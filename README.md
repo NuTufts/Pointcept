@@ -5,7 +5,7 @@ See [docs/LArTPC_Dataset_Guide.md](docs/LArTPC_Dataset_Guide.md) for a rough dev
 
 A LArTPC dataset is defined in [lartpc.py](pointcept/datasets/lartpc.py).
 
-Configurations for training can be found in [config/lartpc](config/lartpc).
+Configurations for training can be found in [configs/lartpc](configs/lartpc).
 
 -------
 
