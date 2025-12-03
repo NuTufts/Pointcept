@@ -160,6 +160,10 @@ class FocalLoss(nn.Module):
         focal_weight = (alpha * target + (1 - alpha) * (1 - target)) * one_minus_pt.pow(
             self.gamma
         )
+        if 'class_weights' in kwargs:
+            cweights = kwargs['class_weights'] # should be (1,C)
+            assert cweights.size(1)==pred.size(1), "number of classes in class_weights does not match prediction"
+            focal_weight *= cweights # (1,C) should broadcast to (N,C)
 
         loss = (
             F.binary_cross_entropy_with_logits(pred, target, reduction="none")
@@ -168,7 +172,7 @@ class FocalLoss(nn.Module):
         if self.reduction == "mean":
             loss = loss.mean()
         elif self.reduction == "sum":
-            loss = loss.total()
+            loss = loss.sum()
         return self.loss_weight * loss
 
 

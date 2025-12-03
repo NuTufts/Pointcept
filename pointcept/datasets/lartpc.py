@@ -49,7 +49,8 @@ class LArTPCDataset(DefaultDataset):
         "pion",       # 2: pi+/pi-
         "proton",     # 3: proton
         "gamma",      # 4: photon
-        "other",      # 5: everything else
+        "ghost",      # 5: ghost
+        "other",      # 6: everything else
     ]
 
     # Default origin class names
@@ -77,11 +78,13 @@ class LArTPCDataset(DefaultDataset):
         # Photon
         22: 4,      # gamma
         # Neutron (often invisible, but include)
-        2112: 5,    # neutron -> other
+        2112: 3,    # neutron -> proton
         # Kaons
-        321: 5,     # K+
-        -321: 5,    # K-
+        321: 6,     # K+
+        -321: 6,    # K-
         # Other common particles go to "other"
+        # ghost points
+        0:5
     }
 
     def __init__(
@@ -99,6 +102,8 @@ class LArTPCDataset(DefaultDataset):
         cache=False,
         ignore_index=-1,
         loop=1,
+        include_ghosts=False,
+        exclude_other=True,
         **kwargs
     ):
         self.use_reco_coords = use_reco_coords
@@ -106,6 +111,8 @@ class LArTPCDataset(DefaultDataset):
         self.label_mode = label_mode
         self.coord_scale = coord_scale
         self.log_transform_edep = log_transform_edep
+        self.include_ghosts = include_ghosts
+        self.exclude_other  = exclude_other
 
         # Call parent init (this will call get_data_list)
         super().__init__(
@@ -210,6 +217,25 @@ class LArTPCDataset(DefaultDataset):
             else:
                 raise ValueError(f"Unknown label_mode: {self.label_mode}")
 
+            classcounts = np.zeros( (1,8), dtype=np.int64 )
+            for iclass in range(7):
+                classcounts[0,iclass] = (segment==iclass).sum()
+            classcounts[0,-1] = (segment==-1).sum()
+            nclasses = 7
+            if self.exclude_other:
+                nclasses -= 1
+            if not self.include_ghosts:
+                nclasses -= 1
+            classweights = np.zeros( (1,nclasses), dtype=np.float32 )
+            for iclass in range(5):
+                classweights[0,iclass] = 1.0/classcounts[0,iclass] if classcounts[0,iclass]>0 else 0.0
+            iclassindex = 5
+            if self.include_ghosts:
+                classweights[0,iclassindex] = 1.0/classcounts[0,5] if classcounts[0,5]>0 else 0.0
+                iclassindex += 1
+            if not self.exclude_other:
+                classweights[0,iclassindex] = 1.0/classcounts[0,6] if classcounts[0,6]>0 else 0.0
+
             # Load energy deposition as strength
             if self.use_edep_as_strength:
                 edep = np.array(f['/entry_0/triplet_data/pixval'], dtype=np.float32)
@@ -242,6 +268,8 @@ class LArTPCDataset(DefaultDataset):
             "instance": instance,
             "name": name,
             "split": split,
+            "segment_counts":classcounts,
+            "segment_weights":classweights
         }
 
         return data_dict
@@ -262,6 +290,11 @@ class LArTPCDataset(DefaultDataset):
 
         for pdg_code, class_idx in self.PID_TO_CLASS.items():
             segment[pid == pdg_code] = class_idx
+
+        if not self.include_ghosts:
+            segment[ segment==5 ] = -1
+        if not self.exclude_other:
+            segment[ segment==6 ] = -1
 
         return segment
 

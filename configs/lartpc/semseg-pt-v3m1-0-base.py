@@ -26,7 +26,7 @@ enable_wandb = True
 # model settings
 model = dict(
     type="DefaultSegmentorV2",
-    num_classes=5,  # electron, muon, pion, proton, gamma (unknown PIDs are ignored)
+    num_classes=6,  # electron, muon, pion, proton, gamma, ghost (unknown PIDs are ignored)
     backbone_out_channels=32,  # Must match first value in dec_channels
     backbone=dict(
         type="PT-v3m1",
@@ -62,16 +62,17 @@ model = dict(
         pdnorm_conditions=("LArTPC",),  # Single dataset condition
     ),
     # Focal Loss to handle class imbalance
-    # Classes: 0-electron, 1-muon, 2-pion, 3-proton, 4-gamma
+    # Classes: 0-electron, 1-muon, 2-pion, 3-proton, 4-gamma, 5-ghost
     # gamma=2.0: focus on hard examples (standard value)
-    # alpha: per-class weights (higher for rare classes like pion)
+    # Per-sample class weights are provided via segment_weights from the dataset
     criteria=[
         dict(
             type="FocalLoss",
             gamma=2.0,
-            alpha=[0.6, 0.15, 0.9, 0.7, 0.7],  # electron, muon, pion, proton, gamma
+            alpha=0.5,  # Balanced alpha; per-sample weights come from segment_weights
             loss_weight=1.0,
             ignore_index=-1,
+            reduction='sum' # sum if weighting per class per sample
         ),
         # Lovasz loss disabled for now - can be unstable early in training
         # Re-enable once model is stable, or use for fine-tuning
@@ -80,24 +81,25 @@ model = dict(
 )
 
 # scheduler settings
-epoch = 1000  # Fewer epochs for initial testing; increase for production
-optimizer = dict(type="AdamW", lr=0.06, weight_decay=0.05)
+epoch = 10000  # Fewer epochs for initial testing; increase for production
+eval_epoch = 1000
+optimizer = dict(type="AdamW", lr=0.006, weight_decay=0.05)
 scheduler = dict(
     type="OneCycleLR",
-    max_lr=[0.06,0.006],
+    max_lr=[0.006,0.0006],
     pct_start=0.05,
     anneal_strategy="cos",
     div_factor=100.0,
     final_div_factor=1000.0,
 )
-param_dicts = [dict(keyword="block", lr=0.006)]
+param_dicts = [dict(keyword="block", lr=0.0006)]
 
 # dataset settings
 dataset_type = "LArTPCDataset"
 data_root = "data/lartpc"
 
 data = dict(
-    num_classes=5,
+    num_classes=6,
     ignore_index=-1,
     names=[
         "electron",
@@ -105,6 +107,7 @@ data = dict(
         "pion",
         "proton",
         "gamma",
+        "ghost",
     ],
     train=dict(
         type=dataset_type,
@@ -114,6 +117,8 @@ data = dict(
         use_edep_as_strength=True,
         label_mode="pid",
         coord_scale=0.001,  # Set to 0.01 if converting cm to m
+        include_ghosts=True,
+        exclude_other=True,        
         log_transform_edep=True,
         transform=[
             #dict(type="CenterShift", apply_z=True),
@@ -146,7 +151,7 @@ data = dict(
             dict(type="ToTensor"),
             dict(
                 type="Collect",
-                keys=("coord", "grid_coord", "segment"),
+                keys=("coord", "grid_coord", "segment", "segment_weights"),
                 feat_keys=("strength", "color"),  # strength + wire_coords = 6 channels
             ),
         ],
@@ -159,6 +164,8 @@ data = dict(
         use_reco_coords=True,
         use_edep_as_strength=True,
         label_mode="pid",
+        include_ghosts=True,
+        exclude_other=True,        
         coord_scale=0.001,  # Must match train
         log_transform_edep=True,
         transform=[
@@ -176,7 +183,7 @@ data = dict(
             dict(type="ToTensor"),
             dict(
                 type="Collect",
-                keys=("coord", "grid_coord", "segment", "origin_segment", "inverse"),
+                keys=("coord", "grid_coord", "segment", "origin_segment", "inverse", "segment_weights"),
                 feat_keys=("strength", "color"),
             ),
         ],
@@ -189,12 +196,12 @@ data = dict(
         use_reco_coords=True,
         use_edep_as_strength=True,
         label_mode="pid",
+        include_ghosts=True,
+        exclude_other=True,        
         coord_scale=0.001,  # Must match train
         log_transform_edep=True,
         transform=[
-            # Copy segment to origin_segment before voxelization
-            # This preserves original labels for proper evaluation
-            dict(type="Copy", keys_dict={"segment": "origin_segment"}),
+            # No Copy transform needed here - test mode handles evaluation differently
         ],
         test_mode=True,
         test_cfg=dict(

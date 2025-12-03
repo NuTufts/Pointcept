@@ -80,13 +80,19 @@ class DefaultSegmentorV2(nn.Module):
         if return_point:
             # PCA evaluator parse feat and coord in point
             return_dict["point"] = point
+
+        # Build kwargs for loss function (e.g., per-sample class weights)
+        loss_kwargs = {}
+        if "segment_weights" in input_dict:
+            loss_kwargs["class_weights"] = input_dict["segment_weights"]
+
         # train
         if self.training:
-            loss = self.criteria(seg_logits, input_dict["segment"])
+            loss = self.criteria(seg_logits, input_dict["segment"], **loss_kwargs)
             return_dict["loss"] = loss
         # eval
         elif "segment" in input_dict.keys():
-            loss = self.criteria(seg_logits, input_dict["segment"])
+            loss = self.criteria(seg_logits, input_dict["segment"], **loss_kwargs)
             return_dict["loss"] = loss
             return_dict["seg_logits"] = seg_logits
         # test
