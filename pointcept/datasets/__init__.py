@@ -20,5 +20,8 @@ from .waymo import WaymoDataset
 from .modelnet import ModelNetDataset
 from .shapenet_part import ShapeNetPartDataset
 
+# physics / LArTPC
+from .lartpc import LArTPCDataset, LArTPCInstanceDataset
+
 # dataloader
 from .dataloader import MultiDatasetDataloader
