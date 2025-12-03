@@ -1,3 +1,15 @@
+
+Note: This fork is used as an development area for deploying Point cloud models on Liquid Argon Time Projection Chamber data
+
+See [docs/LArTPC_Dataset_Guide.md](docs/LArTPC_Dataset_Guide.md) for a rough development plan.
+
+A LArTPC dataset is defined in [lartpc.py](pointcept/datasets/lartpc.py).
+
+Configurations for training can be found in [config/lartpc](config/lartpc).
+
+-------
+
+
 <p align="center">
     <!-- pypi-strip -->
     <picture>
