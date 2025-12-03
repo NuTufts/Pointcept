@@ -346,6 +346,110 @@ class RandomFlip(object):
 
 
 @TRANSFORMS.register_module()
+class RandomFlipAxis(object):
+    """
+    Flip coordinates along a specific axis with probability p.
+
+    Args:
+        p (float): Probability of applying the flip.
+        axis (str or int): Axis to flip. Can be 'x'/0, 'y'/1, or 'z'/2.
+        center (str or float): Center point for the flip.
+            - 'mean': flip around the mean coordinate (default)
+            - 'zero': flip around zero (simple negation)
+            - float: flip around a specific value
+        swap_strength_columns (tuple or None): For LArTPC z-flip, the u and v wire
+            signals need to swap because the wire directions are reflections through
+            the z-plane. Set to (0, 1) to swap first two columns of 'strength' when
+            flipping. Default None (no swap).
+        wire_projections (list of tuples or None): For LArTPC, recalculate wire
+            coordinates after flipping. Each tuple defines a wire plane projection:
+            ((origin_x, origin_y, origin_z), (dir_x, dir_y, dir_z))
+            The wire coordinate is computed as: dot(coord - origin, direction)
+            Provide one tuple per wire plane (e.g., 3 for u, v, y planes).
+            Results are written to 'color' array. Default None (no reprojection).
+
+    The flip is performed as: coord_new = 2 * center - coord_old
+    This maps points on one side of center to the other side.
+    """
+    def __init__(self, p=0.5, axis="z", center="mean", swap_strength_columns=None,
+                 wire_projections=None):
+        self.p = p
+        if isinstance(axis, str):
+            self.axis = {"x": 0, "y": 1, "z": 2}[axis.lower()]
+        else:
+            self.axis = axis
+        self.center = center
+        self.swap_strength_columns = swap_strength_columns
+
+        # Precompute wire projection arrays if provided
+        if wire_projections is not None:
+            self.wire_origins = np.array([proj[0] for proj in wire_projections], dtype=np.float32)
+            self.wire_directions = np.array([proj[1] for proj in wire_projections], dtype=np.float32)
+            # Normalize directions
+            norms = np.linalg.norm(self.wire_directions, axis=1, keepdims=True)
+            self.wire_directions = self.wire_directions / norms
+        else:
+            self.wire_origins = None
+            self.wire_directions = None
+
+    def _reproject_wire_coords(self, coord):
+        """
+        Recalculate wire coordinates for each plane.
+
+        For each wire plane i:
+            wire_coord[i] = dot(coord - origin[i], direction[i])
+
+        Args:
+            coord: (N, 3) array of 3D coordinates
+
+        Returns:
+            (N, num_planes) array of wire coordinates
+        """
+        num_planes = self.wire_origins.shape[0]
+        wire_coords = np.zeros((coord.shape[0], num_planes), dtype=np.float32)
+
+        for i in range(num_planes):
+            # Vector from origin to each point
+            rel_coord = coord - self.wire_origins[i]
+            # Project onto wire direction
+            wire_coords[:, i] = np.dot(rel_coord, self.wire_directions[i])
+
+        return wire_coords
+
+    def __call__(self, data_dict):
+        if np.random.rand() < self.p:
+            if "coord" in data_dict.keys():
+                coord = data_dict["coord"]
+                # Determine center point for flipping
+                if self.center == "mean":
+                    c = coord[:, self.axis].mean()
+                elif self.center == "zero":
+                    c = 0.0
+                else:
+                    c = float(self.center)
+                # Flip: new = 2*center - old
+                data_dict["coord"][:, self.axis] = 2 * c - coord[:, self.axis]
+
+                # Recalculate wire coordinates if projections are defined
+                if self.wire_origins is not None and "color" in data_dict.keys():
+                    data_dict["color"] = self._reproject_wire_coords(data_dict["coord"])
+
+            if "normal" in data_dict.keys():
+                # Normal vectors just get negated on the flip axis
+                data_dict["normal"][:, self.axis] = -data_dict["normal"][:, self.axis]
+            # LArTPC-specific: swap wire signal columns when z-flipping
+            # The u and v wire directions are reflections through the z-plane,
+            # so their signals swap when the ionization pattern is z-flipped
+            if self.swap_strength_columns is not None and "strength" in data_dict.keys():
+                col_a, col_b = self.swap_strength_columns
+                strength = data_dict["strength"]
+                if strength.ndim == 2 and strength.shape[1] > max(col_a, col_b):
+                    # Swap the specified columns
+                    strength[:, [col_a, col_b]] = strength[:, [col_b, col_a]]
+        return data_dict
+
+
+@TRANSFORMS.register_module()
 class RandomJitter(object):
     def __init__(self, sigma=0.01, clip=0.05):
         assert clip > 0
