@@ -49,6 +49,10 @@ amp_dtype = "bfloat16"
 evaluate = False
 find_unused_parameters = False
 
+enable_wandb = True
+wandb_project = "pointcept"
+save_path = "sonata/v1m1"
+
 # LArTPC scale parameters
 # Detector: ~1036 cm largest dimension, 0.3 cm wire pitch / time sampling
 # After coord_scale=0.001: coordinates in ~[0, 10.36] range (meters)
@@ -65,8 +69,8 @@ model = dict(
         order=("z", "z-trans"),
         stride=(2, 2, 2, 2),
         enc_depths=(2, 2, 2, 6, 2),
-        enc_channels=(32, 64, 128, 256, 512),
-        enc_num_head=(2, 4, 8, 16, 32),
+        enc_channels=(16, 32, 64, 128, 256),  # Halved for 16GB GPU
+        enc_num_head=(2, 2, 4, 8, 16),  # Adjusted to divide channels evenly
         enc_patch_size=(1024, 1024, 1024, 1024, 1024),
         mlp_ratio=4,
         qkv_bias=True,
@@ -91,12 +95,12 @@ model = dict(
     ),
     # Head configuration
     # head_in_channels = concatenated features after up_cast
-    # With enc_channels=(32, 64, 128, 256, 512) and up_cast_level=2:
-    # We need to check actual output; starting with estimate
-    head_in_channels=896,  # Adjust based on actual backbone output
-    head_hidden_channels=2048,
-    head_embed_channels=256,
-    head_num_prototypes=2048,
+    # With enc_channels=(16, 32, 64, 128, 256) and up_cast_level=2:
+    # Halved from original to match smaller backbone
+    head_in_channels=448,  # Halved from 896
+    head_hidden_channels=1024,  # Halved from 2048
+    head_embed_channels=128,  # Halved from 256
+    head_num_prototypes=1024,  # Halved from 2048
 
     # View configuration
     num_global_view=2,   # Two global views with different augmentations
@@ -137,8 +141,8 @@ model = dict(
 )
 
 # scheduler settings
-epoch = 10
-eval_epoch = 1
+epoch = 1000
+eval_epoch = 100
 base_lr = 0.002
 lr_decay = 0.9  # layer-wise lr decay
 

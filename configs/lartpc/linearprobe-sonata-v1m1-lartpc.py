@@ -1,37 +1,33 @@
 """
-LArTPC Semantic Segmentation - Fine-tuning from SONATA Pretrained Backbone
+Linear Probing Evaluation for SONATA Pretrained Backbone
 
-Fine-tunes a PointTransformerV3 backbone pretrained with SONATA self-supervision
-for particle-type semantic segmentation.
+Evaluates the quality of self-supervised pretrained features by training
+only a linear classifier on frozen backbone features.
 
-To use:
-1. First pretrain with: configs/lartpc/pretrain-sonata-v1m1-lartpc.py
-2. Then fine-tune with this config, specifying the pretrained checkpoint
+This is the standard evaluation protocol for self-supervised learning:
+1. Load pretrained encoder weights
+2. Freeze all encoder parameters (no gradient updates)
+3. Train only a linear classification head
+4. Evaluate semantic segmentation performance
 
 Usage:
-    python tools/train.py --config-file configs/lartpc/semseg-sonata-v1m1-lartpc-finetune.py \
+    python tools/train.py --config-file configs/lartpc/linearprobe-sonata-v1m1-lartpc.py \
         --options weight=exp/sonata_pretrain/model/model_best.pth
 
-Features (6 channels):
-  - strength (3): Pixel values from u, v, y wire plane images
-  - color (3): Wire indices for u, v, y planes
+Data reuse note:
+    It's acceptable to use the same data used for pretraining, since pretraining
+    was unsupervised (no labels). The linear probe tests whether the learned
+    features capture label-relevant structure.
 """
 
 # =============================================================================
-# Wire plane projection parameters for recalculating wire coordinates after flips
-# Each tuple: ((origin_x, origin_y, origin_z), (pitch_dir_x, pitch_dir_y, pitch_dir_z))
-# - origin: A reference point on the wire plane
-# - pitch_dir: Direction perpendicular to wires (direction of increasing wire index)
-#
-# TODO: Fill in with your detector's actual wire plane geometry
-# Example for a detector with U/V at ±60° from vertical and Y vertical:
-# wire_projections = [
-#     ((0.0, 0.0, 0.0), (0.0, 0.866, 0.5)),   # U plane
-#     ((0.0, 0.0, 0.0), (0.0, 0.866, -0.5)),  # V plane
-#     ((0.0, 0.0, 0.0), (0.0, 0.0, 1.0)),     # Y plane (vertical wires)
-# ]
+# Wire plane projection parameters (must match pretraining)
 # =============================================================================
-wire_projections = None  # Set to None to disable wire reprojection, or define as above
+wire_projections = [
+    ((0.0,-117.0, 0.0), (0.0, 0.866, 0.5)),
+    ((0.0, 117.0, 0.0), (0.0,-0.866, 0.5)),
+    ((0.0,   0.0, 0.0), (0.0, 0.000, 1.0))
+]
 
 _base_ = ["../_base_/default_runtime.py"]
 
@@ -42,36 +38,38 @@ mix_prob = 0.0
 empty_cache = False
 enable_amp = True
 enable_wandb = True
+wandb_project = "pointcept"
+save_path = "sonata/linearprobe"
 
 # Grid size must match pretraining
-grid_size = 0.0003
+grid_size = 0.0002
 
-# model settings - architecture MUST match pretrained backbone
+# model settings - Linear probe on frozen encoder
 model = dict(
     type="DefaultSegmentorV2",
     num_classes=6,  # electron, muon, pion, proton, gamma, ghost
-    backbone_out_channels=16,  # First value of dec_channels (halved)
+    backbone_out_channels=256,  # Final encoder channel (top of encoder)
     backbone=dict(
-        type="PT-v3m2",  # Must match pretraining backbone
-        in_channels=6,  # Must match pretraining
+        type="PT-v3m2",
+        in_channels=6,
         order=("z", "z-trans"),
         stride=(2, 2, 2, 2),
-        # Encoder architecture - MUST match pretrained model (halved for 16GB GPU)
+        # Encoder architecture - MUST match pretrained model
         enc_depths=(2, 2, 2, 6, 2),
-        enc_channels=(16, 32, 64, 128, 256),  # Halved to match pretraining
-        enc_num_head=(2, 2, 4, 8, 16),  # Adjusted to divide channels evenly
+        enc_channels=(16, 32, 64, 128, 256),  # Halved model
+        enc_num_head=(2, 2, 4, 8, 16),
         enc_patch_size=(1024, 1024, 1024, 1024, 1024),
-        # Decoder for segmentation (not used in pretraining)
+        # No decoder - use encoder features directly
         dec_depths=(2, 2, 2, 2),
-        dec_channels=(16, 32, 64, 128),  # Halved to match encoder
-        dec_num_head=(2, 2, 4, 8),  # Adjusted to divide channels evenly
+        dec_channels=(16, 32, 64, 128),
+        dec_num_head=(2, 2, 4, 8),
         dec_patch_size=(1024, 1024, 1024, 1024),
         mlp_ratio=4,
         qkv_bias=True,
         qk_scale=None,
         attn_drop=0.0,
         proj_drop=0.0,
-        drop_path=0.3,
+        drop_path=0.0,  # No dropout for frozen features
         shuffle_orders=True,
         pre_norm=True,
         enable_rpe=False,
@@ -79,8 +77,8 @@ model = dict(
         upcast_attention=False,
         upcast_softmax=False,
         traceable=False,
-        enc_mode=False,  # Need decoder for segmentation
-        mask_token=False,  # Not needed for fine-tuning
+        enc_mode=False,  # Need decoder to upsample features back to point resolution
+        mask_token=False,
     ),
     criteria=[
         dict(
@@ -91,25 +89,24 @@ model = dict(
             ignore_index=-1,
             reduction='sum',
         ),
-        # Lovasz loss can help with fine-tuning
-        dict(type="LovaszLoss", mode="multiclass", loss_weight=0.1, ignore_index=-1),
     ],
-    freeze_backbone=False,  # Set True initially if you want to train only the head first
+    # IMPORTANT: Freeze backbone to only train the linear head
+    freeze_backbone=True,
 )
 
-# scheduler settings - lower LR for fine-tuning
-epoch = 500
-eval_epoch = 50
-optimizer = dict(type="AdamW", lr=0.001, weight_decay=0.05)
+# scheduler settings - faster training since only linear layer
+epoch = 100  # Fewer epochs needed for linear probe
+eval_epoch = 10
+optimizer = dict(type="AdamW", lr=0.01, weight_decay=0.0)  # Higher LR, no weight decay for linear
 scheduler = dict(
     type="OneCycleLR",
-    max_lr=[0.001, 0.0001],
-    pct_start=0.05,
+    max_lr=[0.01],
+    pct_start=0.1,
     anneal_strategy="cos",
     div_factor=10.0,
-    final_div_factor=1000.0,
+    final_div_factor=100.0,
 )
-param_dicts = [dict(keyword="block", lr=0.0001)]
+# No param_dicts needed - backbone is frozen, only head trains
 
 # dataset settings
 dataset_type = "LArTPCDataset"
@@ -138,15 +135,14 @@ data = dict(
         exclude_other=True,
         log_transform_edep=True,
         transform=[
-            # Physics-appropriate augmentations (same as pretraining)
+            # Minimal augmentation for linear probe - just test feature quality
+            # Can add augmentations matching pretraining if desired
             dict(type="RandomScale", scale=[0.95, 1.05]),
             dict(type="RandomFlipAxis", p=0.5, axis="y", center="mean",
                  wire_projections=wire_projections),
-            # Z-flip swaps u/v wire signals (columns 0,1 of strength)
             dict(type="RandomFlipAxis", p=0.5, axis="z", center="mean",
                  swap_strength_columns=(0, 1), wire_projections=wire_projections),
-            dict(type="RandomJitter", sigma=0.0005, clip=0.002),
-            # Grid sampling
+            # Grid sampling - must match pretraining
             dict(
                 type="GridSample",
                 grid_size=grid_size,
