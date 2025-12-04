@@ -65,7 +65,7 @@ for ientry in range(start_entry,end_entry):
   entryfile_name = f"pointceptdata_{basefilename}_entry{ientry:06d}.h5"
   print(f"[{ientry}] output filename: ",entryfile_name)
   
-  #simchmaker.process( ioll, iolcv )
+  simchmaker.process( ioll, iolcv )
   #simchmaker._mckpmaker.printKeypoints()
 
   # save entry
