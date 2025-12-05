@@ -26,7 +26,12 @@ class LArTPCDataset(DefaultDataset):
 
     Args:
         split (str): Dataset split - 'train', 'val', or 'test'
-        data_root (str): Root directory containing split subdirectories
+        data_root (str): Root directory containing split subdirectories (used as base
+            for relative paths in file lists)
+        data_list_file (str, optional): Explicit path to a text file containing paths
+            to HDF5 files (one per line). If provided, this takes priority over
+            directory scanning. Paths in the file can be absolute or relative to
+            data_root. Supports comments (lines starting with #) and blank lines.
         transform (list): List of transform configs
         use_reco_coords (bool): If True, use reconstructed coordinates (pos_*_reco),
             otherwise use true coordinates (pos_*)
@@ -37,6 +42,29 @@ class LArTPCDataset(DefaultDataset):
         coord_scale (float): Scale factor for coordinates (e.g., 0.01 to convert cm to m)
         log_transform_edep (bool): Apply log(1+x) transform to energy deposition
         **kwargs: Additional arguments passed to DefaultDataset
+
+    Data Loading Priority:
+        1. If `data_list_file` is provided and exists, use it
+        2. Else if `data_root/{split}.txt` exists, use it
+        3. Else scan `data_root/{split}/` directory for .h5 files
+
+    Example config with explicit file lists:
+        data = dict(
+            train=dict(
+                type="LArTPCDataset",
+                split="train",
+                data_root="data/lartpc",
+                data_list_file="/path/to/my_train_files.txt",
+                ...
+            ),
+            val=dict(
+                type="LArTPCDataset",
+                split="val",
+                data_root="data/lartpc",
+                data_list_file="/path/to/my_val_files.txt",
+                ...
+            ),
+        )
     """
 
     # Assets that can be loaded (for compatibility with DefaultDataset)
@@ -91,6 +119,7 @@ class LArTPCDataset(DefaultDataset):
         self,
         split="train",
         data_root="data/lartpc",
+        data_list_file=None,
         transform=None,
         use_reco_coords=True,
         use_edep_as_strength=True,
@@ -112,7 +141,8 @@ class LArTPCDataset(DefaultDataset):
         self.coord_scale = coord_scale
         self.log_transform_edep = log_transform_edep
         self.include_ghosts = include_ghosts
-        self.exclude_other  = exclude_other
+        self.exclude_other = exclude_other
+        self.data_list_file = data_list_file
 
         # Call parent init (this will call get_data_list)
         super().__init__(
@@ -128,36 +158,45 @@ class LArTPCDataset(DefaultDataset):
 
     def get_data_list(self):
         """
-        Find all HDF5 files in the data directory.
+        Find all HDF5 files for this dataset split.
 
-        Supports both directory-based organization:
-            data_root/train/*.h5
-            data_root/val/*.h5
+        Loading priority:
+            1. If `data_list_file` is provided and exists, use it
+            2. Else if `data_root/{split}.txt` exists, use it
+            3. Else scan `data_root/{split}/` directory for .h5 files
 
-        And file-list based organization:
-            data_root/train.txt (containing paths to .h5 files)
+        File list format:
+            - One file path per line
+            - Paths can be absolute or relative to data_root
+            - Lines starting with # are treated as comments
+            - Blank lines are ignored
         """
+        data_list = []
+
+        # Priority 1: Explicit data_list_file parameter
+        if self.data_list_file is not None:
+            if os.path.isfile(self.data_list_file):
+                data_list = self._load_file_list(self.data_list_file)
+                if data_list:
+                    return sorted(data_list)
+            else:
+                raise FileNotFoundError(
+                    f"data_list_file not found: {self.data_list_file}"
+                )
+
+        # Handle multiple splits (for combined datasets)
         if isinstance(self.split, str):
             split_list = [self.split]
         else:
             split_list = list(self.split)
 
-        data_list = []
         for split in split_list:
-            # Check for split file (train.txt, val.txt, etc.)
+            # Priority 2: Check for split file (train.txt, val.txt, etc.) in data_root
             split_file = os.path.join(self.data_root, f"{split}.txt")
             if os.path.isfile(split_file):
-                with open(split_file, 'r') as f:
-                    for line in f:
-                        line = line.strip()
-                        if line:
-                            # Handle both absolute and relative paths
-                            if os.path.isabs(line):
-                                data_list.append(line)
-                            else:
-                                data_list.append(os.path.join(self.data_root, line))
+                data_list.extend(self._load_file_list(split_file))
             else:
-                # Look for HDF5 files in split directory
+                # Priority 3: Look for HDF5 files in split directory
                 split_dir = os.path.join(self.data_root, split)
                 if os.path.isdir(split_dir):
                     # Support multiple extensions
@@ -165,6 +204,30 @@ class LArTPCDataset(DefaultDataset):
                         data_list.extend(glob.glob(os.path.join(split_dir, ext)))
 
         return sorted(data_list)
+
+    def _load_file_list(self, file_path):
+        """
+        Load a list of file paths from a text file.
+
+        Args:
+            file_path: Path to the text file containing file paths
+
+        Returns:
+            List of resolved file paths
+        """
+        data_list = []
+        with open(file_path, 'r') as f:
+            for line in f:
+                line = line.strip()
+                # Skip empty lines and comments
+                if not line or line.startswith('#'):
+                    continue
+                # Handle both absolute and relative paths
+                if os.path.isabs(line):
+                    data_list.append(line)
+                else:
+                    data_list.append(os.path.join(self.data_root, line))
+        return data_list
 
     def get_data_name(self, idx):
         """Return the sample name (filename without extension)."""
