@@ -1088,11 +1088,13 @@ class GridSample(object):
 
 @TRANSFORMS.register_module()
 class SphereCrop(object):
-    def __init__(self, point_max=80000, sample_rate=None, mode="random"):
+    def __init__(self, point_max=80000, sample_rate=None, mode="random", point_min=None, max_retries=100):
         self.point_max = point_max
         self.sample_rate = sample_rate
         assert mode in ["random", "center", "all", "given"]
         self.mode = mode
+        self.point_min = point_min
+        self.max_retries = max_retries
 
     def __call__(self, data_dict):
         point_max = (
@@ -1104,11 +1106,23 @@ class SphereCrop(object):
         assert "coord" in data_dict.keys()
         if data_dict["coord"].shape[0] > point_max:
             if self.mode == "random":
-                center = data_dict["coord"][
-                    np.random.randint(data_dict["coord"].shape[0])
-                ]
+                # Retry logic for random mode when point_min is specified
+                for attempt in range(self.max_retries):
+                    center = data_dict["coord"][
+                        np.random.randint(data_dict["coord"].shape[0])
+                    ]
+                    idx_crop = np.argsort(np.sum(np.square(data_dict["coord"] - center), 1))[
+                        :point_max
+                    ]
+                    if self.point_min is None or len(idx_crop) >= self.point_min:
+                        break
+                data_dict = index_operator(data_dict, idx_crop)
             elif self.mode == "center":
                 center = data_dict["coord"][data_dict["coord"].shape[0] // 2]
+                idx_crop = np.argsort(np.sum(np.square(data_dict["coord"] - center), 1))[
+                    :point_max
+                ]
+                data_dict = index_operator(data_dict, idx_crop)
             elif self.mode == "given":
                 given_index = data_dict["correspondence"].reshape(
                     data_dict["correspondence"].shape[0], -1
@@ -1123,12 +1137,12 @@ class SphereCrop(object):
                     ]
                 else:
                     center = np.mean(given_coord, axis=0)
+                idx_crop = np.argsort(np.sum(np.square(data_dict["coord"] - center), 1))[
+                    :point_max
+                ]
+                data_dict = index_operator(data_dict, idx_crop)
             else:
                 raise NotImplementedError
-            idx_crop = np.argsort(np.sum(np.square(data_dict["coord"] - center), 1))[
-                :point_max
-            ]
-            data_dict = index_operator(data_dict, idx_crop)
         return data_dict
 
 
