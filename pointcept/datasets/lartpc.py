@@ -196,12 +196,15 @@ class LArTPCDataset(DefaultDataset):
             if os.path.isfile(split_file):
                 data_list.extend(self._load_file_list(split_file))
             else:
-                # Priority 3: Look for HDF5 files in split directory
+                # Priority 3: Look for HDF5 files in split directory (including subdirectories)
                 split_dir = os.path.join(self.data_root, split)
                 if os.path.isdir(split_dir):
-                    # Support multiple extensions
+                    # Support multiple extensions with recursive glob (**)
                     for ext in ['*.h5', '*.hdf5', '*.hdf']:
+                        # Search in top-level directory
                         data_list.extend(glob.glob(os.path.join(split_dir, ext)))
+                        # Search recursively in subdirectories
+                        data_list.extend(glob.glob(os.path.join(split_dir, '**', ext), recursive=True))
 
         return sorted(data_list)
 
