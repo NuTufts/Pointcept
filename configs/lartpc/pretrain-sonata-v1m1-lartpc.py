@@ -39,8 +39,8 @@ wire_projections = [
 _base_ = ["../_base_/default_runtime.py"]
 
 # misc custom setting
-batch_size = 1  # Adjust based on GPU memory; LArTPC events can be large
-num_worker = 4
+batch_size = 16  # Adjust based on GPU memory; LArTPC events can be large
+num_worker = 6
 mix_prob = 0
 clip_grad = 3.0
 empty_cache = False
@@ -51,13 +51,23 @@ find_unused_parameters = False
 
 enable_wandb = True
 wandb_project = "pointcept"
-save_path = "sonata/v1m1"
+save_path = "sonata/v1m1_bs16"
+
+TRAIN_FILE_LIST="/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept/train_split.txt"
+VAL_FILE_LIST="/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept/val_split.txt"
+TEST_FILE_LIST="/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept/test_split.txt"
+
+max_points_per_view=98304
+max_points_spherecrop=98304
+min_points_spherecrop=20480
 
 # LArTPC scale parameters
 # Detector: ~1036 cm largest dimension, 0.3 cm wire pitch / time sampling
 # After coord_scale=0.001: coordinates in ~[0, 10.36] range (meters)
 # grid_size = 0.3cm / 1000 = 0.0003 in scaled units
 grid_size = 0.0002
+jitter_sigma=0.0001
+jitter_clip=0.0003 # max 1.5 grid spacings
 
 # model settings
 model = dict(
@@ -115,7 +125,7 @@ model = dict(
     mask_ratio_start=0.3,   # Mask 30% initially
     mask_ratio_base=0.7,    # Mask 70% at end
     mask_ratio_warmup_ratio=0.05,
-    mask_jitter=0.001,      # ~1mm jitter for masked coords
+    mask_jitter=0.0003,      # ~3mm jitter for masked coords, after applying 0.001 scale to normalize coordinates
 
     # Temperature schedule
     teacher_temp_start=0.04,
@@ -141,9 +151,9 @@ model = dict(
 )
 
 # scheduler settings
-epoch = 1000
-eval_epoch = 100
-base_lr = 0.002
+epoch = 10
+eval_epoch = 10
+base_lr = 0.004
 lr_decay = 0.9  # layer-wise lr decay
 
 base_wd = 0.04
@@ -177,6 +187,8 @@ data_root = "data/lartpc"
 
 # Transform pipeline for SONATA pretraining
 transform = [
+    # Limit points per sample for memory management
+    dict(type="SphereCrop", point_max=max_points_spherecrop, point_min=min_points_spherecrop, mode="random"),
     # Voxelize to grid
     dict(
         type="GridSample",
@@ -215,7 +227,7 @@ transform = [
             dict(type="RandomFlipAxis", p=0.5, axis="z", center="mean",
                  swap_strength_columns=(0, 1), wire_projections=wire_projections),
             # Small position jitter
-            dict(type="RandomJitter", sigma=0.0005, clip=0.002),
+            dict(type="RandomJitter", sigma=jitter_sigma, clip=jitter_clip),
             # NO rotations - breaks tomographic projection physics
             # NO x-flip - diffusion effects create asymmetry in drift direction
         ],
@@ -226,9 +238,9 @@ transform = [
                  wire_projections=wire_projections),
             dict(type="RandomFlipAxis", p=0.5, axis="z", center="mean",
                  swap_strength_columns=(0, 1), wire_projections=wire_projections),
-            dict(type="RandomJitter", sigma=0.0005, clip=0.002),
+            dict(type="RandomJitter", sigma=jitter_sigma, clip=jitter_clip),
         ],
-        max_size=102400,  # Max points per view
+        max_size=max_points_per_view,  # Max points per view
     ),
     dict(type="ToTensor"),
     dict(type="Update", keys_dict={"grid_size": grid_size}),
@@ -265,7 +277,8 @@ data = dict(
     train=dict(
         type=dataset_type,
         split="train",
-        data_root=data_root,
+        #data_root=data_root,
+        data_list_file=TRAIN_FILE_LIST,
         use_reco_coords=True,
         use_edep_as_strength=True,
         label_mode="pid",
