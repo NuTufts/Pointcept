@@ -367,12 +367,17 @@ class RandomFlipAxis(object):
             The wire coordinate is computed as: dot(coord - origin, direction)
             Provide one tuple per wire plane (e.g., 3 for u, v, y planes).
             Results are written to 'color' array. Default None (no reprojection).
+        wire_pitch: space between wires
+        coord_scale: scale applied to coordinates
 
     The flip is performed as: coord_new = 2 * center - coord_old
     This maps points on one side of center to the other side.
     """
     def __init__(self, p=0.5, axis="z", center="mean", swap_strength_columns=None,
-                 wire_projections=None):
+                 wire_projections=None, 
+                 wire_pitch=0.3,
+                 coord_scale=1.0,
+                 wire_scale=1.0/3456.0):
         self.p = p
         if isinstance(axis, str):
             self.axis = {"x": 0, "y": 1, "z": 2}[axis.lower()]
@@ -382,12 +387,15 @@ class RandomFlipAxis(object):
         self.swap_strength_columns = swap_strength_columns
 
         # Precompute wire projection arrays if provided
+        self.wire_pitch  = wire_pitch
+        self.coord_scale = coord_scale
+        self.wire_scale = wire_scale
         if wire_projections is not None:
             self.wire_origins = np.array([proj[0] for proj in wire_projections], dtype=np.float32)
             self.wire_directions = np.array([proj[1] for proj in wire_projections], dtype=np.float32)
             # Normalize directions
             norms = np.linalg.norm(self.wire_directions, axis=1, keepdims=True)
-            self.wire_directions = self.wire_directions / norms
+            self.wire_directions = self.wire_directions / norms / self.wire_pitch
         else:
             self.wire_origins = None
             self.wire_directions = None
@@ -410,9 +418,12 @@ class RandomFlipAxis(object):
 
         for i in range(num_planes):
             # Vector from origin to each point
-            rel_coord = coord - self.wire_origins[i]
+            #rel_coord = coord/self.coord_scale - self.wire_origins[i]
+            rel_coord = coord/self.coord_scale
             # Project onto wire direction
-            wire_coords[:, i] = np.dot(rel_coord, self.wire_directions[i])
+            wire_coords[:, i] = np.dot(rel_coord, self.wire_directions[i])-self.wire_origins[i][2]
+            
+        wire_coords *= self.wire_scale
 
         return wire_coords
 

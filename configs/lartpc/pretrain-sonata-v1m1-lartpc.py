@@ -12,7 +12,13 @@ Adapted for LArTPC physics constraints:
 
 Features (6 channels total):
   - strength (3): Pixel values from u, v, y wire plane images (pixval)
-  - color (3): Wire indices for u, v, y planes (spatial encoding)
+  - color (3): Wire indices for u, v, y planes divided by 3456.0 (spatial encoding)
+
+Coordinates:
+  - units in data are in cm. We do not need to normalize these values
+  - detector spans in x=[0,256],y=[-117,117],z=[0,1040]
+  - wire pitch is 0.3 cm and drift spacing is about the same.
+  - use grid size of 0.25 cm
 """
 
 # =============================================================================
@@ -24,16 +30,16 @@ Features (6 channels total):
 # TODO: Fill in with your detector's actual wire plane geometry
 # Example for a detector with U/V at ±60° from vertical and Y vertical:
 # wire_projections = [
-#     ((0.0, 0.0, 0.0), (0.0, 0.866, 0.5)),   # U plane
-#     ((0.0, 0.0, 0.0), (0.0, 0.866, -0.5)),  # V plane
-#     ((0.0, 0.0, 0.0), (0.0, 0.0, 1.0)),     # Y plane (vertical wires)
-# ]
+#    ((0.0,    0.0,  -338.6334821387676), (0.0, -0.866, 0.5)),
+#    ((0.0,    0.0,  -333.0331845276306), (0.0,  0.866, 0.5)),
+#    ((0.0,    0.0,  0.33), (0.0, 0.0, 1.0))
+#]
 # =============================================================================
 #wire_projections = None  # Set to None to disable wire reprojection, or define as above
 wire_projections = [
-    ((0.0,-117.0, 0.0), (0.0, 0.866, 0.5)),
-    ((0.0, 117.0, 0.0), (0.0,-0.866, 0.5)),
-    ((0.0,   0.0, 0.0), (0.0, 0.000, 1.0))
+    ((0.0,    0.0,  -338.6334821387676), (0.0, -0.866, 0.5)),
+    ((0.0,    0.0,  -333.0331845276306), (0.0,  0.866, 0.5)),
+    ((0.0,    0.0,  0.33), (0.0, 0.0, 1.0))
 ]
 
 _base_ = ["../_base_/default_runtime.py"]
@@ -65,9 +71,10 @@ min_points_spherecrop=20480
 # Detector: ~1036 cm largest dimension, 0.3 cm wire pitch / time sampling
 # After coord_scale=0.001: coordinates in ~[0, 10.36] range (meters)
 # grid_size = 0.3cm / 1000 = 0.0003 in scaled units
-grid_size = 0.0002
-jitter_sigma=0.0001
-jitter_clip=0.0003 # max 1.5 grid spacings
+grid_size = 0.25  # cm
+jitter_sigma=0.25 # cm
+jitter_clip=0.50  # max 1.5 grid spacings
+wire_scale=1.0/3456.0
 
 # model settings
 model = dict(
@@ -125,7 +132,7 @@ model = dict(
     mask_ratio_start=0.3,   # Mask 30% initially
     mask_ratio_base=0.7,    # Mask 70% at end
     mask_ratio_warmup_ratio=0.05,
-    mask_jitter=0.0003,      # ~3mm jitter for masked coords, after applying 0.001 scale to normalize coordinates
+    mask_jitter=0.3,      # ~3mm jitter for masked coords
 
     # Temperature schedule
     teacher_temp_start=0.04,
@@ -220,12 +227,16 @@ transform = [
             # Y-flip (vertical) - detector is symmetric, flip around mean
             # wire_projections recalculates wire coords after flip (set above)
             dict(type="RandomFlipAxis", p=0.5, axis="y", center="mean",
+                 coord_scale=1.0,
+                 swap_strength_columns=(0, 1)
                  wire_projections=wire_projections),
             # Z-flip (beam direction) - symmetric for uniform ionization
             # swap_strength_columns=(0,1) swaps u/v wire signals because their
             # wire directions are reflections through the z-plane
             dict(type="RandomFlipAxis", p=0.5, axis="z", center="mean",
-                 swap_strength_columns=(0, 1), wire_projections=wire_projections),
+                 coord_scale=1.0,
+                 swap_strength_columns=(0, 1),
+                 wire_projections=wire_projections),
             # Small position jitter
             dict(type="RandomJitter", sigma=jitter_sigma, clip=jitter_clip),
             # NO rotations - breaks tomographic projection physics
@@ -235,9 +246,13 @@ transform = [
         local_transform=[
             dict(type="RandomScale", scale=[0.95, 1.05]),
             dict(type="RandomFlipAxis", p=0.5, axis="y", center="mean",
+                 coord_scale=1.0,
+                 swap_strength_columns=(0, 1),
                  wire_projections=wire_projections),
             dict(type="RandomFlipAxis", p=0.5, axis="z", center="mean",
-                 swap_strength_columns=(0, 1), wire_projections=wire_projections),
+                 coord_scale=1.0,
+                 swap_strength_columns=(0, 1), 
+                 wire_projections=wire_projections),
             dict(type="RandomJitter", sigma=jitter_sigma, clip=jitter_clip),
         ],
         max_size=max_points_per_view,  # Max points per view
@@ -282,7 +297,7 @@ data = dict(
         use_reco_coords=True,
         use_edep_as_strength=True,
         label_mode="pid",
-        coord_scale=0.001,
+        coord_scale=1.0,
         log_transform_edep=True,
         include_ghosts=True,
         exclude_other=True,

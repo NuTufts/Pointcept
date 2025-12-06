@@ -125,6 +125,7 @@ class LArTPCDataset(DefaultDataset):
         use_edep_as_strength=True,
         label_mode="pid",
         coord_scale=1.0,
+        wire_scale=1.0/3456.0,
         log_transform_edep=True,
         test_mode=False,
         test_cfg=None,
@@ -139,6 +140,7 @@ class LArTPCDataset(DefaultDataset):
         self.use_edep_as_strength = use_edep_as_strength
         self.label_mode = label_mode
         self.coord_scale = coord_scale
+        self.wire_scale = wire_scale
         self.log_transform_edep = log_transform_edep
         self.include_ghosts = include_ghosts
         self.exclude_other = exclude_other
@@ -320,7 +322,7 @@ class LArTPCDataset(DefaultDataset):
                 f['/entry_0/triplet_data/vwire'][:],
                 f['/entry_0/triplet_data/ywire'][:]
             ], axis=1).astype(np.float32)
-            wire_feat /= 1000.0
+            wire_feat *= self.wire_scale
 
             # Load instance labels (track IDs)
             trackid = f['/entry_0/triplet_data/trackid'][:]
