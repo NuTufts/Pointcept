@@ -69,12 +69,10 @@ min_points_spherecrop=20480
 
 # LArTPC scale parameters
 # Detector: ~1036 cm largest dimension, 0.3 cm wire pitch / time sampling
-# After coord_scale=0.001: coordinates in ~[0, 10.36] range (meters)
-# grid_size = 0.3cm / 1000 = 0.0003 in scaled units
-grid_size = 0.25  # cm
-jitter_sigma=0.25 # cm
-jitter_clip=0.50  # max 1.5 grid spacings
-wire_scale=1.0/3456.0
+grid_size = 0.25 # cm
+jitter_sigma=0.3 # cm
+jitter_clip=0.50 # max 1.5 grid spacings
+wire_scale=1.0/3456.0 # normalize the wire indices which range from 0-3456
 
 # model settings
 model = dict(
@@ -124,10 +122,10 @@ model = dict(
     num_local_view=4,    # Four local crops (valid for 3D spacepoints)
 
     # Masking schedule - scaled for LArTPC
-    # Patch sizes in coordinate units (after coord_scale=0.001)
-    # 0.01 = 1cm, 0.05 = 5cm in real detector coordinates
-    mask_size_start=0.01,   # Start with ~1cm patches
-    mask_size_base=0.05,    # End with ~5cm patches
+    # Patch sizes in coordinate units
+    # 1cm -> 5cm in real detector coordinates
+    mask_size_start=1.0,   # Start with ~1cm patches
+    mask_size_base=5.0,    # End with ~5cm patches
     mask_size_warmup_ratio=0.05,
     mask_ratio_start=0.3,   # Mask 30% initially
     mask_ratio_base=0.7,    # Mask 70% at end
@@ -151,7 +149,7 @@ model = dict(
 
     # Matching parameters - scaled for LArTPC geometry
     match_max_k=8,
-    match_max_r=0.05,  # ~5cm matching radius
+    match_max_r=5.0,  # ~5cm matching radius
 
     # Feature upsampling through decoder levels
     up_cast_level=2,
@@ -228,7 +226,7 @@ transform = [
             # wire_projections recalculates wire coords after flip (set above)
             dict(type="RandomFlipAxis", p=0.5, axis="y", center="mean",
                  coord_scale=1.0,
-                 swap_strength_columns=(0, 1)
+                 swap_strength_columns=(0, 1),
                  wire_projections=wire_projections),
             # Z-flip (beam direction) - symmetric for uniform ionization
             # swap_strength_columns=(0,1) swaps u/v wire signals because their
