@@ -156,8 +156,8 @@ model = dict(
 )
 
 # scheduler settings
-epoch = 10
-eval_epoch = 10
+epoch = 100
+eval_epoch = 100
 base_lr = 0.004
 lr_decay = 0.9  # layer-wise lr decay
 
