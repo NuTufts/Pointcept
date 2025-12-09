@@ -87,7 +87,7 @@ Notes:
 -  This $L$ term is for one "sample", i.e. for one point with some point set of N points.
 -  $q_k$ comes from the Sinkhorn-Knopp calculation, which finds the optical transport plan
    between a uniformly distributed mass over $K$ clusters to a uniformly distributed mass over $N$ points.
-   The optimal transport cost comes from the entropy(?) between the clusters and spacepoint features: 
+   The optimal transport cost comes from the negative-similarity between the clusters and spacepoint features: 
 
      $$ C_{ik}=[e^{-\frac{1}{\tau}z_i^Tc_{k}}]_{ik} $$
 
