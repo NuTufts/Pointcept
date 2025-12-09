@@ -134,6 +134,7 @@ class LArTPCDataset(DefaultDataset):
         loop=1,
         include_ghosts=False,
         exclude_other=True,
+        true_points_only=False,
         **kwargs
     ):
         self.use_reco_coords = use_reco_coords
@@ -145,6 +146,7 @@ class LArTPCDataset(DefaultDataset):
         self.include_ghosts = include_ghosts
         self.exclude_other = exclude_other
         self.data_list_file = data_list_file
+        self.true_points_only = true_points_only
 
         # Call parent init (this will call get_data_list)
         super().__init__(
@@ -328,6 +330,8 @@ class LArTPCDataset(DefaultDataset):
             trackid = f['/entry_0/triplet_data/trackid'][:]
             instance = trackid.astype(np.int32)
 
+            hasmatch = np.array(f['/entry_0/triplet_data/hasmatch'],dtype=np.int64)
+
         data_dict = {
             "coord": coord,
             "strength": strength,
@@ -339,6 +343,16 @@ class LArTPCDataset(DefaultDataset):
             "segment_counts":classcounts,
             "segment_weights":classweights
         }
+
+        #print("self.true_points_only: ",self.true_points_only)
+        if self.true_points_only:
+            # mask out ghost points
+            #print("RETURN TRUE POINTS ONLY: ",hasmatch.shape)
+            ghost_mask = hasmatch==1
+            for k in data_dict:
+                if k in ['coord','strength','color','segment','instance']:
+                    #print(k,data_dict[k].shape)
+                    data_dict[k] = data_dict[k][ ghost_mask[:] ]
 
         return data_dict
 
