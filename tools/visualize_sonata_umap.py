@@ -35,6 +35,14 @@ from pointcept.models.builder import build_model
 from pointcept.datasets.builder import build_dataset
 from pointcept.datasets.transform import Compose, TRANSFORMS
 
+from sonata_vis_utils import (
+    assign_labels_to_output_points,
+    CLASS_NAMES,
+    CLASS_COLORS,
+    NUM_CLASSES,
+    GHOST_LABEL,
+)
+
 
 def parse_args():
     parser = argparse.ArgumentParser(
@@ -136,6 +144,12 @@ def parse_args():
         type=str,
         default=None,
         help="Optional: load pre-extracted features from .npz file (skip model inference)",
+    )
+    parser.add_argument(
+        "--label-threshold-factor",
+        type=float,
+        default=4.0,
+        help="Factor multiplied by grid_size to get label assignment threshold (default: 4.0)",
     )
     return parser.parse_args()
 
@@ -385,9 +399,9 @@ def main():
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
 
-    # Class names for LArTPC
-    class_names = ["electron", "muon", "pion", "proton", "gamma", "ghost"]
-    num_classes = len(class_names)
+    # Class names for LArTPC (from shared module)
+    class_names = CLASS_NAMES
+    num_classes = NUM_CLASSES
 
     # Check if loading pre-extracted features
     if args.load_features is not None:
@@ -479,19 +493,21 @@ def main():
             #n_grid_points = batch_data["grid_coord"].s
             print(" -> grid_coords=",batch_data["grid_coord"].shape,)
 
-            # Get labels at the output resolution
-            # The backbone pools points, so we need to find nearest input labels
-            # for each output coordinate
+            # Assign labels to output points using shared function
             if "segment" in batch_data:
                 input_coords = batch_data["coord"].cpu().numpy()
                 input_labels = batch_data["segment"].cpu().numpy()
 
-                # For each output coord, find nearest input coord and use its label
-                # Use simple nearest neighbor matching
-                from scipy.spatial import cKDTree
-                tree = cKDTree(input_coords)
-                _, indices = tree.query(coords, k=1)
-                labels = input_labels[indices]
+                labels = assign_labels_to_output_points(
+                    output_coords=coords,
+                    input_coords=input_coords,
+                    input_labels=input_labels,
+                    grid_size=grid_size,
+                    threshold_factor=args.label_threshold_factor,
+                    ghost_label=GHOST_LABEL,
+                    use_gpu=True,
+                    verbose=True,
+                )
             else:
                 labels = np.zeros(n_points_output, dtype=np.int64)
 
@@ -559,19 +575,9 @@ def main():
     print(f"Creating visualization...")
     import matplotlib.pyplot as plt
 
-    # Custom high-contrast color palette for 6 particle classes
-    # Designed for maximum distinguishability
-    class_colors = {
-        0: "#E41A1C",  # electron - red
-        1: "#377EB8",  # muon - blue
-        2: "#4DAF4A",  # pion - green
-        3: "#FF7F00",  # proton - orange
-        4: "#984EA3",  # gamma - purple
-        5: "#999999",  # ghost - gray
-    }
-
-    # Ghost class index
-    ghost_idx = 5
+    # Use shared color palette
+    class_colors = CLASS_COLORS
+    ghost_idx = GHOST_LABEL
 
     fig, axes = plt.subplots(1, 3, figsize=(20, 6))
 

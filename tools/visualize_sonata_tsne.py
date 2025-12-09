@@ -34,6 +34,14 @@ from pointcept.models.builder import build_model
 from pointcept.datasets.builder import build_dataset
 from pointcept.datasets.transform import Compose, TRANSFORMS
 
+from sonata_vis_utils import (
+    assign_labels_to_output_points,
+    CLASS_NAMES,
+    CLASS_COLORS,
+    NUM_CLASSES,
+    GHOST_LABEL,
+)
+
 
 def parse_args():
     parser = argparse.ArgumentParser(
@@ -349,9 +357,9 @@ def main():
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
 
-    # Class names for LArTPC
-    class_names = ["electron", "muon", "pion", "proton", "gamma", "ghost"]
-    num_classes = len(class_names)
+    # Class names for LArTPC (from shared module)
+    class_names = CLASS_NAMES
+    num_classes = NUM_CLASSES
 
     # Check if loading pre-extracted features
     if args.load_features is not None:
@@ -440,52 +448,21 @@ def main():
 
             print(f"-> {n_points_output} output points, {features.shape[1]}D features")
 
-            # Get labels at the output resolution
-            # The backbone pools points, so we need to find nearest input labels
-            # for each output coordinate.
-            #
-            # Improved algorithm: Prioritize non-ghost labels within pooling radius.
-            # Due to pooling, an output point may have both ghost and non-ghost
-            # input points nearby. We prefer non-ghost labels when available.
-            #
-            # The pooling radius is determined by:
-            #   - grid_size (voxelization): 0.25 cm
-            #   - stride (2,2,2,2): 4 pooling layers, each 2x
-            #   - up_cast brings features back some levels
-            # A reasonable threshold is ~4x grid_size = 1.0 cm
-            ghost_label = 5
-            label_threshold = grid_size * args.label_threshold_factor  # Distance threshold for label assignment
-
+            # Assign labels to output points using shared function
             if "segment" in batch_data:
                 input_coords = batch_data["coord"].cpu().numpy()
                 input_labels = batch_data["segment"].cpu().numpy()
 
-                # Split input points into ghost and non-ghost
-                non_ghost_mask = input_labels != ghost_label
-                non_ghost_coords = input_coords[non_ghost_mask]
-                non_ghost_labels = input_labels[non_ghost_mask]
-
-                # Initialize all labels as ghost
-                labels = np.full(n_points_output, ghost_label, dtype=np.int64)
-
-                if len(non_ghost_coords) > 0:
-                    # Use cuML NearestNeighbors for GPU-accelerated KNN
-                    from cuml.neighbors import NearestNeighbors
-
-                    nn = NearestNeighbors(n_neighbors=1, metric="euclidean")
-                    nn.fit(non_ghost_coords.astype(np.float32))
-                    distances, indices = nn.kneighbors(coords.astype(np.float32))
-
-                    # Flatten results (cuML returns 2D arrays even for k=1)
-                    distances = distances.flatten()
-                    indices = indices.flatten()
-
-                    # Assign non-ghost label if within threshold distance
-                    within_threshold = distances <= label_threshold
-                    labels[within_threshold] = non_ghost_labels[indices[within_threshold]]
-
-                    n_assigned = within_threshold.sum()
-                    print(f"(labels: {n_assigned} non-ghost, {n_points_output - n_assigned} ghost)", end=" ")
+                labels = assign_labels_to_output_points(
+                    output_coords=coords,
+                    input_coords=input_coords,
+                    input_labels=input_labels,
+                    grid_size=grid_size,
+                    threshold_factor=args.label_threshold_factor,
+                    ghost_label=GHOST_LABEL,
+                    use_gpu=True,
+                    verbose=True,
+                )
             else:
                 labels = np.zeros(n_points_output, dtype=np.int64)
 
@@ -554,19 +531,9 @@ def main():
     print(f"Creating visualization...")
     import matplotlib.pyplot as plt
 
-    # Custom high-contrast color palette for 6 particle classes
-    # Designed for maximum distinguishability
-    class_colors = {
-        0: "#E41A1C",  # electron - red
-        1: "#377EB8",  # muon - blue
-        2: "#4DAF4A",  # pion - green
-        3: "#FF7F00",  # proton - orange
-        4: "#984EA3",  # gamma - purple
-        5: "#999999",  # ghost - gray
-    }
-
-    # Ghost class index
-    ghost_idx = 5
+    # Use shared color palette
+    class_colors = CLASS_COLORS
+    ghost_idx = GHOST_LABEL
 
     fig, axes = plt.subplots(1, 3, figsize=(20, 6))
 

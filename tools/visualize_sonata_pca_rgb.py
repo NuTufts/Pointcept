@@ -38,6 +38,13 @@ from pointcept.utils.config import Config
 from pointcept.models.builder import build_model
 from pointcept.datasets.transform import Compose, TRANSFORMS
 
+from sonata_vis_utils import (
+    assign_labels_to_output_points,
+    CLASS_NAMES,
+    NUM_CLASSES,
+    GHOST_LABEL,
+)
+
 
 def parse_args():
     parser = argparse.ArgumentParser(
@@ -139,6 +146,12 @@ def parse_args():
         type=str,
         default=None,
         help="Optional: save extracted features to .npz file",
+    )
+    parser.add_argument(
+        "--label-threshold-factor",
+        type=float,
+        default=4.0,
+        help="Factor multiplied by grid_size to get label assignment threshold (default: 4.0)",
     )
     return parser.parse_args()
 
@@ -432,8 +445,8 @@ def create_dash_app(coords, rgb_colors, labels, class_names, args):
         detector_traces = []
 
     # Class info
-    num_classes = len(class_names)
-    ghost_idx = 5
+    num_classes = NUM_CLASSES
+    ghost_idx = GHOST_LABEL
 
     # Create color strings for plotly
     color_strings = [f'rgb({r},{g},{b})' for r, g, b in rgb_colors]
@@ -567,7 +580,7 @@ def create_static_figure(coords, rgb_colors, labels, class_names, args):
         print("Warning: lardly not found, skipping detector outline")
         detector_traces = []
 
-    ghost_idx = 5
+    ghost_idx = GHOST_LABEL
     color_strings = [f'rgb({r},{g},{b})' for r, g, b in rgb_colors]
 
     # Create figure with dropdown for class filtering
@@ -719,8 +732,8 @@ def main():
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
 
-    # Class names for LArTPC
-    class_names = ["electron", "muon", "pion", "proton", "gamma", "ghost"]
+    # Class names for LArTPC (from shared module)
+    class_names = CLASS_NAMES
 
     # Check if loading pre-extracted features
     if args.load_features is not None:
@@ -787,15 +800,21 @@ def main():
 
         print(f"Output points: {n_points_output}, feature dim: {features.shape[1]}")
 
-        # Get labels at output resolution
+        # Assign labels to output points using shared function
         if "segment" in batch_data:
             input_coords = batch_data["coord"].cpu().numpy()
             input_labels = batch_data["segment"].cpu().numpy()
 
-            from scipy.spatial import cKDTree
-            tree = cKDTree(input_coords)
-            _, indices = tree.query(coords, k=1)
-            labels = input_labels[indices]
+            labels = assign_labels_to_output_points(
+                output_coords=coords,
+                input_coords=input_coords,
+                input_labels=input_labels,
+                grid_size=grid_size,
+                threshold_factor=args.label_threshold_factor,
+                ghost_label=GHOST_LABEL,
+                use_gpu=True,
+                verbose=True,
+            )
         else:
             labels = np.zeros(n_points_output, dtype=np.int64)
 
