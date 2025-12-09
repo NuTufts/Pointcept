@@ -3,8 +3,7 @@ import argparse
 import h5py
 import numpy as np
 import dash
-import dash_core_components as dcc
-import dash_html_components as html
+from dash import dcc, html
 from dash.dependencies import Input, Output, State
 from dash.exceptions import PreventUpdate
 
@@ -362,7 +361,7 @@ app.layout = html.Div( [
         className="graph__container"),
     ] )
 
-app.run_server(debug=True)
+app.run(debug=True)
 
 
 
