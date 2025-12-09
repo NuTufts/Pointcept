@@ -92,6 +92,19 @@ def parse_args():
         help="Grid size for voxelization (overrides config)",
     )
     parser.add_argument(
+        "--color-mode",
+        type=str,
+        choices=["pca", "kmeans"],
+        default="pca",
+        help="Color mode: 'pca' (top 3 PCs → RGB) or 'kmeans' (cluster colors)",
+    )
+    parser.add_argument(
+        "--n-clusters",
+        type=int,
+        default=10,
+        help="Number of clusters for K-means color mode",
+    )
+    parser.add_argument(
         "--marker-size",
         type=float,
         default=2.0,
@@ -317,6 +330,89 @@ def features_to_pca_rgb(features, n_components=3):
     return rgb_255, pca
 
 
+def features_to_kmeans_colors(features, n_clusters=10, seed=42):
+    """
+    Apply K-means clustering to features and assign distinct colors to each cluster.
+
+    Uses cuML's GPU-accelerated K-means implementation.
+    Returns RGB colors based on cluster assignments.
+    """
+    print(f"Applying K-means clustering ({n_clusters} clusters) to {features.shape[0]} points...")
+
+    # Use cuML's GPU-accelerated K-means
+    from cuml.cluster import KMeans as cumlKMeans
+    print("Using cuML (GPU) K-means")
+
+    # cuML expects float32
+    features_f32 = features.astype(np.float32)
+
+    # Fit K-means
+    kmeans = cumlKMeans(n_clusters=n_clusters, random_state=seed, max_iter=300)
+    cluster_labels = kmeans.fit_predict(features_f32)
+
+    # Convert cuML output to numpy if needed
+    if hasattr(cluster_labels, 'to_numpy'):
+        cluster_labels = cluster_labels.to_numpy()
+    elif hasattr(cluster_labels, 'get'):
+        cluster_labels = cluster_labels.get()
+
+    # Get inertia (sum of squared distances to cluster centers)
+    inertia = kmeans.inertia_
+    if hasattr(inertia, 'item'):
+        inertia = inertia.item()
+    print(f"K-means inertia: {inertia:.2f}")
+
+    # Count points per cluster
+    unique, counts = np.unique(cluster_labels, return_counts=True)
+    print(f"Cluster sizes: min={counts.min()}, max={counts.max()}, median={np.median(counts):.0f}")
+
+    # Generate distinct colors for each cluster using a qualitative colormap
+    # Use a combination of hue rotation and saturation/value variation for distinctiveness
+    rgb_colors = np.zeros((len(cluster_labels), 3), dtype=np.uint8)
+
+    # Define a set of distinct colors (extended qualitative palette)
+    # These are designed to be maximally distinguishable
+    base_colors = [
+        [228, 26, 28],    # red
+        [55, 126, 184],   # blue
+        [77, 175, 74],    # green
+        [152, 78, 163],   # purple
+        [255, 127, 0],    # orange
+        [255, 255, 51],   # yellow
+        [166, 86, 40],    # brown
+        [247, 129, 191],  # pink
+        [153, 153, 153],  # gray
+        [0, 206, 209],    # dark turquoise
+        [138, 43, 226],   # blue violet
+        [0, 100, 0],      # dark green
+        [255, 20, 147],   # deep pink
+        [0, 0, 139],      # dark blue
+        [184, 134, 11],   # dark goldenrod
+        [139, 0, 0],      # dark red
+        [0, 139, 139],    # dark cyan
+        [85, 107, 47],    # dark olive green
+        [255, 140, 0],    # dark orange
+        [148, 0, 211],    # dark violet
+    ]
+
+    # If we need more colors than base_colors, generate them using HSV
+    if n_clusters > len(base_colors):
+        import colorsys
+        for i in range(len(base_colors), n_clusters):
+            hue = (i * 0.618033988749895) % 1.0  # Golden ratio for good distribution
+            saturation = 0.7 + (i % 3) * 0.1
+            value = 0.9 - (i % 4) * 0.1
+            r, g, b = colorsys.hsv_to_rgb(hue, saturation, value)
+            base_colors.append([int(r * 255), int(g * 255), int(b * 255)])
+
+    # Assign colors to points based on cluster labels
+    for i in range(n_clusters):
+        mask = cluster_labels == i
+        rgb_colors[mask] = base_colors[i]
+
+    return rgb_colors, kmeans, cluster_labels
+
+
 def create_dash_app(coords, rgb_colors, labels, class_names, args):
     """
     Create interactive Dash app for 3D visualization.
@@ -362,9 +458,12 @@ def create_dash_app(coords, rgb_colors, labels, class_names, args):
     ] + [{"label": name.capitalize(), "value": name} for name in class_names]
 
     # Layout
+    # Get color mode label
+    color_mode_label = getattr(args, 'color_mode_label', args.color_mode.upper())
+
     app.layout = html.Div([
         html.Div([
-            html.H3("Sonata PCA-RGB Feature Visualization",
+            html.H3(f"Sonata Feature Visualization ({color_mode_label})",
                     style={"color": "white", "textAlign": "center", "marginBottom": "10px"}),
             html.Div([
                 html.Label("Class Filter:", style={"color": "white", "marginRight": "10px"}),
@@ -584,8 +683,10 @@ def create_static_figure(coords, rgb_colors, labels, class_names, args):
     # Update layout
     init_label = "RANDOM INIT" if args.random_init else "trained"
 
+    color_mode_label = getattr(args, 'color_mode_label', args.color_mode.upper())
+
     fig.update_layout(
-        title=f"Sonata PCA-RGB Features [{init_label}]",
+        title=f"Sonata Features ({color_mode_label}) [{init_label}]",
         updatemenus=[
             dict(
                 active=0,
@@ -708,8 +809,20 @@ def main():
                 coords=coords,
             )
 
-    # Apply PCA to get RGB colors
-    rgb_colors, pca = features_to_pca_rgb(features)
+    # Apply color mapping based on selected mode
+    if args.color_mode == "pca":
+        rgb_colors, _ = features_to_pca_rgb(features)
+        color_mode_label = "PCA"
+    elif args.color_mode == "kmeans":
+        rgb_colors, _, cluster_labels = features_to_kmeans_colors(
+            features, n_clusters=args.n_clusters, seed=args.seed
+        )
+        color_mode_label = f"K-means (k={args.n_clusters})"
+    else:
+        raise ValueError(f"Unknown color mode: {args.color_mode}")
+
+    # Store color mode label for visualization titles
+    args.color_mode_label = color_mode_label
 
     # Print class distribution
     print("\nClass distribution:")
