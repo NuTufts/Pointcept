@@ -1,18 +1,17 @@
 """
-UMAP Visualization of Sonata Encoder Features
+t-SNE Visualization of Sonata Encoder Features
 
 Extracts encoder features from a trained Sonata model and creates
-UMAP embeddings colored by particle class for LArTPC data.
+t-SNE embeddings colored by particle class for LArTPC data.
 
-Supports both CPU (umap-learn) and GPU (cuML) backends.
+Uses cuML's GPU-accelerated t-SNE implementation.
 
 Usage:
-    python tools/visualize_sonata_umap.py \
+    python tools/visualize_sonata_tsne.py \
         --config configs/lartpc/pretrain-sonata-v1m1-lartpc.py \
         --checkpoint exp/lartpc/sonata-v1m1/model_best.pth \
         --data-list /path/to/val_split.txt \
-        --output umap_features.png \
-        --backend cpu \
+        --output tsne_features.png \
         --max-points 50000 \
         --num-events 5
 
@@ -38,7 +37,7 @@ from pointcept.datasets.transform import Compose, TRANSFORMS
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="UMAP visualization of Sonata encoder features"
+        description="t-SNE visualization of Sonata encoder features (cuML GPU)"
     )
     parser.add_argument(
         "--config",
@@ -61,21 +60,14 @@ def parse_args():
     parser.add_argument(
         "--output",
         type=str,
-        default="umap_sonata_features.png",
+        default="tsne_sonata_features.png",
         help="Output image path",
-    )
-    parser.add_argument(
-        "--backend",
-        type=str,
-        choices=["cpu", "gpu", "auto"],
-        default="auto",
-        help="UMAP backend: 'cpu' (umap-learn), 'gpu' (cuML), or 'auto' (try GPU first)",
     )
     parser.add_argument(
         "--max-points",
         type=int,
         default=50000,
-        help="Maximum total points for UMAP (subsampled if exceeded)",
+        help="Maximum total points for t-SNE (subsampled if exceeded)",
     )
     parser.add_argument(
         "--points-per-event",
@@ -90,16 +82,28 @@ def parse_args():
         help="Number of events to process",
     )
     parser.add_argument(
-        "--n-neighbors",
-        type=int,
-        default=15,
-        help="UMAP n_neighbors parameter (higher = more global structure)",
+        "--perplexity",
+        type=float,
+        default=30.0,
+        help="t-SNE perplexity parameter (typically 5-50, higher = more global structure)",
     )
     parser.add_argument(
-        "--min-dist",
+        "--learning-rate",
         type=float,
-        default=0.1,
-        help="UMAP min_dist parameter (lower = tighter clusters)",
+        default=200.0,
+        help="t-SNE learning rate (typically 10-1000)",
+    )
+    parser.add_argument(
+        "--n-iter",
+        type=int,
+        default=1000,
+        help="Number of t-SNE iterations",
+    )
+    parser.add_argument(
+        "--early-exaggeration",
+        type=float,
+        default=12.0,
+        help="t-SNE early exaggeration factor",
     )
     parser.add_argument(
         "--seed",
@@ -131,62 +135,43 @@ def parse_args():
         default=None,
         help="Optional: load pre-extracted features from .npz file (skip model inference)",
     )
+    parser.add_argument(
+        "--true-points-only",
+        action='store_true',
+        default=False,
+        help="Optional: If given, only use true (non-ghost) points",
+    )
     return parser.parse_args()
 
 
-def get_umap_reducer(backend, n_neighbors=15, min_dist=0.1, random_state=42):
+def get_tsne_reducer(perplexity=30.0, learning_rate=200.0, n_iter=1000,
+                     early_exaggeration=12.0, random_state=42):
     """
-    Create UMAP reducer with specified backend.
+    Create cuML t-SNE reducer.
 
     Args:
-        backend: 'cpu', 'gpu', or 'auto'
-        n_neighbors: Number of neighbors for UMAP
-        min_dist: Minimum distance parameter
+        perplexity: Perplexity parameter (balance between local and global structure)
+        learning_rate: Learning rate for optimization
+        n_iter: Number of iterations
+        early_exaggeration: Early exaggeration factor
         random_state: Random seed
 
     Returns:
-        UMAP reducer object, actual backend used
+        t-SNE reducer object
     """
-    if backend == "auto":
-        # Try GPU first, fall back to CPU
-        try:
-            from cuml.manifold import UMAP as cumlUMAP
-            print("Using cuML (GPU) UMAP backend")
-            reducer = cumlUMAP(
-                n_neighbors=n_neighbors,
-                min_dist=min_dist,
-                n_components=2,
-                random_state=random_state,
-                verbose=True,
-            )
-            return reducer, "gpu"
-        except ImportError:
-            print("cuML not available, falling back to CPU UMAP")
-            backend = "cpu"
+    from cuml.manifold import TSNE as cumlTSNE
 
-    if backend == "gpu":
-        from cuml.manifold import UMAP as cumlUMAP
-        print("Using cuML (GPU) UMAP backend")
-        reducer = cumlUMAP(
-            n_neighbors=n_neighbors,
-            min_dist=min_dist,
-            n_components=2,
-            random_state=random_state,
-            verbose=True,
-        )
-        return reducer, "gpu"
-
-    else:  # cpu
-        import umap
-        print("Using umap-learn (CPU) backend")
-        reducer = umap.UMAP(
-            n_neighbors=n_neighbors,
-            min_dist=min_dist,
-            n_components=2,
-            random_state=random_state,
-            verbose=True,
-        )
-        return reducer, "cpu"
+    print("Using cuML (GPU) t-SNE")
+    reducer = cumlTSNE(
+        n_components=2,
+        perplexity=perplexity,
+        learning_rate=learning_rate,
+        n_iter=n_iter,
+        early_exaggeration=early_exaggeration,
+        random_state=random_state,
+        verbose=1,
+    )
+    return reducer
 
 
 def build_inference_transform(cfg, grid_size=None):
@@ -220,33 +205,6 @@ def build_inference_transform(cfg, grid_size=None):
 
     # Return list of dicts - dataset wraps in Compose internally
     return transform_list
-
-
-def build_inference_dataset(cfg, data_list_file=None, transform=None):
-    """
-    Build dataset for inference with simplified transform.
-    """
-    # Get dataset config from training config
-    if "train" in cfg.data:
-        dataset_cfg = cfg.data.train.copy()
-    else:
-        dataset_cfg = cfg.data.copy()
-
-    # Override for inference
-    dataset_cfg["transform"] = transform
-    dataset_cfg["test_mode"] = True
-    dataset_cfg["loop"] = 1
-
-    print(dataset_cfg)
-
-    if data_list_file is not None:
-        dataset_cfg["data_list_file"] = data_list_file
-
-    # Remove split-specific settings
-    dataset_cfg.pop("split", None)
-
-    from pointcept.datasets.builder import DATASETS
-    return DATASETS.build(dataset_cfg)
 
 
 def load_model(cfg, checkpoint_path, device):
@@ -419,7 +377,7 @@ def main():
             log_transform_edep=True,
             include_ghosts=True,
             exclude_other=True,
-            true_points_only=False,
+            true_points_only=args.true_points_only,
             test_mode=False,  # Use False to avoid needing test_cfg
             loop=1,
         )
@@ -457,9 +415,6 @@ def main():
             n_points_output = features.shape[0]
 
             print(f"-> {n_points_output} output points, {features.shape[1]}D features")
-
-            #n_grid_points = batch_data["grid_coord"].s
-            print(" -> grid_coords=",batch_data["grid_coord"].shape,)
 
             # Get labels at the output resolution
             # The backbone pools points, so we need to find nearest input labels
@@ -505,9 +460,9 @@ def main():
                 coords=all_coords,
             )
 
-    # Final subsampling for UMAP
+    # Final subsampling for t-SNE
     if len(all_features) > args.max_points:
-        print(f"Subsampling from {len(all_features)} to {args.max_points} points for UMAP")
+        print(f"Subsampling from {len(all_features)} to {args.max_points} points for t-SNE")
         indices = np.random.choice(len(all_features), args.max_points, replace=False)
         all_features = all_features[indices]
         all_labels = all_labels[indices]
@@ -521,21 +476,22 @@ def main():
         if cls_idx >= 0 and cls_idx < len(class_names):
             print(f"  {class_names[cls_idx]}: {count} ({100*count/len(all_labels):.1f}%)")
 
-    # Run UMAP
-    print(f"\nRunning UMAP with n_neighbors={args.n_neighbors}, min_dist={args.min_dist}...")
-    reducer, backend_used = get_umap_reducer(
-        args.backend,
-        n_neighbors=args.n_neighbors,
-        min_dist=args.min_dist,
+    # Run t-SNE
+    print(f"\nRunning t-SNE with perplexity={args.perplexity}, learning_rate={args.learning_rate}, n_iter={args.n_iter}...")
+    reducer = get_tsne_reducer(
+        perplexity=args.perplexity,
+        learning_rate=args.learning_rate,
+        n_iter=args.n_iter,
+        early_exaggeration=args.early_exaggeration,
         random_state=args.seed,
     )
 
-    # Convert to float32 for UMAP
+    # Convert to float32 for t-SNE
     features_f32 = all_features.astype(np.float32)
 
-    # Run UMAP
+    # Run t-SNE
     embedding = reducer.fit_transform(features_f32)
-    print(f"UMAP complete: {embedding.shape}")
+    print(f"t-SNE complete: {embedding.shape}")
 
     # Create visualization
     print(f"Creating visualization...")
@@ -585,9 +541,9 @@ def main():
                 alpha=0.6,
             )
 
-    ax1.set_xlabel("UMAP 1")
-    ax1.set_ylabel("UMAP 2")
-    ax1.set_title(f"All Points (ghost alpha=0.10)\nn_neighbors={args.n_neighbors}, min_dist={args.min_dist}")
+    ax1.set_xlabel("t-SNE 1")
+    ax1.set_ylabel("t-SNE 2")
+    ax1.set_title(f"All Points (ghost alpha=0.10)\nperplexity={args.perplexity}")
     ax1.legend(markerscale=5, loc="best")
 
     # Plot 2: Non-ghost points only
@@ -607,8 +563,8 @@ def main():
                 alpha=0.7,
             )
 
-    ax2.set_xlabel("UMAP 1")
-    ax2.set_ylabel("UMAP 2")
+    ax2.set_xlabel("t-SNE 1")
+    ax2.set_ylabel("t-SNE 2")
     ax2.set_title(f"True Points Only (no ghost)\n{non_ghost_mask.sum()} points")
     ax2.legend(markerscale=5, loc="best")
 
@@ -621,8 +577,8 @@ def main():
         cmap="viridis",
         mincnt=1,
     )
-    ax3.set_xlabel("UMAP 1")
-    ax3.set_ylabel("UMAP 2")
+    ax3.set_xlabel("t-SNE 1")
+    ax3.set_ylabel("t-SNE 2")
     ax3.set_title("Point Density (all)")
     plt.colorbar(ax3.collections[0], ax=ax3, label="Count")
 
@@ -638,6 +594,9 @@ def main():
         labels=all_labels,
         class_names=class_names,
         class_colors=[class_colors[i] for i in range(num_classes)],
+        perplexity=args.perplexity,
+        learning_rate=args.learning_rate,
+        n_iter=args.n_iter,
     )
     print(f"Saved embedding data to {embedding_path}")
 
