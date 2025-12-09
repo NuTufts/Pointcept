@@ -49,8 +49,14 @@ def parse_args():
     parser.add_argument(
         "--checkpoint",
         type=str,
-        required=True,
-        help="Path to model checkpoint (.pth file)",
+        default=None,
+        help="Path to model checkpoint (.pth file). Not required if --random-init is used.",
+    )
+    parser.add_argument(
+        "--random-init",
+        action="store_true",
+        default=False,
+        help="Use randomly initialized model weights (baseline comparison)",
     )
     parser.add_argument(
         "--data-list",
@@ -249,37 +255,49 @@ def build_inference_dataset(cfg, data_list_file=None, transform=None):
     return DATASETS.build(dataset_cfg)
 
 
-def load_model(cfg, checkpoint_path, device):
+def load_model(cfg, checkpoint_path, device, random_init=False):
     """
-    Load Sonata model from checkpoint.
+    Load Sonata model from checkpoint or with random initialization.
+
+    Args:
+        cfg: Model configuration
+        checkpoint_path: Path to checkpoint file (ignored if random_init=True)
+        device: Device to load model on
+        random_init: If True, use random weights instead of loading checkpoint
     """
     print(f"Building model: {cfg.model.type}")
     model = build_model(cfg.model)
 
-    print(f"Loading checkpoint: {checkpoint_path}")
-    checkpoint = torch.load(checkpoint_path, map_location="cpu")
-
-    # Handle different checkpoint formats
-    if "state_dict" in checkpoint:
-        state_dict = checkpoint["state_dict"]
-    elif "model" in checkpoint:
-        state_dict = checkpoint["model"]
+    if random_init:
+        print("Using RANDOMLY INITIALIZED model weights (no checkpoint loaded)")
     else:
-        state_dict = checkpoint
+        if checkpoint_path is None:
+            raise ValueError("checkpoint_path is required when random_init=False")
+        print(f"Loading checkpoint: {checkpoint_path}")
+        checkpoint = torch.load(checkpoint_path, map_location="cpu")
 
-    # Remove 'module.' prefix if present (from DDP)
-    new_state_dict = {}
-    for k, v in state_dict.items():
-        if k.startswith("module."):
-            new_state_dict[k[7:]] = v
+        # Handle different checkpoint formats
+        if "state_dict" in checkpoint:
+            state_dict = checkpoint["state_dict"]
+        elif "model" in checkpoint:
+            state_dict = checkpoint["model"]
         else:
-            new_state_dict[k] = v
+            state_dict = checkpoint
 
-    model.load_state_dict(new_state_dict, strict=False)
+        # Remove 'module.' prefix if present (from DDP)
+        new_state_dict = {}
+        for k, v in state_dict.items():
+            if k.startswith("module."):
+                new_state_dict[k[7:]] = v
+            else:
+                new_state_dict[k] = v
+
+        model.load_state_dict(new_state_dict, strict=False)
+        print(f"Model loaded successfully")
+
     model = model.to(device)
     model.eval()
 
-    print(f"Model loaded successfully")
     return model
 
 
@@ -427,7 +445,7 @@ def main():
         print(f"Dataset size: {len(dataset)} events")
 
         # Load model
-        model = load_model(cfg, args.checkpoint, args.device)
+        model = load_model(cfg, args.checkpoint, args.device, random_init=args.random_init)
 
         # Extract features from events
         all_features = []
@@ -587,7 +605,8 @@ def main():
 
     ax1.set_xlabel("UMAP 1")
     ax1.set_ylabel("UMAP 2")
-    ax1.set_title(f"All Points (ghost alpha=0.10)\nn_neighbors={args.n_neighbors}, min_dist={args.min_dist}")
+    init_label = "RANDOM INIT" if args.random_init else "trained"
+    ax1.set_title(f"All Points (ghost alpha=0.10) [{init_label}]\nn_neighbors={args.n_neighbors}, min_dist={args.min_dist}")
     ax1.legend(markerscale=5, loc="best")
 
     # Plot 2: Non-ghost points only
