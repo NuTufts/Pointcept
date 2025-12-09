@@ -147,6 +147,12 @@ def parse_args():
         default=False,
         help="Optional: If given, only use true (non-ghost) points",
     )
+    parser.add_argument(
+        "--label-threshold-factor",
+        type=float,
+        default=4.0,
+        help="Factor multiplied by grid_size to get label assignment threshold (default: 4.0)",
+    )
     return parser.parse_args()
 
 
@@ -436,17 +442,50 @@ def main():
 
             # Get labels at the output resolution
             # The backbone pools points, so we need to find nearest input labels
-            # for each output coordinate
+            # for each output coordinate.
+            #
+            # Improved algorithm: Prioritize non-ghost labels within pooling radius.
+            # Due to pooling, an output point may have both ghost and non-ghost
+            # input points nearby. We prefer non-ghost labels when available.
+            #
+            # The pooling radius is determined by:
+            #   - grid_size (voxelization): 0.25 cm
+            #   - stride (2,2,2,2): 4 pooling layers, each 2x
+            #   - up_cast brings features back some levels
+            # A reasonable threshold is ~4x grid_size = 1.0 cm
+            ghost_label = 5
+            label_threshold = grid_size * args.label_threshold_factor  # Distance threshold for label assignment
+
             if "segment" in batch_data:
                 input_coords = batch_data["coord"].cpu().numpy()
                 input_labels = batch_data["segment"].cpu().numpy()
 
-                # For each output coord, find nearest input coord and use its label
-                # Use simple nearest neighbor matching
-                from scipy.spatial import cKDTree
-                tree = cKDTree(input_coords)
-                _, indices = tree.query(coords, k=1)
-                labels = input_labels[indices]
+                # Split input points into ghost and non-ghost
+                non_ghost_mask = input_labels != ghost_label
+                non_ghost_coords = input_coords[non_ghost_mask]
+                non_ghost_labels = input_labels[non_ghost_mask]
+
+                # Initialize all labels as ghost
+                labels = np.full(n_points_output, ghost_label, dtype=np.int64)
+
+                if len(non_ghost_coords) > 0:
+                    # Use cuML NearestNeighbors for GPU-accelerated KNN
+                    from cuml.neighbors import NearestNeighbors
+
+                    nn = NearestNeighbors(n_neighbors=1, metric="euclidean")
+                    nn.fit(non_ghost_coords.astype(np.float32))
+                    distances, indices = nn.kneighbors(coords.astype(np.float32))
+
+                    # Flatten results (cuML returns 2D arrays even for k=1)
+                    distances = distances.flatten()
+                    indices = indices.flatten()
+
+                    # Assign non-ghost label if within threshold distance
+                    within_threshold = distances <= label_threshold
+                    labels[within_threshold] = non_ghost_labels[indices[within_threshold]]
+
+                    n_assigned = within_threshold.sum()
+                    print(f"(labels: {n_assigned} non-ghost, {n_points_output - n_assigned} ghost)", end=" ")
             else:
                 labels = np.zeros(n_points_output, dtype=np.int64)
 
