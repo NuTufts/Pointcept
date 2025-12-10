@@ -275,6 +275,64 @@ class CheckpointLoader(HookBase):
 
 
 @HOOKS.register_module()
+class SonataCheckpointLoader(HookBase):
+    """
+    Checkpoint loader for SonataSegmentor that properly remaps SONATA checkpoint keys.
+
+    SONATA checkpoints have keys like:
+        student.backbone.embedding...
+        teacher.backbone.embedding...
+
+    SonataSegmentor expects keys like:
+        backbone.student.backbone.embedding...
+        backbone.teacher.backbone.embedding...
+
+    This hook prepends "backbone." to all checkpoint keys.
+    """
+    def __init__(self, strict=False):
+        self.strict = strict
+
+    def before_train(self):
+        self.trainer.logger.info("=> Loading SONATA checkpoint & weight ...")
+        if self.trainer.cfg.weight and os.path.isfile(self.trainer.cfg.weight):
+            self.trainer.logger.info(f"Loading weight at: {self.trainer.cfg.weight}")
+            checkpoint = torch.load(
+                self.trainer.cfg.weight,
+                map_location=lambda storage, loc: storage.cuda(),
+                weights_only=False,
+            )
+            self.trainer.logger.info("Remapping SONATA checkpoint keys (prepending 'backbone.')")
+            weight = OrderedDict()
+            for key, value in checkpoint["state_dict"].items():
+                # Remove module. prefix if present (from DDP)
+                if key.startswith("module."):
+                    key = key[7:]
+                # Prepend backbone. for SonataSegmentor
+                new_key = "backbone." + key
+                # Add module. back if using DDP
+                if comm.get_world_size() > 1:
+                    new_key = "module." + new_key
+                weight[new_key] = value
+            load_state_info = self.trainer.model.load_state_dict(
+                weight, strict=self.strict
+            )
+            self.trainer.logger.info(f"Missing keys: {load_state_info[0]}")
+            self.trainer.logger.info(f"Unexpected keys: {load_state_info[1]}")
+            if self.trainer.cfg.resume:
+                self.trainer.logger.info(
+                    f"Resuming train at eval epoch: {checkpoint['epoch']}"
+                )
+                self.trainer.start_epoch = checkpoint["epoch"]
+                self.trainer.best_metric_value = checkpoint["best_metric_value"]
+                self.trainer.optimizer.load_state_dict(checkpoint["optimizer"])
+                self.trainer.scheduler.load_state_dict(checkpoint["scheduler"])
+                if self.trainer.cfg.enable_amp:
+                    self.trainer.scaler.load_state_dict(checkpoint["scaler"])
+        else:
+            self.trainer.logger.info(f"No weight found at: {self.trainer.cfg.weight}")
+
+
+@HOOKS.register_module()
 class PreciseEvaluator(HookBase):
     def __init__(self, test_last=False):
         self.test_last = test_last
