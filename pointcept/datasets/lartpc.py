@@ -287,24 +287,19 @@ class LArTPCDataset(DefaultDataset):
             else:
                 raise ValueError(f"Unknown label_mode: {self.label_mode}")
 
-            classcounts = np.zeros( (1,8), dtype=np.int64 )
-            for iclass in range(7):
-                classcounts[0,iclass] = (segment==iclass).sum()
-            classcounts[0,-1] = (segment==-1).sum()
-            nclasses = 7
-            if self.exclude_other:
-                nclasses -= 1
-            if not self.include_ghosts:
-                nclasses -= 1
-            classweights = np.zeros( (1,nclasses), dtype=np.float32 )
-            for iclass in range(5):
-                classweights[0,iclass] = 1.0/classcounts[0,iclass] if classcounts[0,iclass]>0 else 0.0
-            iclassindex = 5
+            # Count points per class for the active classes only
+            # Classes: 0=electron, 1=muon, 2=pion, 3=proton, 4=gamma, 5=ghost, 6=other
+            # Build list of active class indices
+            active_classes = list(range(5))  # Always include first 5 classes
             if self.include_ghosts:
-                classweights[0,iclassindex] = 1.0/classcounts[0,5] if classcounts[0,5]>0 else 0.0
-                iclassindex += 1
+                active_classes.append(5)
             if not self.exclude_other:
-                classweights[0,iclassindex] = 1.0/classcounts[0,6] if classcounts[0,6]>0 else 0.0
+                active_classes.append(6)
+
+            nclasses = len(active_classes)
+            classcounts = np.zeros((1, nclasses), dtype=np.int64)
+            for i, class_idx in enumerate(active_classes):
+                classcounts[0, i] = (segment == class_idx).sum()
 
             # Load energy deposition as strength
             if self.use_edep_as_strength:
@@ -340,8 +335,7 @@ class LArTPCDataset(DefaultDataset):
             "instance": instance,
             "name": name,
             "split": split,
-            "segment_counts":classcounts,
-            "segment_weights":classweights
+            "segment_counts": classcounts,  # (1, nclasses) - counts per class for this sample
         }
 
         #print("self.true_points_only: ",self.true_points_only)
@@ -375,7 +369,7 @@ class LArTPCDataset(DefaultDataset):
 
         if not self.include_ghosts:
             segment[ segment==5 ] = -1
-        if not self.exclude_other:
+        if self.exclude_other:
             segment[ segment==6 ] = -1
 
         return segment

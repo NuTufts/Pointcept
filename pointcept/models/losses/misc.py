@@ -160,10 +160,19 @@ class FocalLoss(nn.Module):
         focal_weight = (alpha * target + (1 - alpha) * (1 - target)) * one_minus_pt.pow(
             self.gamma
         )
-        if 'class_weights' in kwargs:
-            cweights = kwargs['class_weights'] # should be (1,C)
-            assert cweights.size(1)==pred.size(1), "number of classes in class_weights does not match prediction"
-            focal_weight *= cweights # (1,C) should broadcast to (N,C)
+        if 'class_counts' in kwargs:
+            # class_counts is (batch_size, C) - sum across batch to get total counts
+            counts = kwargs['class_counts'].sum(dim=0, keepdim=True).float()  # (1, C)
+            # Compute inverse frequency weights, avoiding division by zero
+            cweights = torch.where(counts > 0, 1.0 / counts, torch.zeros_like(counts))
+            # Normalize weights so they sum to num_classes (optional, for stability)
+            cweights = cweights * num_classes / (cweights.sum() + 1e-8)
+            assert cweights.size(1) == pred.size(1), "number of classes in class_counts does not match prediction"
+            focal_weight *= cweights  # (1,C) broadcasts to (N,C)
+        elif 'class_weights' in kwargs:
+            cweights = kwargs['class_weights']  # should be (1,C)
+            assert cweights.size(1) == pred.size(1), "number of classes in class_weights does not match prediction"
+            focal_weight *= cweights  # (1,C) should broadcast to (N,C)
 
         loss = (
             F.binary_cross_entropy_with_logits(pred, target, reduction="none")

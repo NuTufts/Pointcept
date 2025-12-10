@@ -35,8 +35,8 @@ wire_projections = [
 _base_ = ["../_base_/default_runtime.py"]
 
 # misc custom setting
-batch_size = 1
-num_worker = 1
+batch_size = 16
+num_worker = 4
 mix_prob = 0.0
 empty_cache = False
 enable_amp = True
@@ -45,9 +45,13 @@ wandb_project = "pointcept"
 save_path = "sonata/linearprobe"
 epoch=100
 eval_epoch=100
+base_lr=0.01
 
 # Grid size must match pretraining
 grid_size = 0.25
+
+max_points_spherecrop=98304
+min_points_spherecrop=20480
 
 # Small dataset test
 TRAIN_FILE_LIST="pi0_train_files.txt"        # 1880 events
@@ -143,7 +147,7 @@ model = dict(
             alpha=0.5,
             loss_weight=1.0,
             ignore_index=-1,
-            reduction='sum',
+            reduction='mean',  # Use sum when using weights from per-batch class counts
         ),
     ],
     # IMPORTANT: Freeze backbone to only train the linear head
@@ -151,12 +155,10 @@ model = dict(
 )
 
 # scheduler settings - faster training since only linear layer
-epoch = 100  # Fewer epochs needed for linear probe
-eval_epoch = 10
-optimizer = dict(type="AdamW", lr=0.01, weight_decay=0.0)  # Higher LR, no weight decay for linear
+optimizer = dict(type="AdamW", lr=base_lr, weight_decay=0.0)  # Higher LR, no weight decay for linear
 scheduler = dict(
     type="OneCycleLR",
-    max_lr=[0.01],
+    max_lr=[base_lr],
     pct_start=0.1,
     anneal_strategy="cos",
     div_factor=10.0,
@@ -206,11 +208,11 @@ data = dict(
                 mode="train",
                 return_grid_coord=True,
             ),
-            dict(type="SphereCrop", point_max=102400, mode="random"),
+            dict(type="SphereCrop", point_max=max_points_spherecrop, point_min=min_points_spherecrop, mode="random"),
             dict(type="ToTensor"),
             dict(
                 type="Collect",
-                keys=("coord", "grid_coord", "segment", "segment_weights"),
+                keys=("coord", "grid_coord", "segment", "segment_counts"),
                 feat_keys=("strength", "color"),
             ),
         ],
@@ -241,7 +243,7 @@ data = dict(
             dict(type="ToTensor"),
             dict(
                 type="Collect",
-                keys=("coord", "grid_coord", "segment", "origin_segment", "inverse", "segment_weights"),
+                keys=("coord", "grid_coord", "segment", "origin_segment", "inverse", "segment_counts"),
                 feat_keys=("strength", "color"),
             ),
         ],

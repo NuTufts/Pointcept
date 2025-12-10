@@ -81,10 +81,11 @@ class DefaultSegmentorV2(nn.Module):
             # PCA evaluator parse feat and coord in point
             return_dict["point"] = point
 
-        # Build kwargs for loss function (e.g., per-sample class weights)
+        # Build kwargs for loss function (e.g., per-sample class counts for weighting)
         loss_kwargs = {}
-        if "segment_weights" in input_dict:
-            loss_kwargs["class_weights"] = input_dict["segment_weights"]
+        if "segment_counts" in input_dict:
+            # segment_counts is (batch_size, num_classes) - pass to loss for inverse freq weighting
+            loss_kwargs["class_counts"] = input_dict["segment_counts"]
 
         # train
         if self.training:
@@ -375,10 +376,11 @@ class SonataSegmentor(nn.Module):
         if return_point:
             return_dict["point"] = point
 
-        # Build kwargs for loss function
+        # Build kwargs for loss function (e.g., per-sample class counts for weighting)
         loss_kwargs = {}
-        if "segment_weights" in input_dict:
-            loss_kwargs["class_weights"] = input_dict["segment_weights"]
+        if "segment_counts" in input_dict:
+            # segment_counts is (batch_size, num_classes) - pass to loss for inverse freq weighting
+            loss_kwargs["class_counts"] = input_dict["segment_counts"]
 
         # train
         if self.training:
