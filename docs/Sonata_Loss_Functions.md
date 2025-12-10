@@ -71,6 +71,71 @@ loss = mask_loss * (2/8) + roll_mask_loss * (2/8) + unmask_loss * (4/8)
 
 The `unmask_loss` has the highest weight because local-to-global consistency is the primary pretext task, while the masking losses provide additional regularization.
 
+## How Prototype Vectors Are Updated
+
+The prototype vectors $c_k$ are central to the clustering mechanism. Understanding how they are learned helps interpret what the model is actually optimizing.
+
+### Prototype Storage
+
+Prototypes are stored as the **weights of a linear layer** with weight normalization in the `OnlineCluster` head:
+
+```python
+self.prototype = weight_norm(nn.Linear(embed_channels, num_prototypes, bias=False))
+```
+
+The weight matrix has shape `[num_prototypes, embed_channels]` = `[4096, 512]`. Each row is a prototype vector $c_k$.
+
+### Weight Normalization
+
+The prototypes use `weight_norm`, which decomposes weights into magnitude and direction:
+
+$$W = g \cdot \frac{V}{\|V\|}$$
+
+Critically, the **magnitude is fixed to 1** and frozen:
+
+```python
+self.prototype.weight_g.data.fill_(1)
+self.prototype.weight_g.requires_grad = False
+```
+
+This means only the **direction** of each prototype vector is learned. All prototypes live on the unit hypersphere in the 512-dimensional embedding space.
+
+### Two Independent Sets of Prototypes
+
+The model maintains **two separate clustering heads**, each with its own set of 4096 prototypes:
+
+1. **`mask_head`**: Used by `mask_loss` and `roll_mask_loss`
+2. **`unmask_head`**: Used by `unmask_loss`
+
+Both student and teacher networks have copies of these heads.
+
+### Which Loss Updates Which Prototypes
+
+| Loss | Student Head Updated | Prototypes Affected |
+|------|---------------------|---------------------|
+| `mask_loss` | `student.mask_head` | `student.mask_head.prototype` |
+| `roll_mask_loss` | `student.mask_head` | `student.mask_head.prototype` |
+| `unmask_loss` | `student.unmask_head` | `student.unmask_head.prototype` |
+
+So:
+- **`mask_loss` + `roll_mask_loss`** jointly train one set of prototypes (in `mask_head`)
+- **`unmask_loss`** trains a separate set of prototypes (in `unmask_head`)
+
+### Teacher Prototype Updates
+
+The **teacher's prototypes are NOT trained by gradient descent**. Instead, they are updated via exponential moving average (EMA) after each training step:
+
+```python
+# after_step()
+teacher = momentum * teacher + (1 - momentum) * student
+```
+
+where momentum starts at 0.996 and increases to 1.0 over training. This provides stable, slowly-evolving targets for the student to match.
+
+### Summary
+
+All three losses influence prototype learning, but through two independent sets of prototypes. The prototypes are unit-normalized vectors in the 512-dimensional embedding space, evolving to represent distinct local geometric/feature patterns in your point cloud data. The teacher's prototypes provide stable targets via EMA, while the student's prototypes are directly optimized through backpropagation.
+
 ## Interpreting Loss Values
 
 ### Mathematical Basis

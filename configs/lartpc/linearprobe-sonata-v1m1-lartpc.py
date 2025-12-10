@@ -152,6 +152,11 @@ model = dict(
     ],
     # IMPORTANT: Freeze backbone to only train the linear head
     freeze_backbone=True,
+    # Initialize linear head bias with log-prior for faster convergence
+    # Class order: electron=0, muon=1, pion=2, proton=3, gamma=4, ghost=5
+    # Approximate class frequencies from data (adjust based on actual statistics):
+    #   electron: ~4%, muon: ~39%, pion: ~0.064%, proton: ~0.5%, gamma: ~0%, ghost: ~70%
+    class_priors=[0.03871, 0.30867, 0.00064, 0.00269, 0.00369, 0.64566],
 )
 
 # scheduler settings - faster training since only linear layer
@@ -159,7 +164,7 @@ optimizer = dict(type="AdamW", lr=base_lr, weight_decay=0.0)  # Higher LR, no we
 scheduler = dict(
     type="OneCycleLR",
     max_lr=[base_lr],
-    pct_start=0.1,
+    pct_start=0.05,
     anneal_strategy="cos",
     div_factor=10.0,
     final_div_factor=100.0,
@@ -290,7 +295,7 @@ hooks = [
     dict(type="SonataCheckpointLoader"),
     dict(type="IterationTimer", warmup_iter=2),
     dict(type="InformationWriter"),
-    dict(type="SemSegEvaluator"),
+    dict(type="SemSegEvaluator", write_cls_iou=True),  # Log per-class IoU to wandb
     dict(type="CheckpointSaver", save_freq=None),
     dict(type="PreciseEvaluator", test_last=False),
 ]

@@ -222,17 +222,19 @@ class SemSegEvaluator(HookBase):
                         iou_class[i],
                         current_epoch,
                     )
+                    self.trainer.writer.add_scalar(
+                        f"val/cls_{i}-{self.trainer.cfg.data.names[i]} Acc",
+                        acc_class[i],
+                        current_epoch,
+                    )
                 if self.trainer.cfg.enable_wandb:
+                    # Log all per-class metrics in a single wandb.log call for efficiency
+                    per_class_metrics = {"Epoch": current_epoch}
                     for i in range(self.trainer.cfg.data.num_classes):
-                        wandb.log(
-                            {
-                                "Epoch": current_epoch,
-                                f"val/cls_{i}-{self.trainer.cfg.data.names[i]} IoU": iou_class[
-                                    i
-                                ],
-                            },
-                            step=wandb.run.step,
-                        )
+                        class_name = self.trainer.cfg.data.names[i]
+                        per_class_metrics[f"val/cls_{i}-{class_name} IoU"] = iou_class[i]
+                        per_class_metrics[f"val/cls_{i}-{class_name} Acc"] = acc_class[i]
+                    wandb.log(per_class_metrics, step=wandb.run.step)
         self.trainer.logger.info("<<<<<<<<<<<<<<<<< End Evaluation <<<<<<<<<<<<<<<<<")
         self.trainer.comm_info["current_metric_value"] = m_iou  # save for saver
         self.trainer.comm_info["current_metric_name"] = "mIoU"  # save for saver

@@ -343,6 +343,7 @@ class SonataSegmentor(nn.Module):
         criteria=None,
         freeze_backbone=False,
         use_teacher=True,
+        class_priors=None,
     ):
         super().__init__()
         self.seg_head = (
@@ -358,6 +359,19 @@ class SonataSegmentor(nn.Module):
         if self.freeze_backbone:
             for p in self.backbone.parameters():
                 p.requires_grad = False
+
+        # Initialize bias with log-prior for imbalanced classification
+        # This helps training converge faster by starting with predictions
+        # that match the class distribution rather than uniform
+        if class_priors is not None and num_classes > 0:
+            assert len(class_priors) == num_classes, \
+                f"class_priors length {len(class_priors)} != num_classes {num_classes}"
+            # Convert to tensor and compute log-priors
+            priors = torch.tensor(class_priors, dtype=torch.float32)
+            priors = priors / priors.sum()  # Normalize to ensure they sum to 1
+            log_priors = torch.log(priors + 1e-8)  # Add epsilon to avoid log(0)
+            with torch.no_grad():
+                self.seg_head.bias.copy_(log_priors)
 
     def forward(self, input_dict, return_point=False):
         # SONATA's forward with return_point=True expects data_dict directly

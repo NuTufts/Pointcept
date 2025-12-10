@@ -73,6 +73,19 @@ grid_size = 0.25 # cm
 jitter_sigma=0.3 # cm
 jitter_clip=0.50 # max 1.5 grid spacings
 wire_scale=1.0/3456.0 # normalize the wire indices which range from 0-3456
+# notes for next run:
+# - in sonata, grid_size is 0.02 with jitter 0.005, so grid_size/4. the jitter_clip=grid_size.
+#   i think my settings were much too big. the sequence was probably grid positions like crazy.
+# - remove wire coordinates, maybe this is keeping us in a geometric trap
+# - the position encoding is actually the output of a sparse-submanifold convolution combined in a residual manner.
+# - restore the hilbert curves
+# - consider using a random filter: for some p, drop ghosts, for some p drop cosmics as well.
+# - make a particle bomb + corsika sample
+# lessons from first run
+# - linear probing is decent at ghost removal and maybe recognizing muons
+# - I think a two stage processing is unavoidable.
+#   - first pass: ghost removal, cosmic keypoints, nu vertex candidates, cosmic clustering
+#   - second pass: nu interaction pass, refinement
 
 # model settings
 model = dict(
