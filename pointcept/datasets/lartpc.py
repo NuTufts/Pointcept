@@ -325,7 +325,15 @@ class LArTPCDataset(DefaultDataset):
             trackid = f['/entry_0/triplet_data/trackid'][:]
             instance = trackid.astype(np.int32)
 
+            # Load true-ghost labels. 0=ghost, 1=true
             hasmatch = np.array(f['/entry_0/triplet_data/hasmatch'],dtype=np.int64)
+
+            # Get keypoints and pass neutrino keypoint for biased sampling
+            # kptype: 0=Nu, 1=TrackStart, 2=TrackEnd, 3=Shower, 4=Michel, 5=Delta
+            keypoint_pos  = np.array(f['/entry_0/mckeypoints/pos'],dtype=np.float32)
+            keypoint_type = np.array(f['/entry_0/mckeypoints/kptype'],dtype=np.int64)
+            nu_keypoint_mask = keypoint_type==0  # Select Nu keypoints (type 0)
+            nu_vertices = keypoint_pos[nu_keypoint_mask[:],:]
 
         data_dict = {
             "coord": coord,
@@ -336,6 +344,7 @@ class LArTPCDataset(DefaultDataset):
             "name": name,
             "split": split,
             "segment_counts": classcounts,  # (1, nclasses) - counts per class for this sample
+            "nu_vertices":nu_vertices
         }
 
         #print("self.true_points_only: ",self.true_points_only)

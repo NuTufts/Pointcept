@@ -333,6 +333,91 @@ class SonataCheckpointLoader(HookBase):
 
 
 @HOOKS.register_module()
+class SonataFinetuneCheckpointLoader(HookBase):
+    """
+    Checkpoint loader for fine-tuning DefaultSegmentorV2 from SONATA pretrained weights.
+
+    SONATA checkpoints have keys like:
+        student.backbone.embedding.stem.linear.weight
+        student.backbone.enc.enc0.block0.cpe.0.weight
+        teacher.backbone.embedding...  (ignored)
+
+    DefaultSegmentorV2 expects keys like:
+        backbone.embedding.stem.linear.weight
+        backbone.enc.enc0.block0.cpe.0.weight
+
+    This hook extracts student.backbone.* keys and maps them to backbone.*
+    The decoder and seg_head are randomly initialized (not in SONATA checkpoint).
+    """
+    def __init__(self, strict=False, use_teacher=False):
+        self.strict = strict
+        self.use_teacher = use_teacher  # If True, load from teacher instead of student
+
+    def before_train(self):
+        self.trainer.logger.info("=> Loading SONATA checkpoint for fine-tuning ...")
+        if self.trainer.cfg.weight and os.path.isfile(self.trainer.cfg.weight):
+            self.trainer.logger.info(f"Loading weight at: {self.trainer.cfg.weight}")
+            checkpoint = torch.load(
+                self.trainer.cfg.weight,
+                map_location=lambda storage, loc: storage.cuda(),
+                weights_only=False,
+            )
+
+            source = "teacher" if self.use_teacher else "student"
+            prefix = f"{source}.backbone."
+            self.trainer.logger.info(
+                f"Remapping SONATA checkpoint: '{prefix}*' -> 'backbone.*'"
+            )
+
+            weight = OrderedDict()
+            loaded_count = 0
+            skipped_count = 0
+
+            for key, value in checkpoint["state_dict"].items():
+                # Remove module. prefix if present (from DDP)
+                if key.startswith("module."):
+                    key = key[7:]
+
+                # Only load student.backbone.* (or teacher.backbone.*)
+                if key.startswith(prefix):
+                    # Map student.backbone.* -> backbone.*
+                    new_key = "backbone." + key[len(prefix):]
+
+                    # Skip mask_token - not used in fine-tuning
+                    if "mask_token" in new_key:
+                        skipped_count += 1
+                        continue
+
+                    # Add module. back if using DDP
+                    if comm.get_world_size() > 1:
+                        new_key = "module." + new_key
+                    weight[new_key] = value
+                    loaded_count += 1
+                else:
+                    skipped_count += 1
+
+            self.trainer.logger.info(
+                f"Loaded {loaded_count} weights from {source}.backbone.*, "
+                f"skipped {skipped_count} (teacher/head/mask_token)"
+            )
+
+            load_state_info = self.trainer.model.load_state_dict(
+                weight, strict=self.strict
+            )
+            self.trainer.logger.info(f"Missing keys (expected for decoder/head): {load_state_info[0]}")
+            self.trainer.logger.info(f"Unexpected keys: {load_state_info[1]}")
+
+            # Don't resume optimizer/scheduler for fine-tuning (different model)
+            if self.trainer.cfg.resume:
+                self.trainer.logger.warning(
+                    "resume=True but not loading optimizer/scheduler state "
+                    "(fine-tuning uses different architecture)"
+                )
+        else:
+            self.trainer.logger.info(f"No weight found at: {self.trainer.cfg.weight}")
+
+
+@HOOKS.register_module()
 class PreciseEvaluator(HookBase):
     def __init__(self, test_last=False):
         self.test_last = test_last

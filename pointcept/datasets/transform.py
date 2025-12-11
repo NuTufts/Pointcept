@@ -1158,6 +1158,160 @@ class SphereCrop(object):
 
 
 @TRANSFORMS.register_module()
+class BiasedSphereCrop(object):
+    """
+    Sphere crop that biases sampling toward specified anchor points (e.g., neutrino interaction vertices).
+
+    This is useful for LArTPC data where ~10% of points come from neutrino interactions
+    and ~90% come from cosmic ray backgrounds. By biasing the crop center toward the
+    neutrino interaction region, we ensure the model sees relevant physics during training.
+
+    Args:
+        anchor_points_key (str): Key in data_dict containing (N, 3) array of anchor points
+            to bias sampling toward (e.g., neutrino vertices, signal particle positions).
+        anchor_pdf_key (str or None): Key in data_dict containing (N,) probability array
+            for sampling anchor points. If None, uniform sampling over anchors.
+        radius (float): Standard deviation of 3D Gaussian offset from selected anchor point.
+            The actual crop center = anchor_point + N(0, radius) in each dimension.
+        point_max (int): Maximum number of points to keep after cropping.
+        point_min (int or None): Minimum number of points required. If crop has fewer,
+            retry with a different center.
+        prob_random (float): Probability of falling back to random SphereCrop behavior
+            (uniform random point selection). Default 0.0 (always use biased sampling).
+        max_retries (int): Maximum attempts to find a valid crop center.
+        fallback_to_random (bool): If True and no valid anchor points exist, fall back
+            to random mode. If False, raise an error.
+
+    The transform expects data_dict to contain:
+        - "coord": (M, 3) array of point coordinates
+        - anchor_points_key: (N, 3) array of anchor coordinates
+        - anchor_pdf_key (optional): (N,) probability distribution over anchors
+
+    Example config:
+        dict(
+            type="BiasedSphereCrop",
+            anchor_points_key="nu_vertices",  # or "signal_coords"
+            anchor_pdf_key="vertex_weights",   # optional
+            radius=50.0,  # cm, std dev of Gaussian offset
+            point_max=80000,
+            point_min=10000,
+            prob_random=0.1,  # 10% chance of random crop
+        )
+    """
+
+    def __init__(
+        self,
+        anchor_points_key="anchor_points",
+        anchor_pdf_key=None,
+        radius=50.0,
+        point_max=80000,
+        point_min=None,
+        prob_random=0.0,
+        max_retries=100,
+        fallback_to_random=True,
+    ):
+        self.anchor_points_key = anchor_points_key
+        self.anchor_pdf_key = anchor_pdf_key
+        self.radius = radius
+        self.point_max = point_max
+        self.point_min = point_min
+        self.prob_random = prob_random
+        self.max_retries = max_retries
+        self.fallback_to_random = fallback_to_random
+
+    def _select_biased_center(self, anchor_points, anchor_pdf=None):
+        """
+        Select a crop center biased toward anchor points.
+
+        1. Sample an anchor point (weighted by pdf if provided)
+        2. Add a 3D Gaussian offset with std=radius
+
+        Returns:
+            (3,) array - the crop center coordinates
+        """
+        n_anchors = anchor_points.shape[0]
+
+        # Normalize pdf if provided, otherwise uniform
+        if anchor_pdf is not None:
+            pdf = np.asarray(anchor_pdf, dtype=np.float64)
+            pdf = pdf / pdf.sum()  # Ensure it sums to 1
+        else:
+            pdf = np.ones(n_anchors) / n_anchors
+
+        # Sample an anchor point according to pdf
+        anchor_idx = np.random.choice(n_anchors, p=pdf)
+        anchor = anchor_points[anchor_idx]
+
+        # Add 3D Gaussian offset
+        offset = np.random.normal(0, self.radius, size=3)
+        center = anchor + offset
+
+        return center
+
+    def _random_center(self, coord):
+        """Select a random point from the point cloud as center."""
+        idx = np.random.randint(coord.shape[0])
+        return coord[idx]
+
+    def _crop_around_center(self, data_dict, center, point_max):
+        """Crop points closest to the given center."""
+        coord = data_dict["coord"]
+        distances_sq = np.sum(np.square(coord - center), axis=1)
+        idx_crop = np.argsort(distances_sq)[:point_max]
+        return idx_crop
+
+    def __call__(self, data_dict):
+        assert "coord" in data_dict.keys(), "BiasedSphereCrop requires 'coord' in data_dict"
+
+        coord = data_dict["coord"]
+        n_points = coord.shape[0]
+
+        # If we have fewer points than max, no cropping needed
+        if n_points <= self.point_max:
+            return data_dict
+
+        # Check if we should use random mode this time
+        use_random = np.random.rand() < self.prob_random
+
+        # Check if anchor points are available
+        has_anchors = (
+            self.anchor_points_key in data_dict
+            and data_dict[self.anchor_points_key] is not None
+            and len(data_dict[self.anchor_points_key]) > 0
+        )
+
+        if use_random or not has_anchors:
+            if not has_anchors and not self.fallback_to_random and not use_random:
+                raise ValueError(
+                    f"BiasedSphereCrop: '{self.anchor_points_key}' not found or empty in data_dict, "
+                    f"and fallback_to_random=False"
+                )
+            # Fall back to random mode (same as SphereCrop random)
+            for attempt in range(self.max_retries):
+                center = self._random_center(coord)
+                idx_crop = self._crop_around_center(data_dict, center, self.point_max)
+                if self.point_min is None or len(idx_crop) >= self.point_min:
+                    break
+            data_dict = index_operator(data_dict, idx_crop)
+        else:
+            # Use biased sampling toward anchor points
+            anchor_points = np.asarray(data_dict[self.anchor_points_key])
+            anchor_pdf = None
+            if self.anchor_pdf_key is not None and self.anchor_pdf_key in data_dict:
+                anchor_pdf = data_dict[self.anchor_pdf_key]
+
+            for attempt in range(self.max_retries):
+                center = self._select_biased_center(anchor_points, anchor_pdf)
+                print(f" attempt[{attempt}] ",center)
+                idx_crop = self._crop_around_center(data_dict, center, self.point_max)
+                if self.point_min is None or len(idx_crop) >= self.point_min:
+                    break
+            data_dict = index_operator(data_dict, idx_crop)
+
+        return data_dict
+
+
+@TRANSFORMS.register_module()
 class ShufflePoint(object):
     def __call__(self, data_dict):
         assert "coord" in data_dict.keys()
