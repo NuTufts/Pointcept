@@ -147,12 +147,13 @@ def create_simple_transform(cfg):
     # Simple transform: GridSample -> ToTensor -> Collect
     # Compose expects a list of config dicts, not built transforms
     # Note: 'offset' is created by Collect via offset_keys_dict, not from input
+    # Note: We use train mode but set a fixed seed before calling for determinism
     transform_list = [
         dict(
             type="GridSample",
             grid_size=grid_size,
             hash_type="fnv",
-            mode="train",
+            mode="train",  # train mode with fixed seed = deterministic
             return_grid_coord=True,
         ),
         dict(type="ToTensor"),
@@ -188,7 +189,9 @@ def extract_encoder_features(model, data_dict, device):
 
         # Get order from backbone
         order = backbone.order if hasattr(backbone, 'order') else ("z", "z-trans")
-        shuffle_orders = backbone.shuffle_orders if hasattr(backbone, 'shuffle_orders') else True
+        # Force shuffle_orders=False for reproducibility across different runs/machines
+        # The backbone may have shuffle_orders=True for training, but we want deterministic inference
+        shuffle_orders = False
 
         point.serialization(order=order, shuffle_orders=shuffle_orders)
         point.sparsify()
@@ -280,8 +283,11 @@ def main():
     data_dict = load_single_file_data(args.data_file, cfg)
     print(f"Loaded {data_dict['coord'].shape[0]} points")
 
-    # Apply transforms
-    print("Applying transforms...")
+    # Apply transforms with fixed seed for deterministic voxel sampling
+    # This ensures the same points are selected on different machines
+    print("Applying transforms (with fixed seed for reproducibility)...")
+    np.random.seed(42)  # Fixed seed for GridSample's random voxel selection
+    torch.manual_seed(42)
     transform = create_simple_transform(cfg)
     data_dict = transform(data_dict)
 
