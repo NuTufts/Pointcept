@@ -45,7 +45,7 @@ wire_projections = [
 _base_ = ["../_base_/default_runtime.py"]
 
 # misc custom setting
-batch_size = 1  # Adjust based on GPU memory; LArTPC events can be large
+batch_size = 4  # Adjust based on GPU memory; LArTPC events can be large
 num_worker = 6
 mix_prob = 0
 clip_grad = 3.0
@@ -175,10 +175,10 @@ model = dict(
 # scheduler settings
 epoch = 100
 eval_epoch = 100
-base_lr = 0.004
+base_lr = 0.00025
 lr_decay = 0.9  # layer-wise lr decay
 
-base_wd = 0.04
+base_wd  = 0.15
 final_wd = 0.2
 
 # Layer-wise learning rate decay

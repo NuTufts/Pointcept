@@ -253,28 +253,42 @@ class SerializedAttention(PointModule):
             ).reshape(-1, C)
             feat = feat.to(qkv.dtype)
         elif self.flash_backend == "xformers":
-            # xformers memory-efficient attention
-            # Reshape QKV: (-1,) -> (num_patches, patch_size, 3, H, C//H)
-            # Then split to Q, K, V each of shape (num_patches, patch_size, H, C//H)
-            qkv_reshaped = qkv.reshape(-1, K, 3, H, C // H)
-            q, k, v = qkv_reshaped.unbind(dim=2)  # Each: (num_patches, patch_size, H, C//H)
+            # xformers memory-efficient attention with variable-length sequences
+            # Similar to flash_attn_varlen, we use BlockDiagonalMask to handle
+            # variable sequence lengths defined by cu_seqlens
 
-            # xformers expects float16 or bfloat16 for best performance
-            # P100 GPUs support float16 but not bfloat16, so use float16
+            # Reshape QKV to (total_tokens, 3, H, head_dim) - same as flash_attn
+            qkv_reshaped = qkv.reshape(-1, 3, H, C // H)
+            q, k, v = qkv_reshaped.unbind(dim=1)  # Each: (total_tokens, H, head_dim)
+
+            # xformers expects float16 for P100 GPUs (no bfloat16 support)
             original_dtype = qkv.dtype
             q = q.to(torch.float16)
             k = k.to(torch.float16)
             v = v.to(torch.float16)
 
+            # Compute sequence lengths from cu_seqlens
+            # cu_seqlens is [0, len1, len1+len2, ..., total] so diff gives lengths
+            seq_lens = (cu_seqlens[1:] - cu_seqlens[:-1]).tolist()
+
+            # Create BlockDiagonalMask for variable-length attention
+            # This prevents attention across different sequences
+            attn_bias = BlockDiagonalMask.from_seqlens(seq_lens)
+
             # xformers memory_efficient_attention expects [B, M, H, K] format
-            # Our tensors are already in (num_patches, patch_size, H, C//H) = (B, M, H, K) format
+            # For variable-length sequences with BlockDiagonalMask, use [1, total_tokens, H, head_dim]
+            q = q.unsqueeze(0)  # (1, total_tokens, H, head_dim)
+            k = k.unsqueeze(0)
+            v = v.unsqueeze(0)
+
             feat = xops.memory_efficient_attention(
                 q, k, v,
+                attn_bias=attn_bias,
                 p=self.attn_drop if self.training else 0.0,
                 scale=self.scale,
             )
-            # Output shape: (num_patches, patch_size, H, C//H)
-            feat = feat.reshape(-1, C).to(original_dtype)
+            # Output shape: (1, total_tokens, H, head_dim) -> (total_tokens, C)
+            feat = feat.squeeze(0).reshape(-1, C).to(original_dtype)
         feat = feat[inverse]
 
         # ffn
