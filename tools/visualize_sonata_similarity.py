@@ -140,6 +140,12 @@ def parse_args():
         default=4.0,
         help="Factor multiplied by grid_size to get label assignment threshold (default: 4.0)",
     )
+    parser.add_argument(
+        "--true-points-only",
+        action='store_true',
+        default=False,
+        help="If provided, only show true energy deposition points (if MC)",
+    )
     return parser.parse_args()
 
 
@@ -660,7 +666,7 @@ def main():
             log_transform_edep=True,
             include_ghosts=True,
             exclude_other=True,
-            true_points_only=False,
+            true_points_only=args.true_points_only,
             test_mode=False,
             loop=1,
         )

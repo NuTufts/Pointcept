@@ -86,6 +86,7 @@ wire_scale=1.0/3456.0 # normalize the wire indices which range from 0-3456
 # - I think a two stage processing is unavoidable.
 #   - first pass: ghost removal, cosmic keypoints, nu vertex candidates, cosmic clustering
 #   - second pass: nu interaction pass, refinement
+#   - maybe can course grain first pass with larger grid size, for speed.
 
 # model settings
 model = dict(
