@@ -257,22 +257,108 @@ def print_report(data1, data2, metrics, output_file=None):
         print(f"\nReport saved to: {output_file}")
 
 
-def compare_coordinates(data1, data2):
+def compare_coordinates(data1, data2, threshold=0.01):
     """Check if coordinates match between the two files."""
     coord1 = data1.get('coords')
     coord2 = data2.get('coords')
 
     if coord1 is None or coord2 is None:
-        return None, "Coordinates not available"
+        return None, "Coordinates not available", None
 
     if coord1.shape != coord2.shape:
-        return False, f"Coordinate shapes differ: {coord1.shape} vs {coord2.shape}"
+        return False, f"Coordinate shapes differ: {coord1.shape} vs {coord2.shape}", None
 
     coord_diff = torch.abs(coord1 - coord2).max().item()
     if coord_diff > 1e-6:
-        return False, f"Coordinates differ (max diff: {coord_diff:.6e})"
+        return False, f"Coordinates differ (max diff: {coord_diff:.6e})", (coord1, coord2)
 
-    return True, "Coordinates match"
+    return True, "Coordinates match", None
+
+
+def analyze_coordinate_differences(coord1, coord2, threshold=0.01, max_examples=10):
+    """Analyze and report coordinate differences in detail."""
+    lines = []
+
+    # Per-point L2 distance
+    diff = coord1 - coord2
+    l2_dist = torch.sqrt((diff ** 2).sum(dim=1))
+
+    # Per-axis absolute difference
+    abs_diff = torch.abs(diff)
+
+    lines.append("COORDINATE DIFFERENCE ANALYSIS:")
+    lines.append("-" * 40)
+    lines.append(f"Total points: {coord1.shape[0]}")
+    lines.append("")
+
+    # Overall statistics
+    lines.append("Per-axis statistics (absolute difference):")
+    axis_names = ['X', 'Y', 'Z']
+    for i, name in enumerate(axis_names):
+        axis_diff = abs_diff[:, i]
+        lines.append(f"  {name}-axis: mean={axis_diff.mean().item():.6e}, "
+                    f"max={axis_diff.max().item():.6e}, "
+                    f"std={axis_diff.std().item():.6e}")
+    lines.append("")
+
+    lines.append("L2 distance statistics:")
+    lines.append(f"  Mean: {l2_dist.mean().item():.6e}")
+    lines.append(f"  Max:  {l2_dist.max().item():.6e}")
+    lines.append(f"  Std:  {l2_dist.std().item():.6e}")
+    lines.append("")
+
+    # Find points exceeding threshold
+    exceed_mask = l2_dist > threshold
+    n_exceed = exceed_mask.sum().item()
+    pct_exceed = 100.0 * n_exceed / coord1.shape[0]
+
+    lines.append(f"Points with L2 diff > {threshold}:")
+    lines.append(f"  Count: {n_exceed} ({pct_exceed:.2f}%)")
+    lines.append("")
+
+    if n_exceed > 0:
+        # Get indices of points that exceed threshold, sorted by distance
+        exceed_indices = torch.where(exceed_mask)[0]
+        exceed_distances = l2_dist[exceed_indices]
+        sorted_order = torch.argsort(exceed_distances, descending=True)
+
+        n_show = min(max_examples, n_exceed)
+        lines.append(f"Top {n_show} largest coordinate differences:")
+        lines.append(f"  {'Idx':>6} | {'Coord1 (x,y,z)':^30} | {'Coord2 (x,y,z)':^30} | {'L2 Dist':>10}")
+        lines.append(f"  {'-'*6}-+-{'-'*30}-+-{'-'*30}-+-{'-'*10}")
+
+        for i in range(n_show):
+            idx = exceed_indices[sorted_order[i]].item()
+            c1 = coord1[idx]
+            c2 = coord2[idx]
+            dist = l2_dist[idx].item()
+            c1_str = f"({c1[0].item():9.3f}, {c1[1].item():9.3f}, {c1[2].item():9.3f})"
+            c2_str = f"({c2[0].item():9.3f}, {c2[1].item():9.3f}, {c2[2].item():9.3f})"
+            lines.append(f"  {idx:>6} | {c1_str:^30} | {c2_str:^30} | {dist:>10.6f}")
+        lines.append("")
+
+        # Check if differences follow a pattern
+        lines.append("Pattern analysis:")
+
+        # Check if it's mostly one axis
+        axis_contributions = abs_diff[exceed_mask].mean(dim=0)
+        total_contribution = axis_contributions.sum().item()
+        if total_contribution > 0:
+            for i, name in enumerate(axis_names):
+                pct = 100.0 * axis_contributions[i].item() / total_contribution
+                lines.append(f"  {name}-axis contributes {pct:.1f}% of differences")
+
+        # Check if there are clusters of differing points
+        if n_exceed > 1:
+            exceed_coords1 = coord1[exceed_mask]
+            coord_range = exceed_coords1.max(dim=0).values - exceed_coords1.min(dim=0).values
+            lines.append(f"  Differing points span: X={coord_range[0].item():.2f}, "
+                        f"Y={coord_range[1].item():.2f}, Z={coord_range[2].item():.2f}")
+    else:
+        lines.append(f"All coordinates match within threshold {threshold}")
+
+    lines.append("")
+    return "\n".join(lines)
 
 
 def main():
@@ -292,10 +378,16 @@ def main():
     data2 = torch.load(args.file2, map_location="cpu")
 
     # Check coordinates
-    coord_match, coord_msg = compare_coordinates(data1, data2)
+    coord_match, coord_msg, coord_data = compare_coordinates(data1, data2, threshold=args.tolerance)
     if coord_match is False:
         print(f"WARNING: {coord_msg}")
         print("The encoder outputs may not be directly comparable if coordinates differ.")
+        # Print detailed coordinate analysis
+        if coord_data is not None:
+            coord1, coord2 = coord_data
+            print("")
+            coord_analysis = analyze_coordinate_differences(coord1, coord2, threshold=args.tolerance)
+            print(coord_analysis)
     elif coord_match is True:
         print(f"OK: {coord_msg}")
 
