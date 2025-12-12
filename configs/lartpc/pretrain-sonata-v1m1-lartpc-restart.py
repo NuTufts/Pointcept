@@ -45,7 +45,7 @@ wire_projections = [
 _base_ = ["../_base_/default_runtime.py"]
 
 # misc custom setting
-batch_size = 4  # Adjust based on GPU memory; LArTPC events can be large
+batch_size = 16  # Adjust based on GPU memory; LArTPC events can be large
 num_worker = 6
 mix_prob = 0
 clip_grad = 3.0
