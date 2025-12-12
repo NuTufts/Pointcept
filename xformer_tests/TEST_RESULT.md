@@ -1,11 +1,45 @@
+# Example Comparison between default and xformer backend
+
+These are example results comparing the outputs of a pre-trained encoder using both the `default` and `xformer` flash attention backends.
+
+The model with the `default` backend ran on a RTX 3080 (Ampere), while the model using the `xformer` backend ran on a P100 (Pascal).
+
+In both setups, we use the script, `extract_encoder_vectors.py`, to output a file containing the embedding vectors output by the same encoder on the same event. We then used `compare_encoder_vectors.py` to produce the output below.
+
+One issue is that the GridSample stage of the input processing creates slightly different input coordinates probably due to
+randomness how the representative point within a grid voxel is chosen. Here is what Claude suggested when asked to investigate possible sources
+of randomness in the inputs:
+
+```
+  Root Cause
+
+  The differences are due to GridSample's random point selection within voxels. When multiple raw points fall into the same voxel grid cell, GridSample randomly picks one. Even with np.random.seed(42):
+
+  - Different numpy versions may have different RNG implementations
+  - Different platforms may have different floating-point hash collision behaviors
+  - The order of operations in np.unique() can vary
+
+  The Good News
+
+  Your xformers backend is working correctly! Despite selecting slightly different points:
+  - Cosine similarity: 0.9999 (nearly identical)
+  - Per-point cosine min: 0.986 (still very good)
+  - The encoder is producing consistent features regardless of backend
+
+  For Truly Deterministic Comparison
+
+  If you want exact coordinate matching for rigorous testing, you could modify the extraction script to use deterministic voxel selection (always pick the first point, or centroid):
+
+  # In GridSample, change from random selection:
+  idx_select = np.cumsum(np.insert(count, 0, 0)[0:-1]) + 0  # Always pick first point
+```
+
+Here is the result of the test:
+
 ```
 python3 xformer_tests/compare_encoder_vectors.py --file1 encoder_out_flashattn_rtx3090_fixedseed.pt --file2 encoder_out_p100_fixseed.pt 
 Loading file 1: encoder_out_flashattn_rtx3090_fixedseed.pt
-/home/twongjirad/working/larbys/gen2/container_u22/dev_xformers/pointcept_xformers/xformer_tests/compare_encoder_vectors.py:375: FutureWarning: You are using `torch.load` with `weights_only=False` (the current default value), which uses the default pickle module implicitly. It is possible to construct malicious pickle data which will execute arbitrary code during unpickling (See https://github.com/pytorch/pytorch/blob/main/SECURITY.md#untrusted-models for more details). In a future release, the default value for `weights_only` will be flipped to `True`. This limits the functions that could be executed during unpickling. Arbitrary objects will no longer be allowed to be loaded via this mode unless they are explicitly allowlisted by the user via `torch.serialization.add_safe_globals`. We recommend you start setting `weights_only=True` for any use case where you don't have full control of the loaded file. Please open an issue on GitHub for any issues related to this experimental feature.
-  data1 = torch.load(args.file1, map_location="cpu")
 Loading file 2: encoder_out_p100_fixseed.pt
-/home/twongjirad/working/larbys/gen2/container_u22/dev_xformers/pointcept_xformers/xformer_tests/compare_encoder_vectors.py:378: FutureWarning: You are using `torch.load` with `weights_only=False` (the current default value), which uses the default pickle module implicitly. It is possible to construct malicious pickle data which will execute arbitrary code during unpickling (See https://github.com/pytorch/pytorch/blob/main/SECURITY.md#untrusted-models for more details). In a future release, the default value for `weights_only` will be flipped to `True`. This limits the functions that could be executed during unpickling. Arbitrary objects will no longer be allowed to be loaded via this mode unless they are explicitly allowlisted by the user via `torch.serialization.add_safe_globals`. We recommend you start setting `weights_only=True` for any use case where you don't have full control of the loaded file. Please open an issue on GitHub for any issues related to this experimental feature.
-  data2 = torch.load(args.file2, map_location="cpu")
 WARNING: Coordinates differ (max diff: 1.500244e-01)
 The encoder outputs may not be directly comparable if coordinates differ.
 
@@ -110,6 +144,87 @@ INTERPRETATION:
 ----------------------------------------
   [EXCELLENT] Outputs are nearly identical (cosine sim > 0.9999)
   Relative error is significant (5.8015%)
+
+======================================================================
+```
+
+
+# Test that we have left the default `flash_attn` backend unmodified
+
+Here we run the encoder with the default `flash_attn` backend twice: once with the dev branch with the xformer option, and once with unmodified code in the `lartpc` branch. The test is to ensure that the modifications to provide the `xformer` flash-attention backend has not altered running with the default backend. Both runs were on the same RTX 3080 card.
+
+
+The tests seem to indicate that the default backend is unchanged:
+
+```
+python3 compare_encoder_vectors.py --file1 encoder_out_flashattn_rtx3090_fixedseed.pt --file2 encoder_out_rtx3080_lartpcbranch.pt 
+Loading file 1: encoder_out_flashattn_rtx3090_fixedseed.pt
+Loading file 2: encoder_out_rtx3080_lartpcbranch.pt
+OK: Coordinates match
+
+Computing comparison metrics...
+
+======================================================================
+ENCODER VECTORS COMPARISON REPORT
+======================================================================
+
+FILE INFORMATION:
+----------------------------------------
+File 1:
+  Path: pointceptdata_dlmerged_coriska_bnb_nue_fileno000228_entry000003.h5
+  Backend: flash_attn
+  Config: configs/lartpc/pretrain-sonata-v1m1-lartpc.py
+  Checkpoint: epoch_80.pth
+
+File 2:
+  Path: pointceptdata_dlmerged_coriska_bnb_nue_fileno000228_entry000003.h5
+  Backend: flash_attn
+  Config: configs/lartpc/pretrain-sonata-v1m1-lartpc.py
+  Checkpoint: epoch_80.pth
+
+TENSOR INFORMATION:
+----------------------------------------
+Features 1 shape: (4761, 256)
+Features 2 shape: (4761, 256)
+Features 1 dtype: torch.float32
+Features 2 dtype: torch.float32
+
+COMPARISON METRICS:
+----------------------------------------
+
+Absolute Error Metrics:
+  Mean Absolute Error (MAE):     1.086295e-05
+  Root Mean Squared Error:       2.269823e-05
+  Max Absolute Difference:       1.442432e-03
+
+Relative Error Metrics:
+  Mean Relative Error:           0.0498%
+  Max Relative Error:            4204.9106%
+
+Similarity Metrics:
+  Cosine Similarity (overall):   1.00000000
+  Cosine Similarity (per-point mean): 1.00000000
+  Cosine Similarity (per-point min):  0.99999977
+  Cosine Similarity (per-point std):  0.00000001
+  Pearson Correlation:           1.00000000
+
+Tolerance Check:
+  Values within tolerance:       100.00%
+
+Per-Channel MAE:
+  Mean:                          1.086295e-05
+  Max:                           1.632520e-05
+  Min:                           4.831166e-06
+
+Difference Distribution (absolute):
+  50th percentile (median):      4.440546e-06
+  90th percentile:               2.720952e-05
+  99th percentile:               9.000301e-05
+
+INTERPRETATION:
+----------------------------------------
+  [EXCELLENT] Outputs are nearly identical (cosine sim > 0.9999)
+  Relative error is negligible (0.0498%)
 
 ======================================================================
 ```
