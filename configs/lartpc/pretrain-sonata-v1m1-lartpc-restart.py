@@ -141,16 +141,16 @@ model = dict(
     # Masking schedule - scaled for LArTPC
     # Patch sizes in coordinate units
     # 1cm -> 5cm in real detector coordinates
-    mask_size_start=1.0,   # Start with ~1cm patches
+    mask_size_start=5.0,   # Start with ~1cm patches
     mask_size_base=5.0,    # End with ~5cm patches
     mask_size_warmup_ratio=0.05,
-    mask_ratio_start=0.3,   # Mask 30% initially
+    mask_ratio_start=0.7,   # Mask 30% initially
     mask_ratio_base=0.7,    # Mask 70% at end
     mask_ratio_warmup_ratio=0.05,
-    mask_jitter=0.3,      # ~3mm jitter for masked coords
+    mask_jitter=0.125,      # half of grid_size 
 
     # Temperature schedule
-    teacher_temp_start=0.04,
+    teacher_temp_start=0.07,
     teacher_temp_base=0.07,
     teacher_temp_warmup_ratio=0.05,
     student_temp=0.1,
