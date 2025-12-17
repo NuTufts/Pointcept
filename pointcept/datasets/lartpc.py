@@ -134,6 +134,7 @@ class LArTPCDataset(DefaultDataset):
         loop=1,
         include_ghosts=False,
         exclude_other=True,
+        true_points_only=False,
         **kwargs
     ):
         self.use_reco_coords = use_reco_coords
@@ -145,6 +146,7 @@ class LArTPCDataset(DefaultDataset):
         self.include_ghosts = include_ghosts
         self.exclude_other = exclude_other
         self.data_list_file = data_list_file
+        self.true_points_only = true_points_only
 
         # Call parent init (this will call get_data_list)
         super().__init__(
@@ -285,24 +287,19 @@ class LArTPCDataset(DefaultDataset):
             else:
                 raise ValueError(f"Unknown label_mode: {self.label_mode}")
 
-            classcounts = np.zeros( (1,8), dtype=np.int64 )
-            for iclass in range(7):
-                classcounts[0,iclass] = (segment==iclass).sum()
-            classcounts[0,-1] = (segment==-1).sum()
-            nclasses = 7
-            if self.exclude_other:
-                nclasses -= 1
-            if not self.include_ghosts:
-                nclasses -= 1
-            classweights = np.zeros( (1,nclasses), dtype=np.float32 )
-            for iclass in range(5):
-                classweights[0,iclass] = 1.0/classcounts[0,iclass] if classcounts[0,iclass]>0 else 0.0
-            iclassindex = 5
+            # Count points per class for the active classes only
+            # Classes: 0=electron, 1=muon, 2=pion, 3=proton, 4=gamma, 5=ghost, 6=other
+            # Build list of active class indices
+            active_classes = list(range(5))  # Always include first 5 classes
             if self.include_ghosts:
-                classweights[0,iclassindex] = 1.0/classcounts[0,5] if classcounts[0,5]>0 else 0.0
-                iclassindex += 1
+                active_classes.append(5)
             if not self.exclude_other:
-                classweights[0,iclassindex] = 1.0/classcounts[0,6] if classcounts[0,6]>0 else 0.0
+                active_classes.append(6)
+
+            nclasses = len(active_classes)
+            classcounts = np.zeros((1, nclasses), dtype=np.int64)
+            for i, class_idx in enumerate(active_classes):
+                classcounts[0, i] = (segment == class_idx).sum()
 
             # Load energy deposition as strength
             if self.use_edep_as_strength:
@@ -328,6 +325,16 @@ class LArTPCDataset(DefaultDataset):
             trackid = f['/entry_0/triplet_data/trackid'][:]
             instance = trackid.astype(np.int32)
 
+            # Load true-ghost labels. 0=ghost, 1=true
+            hasmatch = np.array(f['/entry_0/triplet_data/hasmatch'],dtype=np.int64)
+
+            # Get keypoints and pass neutrino keypoint for biased sampling
+            # kptype: 0=Nu, 1=TrackStart, 2=TrackEnd, 3=Shower, 4=Michel, 5=Delta
+            keypoint_pos  = np.array(f['/entry_0/mckeypoints/pos'],dtype=np.float32)
+            keypoint_type = np.array(f['/entry_0/mckeypoints/kptype'],dtype=np.int64)
+            nu_keypoint_mask = keypoint_type==0  # Select Nu keypoints (type 0)
+            nu_vertices = keypoint_pos[nu_keypoint_mask[:],:]
+
         data_dict = {
             "coord": coord,
             "strength": strength,
@@ -336,9 +343,19 @@ class LArTPCDataset(DefaultDataset):
             "instance": instance,
             "name": name,
             "split": split,
-            "segment_counts":classcounts,
-            "segment_weights":classweights
+            "segment_counts": classcounts,  # (1, nclasses) - counts per class for this sample
+            "nu_vertices":nu_vertices
         }
+
+        #print("self.true_points_only: ",self.true_points_only)
+        if self.true_points_only:
+            # mask out ghost points
+            #print("RETURN TRUE POINTS ONLY: ",hasmatch.shape)
+            ghost_mask = hasmatch==1
+            for k in data_dict:
+                if k in ['coord','strength','color','segment','instance']:
+                    #print(k,data_dict[k].shape)
+                    data_dict[k] = data_dict[k][ ghost_mask[:] ]
 
         return data_dict
 
@@ -361,7 +378,7 @@ class LArTPCDataset(DefaultDataset):
 
         if not self.include_ghosts:
             segment[ segment==5 ] = -1
-        if not self.exclude_other:
+        if self.exclude_other:
             segment[ segment==6 ] = -1
 
         return segment

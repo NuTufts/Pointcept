@@ -46,6 +46,7 @@ class DefaultSegmentorV2(nn.Module):
         backbone=None,
         criteria=None,
         freeze_backbone=False,
+        class_priors=None,
     ):
         super().__init__()
         self.seg_head = (
@@ -59,6 +60,19 @@ class DefaultSegmentorV2(nn.Module):
         if self.freeze_backbone:
             for p in self.backbone.parameters():
                 p.requires_grad = False
+
+        # Initialize bias with log-prior for imbalanced classification
+        # This helps training converge faster by starting with predictions
+        # that match the class distribution rather than uniform
+        if class_priors is not None and num_classes > 0:
+            assert len(class_priors) == num_classes, \
+                f"class_priors length {len(class_priors)} != num_classes {num_classes}"
+            # Convert to tensor and compute log-priors
+            priors = torch.tensor(class_priors, dtype=torch.float32)
+            priors = priors / priors.sum()  # Normalize to ensure they sum to 1
+            log_priors = torch.log(priors + 1e-8)  # Add epsilon to avoid log(0)
+            with torch.no_grad():
+                self.seg_head.bias.copy_(log_priors)
 
     def forward(self, input_dict, return_point=False):
         point = Point(input_dict)
@@ -81,10 +95,11 @@ class DefaultSegmentorV2(nn.Module):
             # PCA evaluator parse feat and coord in point
             return_dict["point"] = point
 
-        # Build kwargs for loss function (e.g., per-sample class weights)
+        # Build kwargs for loss function (e.g., per-sample class counts for weighting)
         loss_kwargs = {}
-        if "segment_weights" in input_dict:
-            loss_kwargs["class_weights"] = input_dict["segment_weights"]
+        if "segment_counts" in input_dict:
+            # segment_counts is (batch_size, num_classes) - pass to loss for inverse freq weighting
+            loss_kwargs["class_counts"] = input_dict["segment_counts"]
 
         # train
         if self.training:
@@ -284,6 +299,124 @@ class DINOEnhancedSegmentor(nn.Module):
         # eval
         elif "segment" in input_dict.keys():
             loss = self.criteria(seg_logits, input_dict["segment"])
+            return_dict["loss"] = loss
+            return_dict["seg_logits"] = seg_logits
+        # test
+        else:
+            return_dict["seg_logits"] = seg_logits
+        return return_dict
+
+
+@MODELS.register_module()
+class SonataSegmentor(nn.Module):
+    """
+    Segmentor that uses a pretrained SONATA model as backbone.
+
+    This wraps the full SONATA model (which contains student/teacher + PT-v3m2 backbone)
+    and uses its up_cast mechanism to get point-resolution features for segmentation.
+
+    The SONATA model's `forward(data_dict, return_point=True)` returns features
+    upcast by `up_cast_level` levels, providing features at a resolution suitable
+    for semantic segmentation.
+
+    Args:
+        num_classes: Number of segmentation classes
+        backbone_out_channels: Output channels from SONATA after upcast (head_in_channels)
+        backbone: Dict config for SONATA model (type="Sonata-v1m1", backbone=dict(...), ...)
+        criteria: Loss function config
+        freeze_backbone: If True, freeze all backbone parameters (for linear probing)
+        use_teacher: If True, use teacher network for inference (default True for linear probe)
+
+    Example config:
+        model = dict(
+            type="SonataSegmentor",
+            num_classes=6,
+            backbone_out_channels=448,  # Same as head_in_channels in SONATA
+            backbone=dict(
+                type="Sonata-v1m1",
+                backbone=dict(
+                    type="PT-v3m2",
+                    in_channels=6,
+                    enc_channels=(16, 32, 64, 128, 256),
+                    ...
+                    enc_mode=True,
+                    mask_token=True,
+                ),
+                head_in_channels=448,
+                up_cast_level=2,
+                ...
+            ),
+            freeze_backbone=True,
+        )
+    """
+    def __init__(
+        self,
+        num_classes,
+        backbone_out_channels,
+        backbone=None,
+        criteria=None,
+        freeze_backbone=False,
+        use_teacher=True,
+        class_priors=None,
+    ):
+        super().__init__()
+        self.seg_head = (
+            nn.Linear(backbone_out_channels, num_classes)
+            if num_classes > 0
+            else nn.Identity()
+        )
+        self.backbone = build_model(backbone)
+        self.criteria = build_criteria(criteria)
+        self.freeze_backbone = freeze_backbone
+        self.use_teacher = use_teacher
+
+        if self.freeze_backbone:
+            for p in self.backbone.parameters():
+                p.requires_grad = False
+
+        # Initialize bias with log-prior for imbalanced classification
+        # This helps training converge faster by starting with predictions
+        # that match the class distribution rather than uniform
+        if class_priors is not None and num_classes > 0:
+            assert len(class_priors) == num_classes, \
+                f"class_priors length {len(class_priors)} != num_classes {num_classes}"
+            # Convert to tensor and compute log-priors
+            priors = torch.tensor(class_priors, dtype=torch.float32)
+            priors = priors / priors.sum()  # Normalize to ensure they sum to 1
+            log_priors = torch.log(priors + 1e-8)  # Add epsilon to avoid log(0)
+            with torch.no_grad():
+                self.seg_head.bias.copy_(log_priors)
+
+    def forward(self, input_dict, return_point=False):
+        # SONATA's forward with return_point=True expects data_dict directly
+        # It will create a Point internally from the teacher backbone
+        if self.freeze_backbone:
+            with torch.no_grad():
+                result = self.backbone(input_dict, return_point=True)
+        else:
+            result = self.backbone(input_dict, return_point=True)
+
+        point = result["point"]
+        feat = point.feat
+
+        seg_logits = self.seg_head(feat)
+        return_dict = dict()
+        if return_point:
+            return_dict["point"] = point
+
+        # Build kwargs for loss function (e.g., per-sample class counts for weighting)
+        loss_kwargs = {}
+        if "segment_counts" in input_dict:
+            # segment_counts is (batch_size, num_classes) - pass to loss for inverse freq weighting
+            loss_kwargs["class_counts"] = input_dict["segment_counts"]
+
+        # train
+        if self.training:
+            loss = self.criteria(seg_logits, input_dict["segment"], **loss_kwargs)
+            return_dict["loss"] = loss
+        # eval
+        elif "segment" in input_dict.keys():
+            loss = self.criteria(seg_logits, input_dict["segment"], **loss_kwargs)
             return_dict["loss"] = loss
             return_dict["seg_logits"] = seg_logits
         # test

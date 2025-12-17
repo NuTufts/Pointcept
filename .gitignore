@@ -16,3 +16,6 @@ outputs/
 Dockerfile
 *~
 *.h5
+*.png
+*.npz
+*.pth

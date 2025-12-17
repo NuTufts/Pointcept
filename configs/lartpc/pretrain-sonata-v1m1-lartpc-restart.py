@@ -51,15 +51,18 @@ mix_prob = 0
 clip_grad = 3.0
 empty_cache = False
 enable_amp = True
-amp_dtype = "bfloat16"
+#amp_dtype = "bfloat16" # use this for default 'flash_attn' backend
+amp_dtype = "float16" # use this with xformer backend
 evaluate = False
 find_unused_parameters = False
 
-enable_wandb = True
+enable_wandb = False
 wandb_project = "pointcept"
-save_path = "sonata/v1m1_bs16"
+save_path = "sonata/v1m1_bs16_restart_xformers"
 
-TRAIN_FILE_LIST="/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept/train_split_shuffled_validated.txt"
+TRAIN_FILE_LIST="/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept/train_split.txt"
+VAL_FILE_LIST="/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept/val_split.txt"
+TEST_FILE_LIST="/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept/test_split.txt"
 
 max_points_per_view=98304
 max_points_spherecrop=98304
@@ -68,8 +71,8 @@ min_points_spherecrop=20480
 # LArTPC scale parameters
 # Detector: ~1036 cm largest dimension, 0.3 cm wire pitch / time sampling
 grid_size = 0.25 # cm
-jitter_sigma=0.3 # cm
-jitter_clip=0.50 # max 1.5 grid spacings
+jitter_sigma=0.05 # cm (reduced)
+jitter_clip=0.25  # cm (reduced)
 wire_scale=1.0/3456.0 # normalize the wire indices which range from 0-3456
 # notes for next run:
 # - in sonata, grid_size is 0.02 with jitter 0.005, so grid_size/4. the jitter_clip=grid_size.
@@ -109,6 +112,8 @@ model = dict(
         pre_norm=True,
         enable_rpe=False,
         enable_flash=True,
+        #flash_backend='flash_attn', # default backend
+        flash_backend='xformers',    # backend needed to run on P100
         upcast_attention=False,
         upcast_softmax=False,
         traceable=True,
@@ -136,16 +141,16 @@ model = dict(
     # Masking schedule - scaled for LArTPC
     # Patch sizes in coordinate units
     # 1cm -> 5cm in real detector coordinates
-    mask_size_start=1.0,   # Start with ~1cm patches
+    mask_size_start=5.0,   # Start with ~1cm patches
     mask_size_base=5.0,    # End with ~5cm patches
     mask_size_warmup_ratio=0.05,
-    mask_ratio_start=0.3,   # Mask 30% initially
+    mask_ratio_start=0.7,   # Mask 30% initially
     mask_ratio_base=0.7,    # Mask 70% at end
     mask_ratio_warmup_ratio=0.05,
-    mask_jitter=0.3,      # ~3mm jitter for masked coords
+    mask_jitter=0.125,      # half of grid_size 
 
     # Temperature schedule
-    teacher_temp_start=0.04,
+    teacher_temp_start=0.07,
     teacher_temp_base=0.07,
     teacher_temp_warmup_ratio=0.05,
     student_temp=0.1,
@@ -170,10 +175,10 @@ model = dict(
 # scheduler settings
 epoch = 100
 eval_epoch = 100
-base_lr = 0.004
+base_lr = 0.00025
 lr_decay = 0.9  # layer-wise lr decay
 
-base_wd = 0.04
+base_wd  = 0.15
 final_wd = 0.2
 
 # Layer-wise learning rate decay

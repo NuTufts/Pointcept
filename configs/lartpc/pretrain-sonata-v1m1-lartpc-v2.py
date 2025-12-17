@@ -10,9 +10,9 @@ Adapted for LArTPC physics constraints:
   - Y-flip and z-flip allowed (detector symmetries)
   - Local 3D crops are valid (spacepoints already reconstructed from wire planes)
 
-Features (6 channels total):
+Features (3 channels total):
   - strength (3): Pixel values from u, v, y wire plane images (pixval)
-  - color (3): Wire indices for u, v, y planes divided by 3456.0 (spatial encoding)
+  - NOTE: Wire coordinates removed to avoid geometric trap during pretraining
 
 Coordinates:
   - units in data are in cm. We do not need to normalize these values
@@ -35,46 +35,61 @@ Coordinates:
 #    ((0.0,    0.0,  0.33), (0.0, 0.0, 1.0))
 #]
 # =============================================================================
-#wire_projections = None  # Set to None to disable wire reprojection, or define as above
-wire_projections = [
-    ((0.0,    0.0,  -338.6334821387676), (0.0, -0.866, 0.5)),
-    ((0.0,    0.0,  -333.0331845276306), (0.0,  0.866, 0.5)),
-    ((0.0,    0.0,  0.33), (0.0, 0.0, 1.0))
-]
+# Wire projections disabled - not using wire coordinates to avoid geometric trap
+wire_projections = None
 
 _base_ = ["../_base_/default_runtime.py"]
 
 # misc custom setting
-batch_size = 16  # Adjust based on GPU memory; LArTPC events can be large
+batch_size = 12  # Adjust based on GPU memory; LArTPC events can be large
 num_worker = 6
 mix_prob = 0
 clip_grad = 3.0
 empty_cache = False
 enable_amp = True
-amp_dtype = "bfloat16"
+amp_dtype = "bfloat16" # use this for default 'flash_attn' backend
+#amp_dtype = "float16" # use this with xformer backend
 evaluate = False
 find_unused_parameters = False
 
-enable_wandb = True
+enable_wandb = False
 wandb_project = "pointcept"
-save_path = "sonata/v1m1_bs16"
+save_path = "sonata/lartpc_v2"
 
-TRAIN_FILE_LIST="/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept/train_split_shuffled_validated.txt"
+#TRAIN_FILE_LIST="/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept/train_split.txt"
+#VAL_FILE_LIST="/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept/val_split.txt"
+#TEST_FILE_LIST="/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept/test_split.txt"
+TRAIN_FILE_LIST="pi0_test_files_100events.txt"
+VAL_FILE_LIST="pi0_test_files_100events.txt"
+TEST_FILE_LIST="pi0_test_files_100events.txt"
+true_points_only=True
 
-max_points_per_view=98304
-max_points_spherecrop=98304
-min_points_spherecrop=20480
+# max_points_per_view=98304
+# max_points_spherecrop=98304
+# min_points_spherecrop=20480
+max_points_per_view=20480
+max_points_spherecrop=20480
+min_points_spherecrop=4096
+biased_spherecrop_radius=20.0
+
+# scheduler settings
+epoch = 100
+eval_epoch = 100
+base_lr = 0.004
+lr_decay = 0.9  # layer-wise lr decay
+base_wd  = 0.04
+final_wd = 0.2
 
 # LArTPC scale parameters
 # Detector: ~1036 cm largest dimension, 0.3 cm wire pitch / time sampling
 grid_size = 0.25 # cm
-jitter_sigma=0.3 # cm
-jitter_clip=0.50 # max 1.5 grid spacings
+jitter_sigma=0.05 # cm (reduced)
+jitter_clip=0.25  # cm (reduced)
 wire_scale=1.0/3456.0 # normalize the wire indices which range from 0-3456
 # notes for next run:
 # - in sonata, grid_size is 0.02 with jitter 0.005, so grid_size/4. the jitter_clip=grid_size.
 #   i think my settings were much too big. the sequence was probably grid positions like crazy.
-# - remove wire coordinates, maybe this is keeping us in a geometric trap
+# - [DONE] remove wire coordinates, maybe this is keeping us in a geometric trap
 # - the position encoding is actually the output of a sparse-submanifold convolution combined in a residual manner.
 # - restore the hilbert curves
 # - consider using a random filter: for some p, drop ghosts, for some p drop cosmics as well.
@@ -92,13 +107,14 @@ model = dict(
     # backbone - student & teacher
     backbone=dict(
         type="PT-v3m2",  # Must use v3m2 for SONATA (supports mask_token)
-        in_channels=6,  # strength(3: pixel values from u,v,y planes) + wire_coords(3: u,v,y wire indices)
-        order=("z", "z-trans"),
+        in_channels=3,  # strength only (3: pixel values from u,v,y planes) - no wire coords to avoid geometric trap
+        order=("z", "z-trans","hilbert", "hilbert-trans"),
         stride=(2, 2, 2, 2),
         enc_depths=(2, 2, 2, 6, 2),
         enc_channels=(16, 32, 64, 128, 256),  # Halved for 16GB GPU
         enc_num_head=(2, 2, 4, 8, 16),  # Adjusted to divide channels evenly
-        enc_patch_size=(1024, 1024, 1024, 1024, 1024),
+        #enc_patch_size=(1024, 1024, 1024, 1024, 1024),
+        enc_patch_size=(256, 256, 256, 256, 256),
         mlp_ratio=4,
         qkv_bias=True,
         qk_scale=None,
@@ -109,6 +125,8 @@ model = dict(
         pre_norm=True,
         enable_rpe=False,
         enable_flash=True,
+        flash_backend='flash_attn', # default backend
+        #flash_backend='xformers',    # backend needed to run on P100
         upcast_attention=False,
         upcast_softmax=False,
         traceable=True,
@@ -142,7 +160,7 @@ model = dict(
     mask_ratio_start=0.3,   # Mask 30% initially
     mask_ratio_base=0.7,    # Mask 70% at end
     mask_ratio_warmup_ratio=0.05,
-    mask_jitter=0.3,      # ~3mm jitter for masked coords
+    mask_jitter=0.125,      # half of grid_size 
 
     # Temperature schedule
     teacher_temp_start=0.04,
@@ -166,15 +184,6 @@ model = dict(
     # Feature upsampling through decoder levels
     up_cast_level=2,
 )
-
-# scheduler settings
-epoch = 100
-eval_epoch = 100
-base_lr = 0.004
-lr_decay = 0.9  # layer-wise lr decay
-
-base_wd = 0.04
-final_wd = 0.2
 
 # Layer-wise learning rate decay
 enc_depths = model["backbone"]["enc_depths"]
@@ -204,8 +213,6 @@ data_root = "data/lartpc"
 
 # Transform pipeline for SONATA pretraining
 transform = [
-    # Limit points per sample for memory management
-    dict(type="SphereCrop", point_max=max_points_spherecrop, point_min=min_points_spherecrop, mode="random"),
     # Voxelize to grid
     dict(
         type="GridSample",
@@ -214,12 +221,24 @@ transform = [
         mode="train",
         return_grid_coord=True,
     ),
+    # Limit points per sample for 
+    # (1) memory management,
+    # (2) near neutrino interactions
+    dict(type="BiasedSphereCrop", 
+        anchor_points_key="nu_vertices",
+        anchor_pdf_key=None,
+        radius=biased_spherecrop_radius,
+        point_max=max_points_spherecrop, 
+        point_min=min_points_spherecrop, 
+        prob_random=0.25,
+        max_retries=100,
+        fallback_to_random=True),
     # Keep original coordinates for cross-view matching
     dict(type="Copy", keys_dict={"coord": "origin_coord"}),
     # Generate multi-scale views
     dict(
         type="MultiViewGenerator",
-        view_keys=("coord", "origin_coord", "strength", "color"),
+        view_keys=("coord", "origin_coord", "strength"),  # No wire coords (color) to avoid geometric trap
         # Global views: see most/all of the event
         global_view_num=2,
         global_view_scale=(0.6, 1.0),
@@ -282,9 +301,9 @@ transform = [
             "name",
         ),
         offset_keys_dict=dict(),
-        # Features: strength (energy) + color (wire coords)
-        global_feat_keys=("global_strength", "global_color"),
-        local_feat_keys=("local_strength", "local_color"),
+        # Features: strength only (no wire coords to avoid geometric trap)
+        global_feat_keys=("global_strength",),
+        local_feat_keys=("local_strength",),
     ),
 ]
 
@@ -314,6 +333,7 @@ data = dict(
         transform=transform,
         test_mode=False,
         loop=1,
+        true_points_only=true_points_only,
     ),
 )
 

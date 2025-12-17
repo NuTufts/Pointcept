@@ -31,20 +31,40 @@ Features (6 channels):
 #     ((0.0, 0.0, 0.0), (0.0, 0.0, 1.0)),     # Y plane (vertical wires)
 # ]
 # =============================================================================
-wire_projections = None  # Set to None to disable wire reprojection, or define as above
+#wire_projections = None  # Set to None to disable wire reprojection, or define as above
+wire_projections = [
+    ((0.0,    0.0,  -338.6334821387676), (0.0, -0.866, 0.5)),
+    ((0.0,    0.0,  -333.0331845276306), (0.0,  0.866, 0.5)),
+    ((0.0,    0.0,  0.33), (0.0, 0.0, 1.0))
+]
 
 _base_ = ["../_base_/default_runtime.py"]
 
 # misc custom setting
-batch_size = 1
-num_worker = 1
+batch_size = 8
+num_worker = 4
 mix_prob = 0.0
+clip_grad = 3.0
 empty_cache = False
 enable_amp = True
+
 enable_wandb = True
+wandb_project = "pointcept"
+save_path = "sonata/semseg-finetune"
+
+TRAIN_FILE_LIST="pi0_train_files.txt"        # 1880 events
+VAL_FILE_LIST="pi0_test_files_100events.txt" # 100 events
+
+max_points_per_view=98304
+max_points_spherecrop=98304
+min_points_spherecrop=20480
 
 # Grid size must match pretraining
-grid_size = 0.0003
+grid_size = 0.25 # cm
+jitter_sigma=0.06 # cm
+jitter_clip=0.25 # cm
+wire_scale=1.0/3456.0 # normalize the wire indices which range from 0-3456
+
 
 # model settings - architecture MUST match pretrained backbone
 model = dict(
@@ -89,31 +109,53 @@ model = dict(
             alpha=0.5,
             loss_weight=1.0,
             ignore_index=-1,
-            reduction='sum',
+            reduction='mean',
         ),
         # Lovasz loss can help with fine-tuning
-        dict(type="LovaszLoss", mode="multiclass", loss_weight=0.1, ignore_index=-1),
+        #dict(type="LovaszLoss", mode="multiclass", loss_weight=0.1, ignore_index=-1),
     ],
     freeze_backbone=False,  # Set True initially if you want to train only the head first
+    # Initialize linear head bias with log-prior for faster convergence
+    # Class order: electron=0, muon=1, pion=2, proton=3, gamma=4, ghost=5
+    # Approximate class frequencies from data (adjust based on actual statistics):
+    #   electron: ~4%, muon: ~25%, pion: ~0.5%, proton: ~0.5%, gamma: ~0%, ghost: ~70%
+    class_priors=[0.04, 0.25, 0.005, 0.005, 0.001, 0.70],
 )
 
-# scheduler settings - lower LR for fine-tuning
-epoch = 500
-eval_epoch = 50
-optimizer = dict(type="AdamW", lr=0.001, weight_decay=0.05)
+# scheduler settings - lower LR for fine-tuning pretrained encoder
+epoch = 100
+eval_epoch = 100
+
+# Learning rates:
+#   - Decoder + seg_head (randomly initialized): higher LR (base_lr)
+#   - Encoder + embedding (pretrained): lower LR (base_lr / 10)
+base_lr = 0.001
+pretrained_lr = base_lr / 100.0  # 0.0001
+
+optimizer = dict(type="AdamW", lr=base_lr, weight_decay=0.05)
+
+# param_dicts defines parameter groups with different LRs
+# Group 0 (default): params NOT matching any keyword -> base_lr (decoder, seg_head)
+# Group 1: params matching "backbone.enc" -> pretrained_lr (encoder)
+# Group 2: params matching "backbone.embedding" -> pretrained_lr (embedding)
+param_dicts = [
+    dict(keyword="backbone.enc", lr=pretrained_lr),
+    dict(keyword="backbone.embedding", lr=pretrained_lr),
+]
+
+# OneCycleLR max_lr must have one value per param group
+# Order: [default_group, enc_group, embedding_group]
 scheduler = dict(
     type="OneCycleLR",
-    max_lr=[0.001, 0.0001],
+    max_lr=[base_lr, pretrained_lr, pretrained_lr],
     pct_start=0.05,
     anneal_strategy="cos",
     div_factor=10.0,
     final_div_factor=1000.0,
 )
-param_dicts = [dict(keyword="block", lr=0.0001)]
 
 # dataset settings
 dataset_type = "LArTPCDataset"
-data_root = "data/lartpc"
 
 data = dict(
     num_classes=6,
@@ -128,12 +170,12 @@ data = dict(
     ],
     train=dict(
         type=dataset_type,
-        split="train",
-        data_root=data_root,
+        data_list_file=TRAIN_FILE_LIST,
         use_reco_coords=True,
         use_edep_as_strength=True,
         label_mode="pid",
-        coord_scale=0.001,
+        coord_scale=1.0,
+        wire_scale=1.0/3456.0,
         include_ghosts=True,
         exclude_other=True,
         log_transform_edep=True,
@@ -141,11 +183,15 @@ data = dict(
             # Physics-appropriate augmentations (same as pretraining)
             dict(type="RandomScale", scale=[0.95, 1.05]),
             dict(type="RandomFlipAxis", p=0.5, axis="y", center="mean",
+                 coord_scale=1.0,
+                 swap_strength_columns=(0, 1),
                  wire_projections=wire_projections),
             # Z-flip swaps u/v wire signals (columns 0,1 of strength)
             dict(type="RandomFlipAxis", p=0.5, axis="z", center="mean",
-                 swap_strength_columns=(0, 1), wire_projections=wire_projections),
-            dict(type="RandomJitter", sigma=0.0005, clip=0.002),
+                 coord_scale=1.0,
+                 swap_strength_columns=(0, 1), 
+                 wire_projections=wire_projections),
+            dict(type="RandomJitter", sigma=jitter_sigma, clip=jitter_clip),
             # Grid sampling
             dict(
                 type="GridSample",
@@ -154,11 +200,11 @@ data = dict(
                 mode="train",
                 return_grid_coord=True,
             ),
-            dict(type="SphereCrop", point_max=102400, mode="random"),
+            dict(type="SphereCrop", point_max=max_points_spherecrop, point_min=min_points_spherecrop, mode="random"),
             dict(type="ToTensor"),
             dict(
                 type="Collect",
-                keys=("coord", "grid_coord", "segment", "segment_weights"),
+                keys=("coord", "grid_coord", "segment", "segment_counts"),
                 feat_keys=("strength", "color"),
             ),
         ],
@@ -166,14 +212,14 @@ data = dict(
     ),
     val=dict(
         type=dataset_type,
-        split="val",
-        data_root=data_root,
+        data_list_file=VAL_FILE_LIST,
         use_reco_coords=True,
         use_edep_as_strength=True,
         label_mode="pid",
         include_ghosts=True,
         exclude_other=True,
-        coord_scale=0.001,
+        coord_scale=1.0,
+        wire_scale=1.0/3456.0,
         log_transform_edep=True,
         transform=[
             dict(type="Copy", keys_dict={"segment": "origin_segment"}),
@@ -188,7 +234,7 @@ data = dict(
             dict(type="ToTensor"),
             dict(
                 type="Collect",
-                keys=("coord", "grid_coord", "segment", "origin_segment", "inverse", "segment_weights"),
+                keys=("coord", "grid_coord", "segment", "origin_segment", "inverse", "segment_counts"),
                 feat_keys=("strength", "color"),
             ),
         ],
@@ -196,8 +242,7 @@ data = dict(
     ),
     test=dict(
         type=dataset_type,
-        split="val",
-        data_root=data_root,
+        data_list_file=VAL_FILE_LIST,
         use_reco_coords=True,
         use_edep_as_strength=True,
         label_mode="pid",
@@ -230,10 +275,13 @@ data = dict(
 )
 
 hooks = [
-    dict(type="CheckpointLoader"),
+    # Use SonataFinetuneCheckpointLoader to properly load SONATA pretrained weights
+    # Maps student.backbone.* -> backbone.* (encoder + embedding only)
+    # Decoder and seg_head remain randomly initialized
+    dict(type="SonataFinetuneCheckpointLoader", use_teacher=True),
     dict(type="IterationTimer", warmup_iter=2),
     dict(type="InformationWriter"),
-    dict(type="SemSegEvaluator"),
+    dict(type="SemSegEvaluator", write_cls_iou=True),
     dict(type="CheckpointSaver", save_freq=None),
     dict(type="PreciseEvaluator", test_last=False),
 ]

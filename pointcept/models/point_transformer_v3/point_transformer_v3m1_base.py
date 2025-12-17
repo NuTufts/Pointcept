@@ -19,6 +19,13 @@ try:
 except ImportError:
     flash_attn = None
 
+try:
+    import xformers.ops as xops
+    from xformers.ops.fmha.attn_bias import BlockDiagonalMask
+except ImportError:
+    xops = None
+    BlockDiagonalMask = None
+
 from pointcept.models.point_prompt_training import PDNorm
 from pointcept.models.builder import MODELS
 from pointcept.models.utils.misc import offset2bincount
@@ -63,6 +70,7 @@ class SerializedAttention(PointModule):
         enable_flash=True,
         upcast_attention=True,
         upcast_softmax=True,
+        flash_backend="flash_attn",  # Options: "flash_attn", "xformers", or None
     ):
         super().__init__()
         assert channels % num_heads == 0
@@ -73,18 +81,33 @@ class SerializedAttention(PointModule):
         self.upcast_attention = upcast_attention
         self.upcast_softmax = upcast_softmax
         self.enable_rpe = enable_rpe
-        self.enable_flash = enable_flash
-        if enable_flash:
+
+        # Handle flash_backend parameter
+        # For backward compatibility: if enable_flash is False, disable flash attention
+        if not enable_flash:
+            self.flash_backend = None
+        else:
+            self.flash_backend = flash_backend
+
+        # Validate and set up based on flash backend
+        if self.flash_backend is not None:
             assert (
                 enable_rpe is False
-            ), "Set enable_rpe to False when enable Flash Attention"
+            ), "Set enable_rpe to False when using Flash Attention"
             assert (
                 upcast_attention is False
-            ), "Set upcast_attention to False when enable Flash Attention"
+            ), "Set upcast_attention to False when using Flash Attention"
             assert (
                 upcast_softmax is False
-            ), "Set upcast_softmax to False when enable Flash Attention"
-            assert flash_attn is not None, "Make sure flash_attn is installed."
+            ), "Set upcast_softmax to False when using Flash Attention"
+
+            if self.flash_backend == "flash_attn":
+                assert flash_attn is not None, "Make sure flash_attn is installed."
+            elif self.flash_backend == "xformers":
+                assert xops is not None, "Make sure xformers is installed."
+            else:
+                raise ValueError(f"Unknown flash_backend: {self.flash_backend}. Use 'flash_attn', 'xformers', or None.")
+
             self.patch_size = patch_size
             self.attn_drop = attn_drop
         else:
@@ -94,6 +117,9 @@ class SerializedAttention(PointModule):
             self.patch_size_max = patch_size
             self.patch_size = 0
             self.attn_drop = torch.nn.Dropout(attn_drop)
+
+        # Keep enable_flash for backward compatibility in forward()
+        self.enable_flash = self.flash_backend is not None
 
         self.qkv = torch.nn.Linear(channels, channels * 3, bias=qkv_bias)
         self.proj = torch.nn.Linear(channels, channels)
@@ -204,7 +230,7 @@ class SerializedAttention(PointModule):
             attn = self.softmax(attn)
             attn = self.attn_drop(attn).to(qkv.dtype)
             feat = (attn @ v).transpose(1, 2).reshape(-1, C)
-        else:
+        elif self.flash_backend == "flash_attn":
             feat = flash_attn.flash_attn_varlen_qkvpacked_func(
                 qkv.to(torch.bfloat16).reshape(-1, 3, H, C // H),
                 cu_seqlens,
@@ -213,6 +239,43 @@ class SerializedAttention(PointModule):
                 softmax_scale=self.scale,
             ).reshape(-1, C)
             feat = feat.to(qkv.dtype)
+        elif self.flash_backend == "xformers":
+            # xformers memory-efficient attention with variable-length sequences
+            # Similar to flash_attn_varlen, we use BlockDiagonalMask to handle
+            # variable sequence lengths defined by cu_seqlens
+
+            # Reshape QKV to (total_tokens, 3, H, head_dim) - same as flash_attn
+            qkv_reshaped = qkv.reshape(-1, 3, H, C // H)
+            q, k, v = qkv_reshaped.unbind(dim=1)  # Each: (total_tokens, H, head_dim)
+
+            # xformers expects float16 for P100 GPUs (no bfloat16 support)
+            original_dtype = qkv.dtype
+            q = q.to(torch.float16)
+            k = k.to(torch.float16)
+            v = v.to(torch.float16)
+
+            # Compute sequence lengths from cu_seqlens
+            # cu_seqlens is [0, len1, len1+len2, ..., total] so diff gives lengths
+            seq_lens = (cu_seqlens[1:] - cu_seqlens[:-1]).tolist()
+
+            # Create BlockDiagonalMask for variable-length attention
+            # This prevents attention across different sequences
+            attn_bias = BlockDiagonalMask.from_seqlens(seq_lens)
+
+            # xformers memory_efficient_attention expects [B, M, H, K] format
+            # For variable-length sequences with BlockDiagonalMask, use [1, total_tokens, H, head_dim]
+            q = q.unsqueeze(0)  # (1, total_tokens, H, head_dim)
+            k = k.unsqueeze(0)
+            v = v.unsqueeze(0)
+
+            feat = xops.memory_efficient_attention(
+                q, k, v,
+                attn_bias=attn_bias,
+                p=self.attn_drop if self.training else 0.0,
+                scale=self.scale,
+            )
+            # Output shape: (1, total_tokens, H, head_dim) -> (total_tokens, C)
+            feat = feat.squeeze(0).reshape(-1, C).to(original_dtype)
         feat = feat[inverse]
 
         # ffn
@@ -269,6 +332,7 @@ class Block(PointModule):
         enable_flash=True,
         upcast_attention=True,
         upcast_softmax=True,
+        flash_backend="flash_attn",  # Options: "flash_attn", "xformers", or None
     ):
         super().__init__()
         self.channels = channels
@@ -300,6 +364,7 @@ class Block(PointModule):
             enable_flash=enable_flash,
             upcast_attention=upcast_attention,
             upcast_softmax=upcast_softmax,
+            flash_backend=flash_backend,
         )
         self.norm2 = PointSequential(norm_layer(channels))
         self.mlp = PointSequential(
@@ -549,6 +614,7 @@ class PointTransformerV3(PointModule):
         pdnorm_adaptive=False,
         pdnorm_affine=True,
         pdnorm_conditions=("ScanNet", "S3DIS", "Structured3D"),
+        flash_backend="flash_attn",  # Options: "flash_attn", "xformers", or None
     ):
         super().__init__()
         self.num_stages = len(enc_depths)
@@ -641,6 +707,7 @@ class PointTransformerV3(PointModule):
                         enable_flash=enable_flash,
                         upcast_attention=upcast_attention,
                         upcast_softmax=upcast_softmax,
+                        flash_backend=flash_backend,
                     ),
                     name=f"block{i}",
                 )
@@ -691,6 +758,7 @@ class PointTransformerV3(PointModule):
                             enable_flash=enable_flash,
                             upcast_attention=upcast_attention,
                             upcast_softmax=upcast_softmax,
+                            flash_backend=flash_backend,
                         ),
                         name=f"block{i}",
                     )
