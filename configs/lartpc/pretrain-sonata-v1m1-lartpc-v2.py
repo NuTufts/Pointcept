@@ -41,7 +41,7 @@ wire_projections = None
 _base_ = ["../_base_/default_runtime.py"]
 
 # misc custom setting
-batch_size = 4  # Adjust based on GPU memory; LArTPC events can be large
+batch_size = 12  # Adjust based on GPU memory; LArTPC events can be large
 num_worker = 6
 mix_prob = 0
 clip_grad = 3.0
@@ -64,10 +64,21 @@ VAL_FILE_LIST="pi0_test_files_100events.txt"
 TEST_FILE_LIST="pi0_test_files_100events.txt"
 true_points_only=True
 
-max_points_per_view=98304
-max_points_spherecrop=98304
-min_points_spherecrop=20480
+# max_points_per_view=98304
+# max_points_spherecrop=98304
+# min_points_spherecrop=20480
+max_points_per_view=20480
+max_points_spherecrop=20480
+min_points_spherecrop=4096
 biased_spherecrop_radius=20.0
+
+# scheduler settings
+epoch = 100
+eval_epoch = 100
+base_lr = 0.004
+lr_decay = 0.9  # layer-wise lr decay
+base_wd  = 0.04
+final_wd = 0.2
 
 # LArTPC scale parameters
 # Detector: ~1036 cm largest dimension, 0.3 cm wire pitch / time sampling
@@ -143,16 +154,16 @@ model = dict(
     # Masking schedule - scaled for LArTPC
     # Patch sizes in coordinate units
     # 1cm -> 5cm in real detector coordinates
-    mask_size_start=5.0,   # Start with ~1cm patches
+    mask_size_start=1.0,   # Start with ~1cm patches
     mask_size_base=5.0,    # End with ~5cm patches
     mask_size_warmup_ratio=0.05,
-    mask_ratio_start=0.7,   # Mask 30% initially
+    mask_ratio_start=0.3,   # Mask 30% initially
     mask_ratio_base=0.7,    # Mask 70% at end
     mask_ratio_warmup_ratio=0.05,
     mask_jitter=0.125,      # half of grid_size 
 
     # Temperature schedule
-    teacher_temp_start=0.07,
+    teacher_temp_start=0.04,
     teacher_temp_base=0.07,
     teacher_temp_warmup_ratio=0.05,
     student_temp=0.1,
@@ -173,15 +184,6 @@ model = dict(
     # Feature upsampling through decoder levels
     up_cast_level=2,
 )
-
-# scheduler settings
-epoch = 100
-eval_epoch = 100
-base_lr = 0.00025
-lr_decay = 0.9  # layer-wise lr decay
-
-base_wd  = 0.15
-final_wd = 0.2
 
 # Layer-wise learning rate decay
 enc_depths = model["backbone"]["enc_depths"]
