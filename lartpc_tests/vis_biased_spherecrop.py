@@ -39,6 +39,8 @@ parser.add_argument("--grid-size", default=0.25, type=float,
                     help="Grid size for voxelization (default: 0.25)")
 parser.add_argument("--pos-mode", default="reco", type=str, choices=["reco", "true"],
                     help="Position mode: reco or true (default: reco)")
+parser.add_argument("--true-pts-only", default=False, action='store_true',
+                    help="If given, remove ghosts and show true points only.")
 args = parser.parse_args()
 
 # Class definitions for LArTPC
@@ -86,7 +88,7 @@ PID_TO_CLASS = {
 }
 
 
-def load_data_from_h5(filepath, pos_mode="reco"):
+def load_data_from_h5(filepath, pos_mode="reco", true_pts_only=False):
     """Load data from HDF5 file."""
     with h5py.File(filepath, 'r') as f:
         # Load coordinates
@@ -121,6 +123,15 @@ def load_data_from_h5(filepath, pos_mode="reco"):
             'pos': keypoint_pos,
             'kptype': keypoint_type
         }
+
+        if true_pts_only:
+            truthlabels = np.array(f['/entry_0/triplet_data/hasmatch'],dtype=np.int64)
+            truthmask = truthlabels==1
+            coord = coord[truthmask[:]]
+            segment = segment[truthmask[:]]
+            strength = strength[truthmask[:]]
+            color = wire_feat[truthmask[:]]
+
 
     return {
         "coord": coord,
@@ -183,7 +194,7 @@ def downsample_for_context(coord, segment, max_points=100000):
 
 # Load the data once at startup
 print(f"Loading data from {args.input_h5}...")
-raw_data = load_data_from_h5(args.input_h5, args.pos_mode)
+raw_data = load_data_from_h5(args.input_h5, args.pos_mode, true_pts_only=args.true_pts_only)
 print(f"Loaded {raw_data['coord'].shape[0]} points")
 print(f"Nu vertices: {raw_data['nu_vertices'].shape[0]} found")
 
