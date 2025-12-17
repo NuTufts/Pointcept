@@ -1302,7 +1302,7 @@ class BiasedSphereCrop(object):
 
             for attempt in range(self.max_retries):
                 center = self._select_biased_center(anchor_points, anchor_pdf)
-                print(f" attempt[{attempt}] ",center)
+                #print(f" attempt[{attempt}] ",center)
                 idx_crop = self._crop_around_center(data_dict, center, self.point_max)
                 if self.point_min is None or len(idx_crop) >= self.point_min:
                     break
