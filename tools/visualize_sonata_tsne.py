@@ -161,7 +161,79 @@ def parse_args():
         default=4.0,
         help="Factor multiplied by grid_size to get label assignment threshold (default: 4.0)",
     )
+    parser.add_argument(
+        "--balanced-sampling",
+        action='store_true',
+        default=False,
+        help="Use class-balanced downsampling: max points per class = max_points / num_classes",
+    )
     return parser.parse_args()
+
+
+def balanced_subsample(features, labels, max_points, num_classes, coords=None, seed=42):
+    """
+    Subsample points with class-balanced strategy.
+
+    Each class gets at most max_points / num_classes points. Classes with fewer
+    points than this limit contribute all their points.
+
+    Args:
+        features: (N, D) array of features
+        labels: (N,) array of class labels
+        max_points: Maximum total points to return
+        num_classes: Number of classes for computing per-class budget
+        coords: Optional (N, 3) array of coordinates
+        seed: Random seed for reproducibility
+
+    Returns:
+        Tuple of (features, labels, coords) after subsampling.
+        coords is None if input coords was None.
+    """
+    np.random.seed(seed)
+
+    # Compute per-class budget
+    max_per_class = max_points // num_classes
+
+    # Get unique labels present in data
+    unique_labels = np.unique(labels)
+
+    # Collect indices for each class
+    selected_indices = []
+    class_sample_counts = {}
+
+    for cls_idx in unique_labels:
+        cls_mask = labels == cls_idx
+        cls_indices = np.where(cls_mask)[0]
+        n_cls = len(cls_indices)
+
+        if n_cls <= max_per_class:
+            # Take all points from this class
+            selected_indices.append(cls_indices)
+            class_sample_counts[cls_idx] = n_cls
+        else:
+            # Randomly sample max_per_class points
+            sampled = np.random.choice(cls_indices, max_per_class, replace=False)
+            selected_indices.append(sampled)
+            class_sample_counts[cls_idx] = max_per_class
+
+    # Concatenate and shuffle
+    selected_indices = np.concatenate(selected_indices)
+    np.random.shuffle(selected_indices)
+
+    # Log sampling info
+    print(f"  Balanced sampling: max {max_per_class} points per class")
+    for cls_idx in sorted(class_sample_counts.keys()):
+        original_count = (labels == cls_idx).sum()
+        sampled_count = class_sample_counts[cls_idx]
+        print(f"    Class {cls_idx}: {sampled_count}/{original_count} points")
+    print(f"  Total selected: {len(selected_indices)} points")
+
+    # Apply selection
+    features_out = features[selected_indices]
+    labels_out = labels[selected_indices]
+    coords_out = coords[selected_indices] if coords is not None else None
+
+    return features_out, labels_out, coords_out
 
 
 def get_tsne_reducer(perplexity=30.0, learning_rate=200.0, n_iter=1000,
@@ -497,11 +569,23 @@ def main():
     # Final subsampling for t-SNE
     if len(all_features) > args.max_points:
         print(f"Subsampling from {len(all_features)} to {args.max_points} points for t-SNE")
-        indices = np.random.choice(len(all_features), args.max_points, replace=False)
-        all_features = all_features[indices]
-        all_labels = all_labels[indices]
-        if all_coords is not None:
-            all_coords = all_coords[indices]
+        if args.balanced_sampling:
+            # Class-balanced subsampling: max points per class = max_points / num_classes
+            all_features, all_labels, all_coords = balanced_subsample(
+                features=all_features,
+                labels=all_labels,
+                max_points=args.max_points,
+                num_classes=num_classes,
+                coords=all_coords,
+                seed=args.seed,
+            )
+        else:
+            # Random subsampling (original behavior)
+            indices = np.random.choice(len(all_features), args.max_points, replace=False)
+            all_features = all_features[indices]
+            all_labels = all_labels[indices]
+            if all_coords is not None:
+                all_coords = all_coords[indices]
 
     # Print class distribution
     print("\nClass distribution:")
