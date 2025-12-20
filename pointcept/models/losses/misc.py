@@ -167,7 +167,7 @@ class FocalLoss(nn.Module):
             cweights = torch.where(counts > 0, 1.0 / counts, torch.zeros_like(counts))
             # Normalize weights so they sum to num_classes (optional, for stability)
             cweights = cweights * num_classes / (cweights.sum() + 1e-8)
-            assert cweights.size(1) == pred.size(1), "number of classes in class_counts does not match prediction"
+            assert cweights.size(1) == pred.size(1), f"number of classes in class_counts ({cweights.size(1)}) does not match prediction ({pred.size(1)})"
             focal_weight *= cweights  # (1,C) broadcasts to (N,C)
         elif 'class_weights' in kwargs:
             cweights = kwargs['class_weights']  # should be (1,C)

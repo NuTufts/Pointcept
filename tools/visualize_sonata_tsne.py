@@ -360,6 +360,7 @@ def extract_features(model, data_dict, device):
         "feat": data_dict["feat"].to(device),
         "offset": data_dict["offset"].to(device),
     }
+    print("feat.shape=",input_dict["feat"].shape)
 
     # Add grid_size - required for serialization
     if "grid_size" in data_dict:
@@ -381,9 +382,13 @@ def extract_features(model, data_dict, device):
     return result["point"]
 
 
-def collate_fn(batch):
+def collate_fn(batch, in_channels=None):
     """
     Custom collate function for inference.
+
+    Args:
+        batch: List of data dicts from the dataset
+        in_channels: Number of input feature channels to use. If None, uses all features.
     """
     # Stack coordinates and features, compute offsets
     coords = []
@@ -396,7 +401,10 @@ def collate_fn(batch):
     for data in batch:
         n = data["coord"].shape[0]
         coords.append(data["coord"])
-        feats.append(data["feat"])
+        if in_channels is not None:
+            feats.append(data["feat"][:, :in_channels])
+        else:
+            feats.append(data["feat"])
         if "segment" in data:
             segments.append(data["segment"])
         names.append(data.get("name", "unknown"))
@@ -491,6 +499,10 @@ def main():
         # Load model
         model = load_model(cfg, args.checkpoint, args.device, random_init=args.random_init)
 
+        # Get input feature dimension from config
+        in_channels = cfg.model.backbone.in_channels
+        print(f"Model expects {in_channels} input feature channels")
+
         # Extract features from events
         all_features = []
         all_labels = []
@@ -504,9 +516,10 @@ def main():
 
             # Get single event
             data = dataset[event_idx]
+            print(data.keys())
 
             # Create batch of 1
-            batch_data = collate_fn([data])
+            batch_data = collate_fn([data], in_channels=in_channels)
 
             n_points_input = batch_data["coord"].shape[0]
             print(f"{n_points_input} input points", end=" ")
