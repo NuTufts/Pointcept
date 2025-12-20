@@ -41,27 +41,27 @@ wire_projections = None
 _base_ = ["../_base_/default_runtime.py"]
 
 # misc custom setting
-batch_size = 12  # Adjust based on GPU memory; LArTPC events can be large
-num_worker = 6
+batch_size = 48  # Adjust based on GPU memory; LArTPC events can be large
+num_worker = 8
 mix_prob = 0
 clip_grad = 3.0
 empty_cache = False
 enable_amp = True
-amp_dtype = "bfloat16" # use this for default 'flash_attn' backend
-#amp_dtype = "float16" # use this with xformer backend
 evaluate = False
 find_unused_parameters = False
 
-enable_wandb = False
-wandb_project = "pointcept"
-save_path = "sonata/lartpc_v2"
+#flash_backend='flash_attn', # default backend
+#amp_dtype = "bfloat16" # use this for default 'flash_attn' backend
 
-#TRAIN_FILE_LIST="/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept/train_split.txt"
-#VAL_FILE_LIST="/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept/val_split.txt"
-#TEST_FILE_LIST="/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept/test_split.txt"
-TRAIN_FILE_LIST="pi0_test_files_100events.txt"
-VAL_FILE_LIST="pi0_test_files_100events.txt"
-TEST_FILE_LIST="pi0_test_files_100events.txt"
+flash_backend='xformers',    # backend needed to run on P100
+amp_dtype = "float16"        # use this with xformer backend on P100
+
+enable_wandb = True
+wandb_project = "pointcept"
+save_path = "sonata/lartpc_v2_p100_noghosts"
+
+TRAIN_FILE_LIST="/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept/train_split_shuffled_keypoint_validated.txt"
+#TRAIN_FILE_LIST="pi0_test_files_100events.txt"
 true_points_only=True
 
 # max_points_per_view=98304
@@ -125,8 +125,9 @@ model = dict(
         pre_norm=True,
         enable_rpe=False,
         enable_flash=True,
-        flash_backend='flash_attn', # default backend
+        #flash_backend='flash_attn', # default backend
         #flash_backend='xformers',    # backend needed to run on P100
+        flash_backend=flash_backend,
         upcast_attention=False,
         upcast_softmax=False,
         traceable=True,

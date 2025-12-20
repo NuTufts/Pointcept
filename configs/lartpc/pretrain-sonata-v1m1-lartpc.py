@@ -59,9 +59,7 @@ enable_wandb = True
 wandb_project = "pointcept"
 save_path = "sonata/v1m1_bs16"
 
-TRAIN_FILE_LIST="/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept/train_split.txt"
-VAL_FILE_LIST="/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept/val_split.txt"
-TEST_FILE_LIST="/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept/test_split.txt"
+TRAIN_FILE_LIST="/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept/train_split_shuffled_validated.txt"
 
 max_points_per_view=98304
 max_points_spherecrop=98304

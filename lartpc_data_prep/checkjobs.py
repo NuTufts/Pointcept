@@ -1,7 +1,9 @@
 import os,sys
 
-inputlist = "inputlists/bnb_nu_corsika.txt"
-outfolder = "/cluster/tufts/wongjiradlab/larbys/data/ub_on_tufts/hdf5/bnb_nu_corsika/"
+#inputlist = "inputlists/bnb_nu_corsika.txt"
+#outfolder = "/cluster/tufts/wongjiradlab/larbys/data/ub_on_tufts/hdf5/bnb_nu_corsika/"
+inputlist = "inputlists/bnb_nue_corsika.txt"
+outfolder = "/cluster/tufts/wongjiradlab/larbys/data/ub_on_tufts/hdf5/bnb_nue_corsika/"
 
 goodlist_name = "goodlist_"+os.path.basename(inputlist)
 badlist_name  = "badlist_"+os.path.basename(inputlist)
