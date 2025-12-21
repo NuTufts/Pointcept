@@ -310,6 +310,10 @@ def load_model(cfg, checkpoint_path, device, random_init=False):
         random_init: If True, use random weights instead of loading checkpoint
     """
     print(f"Building model: {cfg.model.type}")
+
+    # modify upscaling level
+    cfg.model.up_cast_level = 4
+
     model = build_model(cfg.model)
 
     if random_init:
