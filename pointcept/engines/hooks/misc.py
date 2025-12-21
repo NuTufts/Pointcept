@@ -277,9 +277,21 @@ class CheckpointLoader(HookBase):
                 )
                 self.trainer.start_epoch = checkpoint["epoch"]
                 self.trainer.best_metric_value = checkpoint["best_metric_value"]
-                self.trainer.optimizer.load_state_dict(checkpoint["optimizer"])
 
                 if self.extend_scheduler:
+                    # CRITICAL: Save scheduler-related values from param_groups BEFORE loading
+                    # optimizer state, because load_state_dict will overwrite them with old values.
+                    scheduler = self.trainer.scheduler
+                    saved_scheduler_params = []
+                    for idx, group in enumerate(self.trainer.optimizer.param_groups):
+                        saved_scheduler_params.append({
+                            'initial_lr': group.get('initial_lr'),
+                            'max_lr': group.get('max_lr'),
+                        })
+
+                    # Now load optimizer state (this overwrites initial_lr and max_lr in param_groups)
+                    self.trainer.optimizer.load_state_dict(checkpoint["optimizer"])
+
                     # Do NOT load old scheduler state - use new scheduler with extended total_steps
                     # Set the scheduler's step counter to where we left off
                     steps_completed = checkpoint["epoch"] * len(self.trainer.train_loader) // self.trainer.cfg.gradient_accumulation_steps
@@ -288,17 +300,13 @@ class CheckpointLoader(HookBase):
                         f"(new total_steps: {self.trainer.cfg.scheduler.total_steps})"
                     )
 
-                    # CRITICAL: Loading optimizer state overwrites 'initial_lr' and 'max_lr'
-                    # in param_groups that OneCycleLR uses. We need to restore these from
-                    # the NEW scheduler's base_lrs before stepping.
-                    scheduler = self.trainer.scheduler
+                    # Restore the NEW scheduler's initial_lr and max_lr values that were saved
                     for idx, group in enumerate(self.trainer.optimizer.param_groups):
-                        # Restore the scheduler's initial_lr (from base_lrs set at scheduler creation)
-                        if idx < len(scheduler.base_lrs):
-                            group['initial_lr'] = scheduler.base_lrs[idx]
-                        # Restore max_lr from scheduler's stored max_lrs
-                        if hasattr(scheduler, 'max_lrs') and idx < len(scheduler.max_lrs):
-                            group['max_lr'] = scheduler.max_lrs[idx]
+                        if idx < len(saved_scheduler_params):
+                            if saved_scheduler_params[idx]['initial_lr'] is not None:
+                                group['initial_lr'] = saved_scheduler_params[idx]['initial_lr']
+                            if saved_scheduler_params[idx]['max_lr'] is not None:
+                                group['max_lr'] = saved_scheduler_params[idx]['max_lr']
                         self.trainer.logger.info(
                             f"  Param group {idx}: initial_lr={group.get('initial_lr', 'N/A'):.6f}, "
                             f"max_lr={group.get('max_lr', 'N/A'):.6f}"
@@ -315,6 +323,7 @@ class CheckpointLoader(HookBase):
                     current_lr = scheduler.get_last_lr()[0]
                     self.trainer.logger.info(f"  Extended scheduler LR at resume: {current_lr:.6f}")
                 else:
+                    self.trainer.optimizer.load_state_dict(checkpoint["optimizer"])
                     self.trainer.scheduler.load_state_dict(checkpoint["scheduler"])
 
                 if self.trainer.cfg.enable_amp:
