@@ -287,12 +287,33 @@ class CheckpointLoader(HookBase):
                         f"Extending scheduler: setting step counter to {steps_completed} "
                         f"(new total_steps: {self.trainer.cfg.scheduler.total_steps})"
                     )
+
+                    # CRITICAL: Loading optimizer state overwrites 'initial_lr' and 'max_lr'
+                    # in param_groups that OneCycleLR uses. We need to restore these from
+                    # the NEW scheduler's base_lrs before stepping.
+                    scheduler = self.trainer.scheduler
+                    for idx, group in enumerate(self.trainer.optimizer.param_groups):
+                        # Restore the scheduler's initial_lr (from base_lrs set at scheduler creation)
+                        if idx < len(scheduler.base_lrs):
+                            group['initial_lr'] = scheduler.base_lrs[idx]
+                        # Restore max_lr from scheduler's stored max_lrs
+                        if hasattr(scheduler, 'max_lrs') and idx < len(scheduler.max_lrs):
+                            group['max_lr'] = scheduler.max_lrs[idx]
+                        self.trainer.logger.info(
+                            f"  Param group {idx}: initial_lr={group.get('initial_lr', 'N/A'):.6f}, "
+                            f"max_lr={group.get('max_lr', 'N/A'):.6f}"
+                        )
+
                     # Directly modify scheduler state to skip ahead efficiently
                     # This is much faster than calling step() 300k+ times
-                    state = self.trainer.scheduler.state_dict()
+                    state = scheduler.state_dict()
                     state['last_epoch'] = steps_completed
                     state['_step_count'] = steps_completed + 1
-                    self.trainer.scheduler.load_state_dict(state)
+                    scheduler.load_state_dict(state)
+
+                    # Log the LR we'll start with
+                    current_lr = scheduler.get_last_lr()[0]
+                    self.trainer.logger.info(f"  Extended scheduler LR at resume: {current_lr:.6f}")
                 else:
                     self.trainer.scheduler.load_state_dict(checkpoint["scheduler"])
 
@@ -673,19 +694,74 @@ class WeightDecaySchedular(HookBase):
         self,
         base_value=0.04,
         final_value=0.2,
+        extend_scheduler=False,
+        original_total_steps=None,
     ):
+        """
+        Weight decay scheduler with cosine annealing.
+
+        Args:
+            base_value: Starting weight decay value
+            final_value: Final weight decay value
+            extend_scheduler: If True, compute the WD value that the ORIGINAL schedule
+                would have at the resume point, and start the extended schedule from there.
+                Requires original_total_steps to be set.
+            original_total_steps: Total steps of the original training schedule.
+                Required when extend_scheduler=True. Can be computed as:
+                original_epochs * steps_per_epoch // gradient_accumulation_steps
+        """
         self.base_value = base_value
         self.final_value = final_value
+        self.extend_scheduler = extend_scheduler
+        self.original_total_steps = original_total_steps
         self.scheduler = None
 
     def before_train(self):
         curr_step = self.trainer.start_epoch * len(self.trainer.train_loader)
-        self.scheduler = CosineScheduler(
-            base_value=self.base_value,
-            final_value=self.final_value,
-            total_iters=self.trainer.cfg.scheduler.total_steps,
-        )
-        self.scheduler.iter = curr_step
+        new_total_steps = self.trainer.cfg.scheduler.total_steps
+
+        if self.extend_scheduler and self.original_total_steps:
+            # Compute what the WD was at curr_step under the ORIGINAL schedule
+            import numpy as np
+            original_progress = min(curr_step / self.original_total_steps, 1.0)
+            original_wd = self.final_value + 0.5 * (self.base_value - self.final_value) * (
+                1 + np.cos(np.pi * original_progress)
+            )
+            self.trainer.logger.info(
+                f"WeightDecaySchedular: Extending from original schedule"
+            )
+            self.trainer.logger.info(
+                f"  Original WD at step {curr_step}: {original_wd:.6f}"
+            )
+            self.trainer.logger.info(
+                f"  (Original schedule: {self.original_total_steps} steps, "
+                f"base={self.base_value}, final={self.final_value})"
+            )
+
+            # Create extended schedule that starts at original_wd and goes to final_value
+            remaining_steps = new_total_steps - curr_step
+            self.scheduler = CosineScheduler(
+                base_value=original_wd,
+                final_value=self.final_value,
+                total_iters=remaining_steps,
+            )
+            self.scheduler.iter = 0  # Start fresh from 0 for remaining steps
+            self.trainer.logger.info(
+                f"  Extended WD schedule: {original_wd:.6f} -> {self.final_value} "
+                f"over {remaining_steps} remaining steps"
+            )
+        else:
+            # Standard behavior: cosine from base to final over total steps
+            self.scheduler = CosineScheduler(
+                base_value=self.base_value,
+                final_value=self.final_value,
+                total_iters=new_total_steps,
+            )
+            self.scheduler.iter = curr_step
+            current_wd = self.scheduler.get(curr_step)
+            self.trainer.logger.info(
+                f"WeightDecaySchedular: WD at step {curr_step}: {current_wd:.6f}"
+            )
 
     def before_step(self):
         wd = self.scheduler.step()
