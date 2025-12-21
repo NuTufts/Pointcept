@@ -357,6 +357,34 @@ class LArTPCDataset(DefaultDataset):
                     #print(k,data_dict[k].shape)
                     data_dict[k] = data_dict[k][ ghost_mask[:] ]
 
+            # Check if we have enough points after filtering
+            min_points_required = 100  # Minimum points to be a valid sample
+            if data_dict['coord'].shape[0] < min_points_required:
+                # Track retry attempts to prevent infinite recursion
+                if not hasattr(self, '_retry_count'):
+                    self._retry_count = 0
+                self._retry_count += 1
+
+                max_retries = 10
+                if self._retry_count > max_retries:
+                    self._retry_count = 0
+                    raise RuntimeError(
+                        f"Failed to find valid sample after {max_retries} retries. "
+                        f"Too many events have < {min_points_required} true points. "
+                        f"Consider checking your data or lowering true_points_only requirements."
+                    )
+
+                # Log warning and retry with a different sample
+                print(
+                    f"WARNING: Event '{name}' has only {data_dict['coord'].shape[0]} true points "
+                    f"(< {min_points_required}). Sampling a different event (retry {self._retry_count}/{max_retries})."
+                )
+                # Get a different random sample
+                new_idx = np.random.randint(0, len(self.data_list))
+                result = self.get_data(new_idx)
+                self._retry_count = 0  # Reset on success
+                return result
+
         return data_dict
 
     def _map_pid_to_class(self, pid):

@@ -50,17 +50,17 @@ enable_amp = True
 evaluate = False
 find_unused_parameters = False
 
-flash_backend='flash_attn' # default backend
-amp_dtype = "bfloat16" # use this for default 'flash_attn' backend
+#flash_backend='flash_attn' # default backend
+#amp_dtype = "bfloat16" # use this for default 'flash_attn' backend
 
-#flash_backend='xformers'    # backend needed to run on P100
-#amp_dtype = "float16"        # use this with xformer backend on P100
+flash_backend='xformers'   # backend needed to run on P100
+amp_dtype = "float16"      # use this with xformer backend on P100
 
 enable_wandb = True
 wandb_project = "pointcept"
-save_path = "sonata/lartpc_v2_p100_noghosts"
+save_path = "sonata/lartpc_v2_p100_noghosts_extended"
 
-TRAIN_FILE_LIST="/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept/train_split_shuffled_keypoint_validated.txt"
+TRAIN_FILE_LIST="/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept/train_split_shuffled_kp_mintruepts_validated.txt"
 #TRAIN_FILE_LIST="pi0_test_files_100events.txt"
 true_points_only=True
 
