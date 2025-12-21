@@ -50,11 +50,11 @@ enable_amp = True
 evaluate = False
 find_unused_parameters = False
 
-#flash_backend='flash_attn', # default backend
-#amp_dtype = "bfloat16" # use this for default 'flash_attn' backend
+flash_backend='flash_attn' # default backend
+amp_dtype = "bfloat16" # use this for default 'flash_attn' backend
 
-flash_backend='xformers',    # backend needed to run on P100
-amp_dtype = "float16"        # use this with xformer backend on P100
+#flash_backend='xformers'    # backend needed to run on P100
+#amp_dtype = "float16"        # use this with xformer backend on P100
 
 enable_wandb = True
 wandb_project = "pointcept"
@@ -73,9 +73,18 @@ min_points_spherecrop=4096
 biased_spherecrop_radius=20.0
 
 # scheduler settings
-epoch = 100
-eval_epoch = 100
-base_lr = 0.004
+# Extended from 100 to 200 epochs - use extend_scheduler=True in CheckpointLoader
+# when resuming to create a new scheduler with 200 epoch total_steps
+epoch = 200
+eval_epoch = 200
+#base_lr = 0.004 # original base_lr
+lr_final_div_factor=1000.0 # original
+#lr_pct_start=0.05 # original
+
+base_lr = 0.0002 # extended start
+#lr_final_div_factor=100.0 # extended
+lr_pct_start=0.0 # extended par
+
 lr_decay = 0.9  # layer-wise lr decay
 base_wd  = 0.04
 final_wd = 0.2
@@ -202,10 +211,10 @@ optimizer = dict(type="AdamW", lr=base_lr, weight_decay=base_wd)
 scheduler = dict(
     type="OneCycleLR",
     max_lr=[base_lr] + [g["lr"] for g in param_dicts],
-    pct_start=0.05,
+    pct_start=lr_pct_start,
     anneal_strategy="cos",
     div_factor=10.0,
-    final_div_factor=1000.0,
+    final_div_factor=lr_final_div_factor,
 )
 
 # dataset settings
@@ -340,7 +349,11 @@ data = dict(
 
 # Hooks for pretraining
 hooks = [
-    dict(type="CheckpointLoader"),
+    # extend_scheduler=True: When resuming, creates a new scheduler with the updated
+    # total_steps (based on eval_epoch=200) and advances it to the current step.
+    # This allows extending training beyond the original epoch count while
+    # preserving optimizer state (Adam momentum, etc.)
+    dict(type="CheckpointLoader", extend_scheduler=True),
     dict(type="ModelHook"),  # Calls model.before_train(), before_step(), after_step()
     dict(type="WeightDecaySchedular", base_value=base_wd, final_value=final_wd),
     dict(type="IterationTimer", warmup_iter=2),

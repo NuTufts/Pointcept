@@ -228,10 +228,21 @@ class CheckpointSaver(HookBase):
 
 @HOOKS.register_module()
 class CheckpointLoader(HookBase):
-    def __init__(self, keywords="", replacement=None, strict=False):
+    def __init__(self, keywords="", replacement=None, strict=False, extend_scheduler=False):
+        """
+        Args:
+            keywords: Keywords to match in layer names for weight loading
+            replacement: Replacement string for matched keywords
+            strict: Whether to require strict weight matching
+            extend_scheduler: If True, when resuming, do NOT load the scheduler state.
+                Instead, use the new scheduler (with potentially extended total_steps)
+                and advance it to the current step. This allows extending training
+                beyond the original epoch count while preserving optimizer state.
+        """
         self.keywords = keywords
         self.replacement = replacement if replacement is not None else keywords
         self.strict = strict
+        self.extend_scheduler = extend_scheduler
 
     def before_train(self):
         self.trainer.logger.info("=> Loading checkpoint & weight ...")
@@ -267,7 +278,24 @@ class CheckpointLoader(HookBase):
                 self.trainer.start_epoch = checkpoint["epoch"]
                 self.trainer.best_metric_value = checkpoint["best_metric_value"]
                 self.trainer.optimizer.load_state_dict(checkpoint["optimizer"])
-                self.trainer.scheduler.load_state_dict(checkpoint["scheduler"])
+
+                if self.extend_scheduler:
+                    # Do NOT load old scheduler state - use new scheduler with extended total_steps
+                    # Set the scheduler's step counter to where we left off
+                    steps_completed = checkpoint["epoch"] * len(self.trainer.train_loader) // self.trainer.cfg.gradient_accumulation_steps
+                    self.trainer.logger.info(
+                        f"Extending scheduler: setting step counter to {steps_completed} "
+                        f"(new total_steps: {self.trainer.cfg.scheduler.total_steps})"
+                    )
+                    # Directly modify scheduler state to skip ahead efficiently
+                    # This is much faster than calling step() 300k+ times
+                    state = self.trainer.scheduler.state_dict()
+                    state['last_epoch'] = steps_completed
+                    state['_step_count'] = steps_completed + 1
+                    self.trainer.scheduler.load_state_dict(state)
+                else:
+                    self.trainer.scheduler.load_state_dict(checkpoint["scheduler"])
+
                 if self.trainer.cfg.enable_amp:
                     self.trainer.scaler.load_state_dict(checkpoint["scaler"])
         else:
