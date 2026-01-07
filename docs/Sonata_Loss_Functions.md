@@ -142,27 +142,42 @@ All three losses influence prototype learning, but through two independent sets 
 
 The loss is cross-entropy over K prototypes (default K=4096):
 
-$$L = -\sum_{k=1}^{K} q_k \log(p_k)$$
+$$L = -\sum_{i}^{N} \sum_{k}^{K} Q_{ik} \log(p_{ik})$$
 
 where:
-- $q_k$ = teacher's soft assignment for prototype k
-- $p_k$ = student's predicted probability for prototype k
+- $Q_{ik}$ = teacher's probability for sample $i$ to belong to prototype $k$
+- $p_{ik}$ = student's probability for sample $i$ to belong to prototype $k$
+- Both $Q_{ik}$ and $p_{ik}$ normalize to 1 over $i$, i.e. $\sum_{i}^{N} Q_{ik} = 1$ and $\sum_{i}^{N} p_{ik} = 1$
 
 Notes:
--  This $L$ term is for one "sample", i.e. for one point with some point set of N points.
--  $q_k$ comes from the Sinkhorn-Knopp calculation, which finds the optical transport plan
+-  This $L$ term is for one batch -- or rather training update -- i.e. it sums over $N$ samples indexed by $i$.
+-  $Q_{ik}$ comes from the Sinkhorn-Knopp calculation and is the optical transport plan
    between a uniformly distributed mass over $K$ clusters to a uniformly distributed mass over $N$ points.
-   The optimal transport cost comes from the negative-similarity between the clusters and spacepoint features: 
+-  This way of calculating the target makes sure that all the cluster prototypes are used.
+-  This avoids representation collapse that might come about by all the sample feature vectors mapping to one or a few prototypes.
+-  However, enforcing the transport across all prototypes does not mean that the $p_{ik}$ must be smeared out.
+   As long as there are other samples in the the batch that map to other prototypes, an individual sample can
+   have a low entropy distribution over the prototypes, i.e. have high probability only over a few prototypes.
+   Indeed, this is what we are trying to achieve by minimizing with the cross-entropy above.
+   So this works best if the batch has enough diversity of patterns. So we might play around with large batch sizes or accomulate samples over multiple batches.
+   Is the code setup to do this for the Sinkhorn-Knopp calculation?
+-  For our data, which can have large class imbalances, it seems we need to make sure that enough "semantic diversity" is always present.
+-  The optimal transport cost comes from the negative-similarity between the clusters and spacepoint features: 
 
-     $$ C_{ik}=[e^{-\frac{1}{\tau}z_i^Tc_{k}}]_{ik} $$
+  $$ C_{ik}=[e^{-\frac{1}{\tau}z_i^Tc_{k}}]_{ik} $$
 
--  $p_k$ is a probability calculated from
+-  $p_{ik}$ is a probability mass for sample $i$ with feature vector, $z_i$, calculated by
    
-     $$ p_k = \frac{ e^{\frac{1}{\tau} z^T c_k }}{\sum_{k'}^{K}e^{\frac{1}{\tau} z^T c_{k'} }} $$
+  $$ p_{ik} = \frac{ e^{\frac{1}{\tau} z_i^T c_k }}{\sum_{k'}^{K}e^{\frac{1}{\tau} z_i^T c_{k'} }} $$
 
-   where:
-     - $z$ is the feature vector, $z \in R^{d}$, of a given point, and
-     - $c_k$ is the vector in feature space for prototype, $k$.
+  where:
+
+   - $i$ is the index over $N$ samples in the batch (i.e. the (downsampled) points)
+   - $z_i$ is the feature vector, $z_i \in \mathbb{R}^{d}$, of a given point, and
+   - $c_k$ is the vector, $c_k \in \mathbb{R}^{d}$ in feature space for prototype $k$ out of $K$ prototypes.
+- I assume something like the Sinkhorn algorithm is being applied here. It takes in a cost matrix $C_{ik}$ above and the mass distributions over $N$ samples and $K$ prototypes.
+  This is probably $\frac{1}{N}$ and $\frac{1}{K}$ for the samples and prototypes, respectively. The output of the Sinkhorn algorithm is the matrix,
+  $Q_{ik}$, which is the transport plan for how the mass of sample $i$ is to be distributed over each of the $K$ prototypes.
 
 
 
