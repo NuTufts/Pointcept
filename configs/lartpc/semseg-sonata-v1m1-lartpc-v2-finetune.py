@@ -37,8 +37,8 @@ wire_projections = None
 _base_ = ["../_base_/default_runtime.py"]
 
 # misc custom setting
-batch_size = 48
-num_worker = 4
+batch_size = 192
+num_worker = 10
 mix_prob = 0.0
 clip_grad = 1.0
 empty_cache = False
@@ -46,14 +46,23 @@ enable_amp = True
 
 enable_wandb = True
 wandb_project = "pointcept"
-save_path = "sonata/semseg-finetune-v2-noghost"
+save_path = "sonata/semseg-finetune-v2-noghost-p100"
 
-epoch = 100
-eval_epoch = 100
+epoch = 200
+eval_epoch = 200
 base_lr = 0.001
 
-TRAIN_FILE_LIST="pi0_train_files.txt"        # 1880 events
-VAL_FILE_LIST="pi0_test_files_100events.txt" # 100 events
+#TRAIN_FILE_LIST="pi0_train_files.txt"        # 1880 events
+#VAL_FILE_LIST="pi0_test_files_100events.txt" # 100 events
+
+TRAIN_FILE_LIST="/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept/train_split_shuffled_kp_mintruepts_validated.txt"
+VAL_FILE_LIST="/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept/test_split_shuffled_validated.txt"
+
+#flash_backend='flash_attn' # default backend
+#amp_dtype = "bfloat16" # use this for default 'flash_attn' backend
+
+flash_backend='xformers'   # backend needed to run on P100
+amp_dtype = "float16"      # use this with xformer backend on P100
 
 max_points_per_view=20480
 max_points_spherecrop=20480
@@ -97,7 +106,7 @@ model = dict(
         pre_norm=True,
         enable_rpe=False,
         enable_flash=True,
-        flash_backend='flash_attn', # default backend
+        flash_backend=flash_backend,        
         upcast_attention=False,
         upcast_softmax=False,
         traceable=False,

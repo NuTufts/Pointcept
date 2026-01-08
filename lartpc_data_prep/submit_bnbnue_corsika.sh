@@ -5,9 +5,9 @@
 #SBATCH --mem-per-cpu=8000
 #SBATCH --cpus-per-task=1
 #SBATCH --time=1-00:00:00
-#SBATCH --partition=batch
+#SBATCH --partition=wongjiradlab,batch
 #SBATCH --error=logs/bnbnue_corsika/griderr_dl2h5.%j.%A_%a.%N.err
-#SBATCH --array=10-199
+#SBATCH --array=10-399
 
 # set the location of your copy of the repo here
 WORKDIR=/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept/lartpc_data_prep/
