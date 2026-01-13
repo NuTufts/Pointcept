@@ -15,8 +15,7 @@ parser.add_argument("-p", "--pos-mode", default="reco",type=str,help="Position m
 parser.add_argument("-d", "--use-data", action='store_true', default=False, help="If given, plot the data spacepoints")
 args = parser.parse_args()
 
-import lardly
-from lardly.detectoroutline import DetectorOutline
+from detectoroutline import DetectorOutline
 
 fh5    = h5py.File(args.input_h5, 'r')
 
@@ -54,6 +53,19 @@ kptype_name = {
     5:"Delta"
 }
 
+NSSNET_CLASSES=10
+ssnet_class_names = {
+    0:'bg',
+    1:'electron',
+    2:'photon',
+    3:'muon',
+    4:'proton',
+    5:'pion',
+    6:'michel',
+    7:'delta',
+    8:'led',
+    9:'other'
+}
 ssnet_class_colors = {
     0:'rgba(50,50,50,1.0)',  # background
     1:'rgba(255,0,0,1.0)',   # electron
@@ -61,8 +73,12 @@ ssnet_class_colors = {
     3:'rgba(0,0,255,1)',     # muon
     4:'rgba(0,125,255,1)',   # proton
     5:'rgba(125,0,255,1)',   # pion/kaon
-    6:'rgba(125,125,0,1)',   # other
+    6:'rgba(255,51,255,1)',  # shower michel
+    7:'rgba(125,100,255,1)', # shower delta
+    8:'rgba(125,200,255,1)', # low energy deposits    
+    9:'rgba(125,125,0,1)',   # other
 }
+
 
 if args.colorby not in colorby_options:
     print("Color Mode option given is invalid. Options: ",colorby_options)
@@ -143,12 +159,13 @@ else:
     <b>PID</b>:  %{customdata[0]:d}<br>
     <b>TID</b>:  %{customdata[1]:d}<br>
     <b>AID</b>:  %{customdata[2]:d}<br>
+    <b>SSNET</b>: %{customdata[13]:d}<br>
     <b>edep</b>: %{customdata[3]:.3f}, %{customdata[4]:.3f} , %{customdata[5]:.3f}  MeV<br>
     <b>pixval</b>: %{customdata[6]:.3f}, %{customdata[7]:.3f} , %{customdata[8]:.3f}  MeV<br>
     <b>Wires</b>: (%{customdata[9]:d}, %{customdata[10]:d} , %{customdata[11]:d})<br>
     <b>tick</b>: %{customdata[12]:d}
     """
-    customdata = np.concatenate( [data['pid'],data['trackid'],data['aid'],data['edep'],data['pixval'],data['uwire'],data['vwire'],data['ywire'],data['tick']],axis=1 )
+    customdata = np.concatenate( [data['pid'],data['trackid'],data['aid'],data['edep'],data['pixval'],data['uwire'],data['vwire'],data['ywire'],data['tick'],data['ssnet_label']],axis=1 )
 print("customdata: ",customdata.shape)
 
 kpcustom = np.concatenate( (kpdata['pid'].reshape(-1,1), 
@@ -235,9 +252,10 @@ elif colorby in ['kpnu','kptrackstart','kptrackend','kpshower','kpmichel','kpdel
     }
     simch_plots.append( simch_plot )
 elif colorby == 'ssnet-label':
-    for iclass in range(7):
+    for iclass in range(NSSNET_CLASSES):
         ssnet_labels = source['ssnet_label'][:,0]
         ssnet_mask = ssnet_labels==iclass
+        ssnet_name = ssnet_class_names[iclass]
         xcolor = ssnet_class_colors[iclass]
         simch_plot = {
             "type":"scatter3d",
@@ -245,7 +263,7 @@ elif colorby == 'ssnet-label':
             "y":source[pos_var][ssnet_mask[:],1],
             "z":source[pos_var][ssnet_mask[:],2],
             "mode":"markers",
-            "name":f"ssnet[{iclass}]",
+            "name":f"{ssnet_name}[{iclass}]",
             "hovertemplate":hovertemplate,
             "customdata":customdata[ssnet_mask[:],:],
             "marker":{"color":xcolor,"opacity":opacity,"size":marker_size}
