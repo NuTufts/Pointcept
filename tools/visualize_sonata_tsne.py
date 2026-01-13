@@ -445,6 +445,8 @@ def main():
     class_names = CLASS_NAMES
     num_classes = NUM_CLASSES
 
+    print("CLASS_NAMES: ",CLASS_NAMES)
+
     # Check if loading pre-extracted features
     if args.load_features is not None:
         print(f"Loading pre-extracted features from {args.load_features}")
@@ -488,7 +490,8 @@ def main():
             transform=transform,
             use_reco_coords=True,
             use_edep_as_strength=True,
-            label_mode="pid",
+            #label_mode="pid",
+            label_mode="ssnet",
             coord_scale=1.0,
             log_transform_edep=True,
             include_ghosts=True,

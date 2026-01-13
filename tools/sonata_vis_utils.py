@@ -9,9 +9,20 @@ import numpy as np
 
 
 # LArTPC particle class definitions
-CLASS_NAMES = ["electron", "muon", "pion", "proton", "gamma", "ghost"]
+CLASS_NAMES = [
+    "electron",   # 0: e+/e-
+    "muon",       # 1: mu+/mu-
+    "pion",       # 2: pi+/pi-
+    "proton",     # 3: proton
+    "gamma",      # 4: photon
+    "michel",     # 5: michel
+    "delta",      # 6: delta
+    "led",        # 7: low energy deposit
+    "ghost",      # 8: ghost
+    "other"       # 9: everything else
+]
 NUM_CLASSES = len(CLASS_NAMES)
-GHOST_LABEL = 5
+GHOST_LABEL = 8
 
 # High-contrast color palette for particle classes (ColorBrewer Set1-based)
 CLASS_COLORS = {
@@ -20,7 +31,11 @@ CLASS_COLORS = {
     2: "#4DAF4A",  # pion - green
     3: "#FF7F00",  # proton - orange
     4: "#984EA3",  # gamma - purple
-    5: "#999999",  # ghost - gray
+    5: "#F682E9",  # michel - pink
+    6: "#673A91",  # delta - maroon
+    7: "#178787",  # led - teal
+    8: "#999999",  # ghost - gray
+    9: "#999999",  # other - gray
 }
 
 # RGBA versions for plotly (with alpha)
@@ -31,6 +46,10 @@ CLASS_COLORS_RGBA = {
     3: "rgba(255, 127, 0, 1.0)",   # proton - orange
     4: "rgba(152, 78, 163, 1.0)",  # gamma - purple
     5: "rgba(153, 153, 153, 1.0)", # ghost - gray
+    6: "rgba(153, 153, 153, 1.0)", # ghost - gray
+    7: "rgba(153, 153, 153, 1.0)", # ghost - gray
+    8: "rgba(153, 153, 153, 1.0)", # ghost - gray
+    9: "rgba(153, 153, 153, 1.0)", # ghost - gray
 }
 
 

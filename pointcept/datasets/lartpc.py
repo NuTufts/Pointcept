@@ -77,8 +77,11 @@ class LArTPCDataset(DefaultDataset):
         "pion",       # 2: pi+/pi-
         "proton",     # 3: proton
         "gamma",      # 4: photon
-        "ghost",      # 5: ghost
-        "other",      # 6: everything else
+        "michel",     # 5: michel
+        "delta",      # 6: delta
+        "led"         # 7: low energy deposit
+        "ghost",      # 8: ghost
+        "other",      # 9: everything else
     ]
 
     # Default origin class names
@@ -112,7 +115,31 @@ class LArTPCDataset(DefaultDataset):
         -321: 6,    # K-
         # Other common particles go to "other"
         # ghost points
-        0:5
+        0:8
+    }
+
+    # SSNET LABEL FROM larflow::prep::SimChTripletLabelMaker
+    # 0:'bg',
+    # 1:'electron',
+    # 2:'photon',
+    # 3:'muon',
+    # 4:'proton',
+    # 5:'pion',
+    # 6:'michel',
+    # 7:'delta',
+    # 8:'led',
+    # 9:'other'
+    SSNETLABEL_TO_CLASS = {
+        0:8, # ghost
+        1:0, # electron
+        2:4, # photon
+        3:1, # muon
+        4:3, # proton
+        5:2, # pion
+        6:5, # michel
+        7:6, # delta
+        8:7, # LED
+        9:9, # OTHER
     }
 
     def __init__(
@@ -281,6 +308,9 @@ class LArTPCDataset(DefaultDataset):
             if self.label_mode == 'pid':
                 pid = f['/entry_0/triplet_data/pid'][:]
                 segment = self._map_pid_to_class(pid)
+            elif self.label_mode == 'ssnet':
+                ssnetlabels = f['/entry_0/triplet_data/ssnet_label'][:]
+                segment = self._map_ssnetlabel_to_class(ssnetlabels)
             elif self.label_mode == 'origin':
                 origin = f['/entry_0/triplet_data/origin'][:]
                 segment = self._map_origin_to_class(origin)
@@ -403,6 +433,30 @@ class LArTPCDataset(DefaultDataset):
 
         for pdg_code, class_idx in self.PID_TO_CLASS.items():
             segment[pid == pdg_code] = class_idx
+
+        if not self.include_ghosts:
+            segment[ segment==5 ] = -1
+        if self.exclude_other:
+            segment[ segment==6 ] = -1
+
+        return segment
+
+    def _map_ssnetlabel_to_class(self, ssnetlabel):
+        """
+        Map PDG particle IDs to class indices.
+
+        Args:
+            pid: Array of PDG codes
+
+        Returns:
+            Array of class indices (int32), with -1 for unknown/ignored particles
+        """
+        # Default to -1 (ignore_index) for unknown particles
+        # PID=0 means no particle ID assigned - should be ignored during training
+        segment = np.full(len(ssnetlabel), fill_value=-1, dtype=np.int32)
+
+        for ssnet_code, class_idx in self.SSNETLABEL_TO_CLASS.items():
+            segment[ssnetlabel == ssnet_code] = class_idx
 
         if not self.include_ghosts:
             segment[ segment==5 ] = -1
