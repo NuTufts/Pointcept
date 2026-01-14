@@ -2,6 +2,7 @@ import os,sys
 import argparse
 import h5py
 import numpy as np
+from numpy import inf
 import dash
 from dash import dcc, html
 from dash.dependencies import Input, Output, State
@@ -188,6 +189,9 @@ else:
 
 source = data
 
+print("minpos: ",np.min(source[pos_var]))
+print("maxpos: ",np.max(source[pos_var]))
+
 simch_plots = []
 if colorby=='edep':
     simch_plot = {
@@ -252,20 +256,30 @@ elif colorby in ['kpnu','kptrackstart','kptrackend','kpshower','kpmichel','kpdel
     }
     simch_plots.append( simch_plot )
 elif colorby == 'ssnet-label':
+    source['ssnet_label'] = np.nan_to_num(source['ssnet_label'], nan=0)
+    print("ssnetmin: ",np.min(source['ssnet_label']))
+    print("ssnetmax: ",np.max(source['ssnet_label']))    
     for iclass in range(NSSNET_CLASSES):
+        if iclass in [0]:
+            continue
         ssnet_labels = source['ssnet_label'][:,0]
         ssnet_mask = ssnet_labels==iclass
         ssnet_name = ssnet_class_names[iclass]
         xcolor = ssnet_class_colors[iclass]
+        xpos = source[pos_var][ssnet_mask[:],:]
+        xpos = np.nan_to_num(xpos,nan=0)
+        #xpos = xpos[:1000,:]
+        xcustomdata = customdata[ssnet_mask[:],:]
+        #xcustomdata = xcustomdata[:1000,:]
         simch_plot = {
             "type":"scatter3d",
-            "x":source[pos_var][ssnet_mask[:],0],
-            "y":source[pos_var][ssnet_mask[:],1],
-            "z":source[pos_var][ssnet_mask[:],2],
+            "x":xpos[:,0],
+            "y":xpos[:,1],
+            "z":xpos[:,2],
             "mode":"markers",
             "name":f"{ssnet_name}[{iclass}]",
             "hovertemplate":hovertemplate,
-            "customdata":customdata[ssnet_mask[:],:],
+            "customdata":xcustomdata,
             "marker":{"color":xcolor,"opacity":opacity,"size":marker_size}
         }
         simch_plots.append(simch_plot)
@@ -316,6 +330,8 @@ for ikptype in kptypes:
 
     msize = 5.0
     if ikptype==0:
+        msize = 10.0
+    elif ikptype>=3:
         msize = 8.0
 
     kp_plot = {
