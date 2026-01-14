@@ -222,9 +222,13 @@ def balanced_subsample(features, labels, max_points, num_classes, coords=None, s
 
     # Log sampling info
     print(f"  Balanced sampling: max {max_per_class} points per class")
-    for cls_idx in sorted(class_sample_counts.keys()):
+    #for cls_idx in sorted(class_sample_counts.keys()):
+    for cls_idx in range(num_classes):
         original_count = (labels == cls_idx).sum()
-        sampled_count = class_sample_counts[cls_idx]
+        if cls_idx in class_sample_counts:
+            sampled_count = class_sample_counts[cls_idx]
+        else:
+            sampled_count = 0
         print(f"    Class {cls_idx}: {sampled_count}/{original_count} points")
     print(f"  Total selected: {len(selected_indices)} points")
 
@@ -276,6 +280,10 @@ def build_inference_transform(cfg, grid_size=None):
     if grid_size is None:
         grid_size = cfg.get("grid_size", 0.25)
 
+    max_points_spherecrop=20480
+    min_points_spherecrop=4096
+    biased_spherecrop_radius=20.0
+
     transform_list = [
         dict(
             type="GridSample",
@@ -284,6 +292,15 @@ def build_inference_transform(cfg, grid_size=None):
             mode="train",  # keeps all points
             return_grid_coord=True,
         ),
+        dict(type="BiasedSphereCrop", 
+            anchor_points_key="nu_vertices",
+            anchor_pdf_key=None,
+            radius=biased_spherecrop_radius,
+            point_max=max_points_spherecrop, 
+            point_min=min_points_spherecrop, 
+            prob_random=0.25,
+            max_retries=100,
+            fallback_to_random=True),
         dict(type="ToTensor"),
         # Add grid_size to the data dict for the model
         dict(type="Update", keys_dict={"grid_size": grid_size}),

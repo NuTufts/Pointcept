@@ -459,9 +459,9 @@ class LArTPCDataset(DefaultDataset):
             segment[ssnetlabel == ssnet_code] = class_idx
 
         if not self.include_ghosts:
-            segment[ segment==5 ] = -1
+            segment[ segment==8 ] = -1
         if self.exclude_other:
-            segment[ segment==6 ] = -1
+            segment[ segment==9 ] = -1
 
         return segment
 
