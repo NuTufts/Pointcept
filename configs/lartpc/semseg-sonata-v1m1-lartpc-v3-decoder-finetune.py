@@ -37,19 +37,19 @@ wire_projections = None
 _base_ = ["../_base_/default_runtime.py"]
 
 # misc custom setting
-batch_size = 192
-num_worker = 10
+batch_size = 144
+num_worker = 12
 mix_prob = 0.0
 clip_grad = 1.0
 empty_cache = False
 enable_amp = True
 
-enable_wandb = False
+enable_wandb = True
 wandb_project = "pointcept"
 save_path = "sonata/semseg-decoder-finetune-v3-noghost-p100"
 
-epoch = 200
-eval_epoch = 200
+epoch = 20
+eval_epoch = 20
 base_lr = 0.001
 
 TRAIN_FILE_LIST="/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept/train_split_combined_prod3_validated.txt"
@@ -119,17 +119,16 @@ model = dict(
             loss_weight=1.0,
             ignore_index=-1,
             reduction='mean',
+            
         ),
         # Lovasz loss can help with fine-tuning
         #dict(type="LovaszLoss", mode="multiclass", loss_weight=0.1, ignore_index=-1),
     ],
     freeze_backbone=False,  # Set True initially if you want to train only the head first
     # Initialize linear head bias with log-prior for faster convergence
-    # Class order: electron=0, muon=1, pion=2, proton=3, gamma=4, ghost=5
+    # Class order: electron=0, muon=1, pion=2, proton=3, gamma=4, michel=5, delta=6, led=7, ghost=8, other=9
     # Approximate class frequencies from data (adjust based on actual statistics):
-    #   electron: ~4%, muon: ~25%, pion: ~0.5%, proton: ~0.5%, gamma: ~0%, ghost: ~70%
-    #class_priors=[0.04, 0.25, 0.005, 0.005, 0.001, 0.70],
-    class_priors=[0.10923, 0.87100, 0.00181, 0.00759, 0.01041],
+    class_priors=[0.052,0.797,0.009,0.024,0.030,0.006,0.077,0.007],
 )
 
 # scheduler settings - lower LR for fine-tuning pretrained encoder
