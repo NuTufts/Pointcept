@@ -20,6 +20,7 @@ Author: Generated for LArTPC analysis
 import os
 import sys
 import argparse
+import time
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -124,6 +125,12 @@ def parse_args():
         default=False,
         help="Only show true energy deposition points (if MC)",
     )
+    parser.add_argument(
+        "--cpu",
+        action="store_true",
+        default=False,
+        help="Force CPU-only inference (ignores --device). NOTE: May not work with spconv-based models.",
+    )
     return parser.parse_args()
 
 
@@ -183,6 +190,68 @@ class LArTPCDatasetWithSSNet:
         return self.base_dataset[idx]
 
 
+def check_model_uses_spconv(model):
+    """
+    Check if the model uses spconv layers.
+
+    Returns:
+        bool: True if model contains spconv layers
+        int: Number of spconv layers found
+    """
+    spconv_count = 0
+    try:
+        import spconv.pytorch as spconv
+        spconv_types = (
+            spconv.SparseConv3d,
+            spconv.SubMConv3d,
+            spconv.SparseConvTranspose3d,
+            spconv.SparseInverseConv3d,
+        )
+        for module in model.modules():
+            if isinstance(module, spconv_types):
+                spconv_count += 1
+    except ImportError:
+        # If spconv not installed, check by module name
+        for name, module in model.named_modules():
+            module_type = type(module).__name__
+            if 'SparseConv' in module_type or 'SubMConv' in module_type:
+                spconv_count += 1
+
+    return spconv_count > 0, spconv_count
+
+
+def switch_spconv_to_native_algo(model):
+    """
+    Switch all spconv layers to use ConvAlgo.Native algorithm.
+
+    This is required for CPU inference since MaskImplicitGemm is CUDA-only.
+    Native algorithm produces mathematically equivalent results.
+
+    Returns:
+        int: Number of layers switched
+    """
+    try:
+        from spconv.core import ConvAlgo
+    except ImportError:
+        print("WARNING: Could not import spconv.core.ConvAlgo")
+        return 0
+
+    count = 0
+    for name, module in model.named_modules():
+        # Check if this is a spconv layer with an algo attribute
+        if hasattr(module, 'algo'):
+            old_algo = module.algo
+            module.algo = ConvAlgo.Native
+            count += 1
+            # Only print first few to avoid spam
+            if count <= 3:
+                print(f"  Switched {name}: {old_algo} -> ConvAlgo.Native")
+            elif count == 4:
+                print(f"  ... (switching remaining layers)")
+
+    return count
+
+
 def load_model(cfg, checkpoint_path, device):
     """
     Load semantic segmentation model from checkpoint.
@@ -235,6 +304,13 @@ def load_model(cfg, checkpoint_path, device):
     if unexpected:
         print(f"Unexpected keys: {unexpected}")
     print("Model loaded successfully")
+
+    # Switch spconv algorithm to Native for CPU inference
+    is_cpu = device == "cpu" or (isinstance(device, torch.device) and device.type == "cpu")
+    if is_cpu:
+        print("Switching spconv layers to ConvAlgo.Native for CPU inference...")
+        n_switched = switch_spconv_to_native_algo(model)
+        print(f"Switched {n_switched} spconv layers to Native algorithm")
 
     model = model.to(device)
     model.eval()
@@ -289,11 +365,12 @@ def collate_fn(batch, in_channels=None):
 @torch.no_grad()
 def run_inference(model, data_dict, device):
     """
-    Run semantic segmentation inference.
+    Run semantic segmentation inference with timing and memory measurement.
 
     Returns:
         seg_logits: (N, num_classes) tensor of class logits
         coords: (N, 3) tensor of point coordinates
+        inference_stats: dict with timing and memory info
     """
     input_dict = {
         "coord": data_dict["coord"].to(device),
@@ -311,13 +388,57 @@ def run_inference(model, data_dict, device):
     if "grid_coord" in data_dict:
         input_dict["grid_coord"] = data_dict["grid_coord"].to(device)
 
-    # Run model
-    result = model(input_dict)
+    # Prepare for memory measurement
+    inference_stats = {}
+    is_cuda = device.type == "cuda" if isinstance(device, torch.device) else str(device).startswith("cuda")
+
+    if is_cuda:
+        # Reset GPU memory stats before inference
+        torch.cuda.reset_peak_memory_stats(device)
+        torch.cuda.synchronize(device)
+
+    # Measure forward time
+    if is_cuda:
+        # Use CUDA events for accurate GPU timing
+        start_event = torch.cuda.Event(enable_timing=True)
+        end_event = torch.cuda.Event(enable_timing=True)
+        start_event.record()
+        result = model(input_dict)
+        end_event.record()
+        torch.cuda.synchronize(device)
+        forward_time_ms = start_event.elapsed_time(end_event)
+    else:
+        # Use time.perf_counter for CPU timing
+        start_time = time.perf_counter()
+        result = model(input_dict)
+        end_time = time.perf_counter()
+        forward_time_ms = (end_time - start_time) * 1000.0
+
+    inference_stats["forward_time_ms"] = forward_time_ms
+    inference_stats["device"] = str(device)
+
+    # Measure memory usage
+    if is_cuda:
+        # Get peak GPU memory allocated during forward pass
+        peak_memory_bytes = torch.cuda.max_memory_allocated(device)
+        inference_stats["peak_memory_mb"] = peak_memory_bytes / (1024 * 1024)
+        inference_stats["memory_type"] = "GPU"
+    else:
+        # For CPU, try to get process memory (less precise but useful)
+        try:
+            import psutil
+            process = psutil.Process()
+            memory_info = process.memory_info()
+            inference_stats["peak_memory_mb"] = memory_info.rss / (1024 * 1024)
+            inference_stats["memory_type"] = "CPU (RSS)"
+        except ImportError:
+            inference_stats["peak_memory_mb"] = None
+            inference_stats["memory_type"] = "CPU (unavailable - install psutil)"
 
     seg_logits = result["seg_logits"]
     coords = data_dict["coord"]
 
-    return seg_logits.cpu(), coords.cpu()
+    return seg_logits.cpu(), coords.cpu(), inference_stats
 
 
 def get_class_colors_for_predictions(predictions, class_names):
@@ -520,8 +641,43 @@ def create_dash_app(dataset, model, device, cfg, args):
             data = dataset[event_idx]
             batch_data = collate_fn([data], in_channels=in_channels)
 
-            # Run inference
-            seg_logits, coords = run_inference(model, batch_data, device)
+            # Run inference with error handling for spconv CPU issues
+            try:
+                seg_logits, coords, inference_stats = run_inference(model, batch_data, device)
+            except Exception as e:
+                error_msg = str(e)
+                # Check if this is a spconv CPU error
+                if "implicit_gemm" in error_msg or "spconv" in error_msg.lower() or "is_cpu" in error_msg:
+                    print(f"ERROR: spconv does not support CPU inference.")
+                    print(f"       Error: {error_msg}")
+                    print("")
+                    print("       spconv's C++ code has a hard check: '!features.is_cpu() assert failed'")
+                    print("       This is a fundamental limitation - spconv is compiled as GPU-only.")
+                    print("")
+                    print("       Options:")
+                    print("         1. Use GPU inference (remove --cpu flag)")
+                    print("         2. Build spconv from source with CPU support")
+                    print("         3. Use MinkowskiEngine (requires model changes)")
+                    # Create an empty figure with error message
+                    fig = go.Figure()
+                    fig.add_annotation(
+                        text=(
+                            "spconv does not support CPU inference.<br><br>"
+                            "The spconv library is compiled as GPU-only.<br>"
+                            "Its C++ code explicitly rejects CPU tensors.<br><br>"
+                            "Please use GPU inference (remove --cpu flag)."
+                        ),
+                        xref="paper", yref="paper",
+                        x=0.5, y=0.5, showarrow=False,
+                        font=dict(size=14, color="red"),
+                    )
+                    fig.update_layout(
+                        paper_bgcolor="#141414",
+                        plot_bgcolor="#141414",
+                    )
+                    return fig, f"Event {event_idx + 1} / {len(dataset)}", "Error", "spconv: CPU not supported", [], cached_results
+                else:
+                    raise  # Re-raise if it's a different error
 
             # Compute probabilities
             probs = F.softmax(seg_logits, dim=-1).numpy()
@@ -543,6 +699,7 @@ def create_dash_app(dataset, model, device, cfg, args):
                 "probs": probs.tolist(),
                 "true_labels": true_labels.tolist() if true_labels is not None else None,
                 "name": data.get("name", f"event_{event_idx}"),
+                "inference_stats": inference_stats,
             }
         else:
             # Use cached results
@@ -661,8 +818,13 @@ def create_dash_app(dataset, model, device, cfg, args):
         if "name" in cached_results:
             event_info += f" ({cached_results['name']})"
 
-        # Point count
+        # Point count and inference stats
         point_count_text = f"Points: {n_points:,}"
+        if "inference_stats" in cached_results:
+            stats = cached_results["inference_stats"]
+            point_count_text += f" | Forward: {stats['forward_time_ms']:.1f} ms ({stats['device']})"
+            if stats.get("peak_memory_mb") is not None:
+                point_count_text += f" | {stats['memory_type']}: {stats['peak_memory_mb']:.1f} MB"
 
         # Metrics
         metrics_text = ""
@@ -740,6 +902,13 @@ def main():
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
 
+    # Handle --cpu flag (overrides --device)
+    if args.cpu:
+        args.device = "cpu"
+        print("Forcing CPU-only inference (--cpu flag set)")
+        print("Note: spconv layers will be switched to ConvAlgo.Native for CPU compatibility.")
+        print("      CPU inference will be slower than GPU but should produce equivalent results.")
+
     # Load config
     print(f"Loading config: {args.config}")
     cfg = Config.fromfile(args.config)
@@ -800,6 +969,30 @@ def main():
     print(f"Model type: {cfg.model.type}")
     print(f"Number of classes: {actual_num_classes}")
     print(f"Input channels: {cfg.model.backbone.in_channels}")
+    print(f"Inference device: {args.device}")
+
+    # Check for spconv + CPU incompatibility
+    uses_spconv, spconv_count = check_model_uses_spconv(model)
+    if uses_spconv:
+        print(f"Model uses {spconv_count} spconv layers")
+        if args.device == "cpu":
+            print("")
+            print("=" * 70)
+            print("WARNING: spconv does NOT support CPU inference!")
+            print("=" * 70)
+            print("")
+            print("The spconv library is compiled as GPU-only. Its C++ code contains")
+            print("hard assertions that reject CPU tensors:")
+            print("  '!features.is_cpu() assert failed. bias and act don't support cpu.'")
+            print("")
+            print("Options:")
+            print("  1. Use GPU inference: remove the --cpu flag")
+            print("  2. Build spconv from source with CPU support (not trivial)")
+            print("  3. Replace spconv with MinkowskiEngine (requires code changes)")
+            print("")
+            print("Continuing anyway - inference will fail when attempted...")
+            print("=" * 70)
+            print("")
 
     # Create visualization
     print(f"\nStarting Dash server on port {args.port}...")
