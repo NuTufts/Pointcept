@@ -318,13 +318,21 @@ class LArTPCDataset(DefaultDataset):
                 raise ValueError(f"Unknown label_mode: {self.label_mode}")
 
             # Count points per class for the active classes only
-            # Classes: 0=electron, 1=muon, 2=pion, 3=proton, 4=gamma, 5=ghost, 6=other
+            # For ssnet mode: 0=electron, 1=muon, 2=pion, 3=proton, 4=gamma, 5=michel, 6=delta, 7=led, 8=ghost, 9=other
+            # For pid mode: 0=electron, 1=muon, 2=pion, 3=proton, 4=gamma, 5=ghost, 6=other
             # Build list of active class indices
-            active_classes = list(range(5))  # Always include first 5 classes
+            if self.label_mode == 'ssnet':
+                active_classes = list(range(8))  # 8 particle classes for ssnet
+                ghost_class = 8
+                other_class = 9
+            else:
+                active_classes = list(range(5))  # 5 particle classes for pid/origin
+                ghost_class = 5
+                other_class = 6
             if self.include_ghosts:
-                active_classes.append(5)
+                active_classes.append(ghost_class)
             if not self.exclude_other:
-                active_classes.append(6)
+                active_classes.append(other_class)
 
             nclasses = len(active_classes)
             classcounts = np.zeros((1, nclasses), dtype=np.int64)
