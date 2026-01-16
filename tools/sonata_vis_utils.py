@@ -52,6 +52,34 @@ CLASS_COLORS_RGBA = {
     9: "rgba(153, 153, 153, 1.0)", # ghost - gray
 }
 
+# SSNet label definitions (different indexing than CLASS_NAMES)
+# These are the labels stored in HDF5 ssnet_label field
+SSNET_CLASS_NAMES = {
+    0: 'bg',
+    1: 'electron',
+    2: 'photon',
+    3: 'muon',
+    4: 'proton',
+    5: 'pion',
+    6: 'michel',
+    7: 'delta',
+    8: 'led',
+    9: 'other'
+}
+
+SSNET_CLASS_COLORS = {
+    0: 'rgba(50,50,50,1.0)',    # background
+    1: 'rgba(255,0,0,1.0)',     # electron
+    2: 'rgba(200,125,0,1)',     # photon
+    3: 'rgba(0,0,255,1)',       # muon
+    4: 'rgba(0,125,255,1)',     # proton
+    5: 'rgba(125,0,255,1)',     # pion/kaon
+    6: 'rgba(255,51,255,1)',    # shower michel
+    7: 'rgba(125,100,255,1)',   # shower delta
+    8: 'rgba(125,200,255,1)',   # low energy deposits
+    9: 'rgba(125,125,0,1)',     # other
+}
+
 
 def assign_labels_to_output_points(
     output_coords: np.ndarray,
