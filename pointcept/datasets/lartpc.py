@@ -41,6 +41,8 @@ class LArTPCDataset(DefaultDataset):
             - 'origin': Use origin type (neutrino vs cosmic)
         coord_scale (float): Scale factor for coordinates (e.g., 0.01 to convert cm to m)
         log_transform_edep (bool): Apply log(1+x) transform to energy deposition
+        drop_cosmics (bool): default False. If True, drop cosmic and ghost spacepoints with probability, drop_cosmics_prob.
+        drop_cosmics_prob (float): default 0.5. If drop_cosmics is true, drop cosmics with this probability.
         **kwargs: Additional arguments passed to DefaultDataset
 
     Data Loading Priority:
@@ -162,6 +164,8 @@ class LArTPCDataset(DefaultDataset):
         include_ghosts=False,
         exclude_other=True,
         true_points_only=False,
+        drop_cosmics=False,
+        drop_cosmics_prob=0.5,
         **kwargs
     ):
         self.use_reco_coords = use_reco_coords
@@ -174,6 +178,9 @@ class LArTPCDataset(DefaultDataset):
         self.exclude_other = exclude_other
         self.data_list_file = data_list_file
         self.true_points_only = true_points_only
+        self.drop_cosmics = drop_cosmics
+        self.drop_cosmics_prob = drop_cosmics_prob
+        self.min_points_required = 100
 
         # Call parent init (this will call get_data_list)
         super().__init__(
@@ -304,6 +311,10 @@ class LArTPCDataset(DefaultDataset):
             if self.coord_scale != 1.0:
                 coord = coord * self.coord_scale
 
+            # Load origin tag
+            # origin flags: 0=no ground truth, 1=neutrino, 2=cosmic
+            origin = f['/entry_0/triplet_data/origin'][:]
+
             # Load and map semantic labels
             if self.label_mode == 'pid':
                 pid = f['/entry_0/triplet_data/pid'][:]
@@ -312,7 +323,6 @@ class LArTPCDataset(DefaultDataset):
                 ssnetlabels = f['/entry_0/triplet_data/ssnet_label'][:]
                 segment = self._map_ssnetlabel_to_class(ssnetlabels)
             elif self.label_mode == 'origin':
-                origin = f['/entry_0/triplet_data/origin'][:]
                 segment = self._map_origin_to_class(origin)
             else:
                 raise ValueError(f"Unknown label_mode: {self.label_mode}")
@@ -382,22 +392,34 @@ class LArTPCDataset(DefaultDataset):
             "name": name,
             "split": split,
             "segment_counts": classcounts,  # (1, nclasses) - counts per class for this sample
-            "nu_vertices":nu_vertices
+            "nu_vertices":nu_vertices,
+            "origin":origin
         }
 
         #print("self.true_points_only: ",self.true_points_only)
+        filtered = False
         if self.true_points_only:
             # mask out ghost points
             #print("RETURN TRUE POINTS ONLY: ",hasmatch.shape)
             ghost_mask = hasmatch==1
             for k in data_dict:
-                if k in ['coord','strength','color','segment','instance']:
+                if k in ['coord','strength','color','segment','instance','origin']:
                     #print(k,data_dict[k].shape)
                     data_dict[k] = data_dict[k][ ghost_mask[:] ]
+            filtered = True
 
+        if self.drop_cosmics and np.random.random()<self.drop_cosmics_prob:
+            nu_mask = data_dict['origin']==1
+            if nu_mask.sum()>self.min_points_required:
+                for k in data_dict:
+                    if k in ['coord','strength','color','segment','instance','origin']:
+                        #print(k,data_dict[k].shape)
+                        data_dict[k] = data_dict[k][ nu_mask[:] ]
+                filtered = True
+
+        if filtered:
             # Check if we have enough points after filtering
-            min_points_required = 100  # Minimum points to be a valid sample
-            if data_dict['coord'].shape[0] < min_points_required:
+            if data_dict['coord'].shape[0] < self.min_points_required:
                 # Track retry attempts to prevent infinite recursion
                 if not hasattr(self, '_retry_count'):
                     self._retry_count = 0
@@ -408,20 +430,21 @@ class LArTPCDataset(DefaultDataset):
                     self._retry_count = 0
                     raise RuntimeError(
                         f"Failed to find valid sample after {max_retries} retries. "
-                        f"Too many events have < {min_points_required} true points. "
+                        f"Too many events have < {self.min_points_required} true points. "
                         f"Consider checking your data or lowering true_points_only requirements."
                     )
 
                 # Log warning and retry with a different sample
                 print(
                     f"WARNING: Event '{name}' has only {data_dict['coord'].shape[0]} true points "
-                    f"(< {min_points_required}). Sampling a different event (retry {self._retry_count}/{max_retries})."
+                    f"(< {self.min_points_required}). Sampling a different event (retry {self._retry_count}/{max_retries})."
                 )
                 # Get a different random sample
                 new_idx = np.random.randint(0, len(self.data_list))
                 result = self.get_data(new_idx)
                 self._retry_count = 0  # Reset on success
                 return result
+
 
         return data_dict
 

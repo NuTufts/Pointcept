@@ -26,15 +26,19 @@ import torch
 import torch.nn.functional as F
 
 # Add project root to path
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+pointcept_path=os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, pointcept_path)
 
 # Add lardly to path for detector outline
-lardly_path = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-    "..", "ubdl", "lardly"
-)
-if os.path.exists(lardly_path):
-    sys.path.insert(0, lardly_path)
+#lardly_path = os.path.join(
+#    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+#    "..", "ubdl", "lardly"
+#)
+#if os.path.exists(lardly_path):
+#    sys.path.insert(0, lardly_path)
+lartpc_data_path=os.path.join(pointcept_path,"lartpc_data_prep")
+if os.path.exists(lartpc_data_path):
+    sys.path.insert(0,lartpc_data_path)
 
 from pointcept.utils.config import Config
 from pointcept.models.builder import build_model
@@ -124,6 +128,18 @@ def parse_args():
         action="store_true",
         default=False,
         help="Only show true energy deposition points (if MC)",
+    )
+    parser.add_argument(
+        "--drop-cosmics",
+        action="store_true",
+        default=False,
+        help="Only how neutrino-origin points (if MC)",
+    )
+    parser.add_argument(
+        "--prob-drop-cosmics",
+        type=float,
+        default=0.5,
+        help="If drop_cosmics flag is True, probability we drop the cosmics (default: 0.5)",
     )
     parser.add_argument(
         "--cpu",
@@ -501,11 +517,12 @@ def create_dash_app(dataset, model, device, cfg, args):
 
     # Import detector outline
     try:
-        from lardly.detectoroutline import DetectorOutline
+        #from lardly.detectoroutline import DetectorOutline
+        from detectoroutline import DetectorOutline
         detdata = DetectorOutline()
         detector_traces = detdata.getlines()
     except ImportError:
-        print("Warning: lardly not found, skipping detector outline")
+        print("Warning: uboone detector outline not found, skipping")
         detector_traces = []
 
     # Get class names - use CLASS_NAMES from sonata_vis_utils as the authoritative source
@@ -945,6 +962,8 @@ def main():
             'include_ghosts': args.include_ghosts or val_cfg.get('include_ghosts', False),
             'exclude_other': val_cfg.get('exclude_other', True),
             'true_points_only': args.true_points_only or val_cfg.get('true_points_only', False),
+            'drop_cosmics':args.drop_cosmics,
+            'drop_cosmics_prob':args.prob_drop_cosmics,
         }
     print(dataset_params)
 
