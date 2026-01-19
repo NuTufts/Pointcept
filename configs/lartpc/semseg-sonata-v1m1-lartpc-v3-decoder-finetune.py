@@ -37,8 +37,10 @@ wire_projections = None
 _base_ = ["../_base_/default_runtime.py"]
 
 # misc custom setting
-batch_size = 144
-num_worker = 12
+#batch_size = 512
+batch_size = 384
+batch_size_val = 512
+num_worker = 20
 mix_prob = 0.0
 clip_grad = 1.0
 empty_cache = False
@@ -46,10 +48,10 @@ enable_amp = True
 
 enable_wandb = True
 wandb_project = "pointcept"
-save_path = "sonata/semseg-decoder-finetune-v3-noghost-p100"
+save_path = "sonata/semseg-decoder-finetune-v3-noghost-p100-resume-dropcosmics"
 
-epoch = 20
-eval_epoch = 20
+epoch = 40
+eval_epoch = 40
 base_lr = 0.001
 
 TRAIN_FILE_LIST="/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept/train_split_combined_prod3_validated.txt"
@@ -62,8 +64,10 @@ TEST_FILE_LIST="/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept/t
 flash_backend='xformers'   # backend needed to run on P100
 amp_dtype = "float16"      # use this with xformer backend on P100
 
-max_points_per_view=20480
-max_points_spherecrop=20480
+#max_points_per_view=20480
+#max_points_spherecrop=20480
+max_points_per_view=10240
+max_points_spherecrop=10240
 min_points_spherecrop=4096
 biased_spherecrop_radius=20.0
 
@@ -128,7 +132,8 @@ model = dict(
     # Initialize linear head bias with log-prior for faster convergence
     # Class order: electron=0, muon=1, pion=2, proton=3, gamma=4, michel=5, delta=6, led=7, ghost=8, other=9
     # Approximate class frequencies from data (adjust based on actual statistics):
-    class_priors=[0.052,0.797,0.009,0.024,0.030,0.006,0.077,0.007],
+    #class_priors=[0.052,0.797,0.009,0.024,0.030,0.006,0.077,0.007],
+    class_priors=None
 )
 
 # scheduler settings - lower LR for fine-tuning pretrained encoder
@@ -138,7 +143,7 @@ model = dict(
 #pretrained_lr = base_lr / 10.0  # 0.0001
 pretrained_lr = 0.0 # freeze the encoder
 
-optimizer = dict(type="AdamW", lr=base_lr, weight_decay=0.05)
+optimizer = dict(type="AdamW", lr=base_lr, weight_decay=0.005)
 
 # param_dicts defines parameter groups with different LRs
 # Group 0 (default): params NOT matching any keyword -> base_lr (decoder, seg_head)
@@ -154,7 +159,7 @@ param_dicts = [
 scheduler = dict(
     type="OneCycleLR",
     max_lr=[base_lr, pretrained_lr, pretrained_lr],
-    pct_start=0.05,
+    pct_start=0.01,
     anneal_strategy="cos",
     div_factor=10.0,
     final_div_factor=100.0,
@@ -188,6 +193,8 @@ data = dict(
         exclude_other=True,
         true_points_only=True,
         log_transform_edep=True,
+        drop_cosmics=True,
+        drop_cosmics_prob=0.9,
         transform=[
             # Voxelize to grid
             dict(
@@ -237,6 +244,8 @@ data = dict(
         coord_scale=1.0,
         wire_scale=1.0/3456.0,
         log_transform_edep=True,
+        drop_cosmics=True,
+        drop_cosmics_prob=0.9,        
         transform=[
             # Note: removed inverse mapping since BiasedSphereCrop invalidates it
             # Evaluation happens on voxelized+cropped data (same as training)
@@ -305,10 +314,10 @@ data = dict(
 )
 
 hooks = [
-    # Use SonataFinetuneCheckpointLoader to properly load SONATA pretrained weights
-    # Maps student.backbone.* -> backbone.* (encoder + embedding only)
-    # Decoder and seg_head remain randomly initialized
-    dict(type="SonataFinetuneCheckpointLoader", use_teacher=True),
+    # For loading SONATA pretrained weights (encoder only), use:
+    #   dict(type="SonataFinetuneCheckpointLoader", use_teacher=True),
+    # For resuming from a previous finetuned checkpoint, use:
+    dict(type="CheckpointLoader"),
     dict(type="IterationTimer", warmup_iter=2),
     dict(type="InformationWriter"),
     dict(type="SemSegEvaluator", write_cls_iou=True),
