@@ -13,4 +13,5 @@ cd /cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept
 
 # Attempt 3: 250k training set, deeper layers, smaller batchsize
 python3 tools/train.py --config configs/lartpc/pretrain-sonata-v1m1-lartpc-v3.py --num-gpus 4
-
+# extended training. With larger number of events: 375. Includes more charged pions. Increase rate of nu-only examples.
+python3 tools/train.py --num-gpus 4 --config configs/lartpc/pretrain-sonata-v1m1-lartpc-v3.py --options resume=True weight=sonata/lartpc_v3_p100_noghosts/epoch_22.pth

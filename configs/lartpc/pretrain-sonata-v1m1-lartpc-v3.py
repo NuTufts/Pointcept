@@ -60,7 +60,7 @@ enable_wandb = True
 wandb_project = "pointcept"
 save_path = "sonata/lartpc_v3_p100_noghosts-extended"
 
-TRAIN_FILE_LIST="/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept/train_split_combined_prod2_validated_shuffled.txt"
+TRAIN_FILE_LIST="/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept/trainval_split_combined_prod3_validated.txt"
 #TRAIN_FILE_LIST="pi0_test_files_100events.txt"
 true_points_only=True
 
@@ -79,6 +79,7 @@ biased_spherecrop_radius=20.0
 #base_lr = 0.003
 # extended run
 epoch = 50
+eval_epoch = 50
 base_lr = 0.0003
 
 lr_final_div_factor=1000.0 # original
@@ -238,7 +239,7 @@ transform = [
         radius=biased_spherecrop_radius,
         point_max=max_points_spherecrop, 
         point_min=min_points_spherecrop, 
-        prob_random=0.25,
+        prob_random=0.10,
         max_retries=100,
         fallback_to_random=True),
     # Keep original coordinates for cross-view matching
