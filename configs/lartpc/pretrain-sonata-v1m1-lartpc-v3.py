@@ -42,7 +42,7 @@ _base_ = ["../_base_/default_runtime.py"]
 
 # misc custom setting
 batch_size = 32  # Adjust based on GPU memory; LArTPC events can be large
-num_worker = 8
+num_worker = 20
 mix_prob = 0
 clip_grad = 3.0
 empty_cache = False
@@ -58,7 +58,7 @@ amp_dtype = "float16"      # use this with xformer backend on P100
 
 enable_wandb = True
 wandb_project = "pointcept"
-save_path = "sonata/lartpc_v3_p100_noghosts"
+save_path = "sonata/lartpc_v3_p100_noghosts-extended"
 
 TRAIN_FILE_LIST="/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept/train_split_combined_prod2_validated_shuffled.txt"
 #TRAIN_FILE_LIST="pi0_test_files_100events.txt"
@@ -73,15 +73,16 @@ min_points_spherecrop=4096
 biased_spherecrop_radius=20.0
 
 # scheduler settings
-# Extended from 100 to 200 epochs - use extend_scheduler=True in CheckpointLoader
-# when resuming to create a new scheduler with 200 epoch total_steps
-epoch = 24
-eval_epoch = 24
-#base_lr = 0.004 # original base_lr
+# original run
+#epoch = 24
+#eval_epoch = 24
+#base_lr = 0.003
+# extended run
+epoch = 50
+base_lr = 0.0003
+
 lr_final_div_factor=1000.0 # original
 #lr_pct_start=0.05 # original
-
-base_lr = 0.003 # extended start
 #lr_final_div_factor=100.0 # extended
 lr_pct_start=0.0 # extended par
 
@@ -347,7 +348,7 @@ data = dict(
 # Original training parameters (for extending scheduler calculations)
 # These are needed to compute where the original schedule was at the resume point
 original_epochs = 24
-original_steps_per_epoch = 5416  # From checkpoint (110500 total_steps / 100 epochs)
+original_steps_per_epoch = 8125  # From checkpoint (110500 total_steps / 100 epochs)
 original_total_steps = original_epochs * original_steps_per_epoch  # = 110500
 
 # Hooks for pretraining
