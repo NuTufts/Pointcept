@@ -349,7 +349,8 @@ data = dict(
 # Original training parameters (for extending scheduler calculations)
 # These are needed to compute where the original schedule was at the resume point
 original_epochs = 24
-original_steps_per_epoch = 8125  # From checkpoint (110500 total_steps / 100 epochs)
+#original_steps_per_epoch = 8125  # From checkpoint (110500 total_steps / 100 epochs)
+original_steps_per_epoch = 11718  # For expanded data set
 original_total_steps = original_epochs * original_steps_per_epoch  # = 110500
 
 # Hooks for pretraining
@@ -359,7 +360,7 @@ hooks = [
     # This allows extending training beyond the original epoch count while
     # preserving optimizer state (Adam momentum, etc.)
     # CRITICAL: This also restores the scheduler's LR values after loading optimizer state.
-    dict(type="CheckpointLoader", extend_scheduler=False),
+    dict(type="CheckpointLoader", extend_scheduler=True),
     dict(type="ModelHook"),  # Calls model.before_train(), before_step(), after_step()
     # extend_scheduler=True: Computes the WD that the original schedule had at the resume
     # point, then creates a new schedule from that WD to final_wd over the remaining steps.
