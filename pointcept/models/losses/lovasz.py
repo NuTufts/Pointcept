@@ -238,7 +238,7 @@ class LovaszLoss(_Loss):
         self.class_seen = class_seen
         self.loss_weight = loss_weight
 
-    def forward(self, y_pred, y_true):
+    def forward(self, y_pred, y_true, **kwargs):
         if self.mode in {BINARY_MODE, MULTILABEL_MODE}:
             loss = _lovasz_hinge(
                 y_pred, y_true, per_image=self.per_image, ignore=self.ignore_index

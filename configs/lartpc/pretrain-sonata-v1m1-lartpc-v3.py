@@ -80,7 +80,7 @@ biased_spherecrop_radius=20.0
 # extended run
 epoch = 50
 eval_epoch = 50
-base_lr = 0.0003
+base_lr = 0.0001
 
 lr_final_div_factor=1000.0 # original
 #lr_pct_start=0.05 # original
