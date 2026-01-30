@@ -55,35 +55,53 @@ class FeatureStdMonitor(HookBase):
         for handle in self.hook_handles:
             handle.remove()
         self.hook_handles = []
-        
+
+        # Debug: print model class name
+        self.trainer.logger.info(f"[FeatureStdMonitor] Model class: {model.__class__.__name__}")
+
         # Check if model is Sonata or contains Sonata
         sonata_module = None
         if hasattr(model, 'sonata'):
             sonata_module = model.sonata
+            self.trainer.logger.info("[FeatureStdMonitor] Found sonata via model.sonata")
         elif isinstance(model, torch.nn.ModuleDict) and 'sonata' in model:
             sonata_module = model['sonata']
+            self.trainer.logger.info("[FeatureStdMonitor] Found sonata in ModuleDict")
         elif hasattr(model, '__class__') and 'Sonata' in model.__class__.__name__:
             sonata_module = model
-            
+            self.trainer.logger.info("[FeatureStdMonitor] Model is Sonata class directly")
+
         if not sonata_module:
-            self.trainer.logger.warning("Could not find Sonata module for feature monitoring")
+            self.trainer.logger.warning("[FeatureStdMonitor] Could not find Sonata module for feature monitoring")
             return
-        
+
+        # Debug: print what attributes are available
+        self.trainer.logger.info(f"[FeatureStdMonitor] Sonata has teacher: {hasattr(sonata_module, 'teacher')}")
+        self.trainer.logger.info(f"[FeatureStdMonitor] Sonata has student: {hasattr(sonata_module, 'student')}")
+
         # Register hooks on teacher backbone
-        if self.monitor_teacher and hasattr(sonata_module, 'teacher') and 'backbone' in sonata_module.teacher:
-            self.trainer.logger.info("Registering feature monitor on teacher backbone")
-            hook = sonata_module.teacher['backbone'].register_forward_hook(
-                self._feature_stats_hook('teacher')
-            )
-            self.hook_handles.append(hook)
-        
+        if self.monitor_teacher and hasattr(sonata_module, 'teacher'):
+            if 'backbone' in sonata_module.teacher:
+                self.trainer.logger.info("[FeatureStdMonitor] Registering feature monitor on teacher backbone")
+                hook = sonata_module.teacher['backbone'].register_forward_hook(
+                    self._feature_stats_hook('teacher')
+                )
+                self.hook_handles.append(hook)
+            else:
+                self.trainer.logger.warning(f"[FeatureStdMonitor] teacher has no 'backbone', keys: {list(sonata_module.teacher.keys())}")
+
         # Register hooks on student backbone
-        if self.monitor_student and hasattr(sonata_module, 'student') and 'backbone' in sonata_module.student:
-            self.trainer.logger.info("Registering feature monitor on student backbone")
-            hook = sonata_module.student['backbone'].register_forward_hook(
-                self._feature_stats_hook('student')
-            )
-            self.hook_handles.append(hook)
+        if self.monitor_student and hasattr(sonata_module, 'student'):
+            if 'backbone' in sonata_module.student:
+                self.trainer.logger.info("[FeatureStdMonitor] Registering feature monitor on student backbone")
+                hook = sonata_module.student['backbone'].register_forward_hook(
+                    self._feature_stats_hook('student')
+                )
+                self.hook_handles.append(hook)
+            else:
+                self.trainer.logger.warning(f"[FeatureStdMonitor] student has no 'backbone', keys: {list(sonata_module.student.keys())}")
+
+        self.trainer.logger.info(f"[FeatureStdMonitor] Total hooks registered: {len(self.hook_handles)}")
     
     def _feature_stats_hook(self, module_name):
         """Create a forward hook function that captures feature statistics."""
@@ -109,7 +127,7 @@ class FeatureStdMonitor(HookBase):
             # Calculate statistics with proper distributed synchronization
             with torch.no_grad():
                 import torch.distributed as dist
-                from pimm.utils.comm import get_world_size
+                from pointcept.utils.comm import get_world_size
                 
                 features_flat = features.float()
                 local_n = torch.tensor([features_flat.numel()], device=features.device, dtype=torch.float64)
@@ -156,28 +174,42 @@ class FeatureStdMonitor(HookBase):
                     "channel_max_std": channel_max_std
                 }
                         
-            # Log to tensorboard/wandb if available
+            # Log to console (brief summary)
+            self.trainer.logger.info(
+                f"[{self.prefix}/{module_name}] global_std={global_std:.4f} batch_std={batch_std:.4f} "
+                f"channel_std=(mean={channel_mean_std:.4f}, min={channel_min_std:.4f}, max={channel_max_std:.4f})"
+            )
+
+            # Log to tensorboard if available
             if hasattr(self.trainer, 'writer') and self.trainer.writer is not None:
-                import wandb
-                # use wandb step if available, fallback to trainer iter
-                global_step = wandb.run.step if wandb.run else self.trainer.comm_info.get("iter", 0)
-                
-                # Log metrics
+                global_step = self.trainer.comm_info.get("iter", 0)
+
+                # Log metrics to tensorboard
                 for stat_name, stat_value in stats.items():
                     self.trainer.writer.add_scalar(
-                        f"{self.prefix}/{module_name}/{stat_name}", 
+                        f"{self.prefix}/{module_name}/{stat_name}",
                         stat_value,
                         global_step
                     )
-                
+
                 # Log per-channel std if requested
                 if self.track_channels:
                     for i, std_val in enumerate(channel_std):
                         self.trainer.writer.add_scalar(
-                            f"{self.prefix}/{module_name}/channel_{i}_std", 
+                            f"{self.prefix}/{module_name}/channel_{i}_std",
                             std_val.item(),
                             global_step
                         )
+
+            # Log to wandb if enabled
+            if getattr(self.trainer.cfg, 'enable_wandb', False):
+                import wandb
+                if wandb.run is not None:
+                    wandb_metrics = {
+                        f"{self.prefix}/{module_name}/{stat_name}": stat_value
+                        for stat_name, stat_value in stats.items()
+                    }
+                    wandb.log(wandb_metrics, step=wandb.run.step)
         
         return hook_fn
     

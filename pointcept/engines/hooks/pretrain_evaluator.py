@@ -46,7 +46,10 @@ class PretrainEvaluator(HookBase):
         
     def after_step(self):
         if self.trainer.cfg.evaluate and self.every_n_steps > 0:
-            global_iter = self.trainer.comm_info['iter'] + self.trainer.comm_info['iter_per_epoch'] * self.trainer.comm_info['epoch']
+            # Calculate global iteration from epoch and iter within epoch
+            # Note: epoch is stored as self.trainer.epoch, not in comm_info
+            iter_per_epoch = len(self.trainer.train_loader)
+            global_iter = self.trainer.comm_info['iter'] + iter_per_epoch * self.trainer.epoch
             if (global_iter + 1) % self.every_n_steps == 0:
                 self.eval()
 
@@ -75,50 +78,70 @@ class PretrainEvaluator(HookBase):
                 input_dict[key] = input_dict[key].cuda(non_blocking=True)
 
         with torch.inference_mode():
+            # Run backbone forward pass
             point = self.get_backbone()(input_dict)
+            # Upsample features through pooling hierarchy
             while "pooling_parent" in point.keys():
                 parent = point.pop("pooling_parent")
                 inverse = point.pop("pooling_inverse")
                 parent.feat = torch.cat([parent.feat, point.feat[inverse]], dim=-1)
                 point = parent
-        
-        # Get features and offset information
-        features = point.feat[point.inverse]  # [N, C]
-        offsets = [0] + input_dict['offset'].cpu().tolist()  # Batch offsets
-        
-        # Extract all label types
+
+        # Use voxelized features directly (no upsampling via inverse)
+        # This is appropriate for linear probing and avoids issues when BiasedSphereCrop
+        # invalidates the inverse indices from GridSample
+        features = point.feat.cpu()  # [M, C] where M = number of voxels after crop
+
+        # Use the point's offset (post-crop) for batch separation
+        if hasattr(point, 'offset'):
+            offsets = [0] + point.offset.cpu().tolist()
+        else:
+            offsets = [0] + input_dict['offset'].cpu().tolist()
+
+        # Extract all label types (move to CPU immediately)
         all_labels = {}
         for label_name in self.labels:
-            all_labels[label_name] = getattr(point, label_name).squeeze(-1)[point.inverse]  # [N]
-        
+            if not hasattr(point, label_name):
+                self.trainer.logger.error(f"[PretrainEvaluator] Point has no '{label_name}' attribute")
+                raise ValueError(f"Point must have '{label_name}' attribute")
+
+            label_data = getattr(point, label_name).squeeze(-1).cpu()
+            all_labels[label_name] = label_data  # [M]
+
+        # Clear GPU memory
+        del point
+        torch.cuda.empty_cache()
+
         # Process features by batch using offsets
         batch_features = []
         batch_labels_dict = {label_name: [] for label_name in self.labels}
-        
+
         # Use offsets to separate points from different events in the batch
         for i in range(len(offsets) - 1):
             start_idx = offsets[i]
             end_idx = offsets[i + 1]
-            
-            # Extract features for this event
+
+            # Extract features for this event (already on CPU)
             event_features = features[start_idx:end_idx]
-            batch_features.append(event_features.cpu())
+            batch_features.append(event_features)
             # Extract labels for each label type
             for label_name in self.labels:
                 event_labels = all_labels[label_name][start_idx:end_idx]
-                batch_labels_dict[label_name].append(event_labels.cpu())
-            
+                batch_labels_dict[label_name].append(event_labels)
+
         return batch_features, batch_labels_dict
 
     def eval(self):
         # All ranks participate in evaluation
         self.trainer.model.eval()
-        
+
         world_size = comm.get_world_size()
         rank = comm.get_rank()
-        
+
         if rank == 0:
             self.trainer.logger.info(">>>>>>>>>>>>>>>> Start Evaluation >>>>>>>>>>>>>>>>")
+
+        self.trainer.logger.info(f"[PretrainEvaluator] rank={rank}, world_size={world_size}")
 
         # Calculate per-rank event targets to ensure total events match max_train_events + max_test_events
         # Each rank collects its share of events
@@ -126,18 +149,30 @@ class PretrainEvaluator(HookBase):
         per_rank_test_events = (self.max_test_events + world_size - 1) // world_size  # Ceiling division
         per_rank_total_events = per_rank_train_events + per_rank_test_events
 
+        self.trainer.logger.info(f"[PretrainEvaluator] Need {per_rank_total_events} events per rank "
+                                 f"(train={per_rank_train_events}, test={per_rank_test_events})")
+
         # Collect features and labels from events (features shared, labels per label type)
         train_features = []
         train_labels_dict = {label_name: [] for label_name in self.labels}
         test_features = []
         test_labels_dict = {label_name: [] for label_name in self.labels}
-        
+
         event_count = 0
-        
+
         # All ranks iterate their shard of the distributed loader
+        self.trainer.logger.info(f"[PretrainEvaluator] Starting to iterate val_loader (len={len(self.trainer.val_loader)})")
         for i, input_dict in enumerate(self.trainer.val_loader):
+            if i % 10 == 0:
+                self.trainer.logger.info(f"[PretrainEvaluator] Processing batch {i}, collected {event_count} events so far")
+                # Periodically clear GPU cache
+                torch.cuda.empty_cache()
+
             batch_features, batch_labels_dict = self._process_batch_with_offsets(input_dict)
-            
+
+            # Clear input dict to free memory
+            del input_dict
+
             # Process each event in the batch
             for event_idx, event_features in enumerate(batch_features):
                 if event_count < per_rank_train_events:
@@ -150,41 +185,55 @@ class PretrainEvaluator(HookBase):
                         test_labels_dict[label_name].append(batch_labels_dict[label_name][event_idx])
                 else:
                     break
-                    
+
                 event_count += 1
-                
+
             # Stop if we have enough events for this rank
             if event_count >= per_rank_total_events:
+                self.trainer.logger.info(f"[PretrainEvaluator] Collected enough events ({event_count}), stopping iteration")
                 break
+
+        self.trainer.logger.info(f"[PretrainEvaluator] Done collecting. train={len(train_features)}, test={len(test_features)}")
+
+        # Clear GPU cache before gathering/linear probing
+        torch.cuda.empty_cache()
 
         # Gather all events from all ranks to rank 0
         if world_size > 1:
+            self.trainer.logger.info(f"[PretrainEvaluator] Gathering from {world_size} ranks...")
             # Gather train features
             train_features_gathered = comm.gather(train_features, dst=0)
+            self.trainer.logger.info(f"[PretrainEvaluator] Gathered train features")
             # Gather test features
             test_features_gathered = comm.gather(test_features, dst=0)
+            self.trainer.logger.info(f"[PretrainEvaluator] Gathered test features")
             # Gather train labels for each label type
             train_labels_gathered_dict = {}
             test_labels_gathered_dict = {}
             for label_name in self.labels:
                 train_labels_gathered_dict[label_name] = comm.gather(train_labels_dict[label_name], dst=0)
                 test_labels_gathered_dict[label_name] = comm.gather(test_labels_dict[label_name], dst=0)
-            
+            self.trainer.logger.info(f"[PretrainEvaluator] Gathered all labels")
+
             if rank == 0:
                 # Flatten gathered lists and truncate to exact target counts
                 train_features = [f for features_list in train_features_gathered for f in features_list][:self.max_train_events]
                 test_features = [f for features_list in test_features_gathered for f in features_list][:self.max_test_events]
-                
+
                 for label_name in self.labels:
                     train_labels_dict[label_name] = [l for labels_list in train_labels_gathered_dict[label_name] for l in labels_list][:self.max_train_events]
                     test_labels_dict[label_name] = [l for labels_list in test_labels_gathered_dict[label_name] for l in labels_list][:self.max_test_events]
+                self.trainer.logger.info(f"[PretrainEvaluator] Flattened gathered data on rank 0")
             else:
                 # Non-rank-0 processes set model back to train and wait
+                self.trainer.logger.info(f"[PretrainEvaluator] Rank {rank} waiting at synchronize...")
                 self.trainer.model.train()
                 comm.synchronize()
+                self.trainer.logger.info(f"[PretrainEvaluator] Rank {rank} done with synchronize")
                 return
         else:
             # Single process case - truncate to exact counts
+            self.trainer.logger.info(f"[PretrainEvaluator] Single process mode, truncating to exact counts")
             train_features = train_features[:self.max_train_events]
             test_features = test_features[:self.max_test_events]
             for label_name in self.labels:
@@ -240,6 +289,10 @@ class PretrainEvaluator(HookBase):
     
     def _evaluate_single_label(self, X_train, y_train, X_test, y_test, eval_prefix, label_class_weights, label_class_names):
         """Train and evaluate a grid of linear classifiers for a single label type."""
+        self.trainer.logger.info(f"[PretrainEvaluator] Starting linear probing for {eval_prefix}")
+        self.trainer.logger.info(f"[PretrainEvaluator] X_train: {X_train.shape}, y_train: {y_train.shape}")
+        self.trainer.logger.info(f"[PretrainEvaluator] X_test: {X_test.shape}, y_test: {y_test.shape}")
+
         from pointcept.engines.hooks.eval.linear import LinearProbingTrainer, LinearProbingConfig
 
         # Use provided class names or fall back to default

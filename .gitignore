@@ -19,3 +19,5 @@ Dockerfile
 *.png
 *.npz
 *.pth
+*.txt
+*.err
