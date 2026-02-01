@@ -41,7 +41,7 @@ wire_projections = None
 _base_ = ["../_base_/default_runtime.py"]
 
 # misc custom setting
-batch_size = 72  # Adjust based on GPU memory; LArTPC events can be large
+batch_size = 48  # Adjust based on GPU memory; LArTPC events can be large
 batch_size_val = 8   # Batch size for validation (used by PretrainEvaluator)
 num_worker = 20
 mix_prob = 0

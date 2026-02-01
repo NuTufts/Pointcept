@@ -48,11 +48,11 @@ enable_amp = True
 
 enable_wandb = True
 wandb_project = "pointcept"
-save_path = "sonata/semseg-decoder-finetune-v3-noghost-p100-resume-dropcosmics"
+save_path = "sonata/semseg-decoder-finetune-v3-noghost-p100-lovasz-loss"
 
 epoch = 40
 eval_epoch = 40
-base_lr = 0.001
+base_lr = 0.0002
 
 TRAIN_FILE_LIST="/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept/train_split_combined_prod3_validated.txt"
 VAL_FILE_LIST="/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept/val_split_combined_prod3_validated_shuffled.txt"
@@ -116,17 +116,16 @@ model = dict(
         mask_token=False,  # Not needed for fine-tuning
     ),
     criteria=[
-        dict(
-            type="FocalLoss",
-            gamma=2.0,
-            alpha=0.5,
-            loss_weight=1.0,
-            ignore_index=-1,
-            reduction='mean',
-            
-        ),
-        # Lovasz loss can help with fine-tuning
-        #dict(type="LovaszLoss", mode="multiclass", loss_weight=0.1, ignore_index=-1),
+#        dict(
+#            type="FocalLoss",
+#            gamma=2.0,
+#            alpha=0.5,
+#            loss_weight=1.0,
+#            ignore_index=-1,
+#            reduction='mean',            
+#        ),
+        # Lovasz loss
+        dict(type="LovaszLoss", mode="multiclass", loss_weight=1.0, ignore_index=-1),
     ],
     freeze_backbone=False,  # Set True initially if you want to train only the head first
     # Initialize linear head bias with log-prior for faster convergence
@@ -159,7 +158,7 @@ param_dicts = [
 scheduler = dict(
     type="OneCycleLR",
     max_lr=[base_lr, pretrained_lr, pretrained_lr],
-    pct_start=0.01,
+    pct_start=0.025,
     anneal_strategy="cos",
     div_factor=10.0,
     final_div_factor=100.0,
