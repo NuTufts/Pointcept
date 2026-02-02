@@ -807,3 +807,169 @@ class GarbageHandler(HookBase):
     def after_train(self):
         gc.collect()
         torch.cuda.empty_cache()
+
+
+@HOOKS.register_module()
+class LossWeightScheduler(HookBase):
+    """
+    Schedules loss weights during training with linear interpolation.
+
+    This hook modifies the loss_weight attribute of loss functions in the
+    model's criteria list during training. Weights transition linearly from
+    initial to final values over a configurable fraction of training.
+
+    Args:
+        loss_weights: List of dicts specifying weight schedules, each containing:
+            - loss_index (int): Index in model.criteria.criteria list
+            - initial_weight (float): Starting weight value
+            - final_weight (float): Ending weight value
+        transition_fraction (float): Fraction of training at which transition
+            completes (0.0 to 1.0). After this point, weights stay at final values.
+            Default: 1.0 (transition over entire training)
+        schedule_type (str): Granularity of weight updates:
+            - "epoch": Update at epoch boundaries (default, more stable)
+            - "step": Update every step (smoother transitions)
+
+    Example config:
+        dict(
+            type="LossWeightScheduler",
+            loss_weights=[
+                dict(loss_index=0, initial_weight=1.0, final_weight=0.0),  # FocalLoss
+                dict(loss_index=1, initial_weight=0.0, final_weight=1.0),  # LovaszLoss
+            ],
+            transition_fraction=0.5,  # Complete transition at 50% of training
+        )
+    """
+
+    def __init__(self, loss_weights, transition_fraction=1.0, schedule_type="epoch"):
+        self.loss_weights = loss_weights
+        self.transition_fraction = transition_fraction
+        self.schedule_type = schedule_type
+        self.criteria = None
+        self.total_epochs = None
+        self.total_steps = None
+        self.transition_epochs = None
+        self.transition_steps = None
+        self.current_epoch = 0
+        self.current_step = 0
+        self.step_log_interval = 100  # Log every N steps when schedule_type="step"
+
+    def _get_model_criteria(self):
+        """Get the criteria list from the model, handling DDP wrapping."""
+        model = self.trainer.model
+        if comm.get_world_size() > 1:
+            model = model.module
+        return model.criteria.criteria
+
+    def _compute_weights(self, progress):
+        """Compute interpolated weights given progress in [0, 1]."""
+        # Clamp progress to [0, 1]
+        progress = max(0.0, min(1.0, progress))
+        weights = {}
+        for spec in self.loss_weights:
+            idx = spec["loss_index"]
+            initial = spec["initial_weight"]
+            final = spec["final_weight"]
+            # Linear interpolation
+            weight = initial + (final - initial) * progress
+            weights[idx] = weight
+        return weights
+
+    def _apply_weights(self, weights):
+        """Apply weights to the criteria list."""
+        for idx, weight in weights.items():
+            if idx < len(self.criteria):
+                self.criteria[idx].loss_weight = weight
+
+    def _log_weights(self, weights, step_for_logging):
+        """Log current weights to tensorboard/wandb."""
+        if self.trainer.writer is not None:
+            for idx, weight in weights.items():
+                self.trainer.writer.add_scalar(
+                    f"params/loss_weight_{idx}", weight, step_for_logging
+                )
+            if self.trainer.cfg.enable_wandb:
+                log_dict = {"Iter": step_for_logging}
+                for idx, weight in weights.items():
+                    log_dict[f"params/loss_weight_{idx}"] = weight
+                wandb.log(log_dict, step=wandb.run.step)
+
+    def before_train(self):
+        """Initialize scheduler parameters and get reference to criteria."""
+        self.criteria = self._get_model_criteria()
+        self.total_epochs = self.trainer.max_epoch
+        steps_per_epoch = len(self.trainer.train_loader)
+        self.total_steps = self.total_epochs * steps_per_epoch
+
+        # Compute transition points
+        self.transition_epochs = int(self.total_epochs * self.transition_fraction)
+        self.transition_steps = int(self.total_steps * self.transition_fraction)
+
+        # Handle resume: set current epoch/step from trainer
+        self.current_epoch = self.trainer.start_epoch
+        self.current_step = self.current_epoch * steps_per_epoch
+
+        self.trainer.logger.info(
+            f"LossWeightScheduler: schedule_type={self.schedule_type}, "
+            f"transition_fraction={self.transition_fraction}"
+        )
+        self.trainer.logger.info(
+            f"  Total epochs: {self.total_epochs}, transition at epoch {self.transition_epochs}"
+        )
+        self.trainer.logger.info(
+            f"  Total steps: {self.total_steps}, transition at step {self.transition_steps}"
+        )
+
+        # Log initial weight configuration
+        for spec in self.loss_weights:
+            idx = spec["loss_index"]
+            self.trainer.logger.info(
+                f"  Loss[{idx}]: {spec['initial_weight']:.3f} -> {spec['final_weight']:.3f}"
+            )
+
+        # Apply initial weights
+        if self.schedule_type == "epoch":
+            progress = self.current_epoch / self.transition_epochs if self.transition_epochs > 0 else 1.0
+        else:
+            progress = self.current_step / self.transition_steps if self.transition_steps > 0 else 1.0
+        weights = self._compute_weights(progress)
+        self._apply_weights(weights)
+
+        # Log current weights after resume
+        self.trainer.logger.info(
+            f"  Initial weights at epoch {self.current_epoch}: {weights}"
+        )
+
+    def before_epoch(self):
+        """Update weights at epoch boundary if using epoch-based scheduling."""
+        if self.schedule_type == "epoch":
+            progress = self.current_epoch / self.transition_epochs if self.transition_epochs > 0 else 1.0
+            weights = self._compute_weights(progress)
+            self._apply_weights(weights)
+
+            # Log to tensorboard/wandb (use step count for x-axis consistency)
+            step_for_logging = self.current_step
+            self._log_weights(weights, step_for_logging)
+
+            self.trainer.logger.info(
+                f"LossWeightScheduler: epoch {self.current_epoch}, weights={weights}"
+            )
+
+    def before_step(self):
+        """Update weights at step boundary if using step-based scheduling."""
+        if self.schedule_type == "step":
+            progress = self.current_step / self.transition_steps if self.transition_steps > 0 else 1.0
+            weights = self._compute_weights(progress)
+            self._apply_weights(weights)
+
+            # Log periodically to avoid log spam
+            if self.current_step % self.step_log_interval == 0:
+                self._log_weights(weights, self.current_step)
+
+    def after_step(self):
+        """Increment step counter."""
+        self.current_step += 1
+
+    def after_epoch(self):
+        """Increment epoch counter."""
+        self.current_epoch += 1

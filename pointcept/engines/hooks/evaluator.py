@@ -129,6 +129,7 @@ class SemSegEvaluator(HookBase):
 
     def eval(self):
         self.trainer.logger.info(">>>>>>>>>>>>>>>> Start Evaluation >>>>>>>>>>>>>>>>")
+        torch.cuda.empty_cache()  # Clear GPU memory cache before validation
         self.trainer.model.eval()
         for i, input_dict in enumerate(self.trainer.val_loader):
             for key in input_dict.keys():
