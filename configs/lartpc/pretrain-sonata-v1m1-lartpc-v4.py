@@ -45,7 +45,7 @@ batch_size = 48  # Adjust based on GPU memory; LArTPC events can be large
 batch_size_val = 8   # Batch size for validation (used by PretrainEvaluator)
 num_worker = 20
 mix_prob = 0
-clip_grad = 3.0
+clip_grad = 1.0
 empty_cache = False
 enable_amp = True
 evaluate = False  # Disabled - PretrainEvaluator hook is commented out
@@ -401,8 +401,6 @@ data = dict(
 
 # Original training parameters (for extending scheduler calculations)
 # These are needed to compute where the original schedule was at the resume point
-original_epochs = 200
-#original_steps_per_epoch = 8125  # From checkpoint (110500 total_steps / 100 epochs)
 original_steps_per_epoch = 11718  # For expanded data set
 original_total_steps = original_epochs * original_steps_per_epoch  # = 110500
 
@@ -422,6 +420,24 @@ hooks = [
     dict(type="IterationTimer", warmup_iter=2),
     dict(type="InformationWriter"),
     dict(type="CheckpointSaver", save_freq=1),
+    # === Stability Monitoring ===
+    # GradScaler monitor - detect overflow events
+    dict(
+        type="GradScalerMonitor",
+        log_frequency=10,
+        prefix="grad_scaler",
+        warn_on_overflow=True,
+        warn_on_low_scale=1.0,
+    ),
+    # Adam state monitor - track momentum/variance growth
+    dict(
+        type="AdamStateMonitor",
+        log_frequency=100,        # Every 100 steps (less frequent, more expensive)
+        prefix="adam_state",
+        track_layers=True,        # Group by layer type (attention, mlp, etc.)
+        track_histograms=False,   # Set True for detailed debugging (expensive)
+        histogram_frequency=500,  # If histograms enabled, log every 500 steps
+    ),
     # =========================================================================
     # Monitoring Hooks (adapted from particle-imaging-models)
     # =========================================================================
