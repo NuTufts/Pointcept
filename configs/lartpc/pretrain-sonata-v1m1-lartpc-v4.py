@@ -401,6 +401,7 @@ data = dict(
 
 # Original training parameters (for extending scheduler calculations)
 # These are needed to compute where the original schedule was at the resume point
+original_epochs=50
 original_steps_per_epoch = 11718  # For expanded data set
 original_total_steps = original_epochs * original_steps_per_epoch  # = 110500
 

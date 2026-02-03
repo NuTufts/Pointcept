@@ -155,13 +155,11 @@ class AdamStateMonitor(HookBase):
 
         for group_idx, group in enumerate(optimizer.param_groups):
             for param_idx, param in enumerate(group['params']):
-                if param.grad is None:
-                    continue
-
                 global_idx = (group_idx, param_idx)
                 state = optimizer.state[param]
 
-                if len(state) == 0:  # No state yet
+                # Skip if no optimizer state yet (happens on first step)
+                if len(state) == 0:
                     continue
 
                 # Get Adam buffers
@@ -225,14 +223,20 @@ class AdamStateMonitor(HookBase):
                     metrics[f"{self.prefix}/{layer_type}/update_ratio_max"] = np.max(stats["update_ratio_max"])
 
         # Console logging
-        self.trainer.logger.info(
-            f"[{self.prefix}] step={global_step} "
-            f"exp_avg_abs=(mean={metrics.get(f'{self.prefix}/exp_avg_abs_mean', 0):.2e}, "
-            f"max={metrics.get(f'{self.prefix}/exp_avg_abs_max', 0):.2e}) "
-            f"exp_avg_sq=(mean={metrics.get(f'{self.prefix}/exp_avg_sq_mean', 0):.2e}, "
-            f"max={metrics.get(f'{self.prefix}/exp_avg_sq_max', 0):.2e}) "
-            f"update_ratio_max={metrics.get(f'{self.prefix}/update_ratio_max', 0):.2e}"
-        )
+        if not metrics:
+            self.trainer.logger.warning(
+                f"[{self.prefix}] step={global_step} No optimizer state found "
+                f"(checked {sum(len(g['params']) for g in optimizer.param_groups)} params)"
+            )
+        else:
+            self.trainer.logger.info(
+                f"[{self.prefix}] step={global_step} "
+                f"exp_avg_abs=(mean={metrics.get(f'{self.prefix}/exp_avg_abs_mean', 0):.2e}, "
+                f"max={metrics.get(f'{self.prefix}/exp_avg_abs_max', 0):.2e}) "
+                f"exp_avg_sq=(mean={metrics.get(f'{self.prefix}/exp_avg_sq_mean', 0):.2e}, "
+                f"max={metrics.get(f'{self.prefix}/exp_avg_sq_max', 0):.2e}) "
+                f"update_ratio_max={metrics.get(f'{self.prefix}/update_ratio_max', 0):.2e}"
+            )
 
         # TensorBoard logging
         if hasattr(self.trainer, 'writer') and self.trainer.writer is not None:
@@ -240,11 +244,12 @@ class AdamStateMonitor(HookBase):
                 self.trainer.writer.add_scalar(metric_name, metric_value, global_step)
 
         # WandB logging
-        if getattr(self.trainer.cfg, 'enable_wandb', False):
+        if metrics and getattr(self.trainer.cfg, 'enable_wandb', False):
             try:
                 import wandb
                 if wandb.run is not None:
-                    wandb.log(metrics, step=global_step)
+                    # Use wandb.run.step for consistent step tracking across hooks
+                    wandb.log(metrics, step=wandb.run.step)
             except ImportError:
                 pass
 
@@ -264,7 +269,6 @@ class AdamStateMonitor(HookBase):
             return
 
         optimizer = self.trainer.optimizer
-        global_step = self.trainer.comm_info.get("iter", self.step_count)
 
         # Collect all exp_avg and exp_avg_sq values
         all_exp_avg = []
@@ -326,9 +330,10 @@ class AdamStateMonitor(HookBase):
                 )
 
         if histograms:
-            wandb.log(histograms, step=global_step)
+            # Use wandb.run.step for consistent step tracking across hooks
+            wandb.log(histograms, step=wandb.run.step)
             self.trainer.logger.info(
-                f"[{self.prefix}] Logged {len(histograms)} histograms at step {global_step}"
+                f"[{self.prefix}] Logged {len(histograms)} histograms at step {wandb.run.step}"
             )
 
     def __repr__(self):

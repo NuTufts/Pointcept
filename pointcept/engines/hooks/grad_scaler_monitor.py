@@ -168,7 +168,8 @@ class GradScalerMonitor(HookBase):
                     else:
                         wandb_metrics[f"{self.prefix}/overflow_event"] = 0
 
-                    wandb.log(wandb_metrics, step=global_step)
+                    # Use wandb.run.step for consistent step tracking across hooks
+                    wandb.log(wandb_metrics, step=wandb.run.step)
             except ImportError:
                 pass
 
