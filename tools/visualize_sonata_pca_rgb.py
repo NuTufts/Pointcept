@@ -177,7 +177,7 @@ def build_inference_transform(cfg, grid_size=None):
             type="Collect",
             keys=("coord", "grid_coord", "segment", "name", "grid_size"),
             offset_keys_dict=dict(offset="coord"),
-            feat_keys=("strength", "color"),
+            feat_keys=("strength",),  # Only strength (3 channels) - matches model in_channels
         ),
     ]
 

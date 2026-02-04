@@ -533,9 +533,154 @@ def create_combined_wire_images(event_data, vmax_percentile=99):
 
     fig.update_layout(
         height=400,
-        title='Wire Plane Images (Sparse)',
+        title='Wire Plane Images (Full View)',
         showlegend=True,
         legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='right', x=1)
+    )
+
+    return fig
+
+
+def create_zoomed_wire_images(event_data, uwire, vwire, ywire, tick, half_width=25, vmax_percentile=99):
+    """Create zoomed wire plane images centered on the clicked 3D point.
+
+    Args:
+        event_data: Event data dictionary
+        uwire: U plane wire coordinate of clicked point
+        vwire: V plane wire coordinate of clicked point
+        ywire: Y plane wire coordinate of clicked point
+        tick: Time tick coordinate of clicked point
+        half_width: Half width of the zoom window (default 25 for 50x50 view)
+        vmax_percentile: Percentile for color scale max
+    """
+    # Convert tick to row coordinate: row = (tick - 2400) / 6.0
+    row_center = (tick - 2400) / 6.0
+
+    fig = make_subplots(
+        rows=1, cols=3,
+        subplot_titles=[
+            f'U Plane (wire={uwire})',
+            f'V Plane (wire={vwire})',
+            f'Y Plane (wire={ywire})'
+        ],
+        horizontal_spacing=0.08
+    )
+
+    plane_names = ['U', 'V', 'Y']
+    wire_centers = [uwire, vwire, ywire]
+
+    for plane_idx in range(3):
+        if plane_idx not in event_data['wire_images']:
+            continue
+
+        plane_data = event_data['wire_images'][plane_idx]
+        coords = plane_data['coord']
+        feats = plane_data['feat']
+
+        if len(coords) == 0:
+            continue
+
+        wire_center = wire_centers[plane_idx]
+
+        # Define zoom window using converted row coordinate
+        wire_min = wire_center - half_width
+        wire_max = wire_center + half_width
+        row_min = row_center - half_width
+        row_max = row_center + half_width
+
+        # Filter pixels within the zoom window
+        cols = coords[:, 0]
+        rows = coords[:, 1]
+        mask = (cols >= wire_min) & (cols <= wire_max) & (rows >= row_min) & (rows <= row_max)
+
+        filtered_cols = cols[mask]
+        filtered_rows = rows[mask]
+        filtered_feats = feats[mask]
+
+        vmax = np.percentile(feats, vmax_percentile) if len(feats) > 0 else 1
+
+        # Add scatter plot for the zoomed region
+        fig.add_trace(
+            go.Scattergl(
+                x=filtered_cols,
+                y=filtered_rows,
+                mode='markers',
+                marker=dict(
+                    size=8,  # Larger markers for zoomed view
+                    color=filtered_feats,
+                    colorscale='Viridis',
+                    cmin=0,
+                    cmax=vmax,
+                    showscale=(plane_idx == 2)
+                ),
+                name=f'{plane_names[plane_idx]} ({len(filtered_cols)} px)',
+                hovertemplate=f'{plane_names[plane_idx]}<br>Wire: %{{x}}<br>Row: %{{y}}<br>ADC: %{{marker.color:.1f}}<extra></extra>'
+            ),
+            row=1, col=plane_idx + 1
+        )
+
+        # Add crosshair at the center point
+        fig.add_trace(
+            go.Scatter(
+                x=[wire_center],
+                y=[row_center],
+                mode='markers',
+                marker=dict(
+                    size=15,
+                    color='red',
+                    symbol='cross',
+                    line=dict(width=2, color='white')
+                ),
+                name='Selected Point' if plane_idx == 0 else None,
+                showlegend=(plane_idx == 0),
+                hovertemplate=f'Selected<br>Wire: {wire_center}<br>Row: {row_center:.1f}<extra></extra>'
+            ),
+            row=1, col=plane_idx + 1
+        )
+
+        # Set axis ranges to zoom window
+        fig.update_xaxes(
+            title_text='Wire',
+            range=[wire_min, wire_max],
+            row=1, col=plane_idx + 1
+        )
+        fig.update_yaxes(
+            title_text='Row',
+            range=[row_min, row_max],
+            row=1, col=plane_idx + 1
+        )
+
+    fig.update_layout(
+        height=400,
+        title=f'Zoomed Wire Plane Images (50x50 around tick={tick}, row={row_center:.1f})',
+        showlegend=True,
+        legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='right', x=1)
+    )
+
+    return fig
+
+
+def create_empty_zoomed_view():
+    """Create an empty placeholder for the zoomed view before any point is clicked."""
+    fig = make_subplots(
+        rows=1, cols=3,
+        subplot_titles=['U Plane', 'V Plane', 'Y Plane'],
+        horizontal_spacing=0.08
+    )
+
+    fig.update_layout(
+        height=400,
+        title='Click on a 3D point to see zoomed wire plane images (50x50 view)',
+        showlegend=False,
+        annotations=[
+            dict(
+                text="Click on a point in the 3D view above",
+                xref="paper", yref="paper",
+                x=0.5, y=0.5,
+                showarrow=False,
+                font=dict(size=16, color="gray")
+            )
+        ]
     )
 
     return fig
@@ -572,7 +717,7 @@ def main():
     ]
 
     # Create Dash app
-    app = Dash(__name__)
+    app = Dash(__name__, suppress_callback_exceptions=True)
 
     app.layout = html.Div([
         html.H1("LArTPC Data Viewer", style={'textAlign': 'center'}),
@@ -599,6 +744,12 @@ def main():
 
         # Store current entry index
         dcc.Store(id='current-entry', data=start_entry),
+
+        # Store for clicked point data
+        dcc.Store(id='clicked-point-data', data=None),
+
+        # Store for current event data (wire coordinates)
+        dcc.Store(id='event-wire-data', data=None),
 
         # Visualization options
         html.Div([
@@ -649,16 +800,32 @@ def main():
             dcc.Graph(id='scatter-3d', style={'width': '100%'})
         ], style={'marginBottom': '20px'}),
 
-        # Wire plane images
-        html.H3("Wire Plane Images", style={'textAlign': 'center'}),
+        # Zoomed wire plane images (click-responsive)
+        html.H3("Wire Plane Images (Click 3D Point to Zoom)", style={'textAlign': 'center'}),
+        html.Div(id='clicked-point-info', style={
+            'textAlign': 'center',
+            'marginBottom': '10px',
+            'padding': '5px',
+            'backgroundColor': '#d4edda',
+            'borderRadius': '5px',
+            'display': 'none'  # Hidden until a point is clicked
+        }),
         html.Div([
-            dcc.Graph(id='wire-images-combined', style={'width': '100%'})
+            dcc.Graph(id='wire-images-zoomed', style={'width': '100%'})
         ], style={'marginBottom': '20px'}),
 
-        # Individual plane views (collapsible)
+        # Full wire plane views and individual planes (collapsible)
         html.Details([
-            html.Summary("Individual Plane Views (click to expand)", style={'cursor': 'pointer', 'fontWeight': 'bold'}),
+            html.Summary("Full Wire Plane Views (click to expand)", style={'cursor': 'pointer', 'fontWeight': 'bold'}),
             html.Div([
+                # Combined full view
+                html.H4("Combined View", style={'textAlign': 'center', 'marginTop': '10px'}),
+                html.Div([
+                    dcc.Graph(id='wire-images-combined', style={'width': '100%'})
+                ], style={'marginBottom': '20px'}),
+
+                # Individual plane views
+                html.H4("Individual Plane Views", style={'textAlign': 'center'}),
                 html.Div([
                     dcc.Graph(id='wire-image-0', style={'width': '100%'})
                 ], style={'marginBottom': '10px'}),
@@ -704,6 +871,11 @@ def main():
         Output('wire-image-0', 'figure'),
         Output('wire-image-1', 'figure'),
         Output('wire-image-2', 'figure'),
+        Output('wire-images-zoomed', 'figure'),
+        Output('event-wire-data', 'data'),
+        Output('clicked-point-data', 'data'),
+        Output('clicked-point-info', 'children'),
+        Output('clicked-point-info', 'style'),
         Input('current-entry', 'data'),
         Input('color-mode-dropdown', 'value'),
         Input('show-keypoints', 'value'),
@@ -739,13 +911,118 @@ def main():
             marker_size=marker_size
         )
 
-        # Wire plane images
+        # Wire plane images (full view)
         combined_fig = create_combined_wire_images(event_data)
         plane0_fig = create_wire_plane_images(event_data, 0)
         plane1_fig = create_wire_plane_images(event_data, 1)
         plane2_fig = create_wire_plane_images(event_data, 2)
 
-        return entry_info, stats_text, scatter_fig, combined_fig, plane0_fig, plane1_fig, plane2_fig
+        # Empty zoomed view initially
+        zoomed_fig = create_empty_zoomed_view()
+
+        # Store wire coordinate data for click handling
+        wire_data = {
+            'uwire': event_data['uwire'].tolist(),
+            'vwire': event_data['vwire'].tolist(),
+            'ywire': event_data['ywire'].tolist(),
+            'tick': event_data['tick'].tolist(),
+            'pos': event_data['pos'].tolist(),
+            'pid': event_data['pid'].tolist(),
+            'ssnet_label': event_data['ssnet_label'].tolist(),
+            'origin': event_data['origin'].tolist(),
+            'hasmatch': event_data['hasmatch'].tolist(),
+        }
+
+        # Reset clicked point data and hide info box
+        clicked_point_info = ""
+        info_style = {
+            'textAlign': 'center',
+            'marginBottom': '10px',
+            'padding': '5px',
+            'backgroundColor': '#d4edda',
+            'borderRadius': '5px',
+            'display': 'none'
+        }
+
+        return (entry_info, stats_text, scatter_fig, combined_fig,
+                plane0_fig, plane1_fig, plane2_fig, zoomed_fig,
+                wire_data, None, clicked_point_info, info_style)
+
+    @callback(
+        Output('wire-images-zoomed', 'figure', allow_duplicate=True),
+        Output('clicked-point-info', 'children', allow_duplicate=True),
+        Output('clicked-point-info', 'style', allow_duplicate=True),
+        Input('scatter-3d', 'clickData'),
+        State('event-wire-data', 'data'),
+        State('current-entry', 'data'),
+        prevent_initial_call=True
+    )
+    def handle_3d_click(click_data, wire_data, entry_idx):
+        if click_data is None or wire_data is None:
+            return create_empty_zoomed_view(), "", {'display': 'none'}
+
+        # Get the clicked point info
+        point = click_data['points'][0]
+
+        # Get the point index from customdata or find nearest point
+        # The click_data contains x, y, z coordinates of clicked point
+        clicked_x = point['x']
+        clicked_y = point['y']
+        clicked_z = point['z']
+
+        # Find the index of the clicked point by matching coordinates
+        pos_array = np.array(wire_data['pos'])
+        distances = np.sqrt(
+            (pos_array[:, 0] - clicked_x)**2 +
+            (pos_array[:, 1] - clicked_y)**2 +
+            (pos_array[:, 2] - clicked_z)**2
+        )
+        point_idx = np.argmin(distances)
+
+        # Get wire coordinates for this point
+        uwire = wire_data['uwire'][point_idx]
+        vwire = wire_data['vwire'][point_idx]
+        ywire = wire_data['ywire'][point_idx]
+        tick = wire_data['tick'][point_idx]
+
+        # Get additional point info
+        pid = wire_data['pid'][point_idx]
+        ssnet = wire_data['ssnet_label'][point_idx]
+        origin = wire_data['origin'][point_idx]
+        hasmatch = wire_data['hasmatch'][point_idx]
+
+        # Load event data again for the zoomed image
+        entry_key = entry_keys[entry_idx]
+        event_data = load_event_data(h5file, entry_key)
+
+        # Create zoomed view
+        zoomed_fig = create_zoomed_wire_images(
+            event_data, uwire, vwire, ywire, tick, half_width=25
+        )
+
+        # Create info text
+        origin_name = ORIGIN_NAMES.get(origin, 'unknown')
+        ssnet_name = SSNET_CLASS_NAMES.get(ssnet, 'unknown')
+        pdg_name = get_pdg_name(pid)
+        match_str = "True" if hasmatch == 1 else "Ghost"
+
+        info_text = (
+            f"Selected Point: 3D=({clicked_x:.1f}, {clicked_y:.1f}, {clicked_z:.1f}) | "
+            f"Wires: U={uwire}, V={vwire}, Y={ywire} | Tick={tick} | "
+            f"PID={pdg_name} | SSNET={ssnet_name} | Origin={origin_name} | {match_str}"
+        )
+
+        info_style = {
+            'textAlign': 'center',
+            'marginBottom': '10px',
+            'padding': '10px',
+            'backgroundColor': '#d4edda',
+            'borderRadius': '5px',
+            'display': 'block',
+            'fontWeight': 'bold'
+        }
+
+        return zoomed_fig, info_text, info_style
 
     print(f"Starting Dash server on port {args.port}")
     print(f"Loaded {num_entries} entries from {args.h5file}")
