@@ -169,9 +169,50 @@ def load_event_data(h5file, entry_key):
     return data
 
 
-def create_3d_scatter(event_data, color_mode='ssnet', show_keypoints=True, opacity=0.8, marker_size=2):
-    """Create a 3D scatter plot of the point cloud with various coloring options."""
+def create_3d_scatter(event_data, color_mode='ssnet', show_keypoints=True, show_ghosts=False, opacity=0.8, marker_size=2):
+    """Create a 3D scatter plot of the point cloud with various coloring options.
+
+    Args:
+        event_data: Event data dictionary
+        color_mode: Coloring mode ('ssnet', 'origin', 'trackid', 'hasmatch', 'pixval', 'edep')
+        show_keypoints: Whether to show keypoints
+        show_ghosts: Whether to show ghost points (hasmatch == 0). Default False.
+        opacity: Marker opacity
+        marker_size: Marker size
+    """
     pos = event_data['pos']
+    hasmatch = event_data['hasmatch']
+
+    # Filter out ghosts if show_ghosts is False
+    if not show_ghosts:
+        true_mask = hasmatch == 1
+        # Create filtered event data for display
+        filtered_event_data = {
+            'pos': pos[true_mask],
+            'pid': event_data['pid'][true_mask],
+            'ssnet_label': event_data['ssnet_label'][true_mask],
+            'origin': event_data['origin'][true_mask],
+            'trackid': event_data['trackid'][true_mask],
+            'hasmatch': hasmatch[true_mask],
+            'uwire': event_data['uwire'][true_mask],
+            'vwire': event_data['vwire'][true_mask],
+            'ywire': event_data['ywire'][true_mask],
+            'tick': event_data['tick'][true_mask],
+            'pixval': event_data['pixval'][true_mask],
+            'edep': event_data['edep'][true_mask],
+        }
+        # Keep keypoints unchanged
+        if 'keypoints' in event_data:
+            filtered_event_data['keypoints'] = event_data['keypoints']
+        display_data = filtered_event_data
+        n_total = len(pos)
+        n_displayed = len(display_data['pos'])
+        ghost_info = f" (showing {n_displayed}/{n_total}, ghosts hidden)"
+    else:
+        display_data = event_data
+        ghost_info = ""
+
+    pos = display_data['pos']
 
     if len(pos) == 0:
         fig = go.Figure()
@@ -188,21 +229,21 @@ def create_3d_scatter(event_data, color_mode='ssnet', show_keypoints=True, opaci
                 f"x: {pos[i, 0]:.1f}<br>"
                 f"y: {pos[i, 1]:.1f}<br>"
                 f"z: {pos[i, 2]:.1f}<br>"
-                f"PID: {get_pdg_name(event_data['pid'][i])} ({event_data['pid'][i]})<br>"
-                f"SSNET: {SSNET_CLASS_NAMES.get(event_data['ssnet_label'][i], 'unknown')}<br>"
-                f"Origin: {ORIGIN_NAMES.get(event_data['origin'][i], 'unknown')}<br>"
-                f"TrackID: {event_data['trackid'][i]}<br>"
-                f"Wires: ({event_data['uwire'][i]}, {event_data['vwire'][i]}, {event_data['ywire'][i]})<br>"
-                f"Tick: {event_data['tick'][i]}<br>"
-                f"PixVal: ({event_data['pixval'][i, 0]:.1f}, {event_data['pixval'][i, 1]:.1f}, {event_data['pixval'][i, 2]:.1f})"
+                f"PID: {get_pdg_name(display_data['pid'][i])} ({display_data['pid'][i]})<br>"
+                f"SSNET: {SSNET_CLASS_NAMES.get(display_data['ssnet_label'][i], 'unknown')}<br>"
+                f"Origin: {ORIGIN_NAMES.get(display_data['origin'][i], 'unknown')}<br>"
+                f"TrackID: {display_data['trackid'][i]}<br>"
+                f"Wires: ({display_data['uwire'][i]}, {display_data['vwire'][i]}, {display_data['ywire'][i]})<br>"
+                f"Tick: {display_data['tick'][i]}<br>"
+                f"PixVal: ({display_data['pixval'][i, 0]:.1f}, {display_data['pixval'][i, 1]:.1f}, {display_data['pixval'][i, 2]:.1f})"
             )
             hover_texts.append(text)
         return hover_texts
 
     if color_mode == 'ssnet':
         # Color by SSNET class
-        for ssnet_class in np.unique(event_data['ssnet_label']):
-            mask = event_data['ssnet_label'] == ssnet_class
+        for ssnet_class in np.unique(display_data['ssnet_label']):
+            mask = display_data['ssnet_label'] == ssnet_class
             indices = np.where(mask)[0]
             if len(indices) == 0:
                 continue
@@ -224,8 +265,8 @@ def create_3d_scatter(event_data, color_mode='ssnet', show_keypoints=True, opaci
 
     elif color_mode == 'origin':
         # Color by origin (neutrino vs cosmic)
-        for origin_type in np.unique(event_data['origin']):
-            mask = event_data['origin'] == origin_type
+        for origin_type in np.unique(display_data['origin']):
+            mask = display_data['origin'] == origin_type
             indices = np.where(mask)[0]
             if len(indices) == 0:
                 continue
@@ -247,12 +288,12 @@ def create_3d_scatter(event_data, color_mode='ssnet', show_keypoints=True, opaci
 
     elif color_mode == 'trackid':
         # Color by track ID
-        unique_trackids = np.unique(event_data['trackid'])
+        unique_trackids = np.unique(display_data['trackid'])
         np.random.seed(42)  # For reproducible colors
         for tid in unique_trackids:
             if tid <= 0:
                 continue
-            mask = event_data['trackid'] == tid
+            mask = display_data['trackid'] == tid
             indices = np.where(mask)[0]
             if len(indices) == 0:
                 continue
@@ -274,7 +315,7 @@ def create_3d_scatter(event_data, color_mode='ssnet', show_keypoints=True, opaci
     elif color_mode == 'hasmatch':
         # Color by has match (true vs ghost)
         for match_val, name, color in [(1, 'True', 'green'), (0, 'Ghost', 'red')]:
-            mask = event_data['hasmatch'] == match_val
+            mask = display_data['hasmatch'] == match_val
             indices = np.where(mask)[0]
             if len(indices) == 0:
                 continue
@@ -292,7 +333,7 @@ def create_3d_scatter(event_data, color_mode='ssnet', show_keypoints=True, opaci
 
     elif color_mode == 'pixval':
         # Color by pixel value (sum of 3 planes)
-        pixval_sum = np.sum(event_data['pixval'], axis=1)
+        pixval_sum = np.sum(display_data['pixval'], axis=1)
         indices = np.arange(len(pos))
 
         fig.add_trace(go.Scatter3d(
@@ -316,7 +357,7 @@ def create_3d_scatter(event_data, color_mode='ssnet', show_keypoints=True, opaci
 
     elif color_mode == 'edep':
         # Color by energy deposition (sum of 3 planes)
-        edep_sum = np.sum(event_data['edep'], axis=1)
+        edep_sum = np.sum(display_data['edep'], axis=1)
         indices = np.arange(len(pos))
 
         fig.add_trace(go.Scatter3d(
@@ -403,7 +444,7 @@ def create_3d_scatter(event_data, color_mode='ssnet', show_keypoints=True, opaci
             ),
         ),
         title=dict(
-            text=f"3D Point Cloud - {color_mode.upper()} coloring ({len(pos)} points)",
+            text=f"3D Point Cloud - {color_mode.upper()} coloring ({len(pos)} points){ghost_info}",
             font=dict(color="white")
         ),
         height=800,
@@ -542,7 +583,7 @@ def create_combined_wire_images(event_data, vmax_percentile=99):
 
 
 def create_zoomed_wire_images(event_data, uwire, vwire, ywire, tick, half_width=25, vmax_percentile=99):
-    """Create zoomed wire plane images centered on the clicked 3D point.
+    """Create zoomed wire plane images centered on the clicked 3D point using heatmaps.
 
     Args:
         event_data: Event data dictionary
@@ -568,6 +609,9 @@ def create_zoomed_wire_images(event_data, uwire, vwire, ywire, tick, half_width=
 
     plane_names = ['U', 'V', 'Y']
     wire_centers = [uwire, vwire, ywire]
+
+    # Size of the dense image
+    img_size = 2 * half_width + 1
 
     for plane_idx in range(3):
         if plane_idx not in event_data['wire_images']:
@@ -597,24 +641,35 @@ def create_zoomed_wire_images(event_data, uwire, vwire, ywire, tick, half_width=
         filtered_rows = rows[mask]
         filtered_feats = feats[mask]
 
+        # Create dense image array (initialize with zeros/NaN for empty pixels)
+        dense_img = np.zeros((img_size, img_size), dtype=np.float32)
+
+        # Fill in the sparse values
+        for c, r, f in zip(filtered_cols, filtered_rows, filtered_feats):
+            # Convert to array indices
+            col_idx = int(c - wire_min)
+            row_idx = int(r - row_min)
+            if 0 <= col_idx < img_size and 0 <= row_idx < img_size:
+                dense_img[row_idx, col_idx] = f
+
         vmax = np.percentile(feats, vmax_percentile) if len(feats) > 0 else 1
 
-        # Add scatter plot for the zoomed region
+        # Create x and y axis values for proper labeling
+        x_vals = np.arange(wire_min, wire_max + 1)
+        y_vals = np.arange(row_min, row_max + 1)
+
+        # Add heatmap for the zoomed region
         fig.add_trace(
-            go.Scattergl(
-                x=filtered_cols,
-                y=filtered_rows,
-                mode='markers',
-                marker=dict(
-                    size=8,  # Larger markers for zoomed view
-                    color=filtered_feats,
-                    colorscale='Viridis',
-                    cmin=0,
-                    cmax=vmax,
-                    showscale=(plane_idx == 2)
-                ),
-                name=f'{plane_names[plane_idx]} ({len(filtered_cols)} px)',
-                hovertemplate=f'{plane_names[plane_idx]}<br>Wire: %{{x}}<br>Row: %{{y}}<br>ADC: %{{marker.color:.1f}}<extra></extra>'
+            go.Heatmap(
+                z=dense_img,
+                x=x_vals,
+                y=y_vals,
+                colorscale='Viridis',
+                zmin=0,
+                zmax=vmax,
+                showscale=(plane_idx == 2),
+                colorbar=dict(title='ADC') if plane_idx == 2 else None,
+                hovertemplate=f'{plane_names[plane_idx]}<br>Wire: %{{x}}<br>Row: %{{y}}<br>ADC: %{{z:.1f}}<extra></extra>'
             ),
             row=1, col=plane_idx + 1
         )
@@ -638,15 +693,13 @@ def create_zoomed_wire_images(event_data, uwire, vwire, ywire, tick, half_width=
             row=1, col=plane_idx + 1
         )
 
-        # Set axis ranges to zoom window
+        # Set axis ranges and titles
         fig.update_xaxes(
             title_text='Wire',
-            range=[wire_min, wire_max],
             row=1, col=plane_idx + 1
         )
         fig.update_yaxes(
             title_text='Row',
-            range=[row_min, row_max],
             row=1, col=plane_idx + 1
         )
 
@@ -773,6 +826,15 @@ def main():
             ], style={'display': 'inline-block', 'marginRight': '30px'}),
 
             html.Div([
+                dcc.Checklist(
+                    id='show-ghosts',
+                    options=[{'label': ' Show Ghosts', 'value': 'show'}],
+                    value=[],  # Default off
+                    style={'display': 'inline-block'}
+                ),
+            ], style={'display': 'inline-block', 'marginRight': '30px'}),
+
+            html.Div([
                 html.Label('Marker Size:', style={'fontWeight': 'bold', 'marginRight': '10px'}),
                 dcc.Slider(
                     id='marker-size-slider',
@@ -879,9 +941,10 @@ def main():
         Input('current-entry', 'data'),
         Input('color-mode-dropdown', 'value'),
         Input('show-keypoints', 'value'),
+        Input('show-ghosts', 'value'),
         Input('marker-size-slider', 'value')
     )
-    def update_display(entry_idx, color_mode, show_keypoints, marker_size):
+    def update_display(entry_idx, color_mode, show_keypoints, show_ghosts, marker_size):
         entry_key = entry_keys[entry_idx]
         event_data = load_event_data(h5file, entry_key)
 
@@ -908,6 +971,7 @@ def main():
             event_data,
             color_mode=color_mode,
             show_keypoints='show' in (show_keypoints or []),
+            show_ghosts='show' in (show_ghosts or []),
             marker_size=marker_size
         )
 
