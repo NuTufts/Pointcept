@@ -41,9 +41,9 @@ wire_projections = None
 _base_ = ["../_base_/default_runtime.py"]
 
 # misc custom setting
-batch_size = 48  # Adjust based on GPU memory; LArTPC events can be large
+batch_size = 64  # Adjust based on GPU memory; LArTPC events can be large
 batch_size_val = 8   # Batch size for validation (used by PretrainEvaluator)
-num_worker = 20
+num_worker = 32
 mix_prob = 0
 clip_grad = 1.0
 empty_cache = False
@@ -59,7 +59,7 @@ amp_dtype = "bfloat16" # use this for default 'flash_attn' backend
 
 enable_wandb = True
 wandb_project = "pointcept"
-save_path = "sonata/lartpc_v4_p100_noghosts"
+save_path = "sonata/lartpc_v5_h200_noghosts"
 
 TRAIN_FILE_LIST="/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept/lartpc_data_prep/hdflist_combined_prod4_validated_shuffled_trainsplit.txt"
 VAL_FILE_LIST="/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept/lartpc_data_prep/hdflist_combined_prod4_validated_shuffled_valsplit.txt"
@@ -120,8 +120,9 @@ model = dict(
         order=("z", "z-trans","hilbert", "hilbert-trans"),
         stride=(2, 2, 2, 2),
         enc_depths=(3, 3, 3, 9, 3), # voxel size at each encoder layer: (0.25, 0.5, 1.0, 2.0, 4.0); panda depths: (3, 3, 3, 9, 3)
-        enc_channels=(16, 32, 64, 128, 256),  # Halved for 16GB GPU; panda channels: (48, 96, 192, 384, 512)
-        enc_num_head=(2, 2, 4, 8, 16),  # Adjusted to divide channels evenly
+        #enc_channels=(16, 32, 64, 128, 256),  # Halved for 16GB GPU; panda channels: (48, 96, 192, 384, 512)
+        enc_channels=(48, 96, 192, 384, 512),
+        enc_num_head=(3, 6, 12, 24, 32),  # Adjusted to divide channels evenly
         enc_patch_size=(256, 256, 256, 256, 256),
         mlp_ratio=4,
         qkv_bias=True,
@@ -147,10 +148,10 @@ model = dict(
     ),
     # Head configuration
     # head_in_channels = concatenated features after up_cast
-    # With enc_channels=(16, 32, 64, 128, 256) and up_cast_level=2:
-    # Halved from original to match smaller backbone
-    head_in_channels=448,  # Halved from 896
-    head_hidden_channels=1024,  # Halved from 2048
+    # With enc_channels=(48, 96, 192, 384, 512) and up_cast_level=2:
+    # Sum of channels from levels 2, 3, 4: 192 + 384 + 512 = 1088
+    head_in_channels=1088,
+    head_hidden_channels=2048,
     head_embed_channels=256,   # Sonata originally 256
     head_num_prototypes=4096,  # Sonata originally 2048, increased because semantic imbalance (muons vs non-muons)
 
