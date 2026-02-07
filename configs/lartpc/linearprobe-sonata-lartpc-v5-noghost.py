@@ -31,12 +31,14 @@ wire_projections = None
 _base_ = ["../_base_/default_runtime.py"]
 
 # misc custom setting
-batch_size = 64
-num_worker = 4
+batch_size = 288
+batch_size_val = 132
+num_worker = 22
+num_worker_val = 20
 mix_prob = 0.0
 empty_cache = False
 enable_amp = False
-enable_wandb = False
+enable_wandb = True
 wandb_project = "pointcept"
 save_path = "sonata/linearprobe_v5_p100_noghost"
 epoch=50
@@ -54,9 +56,9 @@ max_points_spherecrop=20480
 min_points_spherecrop=4096
 biased_spherecrop_radius=20.0
 
-# Small dataset test
-TRAIN_FILE_LIST="pi0_train_files.txt"        # 1880 events
-VAL_FILE_LIST="pi0_test_files_100events.txt" # 100 events
+TRAIN_FILE_LIST="/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept/lartpc_data_prep/hdflist_combined_prod4_validated_shuffled_trainsplit.txt"
+VAL_FILE_LIST="/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept/lartpc_data_prep/hdflist_combined_prod4_validated_shuffled_valsplit.txt"
+true_points_only=True
 
 # =============================================================================
 # Model settings - Linear probe using SonataSegmentor with nested SONATA backbone
@@ -123,8 +125,16 @@ model = dict(
         up_cast_level=4,
     ),
     criteria=[
-        dict(type="CrossEntropyLoss", loss_weight=1.0, ignore_index=-1),
-        dict(type="LovaszLoss", mode="multiclass", loss_weight=1.0, ignore_index=-1),
+        dict(
+            type="FocalLoss",
+            gamma=2.0,
+            alpha=0.5,
+            loss_weight=1.0,  # Initial weight (will be overridden by LossWeightScheduler)
+            ignore_index=-1,
+            reduction='mean',
+        ),        
+        #dict(type="CrossEntropyLoss", loss_weight=1.0, ignore_index=-1),
+        dict(type="LovaszLoss", mode="multiclass", loss_weight=0.1, ignore_index=-1),
     ],
     # IMPORTANT: Freeze backbone to only train the linear head
     freeze_backbone=True,
@@ -308,7 +318,6 @@ hooks = [
     dict(type="SonataCheckpointLoader"),
     dict(type="IterationTimer", warmup_iter=2),
     dict(type="InformationWriter"),
-    dict(type="SemSegEvaluator", write_cls_iou=True),  # Log per-class IoU to wandb
-    dict(type="CheckpointSaver", save_freq=None),
-    dict(type="PreciseEvaluator", test_last=False),
+    dict(type="SemSegEvaluator", write_cls_iou=True, eval_freq=100),  # Evaluate every 100 steps
+    dict(type="CheckpointSaver", save_freq=1),
 ]
