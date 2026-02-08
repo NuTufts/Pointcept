@@ -188,6 +188,12 @@ def parse_args():
         help="Save extracted features to .npz file",
     )
     parser.add_argument(
+        "--stop-after-features",
+        action='store_true',
+        default=False,
+        help="If flag provided, stop after we save feature vectors",
+    )
+    parser.add_argument(
         "--load-features",
         type=str,
         default=None,
@@ -785,6 +791,10 @@ def main():
     for cls_idx, count in zip(unique, counts):
         if cls_idx >= 0 and cls_idx < len(EXTENDED_CLASS_NAMES):
             print(f"  {EXTENDED_CLASS_NAMES[cls_idx]}: {count} ({100*count/len(all_labels):.1f}%)")
+
+    if args.stop_after_features:
+        print("Stop after saving features.")
+        sys.exit(0)
 
     # Run t-SNE
     print(f"\nRunning t-SNE with perplexity={args.perplexity}, lr={args.learning_rate}, n_iter={args.n_iter}...")
