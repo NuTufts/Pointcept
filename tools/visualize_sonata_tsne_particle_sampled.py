@@ -25,6 +25,7 @@ Author: Generated for LArTPC analysis
 
 import os
 import sys
+import gc
 import argparse
 import numpy as np
 import h5py
@@ -191,6 +192,12 @@ def parse_args():
         type=str,
         default=None,
         help="Save extracted features to .npz file",
+    )
+    parser.add_argument(
+        "--stop-after-features",
+        action='store_true',
+        default=False,
+        help="If flag provided, stop after we save feature vectors",
     )
     parser.add_argument(
         "--load-features",
@@ -507,7 +514,7 @@ def assign_metadata_to_output_points(
             distances, indices = nn.kneighbors(output_coords.astype(np.float32))
             distances = distances.flatten()
             indices = indices.flatten()
-        except ImportError:
+        except Exception:
             use_gpu = False
 
     if not use_gpu:
@@ -527,20 +534,33 @@ def assign_metadata_to_output_points(
 def get_tsne_reducer(perplexity=30.0, learning_rate=200.0, n_iter=1000,
                      early_exaggeration=12.0, metric="euclidean",
                      random_state=42):
-    """Create cuML t-SNE reducer."""
-    from cuml.manifold import TSNE as cumlTSNE
-
-    print("Using cuML (GPU) t-SNE")
-    reducer = cumlTSNE(
-        n_components=2,
-        perplexity=perplexity,
-        learning_rate=learning_rate,
-        n_iter=n_iter,
-        early_exaggeration=early_exaggeration,
-        metric=metric,
-        random_state=random_state,
-        verbose=1,
-    )
+    """Create t-SNE reducer, using cuML (GPU) if available, else sklearn (CPU)."""
+    try:
+        from cuml.manifold import TSNE as cumlTSNE
+        print("Using cuML (GPU) t-SNE")
+        reducer = cumlTSNE(
+            n_components=2,
+            perplexity=perplexity,
+            learning_rate=learning_rate,
+            n_iter=n_iter,
+            early_exaggeration=early_exaggeration,
+            metric=metric,
+            random_state=random_state,
+            verbose=1,
+        )
+    except Exception:
+        from sklearn.manifold import TSNE as sklearnTSNE
+        print("cuML not available, using sklearn (CPU) t-SNE")
+        reducer = sklearnTSNE(
+            n_components=2,
+            perplexity=perplexity,
+            learning_rate=learning_rate,
+            n_iter=n_iter,
+            early_exaggeration=early_exaggeration,
+            metric=metric,
+            random_state=random_state,
+            verbose=1,
+        )
     return reducer
 
 
@@ -725,13 +745,26 @@ def main():
 
                     for idx in sampled_indices:
                         class_points[cls].append((
-                            features[idx],
-                            output_coords[idx],
+                            features[idx].copy(),
+                            output_coords[idx].copy(),
                             tid,
                         ))
                         seen_particles[particle_key].add(idx)
 
                     class_counts[cls] += n_to_sample
+
+            # Free per-event arrays to release memory
+            del raw_data, data_dict, raw_coords, raw_labels, raw_trackids, raw_origins
+            del transformed_data, batch_data, point, features, output_coords
+            del input_coords, input_labels, input_trackids, input_origins
+            del output_labels, output_trackids, output_origins, particle_points
+
+            # Periodically clean up seen_particles for already-processed files
+            # and run garbage collection
+            if events_processed % 20 == 0:
+                seen_particles.clear()
+                gc.collect()
+                torch.cuda.empty_cache()
 
             # Print progress
             status = ", ".join([
@@ -779,6 +812,10 @@ def main():
     for cls_idx, count in zip(unique, counts):
         if cls_idx >= 0 and cls_idx < len(EXTENDED_CLASS_NAMES):
             print(f"  {EXTENDED_CLASS_NAMES[cls_idx]}: {count} ({100*count/len(all_labels):.1f}%)")
+
+    if args.stop_after_features:
+        print("Stop after saving features.")
+        sys.exit(0)
 
     # Run t-SNE
     print(f"\nRunning t-SNE with perplexity={args.perplexity}, lr={args.learning_rate}, n_iter={args.n_iter}...")
