@@ -163,6 +163,12 @@ def parse_args():
         help="t-SNE early exaggeration factor",
     )
     parser.add_argument(
+        "--metric",
+        type=str,
+        default="euclidean",
+        help="t-SNE distance metric (default: euclidean)",
+    )
+    parser.add_argument(
         "--seed",
         type=int,
         default=42,
@@ -519,7 +525,8 @@ def assign_metadata_to_output_points(
 
 
 def get_tsne_reducer(perplexity=30.0, learning_rate=200.0, n_iter=1000,
-                     early_exaggeration=12.0, random_state=42):
+                     early_exaggeration=12.0, metric="euclidean",
+                     random_state=42):
     """Create cuML t-SNE reducer."""
     from cuml.manifold import TSNE as cumlTSNE
 
@@ -530,6 +537,7 @@ def get_tsne_reducer(perplexity=30.0, learning_rate=200.0, n_iter=1000,
         learning_rate=learning_rate,
         n_iter=n_iter,
         early_exaggeration=early_exaggeration,
+        metric=metric,
         random_state=random_state,
         verbose=1,
     )
@@ -779,6 +787,7 @@ def main():
         learning_rate=args.learning_rate,
         n_iter=args.n_iter,
         early_exaggeration=args.early_exaggeration,
+        metric=args.metric,
         random_state=args.seed,
     )
 
