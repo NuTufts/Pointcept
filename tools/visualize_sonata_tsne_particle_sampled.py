@@ -508,7 +508,7 @@ def assign_metadata_to_output_points(
             distances, indices = nn.kneighbors(output_coords.astype(np.float32))
             distances = distances.flatten()
             indices = indices.flatten()
-        except ImportError:
+        except Exception:
             use_gpu = False
 
     if not use_gpu:
@@ -527,19 +527,31 @@ def assign_metadata_to_output_points(
 
 def get_tsne_reducer(perplexity=30.0, learning_rate=200.0, n_iter=1000,
                      early_exaggeration=12.0, random_state=42):
-    """Create cuML t-SNE reducer."""
-    from cuml.manifold import TSNE as cumlTSNE
-
-    print("Using cuML (GPU) t-SNE")
-    reducer = cumlTSNE(
-        n_components=2,
-        perplexity=perplexity,
-        learning_rate=learning_rate,
-        n_iter=n_iter,
-        early_exaggeration=early_exaggeration,
-        random_state=random_state,
-        verbose=1,
-    )
+    """Create t-SNE reducer, using cuML (GPU) if available, else sklearn (CPU)."""
+    try:
+        from cuml.manifold import TSNE as cumlTSNE
+        print("Using cuML (GPU) t-SNE")
+        reducer = cumlTSNE(
+            n_components=2,
+            perplexity=perplexity,
+            learning_rate=learning_rate,
+            n_iter=n_iter,
+            early_exaggeration=early_exaggeration,
+            random_state=random_state,
+            verbose=1,
+        )
+    except Exception:
+        from sklearn.manifold import TSNE as sklearnTSNE
+        print("cuML not available, using sklearn (CPU) t-SNE")
+        reducer = sklearnTSNE(
+            n_components=2,
+            perplexity=perplexity,
+            learning_rate=learning_rate,
+            n_iter=n_iter,
+            early_exaggeration=early_exaggeration,
+            random_state=random_state,
+            verbose=1,
+        )
     return reducer
 
 
