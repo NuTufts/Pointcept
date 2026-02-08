@@ -116,19 +116,31 @@ class ClsEvaluator(HookBase):
 
 @HOOKS.register_module()
 class SemSegEvaluator(HookBase):
-    def __init__(self, write_cls_iou=False):
+    def __init__(self, write_cls_iou=False, eval_freq=0):
         self.write_cls_iou = write_cls_iou
+        self.eval_freq = eval_freq  # 0 = evaluate at end of epoch only; >0 = every N steps
 
     def before_train(self):
         if self.trainer.writer is not None and self.trainer.cfg.enable_wandb:
             wandb.define_metric("val/*", step_metric="Epoch")
 
+    def after_step(self):
+        if self.trainer.cfg.evaluate and self.eval_freq > 0:
+            iter_per_epoch = len(self.trainer.train_loader)
+            global_iter = self.trainer.comm_info["iter"] + iter_per_epoch * self.trainer.epoch
+            if (global_iter + 1) % self.eval_freq == 0:
+                self.eval()
+
     def after_epoch(self):
-        if self.trainer.cfg.evaluate:
+        if self.trainer.cfg.evaluate and self.eval_freq == 0:
             self.eval()
 
     def eval(self):
         self.trainer.logger.info(">>>>>>>>>>>>>>>> Start Evaluation >>>>>>>>>>>>>>>>")
+        # Reset val histories to prevent accumulation across multiple evals per epoch
+        for key in ("val_intersection", "val_union", "val_target", "val_loss"):
+            if key in self.trainer.storage._history:
+                self.trainer.storage.reset_history(key)
         torch.cuda.empty_cache()  # Clear GPU memory cache before validation
         self.trainer.model.eval()
         for i, input_dict in enumerate(self.trainer.val_loader):
@@ -239,6 +251,9 @@ class SemSegEvaluator(HookBase):
         self.trainer.logger.info("<<<<<<<<<<<<<<<<< End Evaluation <<<<<<<<<<<<<<<<<")
         self.trainer.comm_info["current_metric_value"] = m_iou  # save for saver
         self.trainer.comm_info["current_metric_name"] = "mIoU"  # save for saver
+        # Restore train mode when evaluating mid-epoch (step-based eval)
+        if self.eval_freq > 0:
+            self.trainer.model.train()
 
     def after_train(self):
         self.trainer.logger.info(
