@@ -25,6 +25,7 @@ Author: Generated for LArTPC analysis
 
 import os
 import sys
+import gc
 import argparse
 import numpy as np
 import h5py
@@ -717,13 +718,26 @@ def main():
 
                     for idx in sampled_indices:
                         class_points[cls].append((
-                            features[idx],
-                            output_coords[idx],
+                            features[idx].copy(),
+                            output_coords[idx].copy(),
                             tid,
                         ))
                         seen_particles[particle_key].add(idx)
 
                     class_counts[cls] += n_to_sample
+
+            # Free per-event arrays to release memory
+            del raw_data, data_dict, raw_coords, raw_labels, raw_trackids, raw_origins
+            del transformed_data, batch_data, point, features, output_coords
+            del input_coords, input_labels, input_trackids, input_origins
+            del output_labels, output_trackids, output_origins, particle_points
+
+            # Periodically clean up seen_particles for already-processed files
+            # and run garbage collection
+            if events_processed % 20 == 0:
+                seen_particles.clear()
+                gc.collect()
+                torch.cuda.empty_cache()
 
             # Print progress
             status = ", ".join([
