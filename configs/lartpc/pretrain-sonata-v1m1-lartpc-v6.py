@@ -45,7 +45,7 @@ wire_projections = None
 _base_ = ["../_base_/default_runtime.py"]
 
 # misc custom setting
-batch_size = 512 # 64  # Adjust based on GPU memory; LArTPC events can be large
+batch_size = 64  # Adjust based on GPU memory; LArTPC events can be large
 batch_size_val = 8   # Batch size for validation (used by PretrainEvaluator)
 num_worker = 32
 mix_prob = 0
@@ -69,9 +69,9 @@ TRAIN_FILE_LIST="/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept/
 VAL_FILE_LIST="/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept/lartpc_data_prep/hdflist_combined_prod4_validated_shuffled_valsplit.txt"
 true_points_only=True
 
-max_points_per_view=10240
-max_points_spherecrop=10240
-min_points_spherecrop=2048
+max_points_per_view=20480
+max_points_spherecrop=20480
+min_points_spherecrop=4096
 biased_spherecrop_radius=20.0
 
 # scheduler settings
@@ -162,7 +162,7 @@ model = dict(
 
     # View configuration
     num_global_view=2,   # Two global views with different augmentations
-    num_local_view=4,    # Four local crops (valid for 3D spacepoints)
+    num_local_view=6,    # Must match local_view_num in MultiViewGenerator
 
     # Masking schedule - scaled for LArTPC
     # Patch sizes in coordinate units
@@ -252,7 +252,7 @@ transform = [
     dict(
         type="LogTransform",
         min_val=0.01,
-        max_val=500.0,
+        max_val=1000.0,
         log=True,
         keys=("strength",),
     ),
@@ -314,7 +314,7 @@ transform = [
         max_size=max_points_per_view,  # Max points per view
     ),
     dict(type="ToTensor"),
-    dict(type="Update", keys_dict={"grid_size": grid_size}),
+    dict(type="Update", keys_dict={"grid_size": scaled_grid_size}),
     dict(
         type="Collect",
         keys=(
