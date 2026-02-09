@@ -45,7 +45,7 @@ wire_projections = None
 _base_ = ["../_base_/default_runtime.py"]
 
 # misc custom setting
-batch_size = 64  # Adjust based on GPU memory; LArTPC events can be large
+batch_size = 512 # 64  # Adjust based on GPU memory; LArTPC events can be large
 batch_size_val = 8   # Batch size for validation (used by PretrainEvaluator)
 num_worker = 32
 mix_prob = 0
@@ -99,7 +99,7 @@ grid_size = 0.25 # cm
 jitter_sigma=0.05 # cm (reduced)
 jitter_clip=0.25  # cm (reduced)
 wire_scale=1.0/3456.0 # normalize the wire indices which range from 0-3456
-coord_scale=1036.0 * 3**0.5 / 2.0 / 10.0
+coord_scale=1036.0 * 3**0.5 / 2.0 / 5.0
 scaled_grid_size = grid_size/coord_scale
 # notes for next run:
 # - in sonata, grid_size is 0.02 with jitter 0.005, so grid_size/4. the jitter_clip=grid_size.
@@ -192,7 +192,7 @@ model = dict(
 
     # Matching parameters - scaled for LArTPC geometry
     match_max_k=8,
-    match_max_r=2.0*grid_size/coord_scale,  # ~5cm matching radius
+    match_max_r=16.0*grid_size/coord_scale,  # ~5cm matching radius
 
     # Feature upsampling through decoder levels
     up_cast_level=2,
@@ -264,13 +264,19 @@ transform = [
         view_keys=("coord", "origin_coord", "strength"),  # No wire coords (color) to avoid geometric trap
         # Global views: see most/all of the event
         global_view_num=2,
-        global_view_scale=(0.6, 1.0),
+        global_view_scale=(0.4, 1.0),
         # Local views: crops of 3D regions (valid for spacepoints)
-        local_view_num=4,
-        local_view_scale=(0.1, 0.3),
+        local_view_num=6,
+        local_view_scale=(0.1, 0.4),
         # Shared transforms for all views
         global_shared_transform=[
-            # No color augmentation - physics signals should not be modified
+            dict(
+                type="MultiplicativeRandomJitter",
+                sigma=0.05,
+                clip=0.05,
+                keys=("strength"),
+                p=0.8,
+            ),
         ],
         # Per-view augmentations
         # The transforms on the spacepoints do not respect the pixel values from the wires

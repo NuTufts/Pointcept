@@ -30,6 +30,7 @@ import copy
 import argparse
 
 import numpy as np
+from scipy.spatial import cKDTree
 
 # Ensure project root is on path
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
@@ -124,6 +125,10 @@ def parse_args():
         "--mask-jitter", type=float, default=None,
         help="Jitter sigma for masked coords (default: from cfg.model.mask_jitter)"
     )
+    parser.add_argument(
+        "--match-max-r", type=float, default=None,
+        help="Max distance for point matching (default: from cfg.model.match_max_r)"
+    )
     return parser.parse_args()
 
 
@@ -193,6 +198,38 @@ def get_mask_params(cfg, args):
     return mask_size, mask_ratio, mask_jitter
 
 
+def get_match_params(cfg, args):
+    """Extract match_max_r from model config, with CLI override."""
+    match_max_r = 5.0  # default
+    if hasattr(cfg, "model"):
+        m = cfg.model
+        if hasattr(m, "match_max_r"):
+            match_max_r = m.match_max_r
+    if args.match_max_r is not None:
+        match_max_r = args.match_max_r
+    return match_max_r
+
+
+def match_views_numpy(origin_coord_0, origin_coord_1, match_max_r):
+    """
+    Match points between two views using KNN k=1 on origin_coord,
+    filtered by match_max_r.  Mirrors Sonata's match_neighbour().
+
+    For each point in view0, find nearest neighbor in view1.
+    Keep pairs where distance < match_max_r.
+
+    Returns:
+        idx0: indices into view0 of matched points
+        idx1: indices into view1 of matched points
+    """
+    tree = cKDTree(origin_coord_1)
+    dist, nn_idx = tree.query(origin_coord_0, k=1)
+    valid = dist < match_max_r
+    idx0 = np.where(valid)[0]
+    idx1 = nn_idx[valid]
+    return idx0, idx1
+
+
 # ── Data processing ─────────────────────────────────────────────────────────
 
 def split_by_offset(arr, offset):
@@ -207,7 +244,7 @@ def split_by_offset(arr, offset):
 
 def process_entry(
     dataset, pre_transform, multi_view_gen,
-    mask_gen, mask_jitter_gen, idx,
+    mask_gen, mask_jitter_gen, match_max_r, idx,
 ):
     """
     Process a single entry through the transform pipeline.
@@ -217,6 +254,8 @@ def process_entry(
         global_views: list of dicts with coord, origin_coord, strength
         masked_views: list of dicts with coord, jittered_coord, mask, cluster, strength
         local_views: list of dicts with coord, origin_coord, strength
+        match_data: dict with idx0, idx1, n_view0, n_view1 (or None)
+        local_match_data: dict with idx0, idx1, n_view0, n_view1 (or None)
     """
     raw_data = dataset.get_data(idx)
     pre_data = pre_transform(copy.deepcopy(raw_data))
@@ -306,7 +345,38 @@ def process_entry(
                 "strength": l_strength[i],
             })
 
-    return original_data, global_views, masked_views, local_views
+    # Cross-view matching (global view 0 vs global view 1)
+    match_data = None
+    if len(global_views) >= 2 and global_views[0].get("origin_coord") is not None:
+        oc0 = global_views[0]["origin_coord"]
+        oc1 = global_views[1]["origin_coord"]
+        idx0, idx1 = match_views_numpy(oc0, oc1, match_max_r)
+        match_data = {
+            "idx0": idx0,
+            "idx1": idx1,
+            "n_view0": oc0.shape[0],
+            "n_view1": oc1.shape[0],
+        }
+
+    # Local-to-global matching (local view 0 vs global view 0, as in unmask_loss)
+    local_match_data = None
+    if (
+        len(local_views) >= 1
+        and len(global_views) >= 1
+        and local_views[0].get("origin_coord") is not None
+        and global_views[0].get("origin_coord") is not None
+    ):
+        loc_oc = local_views[0]["origin_coord"]
+        glb_oc = global_views[0]["origin_coord"]
+        l_idx0, l_idx1 = match_views_numpy(loc_oc, glb_oc, match_max_r)
+        local_match_data = {
+            "idx0": l_idx0,
+            "idx1": l_idx1,
+            "n_view0": loc_oc.shape[0],
+            "n_view1": glb_oc.shape[0],
+        }
+
+    return original_data, global_views, masked_views, local_views, match_data, local_match_data
 
 
 # ── Figure builders ─────────────────────────────────────────────────────────
@@ -616,6 +686,92 @@ def build_masked_view_figure(view_data, title="Masked View"):
     return {"data": traces, "layout": make_layout(full_title, npts, height=500)}
 
 
+def build_match_figure(view_data, match_indices, is_view0, title="Match View"):
+    """
+    Build figure showing matched vs unmatched points for one global view.
+
+    Matched points are colored by origin_coord z-value (shared color between
+    the two views so matched pairs are visually identifiable).
+    Unmatched points are shown in gray.
+    """
+    coord = view_data["coord"]
+    origin_coord = view_data.get("origin_coord", coord)
+    npts = coord.shape[0]
+
+    if is_view0:
+        matched_idx = match_indices["idx0"]
+    else:
+        matched_idx = match_indices["idx1"]
+
+    matched_mask = np.zeros(npts, dtype=bool)
+    matched_mask[matched_idx] = True
+    n_matched = int(matched_mask.sum())
+    n_unmatched = npts - n_matched
+
+    traces = []
+
+    # ── Unmatched points (gray) ─────────────────────────────
+    if n_unmatched > 0:
+        um = ~matched_mask
+        um_hover = (
+            "<b>x</b>: %{x:.2f}<br>"
+            "<b>y</b>: %{y:.2f}<br>"
+            "<b>z</b>: %{z:.2f}<br>"
+            "<b>matched</b>: no<br>"
+        )
+        traces.append({
+            "type": "scatter3d",
+            "x": coord[um, 0],
+            "y": coord[um, 1],
+            "z": coord[um, 2],
+            "mode": "markers",
+            "name": f"unmatched ({n_unmatched:,})",
+            "hovertemplate": um_hover,
+            "marker": {
+                "color": "rgba(120,120,120,0.3)",
+                "size": 2,
+            },
+        })
+
+    # ── Matched points (colored by origin_coord z for shared identity) ──
+    if n_matched > 0:
+        m_hover = [
+            "<b>x</b>: %{x:.2f}<br>",
+            "<b>y</b>: %{y:.2f}<br>",
+            "<b>z</b>: %{z:.2f}<br>",
+            "<b>matched</b>: yes<br>",
+            "<b>origin</b>: (%{customdata[0]:.2f}, "
+            "%{customdata[1]:.2f}, "
+            "%{customdata[2]:.2f})<br>",
+        ]
+        m_hovertemplate = "".join(m_hover)
+        m_origin = origin_coord[matched_mask]
+        # Color by origin z-value so matched pairs in both views share same color
+        color_vals = m_origin[:, 2]
+
+        traces.append({
+            "type": "scatter3d",
+            "x": coord[matched_mask, 0],
+            "y": coord[matched_mask, 1],
+            "z": coord[matched_mask, 2],
+            "mode": "markers",
+            "name": f"matched ({n_matched:,})",
+            "hovertemplate": m_hovertemplate,
+            "customdata": m_origin,
+            "marker": {
+                "color": color_vals,
+                "colorscale": "Rainbow",
+                "opacity": 0.8,
+                "size": 2,
+                "colorbar": {"title": "origin z", "len": 0.5},
+            },
+        })
+
+    pct = 100.0 * n_matched / max(npts, 1)
+    full_title = f"{title}  —  {n_matched:,}/{npts:,} matched ({pct:.0f}%)"
+    return {"data": traces, "layout": make_layout(full_title, npts, height=500)}
+
+
 def empty_figure(title="N/A"):
     return {
         "data": [],
@@ -634,6 +790,7 @@ dataset, pre_transform, multi_view_gen = build_dataset_and_transforms(
 
 # Get mask parameters from model config + CLI overrides
 mask_size, mask_ratio, mask_jitter = get_mask_params(cfg, args)
+match_max_r = get_match_params(cfg, args)
 
 # Build mask transforms
 mask_gen = TRANSFORMS.build(dict(
@@ -659,6 +816,7 @@ n_entries = len(dataset.data_list)
 print(f"Dataset: {n_entries} entries")
 print(f"MultiViewGenerator: {'present' if multi_view_gen else 'absent'}")
 print(f"Mask params: size={mask_size}, ratio={mask_ratio}, jitter={mask_jitter}")
+print(f"Match params: match_max_r={match_max_r}")
 print(f"Class names: {class_names}")
 print(f"Config: {args.config}")
 
@@ -748,7 +906,7 @@ app.layout = html.Div(
         html.Div(
             f"Config: {os.path.basename(args.config)}  |  "
             f"mask_size={mask_size}  mask_ratio={mask_ratio}  "
-            f"mask_jitter={mask_jitter}",
+            f"mask_jitter={mask_jitter}  match_max_r={match_max_r}",
             style={"color": "#888", "fontSize": "12px", "marginBottom": "15px"},
         ),
         # ── Original batch ──────────────────────────────────
@@ -818,6 +976,33 @@ app.layout = html.Div(
                 ),
             ]
         ),
+        # ── Cross-view match ────────────────────────────────
+        html.Div(
+            [
+                html.H3(
+                    "Cross-View Match (match_neighbour on origin_coord)",
+                    style={"color": "white", "marginBottom": "5px"},
+                ),
+                html.Div(
+                    [
+                        html.Div(
+                            [
+                                dcc.Graph(
+                                    id=f"match-{i}-graph",
+                                    config={"scrollZoom": True},
+                                )
+                            ],
+                            style={
+                                "width": "50%",
+                                "display": "inline-block",
+                                "verticalAlign": "top",
+                            },
+                        )
+                        for i in range(2)
+                    ]
+                ),
+            ]
+        ),
         # ── Local views ─────────────────────────────────────
         html.Div(
             [
@@ -845,6 +1030,45 @@ app.layout = html.Div(
                 ),
             ]
         ),
+        # ── Local-to-global match ──────────────────────────
+        html.Div(
+            [
+                html.H3(
+                    "Local-Global Match (unmask_loss: local view 0 vs global view 0)",
+                    style={"color": "white", "marginBottom": "5px"},
+                ),
+                html.Div(
+                    [
+                        html.Div(
+                            [
+                                dcc.Graph(
+                                    id="lg-match-local-graph",
+                                    config={"scrollZoom": True},
+                                )
+                            ],
+                            style={
+                                "width": "50%",
+                                "display": "inline-block",
+                                "verticalAlign": "top",
+                            },
+                        ),
+                        html.Div(
+                            [
+                                dcc.Graph(
+                                    id="lg-match-global-graph",
+                                    config={"scrollZoom": True},
+                                )
+                            ],
+                            style={
+                                "width": "50%",
+                                "display": "inline-block",
+                                "verticalAlign": "top",
+                            },
+                        ),
+                    ]
+                ),
+            ]
+        ),
         # ── Hidden store for current entry index ────────────
         dcc.Store(id="current-idx", data=args.entry),
     ],
@@ -858,10 +1082,14 @@ app.layout = html.Div(
         Output("global-1-graph", "figure"),
         Output("masked-0-graph", "figure"),
         Output("masked-1-graph", "figure"),
+        Output("match-0-graph", "figure"),
+        Output("match-1-graph", "figure"),
         Output("local-0-graph", "figure"),
         Output("local-1-graph", "figure"),
         Output("local-2-graph", "figure"),
         Output("local-3-graph", "figure"),
+        Output("lg-match-local-graph", "figure"),
+        Output("lg-match-global-graph", "figure"),
         Output("entry-label", "children"),
         Output("current-idx", "data"),
     ],
@@ -889,11 +1117,12 @@ def update_display(sample_clicks, go_clicks, current_idx, entry_input):
     # Process entry (retry on failure)
     for attempt in range(5):
         try:
-            original_data, global_views, masked_views, local_views = (
-                process_entry(
-                    dataset, pre_transform, multi_view_gen,
-                    mask_gen, mask_jitter_gen, idx,
-                )
+            (
+                original_data, global_views, masked_views,
+                local_views, match_data, local_match_data,
+            ) = process_entry(
+                dataset, pre_transform, multi_view_gen,
+                mask_gen, mask_jitter_gen, match_max_r, idx,
             )
             break
         except Exception as e:
@@ -907,10 +1136,14 @@ def update_display(sample_clicks, go_clicks, current_idx, entry_input):
             empty_figure("Global View 1"),
             empty_figure("Masked Global View 0"),
             empty_figure("Masked Global View 1"),
+            empty_figure("Match View 0"),
+            empty_figure("Match View 1"),
             empty_figure("Local View 0"),
             empty_figure("Local View 1"),
             empty_figure("Local View 2"),
             empty_figure("Local View 3"),
+            empty_figure("Local-Global Match: Local 0"),
+            empty_figure("Local-Global Match: Global 0"),
             "Error: could not process any entry",
             idx,
         )
@@ -938,6 +1171,19 @@ def update_display(sample_clicks, go_clicks, current_idx, entry_input):
         else:
             masked_figs.append(empty_figure(f"Masked Global View {i}"))
 
+    match_figs = []
+    for i in range(2):
+        if match_data is not None and i < len(global_views):
+            match_figs.append(
+                build_match_figure(
+                    global_views[i], match_data,
+                    is_view0=(i == 0),
+                    title=f"Match View {i} (r={match_max_r:.3f})",
+                )
+            )
+        else:
+            match_figs.append(empty_figure(f"Match View {i}"))
+
     local_figs = []
     for i in range(4):
         if i < len(local_views):
@@ -946,6 +1192,22 @@ def update_display(sample_clicks, go_clicks, current_idx, entry_input):
             )
         else:
             local_figs.append(empty_figure(f"Local View {i}"))
+
+    # Local-to-global match figures
+    if local_match_data is not None and len(local_views) >= 1 and len(global_views) >= 1:
+        lg_local_fig = build_match_figure(
+            local_views[0], local_match_data,
+            is_view0=True,
+            title=f"Local View 0 (r={match_max_r:.3f})",
+        )
+        lg_global_fig = build_match_figure(
+            global_views[0], local_match_data,
+            is_view0=False,
+            title=f"Global View 0 (r={match_max_r:.3f})",
+        )
+    else:
+        lg_local_fig = empty_figure("Local-Global Match: Local 0")
+        lg_global_fig = empty_figure("Local-Global Match: Global 0")
 
     name = original_data.get("name", "?")
     entry_label = (
@@ -960,10 +1222,14 @@ def update_display(sample_clicks, go_clicks, current_idx, entry_input):
         global_figs[1],
         masked_figs[0],
         masked_figs[1],
+        match_figs[0],
+        match_figs[1],
         local_figs[0],
         local_figs[1],
         local_figs[2],
         local_figs[3],
+        lg_local_fig,
+        lg_global_fig,
         entry_label,
         idx,
     )

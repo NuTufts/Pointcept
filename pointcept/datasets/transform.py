@@ -511,6 +511,31 @@ class RandomJitter(object):
                 raise ValueError(f"Key {k} not found in data_dict")
         return data_dict
 
+@TRANSFORMS.register_module()
+class MultiplicativeRandomJitter(object):
+    def __init__(self, sigma=0.05, clip=0.05, keys=("energy",), p=0.5):
+        assert clip > 0
+        self.sigma = sigma
+        self.clip = clip
+        if not isinstance(keys, tuple):
+            keys = (keys,)
+        self.keys = keys
+        self.p = p
+
+    def __call__(self, data_dict):
+        if random.random() > self.p:
+            return data_dict
+        for k in self.keys:
+            if k in data_dict.keys():
+                noise = np.clip(
+                    np.random.randn(*data_dict[k].shape) * self.sigma,
+                    -self.clip,
+                    self.clip,
+                )
+                data_dict[k] *= 1.0 + noise
+            else:
+                raise ValueError(f"Key {k} not found in data_dict")
+        return data_dict
 
 
 @TRANSFORMS.register_module()
