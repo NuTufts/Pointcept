@@ -26,6 +26,7 @@ Author: Generated for LArTPC analysis
 import os
 import sys
 import gc
+import time
 import argparse
 import numpy as np
 import h5py
@@ -520,13 +521,14 @@ def assign_metadata_to_output_points(
             distances, indices = nn.kneighbors(output_coords.astype(np.float32))
             distances = distances.flatten()
             indices = indices.flatten()
-        except Exception:
+        except Exception as e:
+            print(f"    cuML NearestNeighbors failed, falling back to scipy: {e}")
             use_gpu = False
 
     if not use_gpu:
         from scipy.spatial import cKDTree
         tree = cKDTree(non_ghost_coords)
-        distances, indices = tree.query(output_coords, k=1)
+        distances, indices = tree.query(output_coords, k=1, workers=-1)
 
     # Assign metadata for points within threshold
     within_threshold = distances <= label_threshold
@@ -628,6 +630,22 @@ def main():
         file_idx = 0
         events_processed = 0
 
+        # Cumulative timing accumulators
+        timing_totals = {
+            "file_load": 0.0,
+            "data_prep": 0.0,
+            "transform": 0.0,
+            "collate": 0.0,
+            "forward_pass": 0.0,
+            "to_numpy": 0.0,
+            "nn_input_metadata": 0.0,
+            "nn_output_metadata": 0.0,
+            "particle_grouping": 0.0,
+            "particle_sampling": 0.0,
+            "cleanup": 0.0,
+        }
+        timing_counts = 0  # number of events that completed the full loop
+
         print("\nCollecting features by particle...")
         while not all_classes_satisfied() and file_idx < len(file_list):
             h5_path = file_list[file_idx]
@@ -640,14 +658,19 @@ def main():
 
             print(f"\n  Event {events_processed}: {os.path.basename(h5_path)}")
 
-            # Load raw data
+            t_event_start = time.time()
+
+            # --- File loading ---
+            t0 = time.time()
             try:
                 raw_data = load_raw_event_data(h5_path)
             except Exception as e:
                 print(f"    Error loading file: {e}")
                 continue
+            t_file_load = time.time() - t0
 
-            # Prepare data dict for transforms
+            # --- Data preparation ---
+            t0 = time.time()
             data_dict = prepare_data_dict(raw_data)
 
             # Filter to true points only if requested
@@ -667,64 +690,95 @@ def main():
             raw_labels = data_dict['segment'].copy()
             raw_trackids = data_dict['trackid'].copy()
             raw_origins = data_dict['origin'].copy()
+            t_data_prep = time.time() - t0
 
-            # Apply transforms
+            # --- Transform pipeline ---
+            t0 = time.time()
             try:
                 transformed_data = transform(data_dict)
             except Exception as e:
                 print(f"    Transform error: {e}")
                 continue
+            t_transform = time.time() - t0
 
-            # Collate for model
+            # --- Collation ---
+            t0 = time.time()
             batch_data = collate_fn([transformed_data], in_channels=in_channels)
             n_input = batch_data["coord"].shape[0]
+            t_collate = time.time() - t0
             print(f"    {n_input} input points after transform")
 
-            # Extract features
+            # --- Network forward pass ---
+            t0 = time.time()
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()
             try:
                 point = extract_features(model, batch_data, args.device)
             except Exception as e:
                 print(f"    Feature extraction error: {e}")
                 continue
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()
+            t_forward = time.time() - t0
 
+            # --- Transfer results to CPU/numpy ---
+            t0 = time.time()
             features = point.feat.cpu().numpy()
             output_coords = point.coord.cpu().numpy()
             n_output = features.shape[0]
-            print(f"    {n_output} output points, {features.shape[1]}D features")
-
-            # Get input data after transforms
             input_coords = batch_data["coord"].cpu().numpy()
             input_labels = batch_data["segment"].cpu().numpy()
+            t_to_numpy = time.time() - t0
+            print(f"    {n_output} output points, {features.shape[1]}D features")
 
-            # We need to get trackid and origin for the input points
-            # These need to be propagated through the transform...
-            # Since transforms may change point count, we use the raw data
-            # (saved before transforms) and assign via nearest neighbor to input_coords
-
-            # Assign trackids and origins to input points (post-transform)
+            # --- NN label assignment: raw -> input points ---
+            t0 = time.time()
             _, input_trackids, input_origins = assign_metadata_to_output_points(
                 input_coords, raw_coords, raw_labels, raw_trackids, raw_origins,
                 grid_size=grid_size, threshold_factor=args.label_threshold_factor,
                 ghost_label=EXTENDED_GHOST_LABEL, use_gpu=True,
             )
+            t_nn_input = time.time() - t0
 
-            # Assign metadata to output points
-            output_labels, output_trackids, output_origins = assign_metadata_to_output_points(
-                output_coords, input_coords, input_labels, input_trackids, input_origins,
-                grid_size=grid_size, threshold_factor=args.label_threshold_factor,
-                ghost_label=EXTENDED_GHOST_LABEL, use_gpu=True,
+            # --- Map metadata to output points ---
+            # With up_cast_level=4 the encoder up-casts back to the original
+            # input resolution, so output points are in 1:1 correspondence
+            # with input points (same count, same order, same coordinates).
+            # A full NN search is unnecessary — just pass metadata through.
+            t0 = time.time()
+            assert n_output == n_input, (
+                f"Output/input point count mismatch ({n_output} vs {n_input}). "
+                f"Cannot skip NN — the encoder changed the point count."
             )
+            max_coord_diff = np.max(np.abs(output_coords - input_coords))
+            if timing_counts == 0:
+                print(f"    [check] max coord diff output vs input: {max_coord_diff:.6e}")
+            if max_coord_diff > grid_size:
+                print(f"    WARNING: output/input coords differ by {max_coord_diff:.3f} "
+                      f"(> grid_size={grid_size}), falling back to NN")
+                output_labels, output_trackids, output_origins = assign_metadata_to_output_points(
+                    output_coords, input_coords, input_labels, input_trackids, input_origins,
+                    grid_size=grid_size, threshold_factor=args.label_threshold_factor,
+                    ghost_label=EXTENDED_GHOST_LABEL, use_gpu=False,
+                )
+            else:
+                output_labels = input_labels.copy()
+                output_trackids = input_trackids.copy()
+                output_origins = input_origins.copy()
+            t_nn_output = time.time() - t0
 
-            # Group output points by particle (class, trackid)
-            # particle_points[(class, trackid)] = list of indices
+            # --- Particle grouping ---
+            t0 = time.time()
             particle_points = defaultdict(list)
             for pt_idx in range(n_output):
                 cls = output_labels[pt_idx]
                 tid = output_trackids[pt_idx]
                 if cls in classes_to_collect:
                     particle_points[(cls, tid)].append(pt_idx)
+            t_grouping = time.time() - t0
 
-            # Sample from each particle
+            # --- Particle sampling ---
+            t0 = time.time()
             for (cls, tid), pt_indices in particle_points.items():
                 if class_counts[cls] >= args.target_points_per_class:
                     continue
@@ -758,8 +812,10 @@ def main():
                         seen_particles[particle_key].add(idx)
 
                     class_counts[cls] += n_to_sample
+            t_sampling = time.time() - t0
 
-            # Free per-event arrays to release memory
+            # --- Cleanup ---
+            t0 = time.time()
             del raw_data, data_dict, raw_coords, raw_labels, raw_trackids, raw_origins
             del transformed_data, batch_data, point, features, output_coords
             del input_coords, input_labels, input_trackids, input_origins
@@ -771,6 +827,31 @@ def main():
                 seen_particles.clear()
                 gc.collect()
                 torch.cuda.empty_cache()
+            t_cleanup = time.time() - t0
+
+            t_event_total = time.time() - t_event_start
+
+            # Accumulate timing
+            timing_totals["file_load"] += t_file_load
+            timing_totals["data_prep"] += t_data_prep
+            timing_totals["transform"] += t_transform
+            timing_totals["collate"] += t_collate
+            timing_totals["forward_pass"] += t_forward
+            timing_totals["to_numpy"] += t_to_numpy
+            timing_totals["nn_input_metadata"] += t_nn_input
+            timing_totals["nn_output_metadata"] += t_nn_output
+            timing_totals["particle_grouping"] += t_grouping
+            timing_totals["particle_sampling"] += t_sampling
+            timing_totals["cleanup"] += t_cleanup
+            timing_counts += 1
+
+            # Print per-event timing
+            print(f"    Timing (s): load={t_file_load:.3f}  prep={t_data_prep:.3f}  "
+                  f"transform={t_transform:.3f}  collate={t_collate:.3f}  "
+                  f"forward={t_forward:.3f}  to_numpy={t_to_numpy:.3f}  "
+                  f"nn_input={t_nn_input:.3f}  nn_output={t_nn_output:.3f}  "
+                  f"grouping={t_grouping:.3f}  sampling={t_sampling:.3f}  "
+                  f"cleanup={t_cleanup:.3f}  TOTAL={t_event_total:.3f}")
 
             # Print progress
             status = ", ".join([
@@ -778,6 +859,20 @@ def main():
                 for cls in classes_to_collect
             ])
             print(f"    Current counts: {status}")
+
+        # Print timing summary
+        print(f"\n{'='*70}")
+        print(f"TIMING SUMMARY ({timing_counts} events processed)")
+        print(f"{'='*70}")
+        grand_total = sum(timing_totals.values())
+        for component, total_time in sorted(timing_totals.items(), key=lambda x: -x[1]):
+            avg_time = total_time / timing_counts if timing_counts > 0 else 0
+            pct = 100.0 * total_time / grand_total if grand_total > 0 else 0
+            print(f"  {component:25s}: {total_time:8.2f}s total, "
+                  f"{avg_time:7.3f}s avg/event, {pct:5.1f}%")
+        print(f"  {'GRAND TOTAL':25s}: {grand_total:8.2f}s total, "
+              f"{grand_total/timing_counts if timing_counts > 0 else 0:7.3f}s avg/event")
+        print(f"{'='*70}")
 
         print(f"\n\nCollection complete after {events_processed} events")
         print("Final class counts:")
