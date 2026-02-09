@@ -1,22 +1,22 @@
 """
-t-SNE Visualization of Sonata Encoder Features with Particle-Based Sampling
+UMAP Visualization of Sonata Encoder Features with Particle-Based Sampling
 
 Extracts encoder features from a trained Sonata model and creates
-t-SNE embeddings colored by particle class for LArTPC data.
+UMAP embeddings colored by particle class for LArTPC data.
 
 This version implements particle-based sampling:
 - Limits points collected from any individual particle (by trackid)
 - Collects points until each class reaches a target count
 - Splits muon category into "muon_nu" (neutrino origin) and "muon_cosmic" (cosmic origin)
 
-Uses cuML's GPU-accelerated t-SNE implementation.
+Uses cuML's GPU-accelerated UMAP implementation.
 
 Usage:
-    python tools/visualize_sonata_tsne_particle_sampled.py \
+    python tools/visualize_sonata_umap_particle_sampled.py \
         --config configs/lartpc/pretrain-sonata-v1m1-lartpc.py \
         --checkpoint exp/lartpc/sonata-v1m1/model_best.pth \
         --data-list /path/to/val_split.txt \
-        --output tsne_features.png \
+        --output umap_features.png \
         --max-points-per-particle 100 \
         --target-points-per-class 5000
 
@@ -25,8 +25,6 @@ Author: Generated for LArTPC analysis
 
 import os
 import sys
-import gc
-import time
 import argparse
 import numpy as np
 import h5py
@@ -96,7 +94,7 @@ SSNET_TO_EXTENDED_CLASS = {
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="t-SNE visualization with particle-based sampling"
+        description="UMAP visualization with particle-based sampling"
     )
     parser.add_argument(
         "--config",
@@ -125,7 +123,7 @@ def parse_args():
     parser.add_argument(
         "--output",
         type=str,
-        default="tsne_particle_sampled.png",
+        default="umap_particle_sampled.png",
         help="Output image path",
     )
     parser.add_argument(
@@ -140,35 +138,60 @@ def parse_args():
         default=5000,
         help="Target total points per particle class (M)",
     )
+    # UMAP parameters tuned for ~90k points
     parser.add_argument(
-        "--perplexity",
-        type=float,
-        default=30.0,
-        help="t-SNE perplexity parameter",
-    )
-    parser.add_argument(
-        "--learning-rate",
-        type=float,
-        default=200.0,
-        help="t-SNE learning rate",
-    )
-    parser.add_argument(
-        "--n-iter",
+        "--n-neighbors",
         type=int,
-        default=1000,
-        help="Number of t-SNE iterations",
+        default=30,
+        help="UMAP n_neighbors: size of local neighborhood. "
+             "Higher values capture more global structure. "
+             "(default: 30, good for ~90k points; range 15-100)",
     )
     parser.add_argument(
-        "--early-exaggeration",
+        "--min-dist",
         type=float,
-        default=12.0,
-        help="t-SNE early exaggeration factor",
+        default=0.1,
+        help="UMAP min_dist: minimum distance between embedded points. "
+             "Lower values create tighter clusters. "
+             "(default: 0.1; range 0.0-1.0)",
+    )
+    parser.add_argument(
+        "--spread",
+        type=float,
+        default=1.0,
+        help="UMAP spread: effective scale of embedded points. "
+             "(default: 1.0)",
+    )
+    parser.add_argument(
+        "--n-epochs",
+        type=int,
+        default=500,
+        help="UMAP n_epochs: number of training epochs. "
+             "(default: 500; UMAP auto-default for >10k points is 200, "
+             "but 500 gives better convergence for ~90k points)",
     )
     parser.add_argument(
         "--metric",
         type=str,
         default="euclidean",
-        help="t-SNE distance metric (default: euclidean)",
+        help="UMAP distance metric (default: euclidean)",
+    )
+    parser.add_argument(
+        "--repulsion-strength",
+        type=float,
+        default=1.0,
+        help="UMAP repulsion_strength: weight of repulsive forces between "
+             "dissimilar points. Higher values push different clusters further "
+             "apart, improving class separation. (default: 1.0; try 2.0-5.0)",
+    )
+    parser.add_argument(
+        "--negative-sample-rate",
+        type=int,
+        default=5,
+        help="UMAP negative_sample_rate: number of negative samples per "
+             "positive sample during optimization. Higher values improve "
+             "separation at the cost of speed. (default: 5; try 10-20 for "
+             "~90k points)",
     )
     parser.add_argument(
         "--seed",
@@ -193,12 +216,6 @@ def parse_args():
         type=str,
         default=None,
         help="Save extracted features to .npz file",
-    )
-    parser.add_argument(
-        "--stop-after-features",
-        action='store_true',
-        default=False,
-        help="If flag provided, stop after we save feature vectors",
     )
     parser.add_argument(
         "--load-features",
@@ -229,12 +246,6 @@ def parse_args():
         action='store_true',
         default=False,
         help="Include 'other' class points in the visualization",
-    )
-    parser.add_argument(
-        "--normalize-features",
-        action='store_true',
-        default=False,
-        help="L2-normalize feature vectors before running t-SNE",
     )
     return parser.parse_args()
 
@@ -521,14 +532,13 @@ def assign_metadata_to_output_points(
             distances, indices = nn.kneighbors(output_coords.astype(np.float32))
             distances = distances.flatten()
             indices = indices.flatten()
-        except Exception as e:
-            print(f"    cuML NearestNeighbors failed, falling back to scipy: {e}")
+        except ImportError:
             use_gpu = False
 
     if not use_gpu:
         from scipy.spatial import cKDTree
         tree = cKDTree(non_ghost_coords)
-        distances, indices = tree.query(output_coords, k=1, workers=-1)
+        distances, indices = tree.query(output_coords, k=1)
 
     # Assign metadata for points within threshold
     within_threshold = distances <= label_threshold
@@ -539,39 +549,26 @@ def assign_metadata_to_output_points(
     return labels, trackids, origins
 
 
-def get_tsne_reducer(perplexity=30.0, learning_rate=200.0, n_iter=1000,
-                     early_exaggeration=12.0, metric="euclidean",
-                     random_state=42, init_method='pca'):
-    """Create t-SNE reducer, using cuML (GPU) if available, else sklearn (CPU)."""
-    try:
-        from cuml.manifold import TSNE as cumlTSNE
-        print("Using cuML (GPU) t-SNE")
-        reducer = cumlTSNE(
-            n_components=2,
-            perplexity=perplexity,
-            learning_rate=learning_rate,
-            n_iter=n_iter,
-            early_exaggeration=early_exaggeration,
-            metric=metric,
-            random_state=random_state,
-            verbose=1,
-            init=init_method,
-            method='fft'
-        )
-    except Exception:
-        from sklearn.manifold import TSNE as sklearnTSNE
-        print("cuML not available, using sklearn (CPU) t-SNE")
-        reducer = sklearnTSNE(
-            n_components=2,
-            perplexity=perplexity,
-            learning_rate=learning_rate,
-            n_iter=n_iter,
-            early_exaggeration=early_exaggeration,
-            metric=metric,
-            random_state=random_state,
-            verbose=1,
-            init=init_method
-        )
+def get_umap_reducer(n_neighbors=30, min_dist=0.1, spread=1.0,
+                     n_epochs=500, metric="euclidean",
+                     repulsion_strength=1.0, negative_sample_rate=5,
+                     random_state=42):
+    """Create cuML UMAP reducer with defaults tuned for ~90k points."""
+    from cuml.manifold import UMAP as cumlUMAP
+
+    print("Using cuML (GPU) UMAP")
+    reducer = cumlUMAP(
+        n_components=2,
+        n_neighbors=n_neighbors,
+        min_dist=min_dist,
+        spread=spread,
+        n_epochs=n_epochs,
+        metric=metric,
+        repulsion_strength=repulsion_strength,
+        negative_sample_rate=negative_sample_rate,
+        random_state=random_state,
+        verbose=True,
+    )
     return reducer
 
 
@@ -633,22 +630,6 @@ def main():
         file_idx = 0
         events_processed = 0
 
-        # Cumulative timing accumulators
-        timing_totals = {
-            "file_load": 0.0,
-            "data_prep": 0.0,
-            "transform": 0.0,
-            "collate": 0.0,
-            "forward_pass": 0.0,
-            "to_numpy": 0.0,
-            "nn_input_metadata": 0.0,
-            "nn_output_metadata": 0.0,
-            "particle_grouping": 0.0,
-            "particle_sampling": 0.0,
-            "cleanup": 0.0,
-        }
-        timing_counts = 0  # number of events that completed the full loop
-
         print("\nCollecting features by particle...")
         while not all_classes_satisfied() and file_idx < len(file_list):
             h5_path = file_list[file_idx]
@@ -661,19 +642,14 @@ def main():
 
             print(f"\n  Event {events_processed}: {os.path.basename(h5_path)}")
 
-            t_event_start = time.time()
-
-            # --- File loading ---
-            t0 = time.time()
+            # Load raw data
             try:
                 raw_data = load_raw_event_data(h5_path)
             except Exception as e:
                 print(f"    Error loading file: {e}")
                 continue
-            t_file_load = time.time() - t0
 
-            # --- Data preparation ---
-            t0 = time.time()
+            # Prepare data dict for transforms
             data_dict = prepare_data_dict(raw_data)
 
             # Filter to true points only if requested
@@ -693,95 +669,64 @@ def main():
             raw_labels = data_dict['segment'].copy()
             raw_trackids = data_dict['trackid'].copy()
             raw_origins = data_dict['origin'].copy()
-            t_data_prep = time.time() - t0
 
-            # --- Transform pipeline ---
-            t0 = time.time()
+            # Apply transforms
             try:
                 transformed_data = transform(data_dict)
             except Exception as e:
                 print(f"    Transform error: {e}")
                 continue
-            t_transform = time.time() - t0
 
-            # --- Collation ---
-            t0 = time.time()
+            # Collate for model
             batch_data = collate_fn([transformed_data], in_channels=in_channels)
             n_input = batch_data["coord"].shape[0]
-            t_collate = time.time() - t0
             print(f"    {n_input} input points after transform")
 
-            # --- Network forward pass ---
-            t0 = time.time()
-            if torch.cuda.is_available():
-                torch.cuda.synchronize()
+            # Extract features
             try:
                 point = extract_features(model, batch_data, args.device)
             except Exception as e:
                 print(f"    Feature extraction error: {e}")
                 continue
-            if torch.cuda.is_available():
-                torch.cuda.synchronize()
-            t_forward = time.time() - t0
 
-            # --- Transfer results to CPU/numpy ---
-            t0 = time.time()
             features = point.feat.cpu().numpy()
             output_coords = point.coord.cpu().numpy()
             n_output = features.shape[0]
-            input_coords = batch_data["coord"].cpu().numpy()
-            input_labels = batch_data["segment"].cpu().numpy()
-            t_to_numpy = time.time() - t0
             print(f"    {n_output} output points, {features.shape[1]}D features")
 
-            # --- NN label assignment: raw -> input points ---
-            t0 = time.time()
+            # Get input data after transforms
+            input_coords = batch_data["coord"].cpu().numpy()
+            input_labels = batch_data["segment"].cpu().numpy()
+
+            # We need to get trackid and origin for the input points
+            # These need to be propagated through the transform...
+            # Since transforms may change point count, we use the raw data
+            # (saved before transforms) and assign via nearest neighbor to input_coords
+
+            # Assign trackids and origins to input points (post-transform)
             _, input_trackids, input_origins = assign_metadata_to_output_points(
                 input_coords, raw_coords, raw_labels, raw_trackids, raw_origins,
                 grid_size=grid_size, threshold_factor=args.label_threshold_factor,
                 ghost_label=EXTENDED_GHOST_LABEL, use_gpu=True,
             )
-            t_nn_input = time.time() - t0
 
-            # --- Map metadata to output points ---
-            # With up_cast_level=4 the encoder up-casts back to the original
-            # input resolution, so output points are in 1:1 correspondence
-            # with input points (same count, same order, same coordinates).
-            # A full NN search is unnecessary — just pass metadata through.
-            t0 = time.time()
-            assert n_output == n_input, (
-                f"Output/input point count mismatch ({n_output} vs {n_input}). "
-                f"Cannot skip NN — the encoder changed the point count."
+            # Assign metadata to output points
+            output_labels, output_trackids, output_origins = assign_metadata_to_output_points(
+                output_coords, input_coords, input_labels, input_trackids, input_origins,
+                grid_size=grid_size, threshold_factor=args.label_threshold_factor,
+                ghost_label=EXTENDED_GHOST_LABEL, use_gpu=True,
             )
-            max_coord_diff = np.max(np.abs(output_coords - input_coords))
-            if timing_counts == 0:
-                print(f"    [check] max coord diff output vs input: {max_coord_diff:.6e}")
-            if max_coord_diff > grid_size:
-                print(f"    WARNING: output/input coords differ by {max_coord_diff:.3f} "
-                      f"(> grid_size={grid_size}), falling back to NN")
-                output_labels, output_trackids, output_origins = assign_metadata_to_output_points(
-                    output_coords, input_coords, input_labels, input_trackids, input_origins,
-                    grid_size=grid_size, threshold_factor=args.label_threshold_factor,
-                    ghost_label=EXTENDED_GHOST_LABEL, use_gpu=False,
-                )
-            else:
-                output_labels = input_labels.copy()
-                output_trackids = input_trackids.copy()
-                output_origins = input_origins.copy()
-            t_nn_output = time.time() - t0
 
-            # --- Particle grouping ---
-            t0 = time.time()
+            # Group output points by particle (class, trackid)
+            # particle_points[(class, trackid)] = list of indices
             particle_points = defaultdict(list)
             for pt_idx in range(n_output):
                 cls = output_labels[pt_idx]
                 tid = output_trackids[pt_idx]
                 if cls in classes_to_collect:
                     particle_points[(cls, tid)].append(pt_idx)
-            t_grouping = time.time() - t0
 
-            # --- Particle sampling ---
-            t0 = time.time()
+            # Sample from each particle
             for (cls, tid), pt_indices in particle_points.items():
                 if class_counts[cls] >= args.target_points_per_class:
                     continue
@@ -808,53 +753,13 @@ def main():
 
                     for idx in sampled_indices:
                         class_points[cls].append((
-                            features[idx].copy(),
-                            output_coords[idx].copy(),
+                            features[idx],
+                            output_coords[idx],
                             tid,
                         ))
                         seen_particles[particle_key].add(idx)
 
                     class_counts[cls] += n_to_sample
-            t_sampling = time.time() - t0
-
-            # --- Cleanup ---
-            t0 = time.time()
-            del raw_data, data_dict, raw_coords, raw_labels, raw_trackids, raw_origins
-            del transformed_data, batch_data, point, features, output_coords
-            del input_coords, input_labels, input_trackids, input_origins
-            del output_labels, output_trackids, output_origins, particle_points
-
-            # Periodically clean up seen_particles for already-processed files
-            # and run garbage collection
-            if events_processed % 20 == 0:
-                seen_particles.clear()
-                gc.collect()
-                torch.cuda.empty_cache()
-            t_cleanup = time.time() - t0
-
-            t_event_total = time.time() - t_event_start
-
-            # Accumulate timing
-            timing_totals["file_load"] += t_file_load
-            timing_totals["data_prep"] += t_data_prep
-            timing_totals["transform"] += t_transform
-            timing_totals["collate"] += t_collate
-            timing_totals["forward_pass"] += t_forward
-            timing_totals["to_numpy"] += t_to_numpy
-            timing_totals["nn_input_metadata"] += t_nn_input
-            timing_totals["nn_output_metadata"] += t_nn_output
-            timing_totals["particle_grouping"] += t_grouping
-            timing_totals["particle_sampling"] += t_sampling
-            timing_totals["cleanup"] += t_cleanup
-            timing_counts += 1
-
-            # Print per-event timing
-            print(f"    Timing (s): load={t_file_load:.3f}  prep={t_data_prep:.3f}  "
-                  f"transform={t_transform:.3f}  collate={t_collate:.3f}  "
-                  f"forward={t_forward:.3f}  to_numpy={t_to_numpy:.3f}  "
-                  f"nn_input={t_nn_input:.3f}  nn_output={t_nn_output:.3f}  "
-                  f"grouping={t_grouping:.3f}  sampling={t_sampling:.3f}  "
-                  f"cleanup={t_cleanup:.3f}  TOTAL={t_event_total:.3f}")
 
             # Print progress
             status = ", ".join([
@@ -862,20 +767,6 @@ def main():
                 for cls in classes_to_collect
             ])
             print(f"    Current counts: {status}")
-
-        # Print timing summary
-        print(f"\n{'='*70}")
-        print(f"TIMING SUMMARY ({timing_counts} events processed)")
-        print(f"{'='*70}")
-        grand_total = sum(timing_totals.values())
-        for component, total_time in sorted(timing_totals.items(), key=lambda x: -x[1]):
-            avg_time = total_time / timing_counts if timing_counts > 0 else 0
-            pct = 100.0 * total_time / grand_total if grand_total > 0 else 0
-            print(f"  {component:25s}: {total_time:8.2f}s total, "
-                  f"{avg_time:7.3f}s avg/event, {pct:5.1f}%")
-        print(f"  {'GRAND TOTAL':25s}: {grand_total:8.2f}s total, "
-              f"{grand_total/timing_counts if timing_counts > 0 else 0:7.3f}s avg/event")
-        print(f"{'='*70}")
 
         print(f"\n\nCollection complete after {events_processed} events")
         print("Final class counts:")
@@ -917,64 +808,38 @@ def main():
         if cls_idx >= 0 and cls_idx < len(EXTENDED_CLASS_NAMES):
             print(f"  {EXTENDED_CLASS_NAMES[cls_idx]}: {count} ({100*count/len(all_labels):.1f}%)")
 
-    if args.stop_after_features:
-        print("Stop after saving features.")
-        sys.exit(0)
-
-    # Run t-SNE
-    print(f"\nRunning t-SNE with perplexity={args.perplexity}, lr={args.learning_rate}, n_iter={args.n_iter}...")
-    reducer = get_tsne_reducer(
-        perplexity=args.perplexity,
-        learning_rate=args.learning_rate,
-        n_iter=args.n_iter,
-        early_exaggeration=args.early_exaggeration,
+    # Run UMAP
+    print(f"\nRunning UMAP with n_neighbors={args.n_neighbors}, min_dist={args.min_dist}, "
+          f"n_epochs={args.n_epochs}, spread={args.spread}, metric={args.metric}, "
+          f"repulsion_strength={args.repulsion_strength}, "
+          f"negative_sample_rate={args.negative_sample_rate}...")
+    reducer = get_umap_reducer(
+        n_neighbors=args.n_neighbors,
+        min_dist=args.min_dist,
+        spread=args.spread,
+        n_epochs=args.n_epochs,
         metric=args.metric,
+        repulsion_strength=args.repulsion_strength,
+        negative_sample_rate=args.negative_sample_rate,
         random_state=args.seed,
     )
 
     features_f32 = all_features.astype(np.float32)
-    features_f32 = features_f32[:,-1088:] # truncate
-    if args.normalize_features:
-        norms = np.linalg.norm(features_f32, axis=1, keepdims=True)
-        norms = np.maximum(norms, 1e-12)  # avoid division by zero
-        features_f32 = features_f32 / norms
-        print("Applied L2 normalization to feature vectors")
-    print("Fit t-SNE to features=",features_f32.shape)
     embedding = reducer.fit_transform(features_f32)
-    print(f"t-SNE complete: {embedding.shape}")
+    print(f"UMAP complete: {embedding.shape}")
 
     # Create visualization
     print(f"Creating visualization...")
     import matplotlib.pyplot as plt
 
-    # Determine which classes actually have points
-    active_classes = [cls for cls in classes_to_collect
-                      if np.sum(all_labels == cls) > 0]
-    n_active = len(active_classes)
+    fig, axes = plt.subplots(1, 3, figsize=(20, 6))
 
-    # Layout: row 0 = summary panels (all-class, muon comparison, density)
-    #         rows 1+ = one panel per individual class
-    n_summary = 3
-    n_total = n_summary + n_active
-    ncols = min(4, n_total)
-    nrows = (n_total + ncols - 1) // ncols
-
-    fig, axes = plt.subplots(nrows, ncols, figsize=(6 * ncols, 5 * nrows))
-    axes = np.atleast_2d(axes)  # ensure 2D even if single row
-    axes_flat = axes.flatten()
-
-    # Shared axis limits
-    x_min, x_max = embedding[:, 0].min(), embedding[:, 0].max()
-    y_min, y_max = embedding[:, 1].min(), embedding[:, 1].max()
-    x_pad = (x_max - x_min) * 0.05
-    y_pad = (y_max - y_min) * 0.05
-
-    # --- Panel 0: All points colored by class ---
-    ax = axes_flat[0]
+    # Plot 1: All points colored by class
+    ax1 = axes[0]
     for cls_idx in classes_to_collect:
         mask = all_labels == cls_idx
         if mask.sum() > 0:
-            ax.scatter(
+            ax1.scatter(
                 embedding[mask, 0],
                 embedding[mask, 1],
                 c=EXTENDED_CLASS_COLORS.get(cls_idx, "#000000"),
@@ -982,20 +847,20 @@ def main():
                 s=2,
                 alpha=0.6,
             )
-    ax.set_xlabel("t-SNE 1")
-    ax.set_ylabel("t-SNE 2")
-    init_label = "RANDOM INIT" if args.random_init else "trained"
-    ax.set_title(f"All Points [{init_label}]\nperplexity={args.perplexity}")
-    ax.legend(markerscale=5, loc="best", fontsize=7)
-    ax.set_xlim(x_min - x_pad, x_max + x_pad)
-    ax.set_ylim(y_min - y_pad, y_max + y_pad)
 
-    # --- Panel 1: Muon comparison (nu vs cosmic) ---
-    ax = axes_flat[1]
+    ax1.set_xlabel("UMAP 1")
+    ax1.set_ylabel("UMAP 2")
+    init_label = "RANDOM INIT" if args.random_init else "trained"
+    ax1.set_title(f"All Points [{init_label}]\nn_neighbors={args.n_neighbors}, min_dist={args.min_dist}")
+    ax1.legend(markerscale=5, loc="best", fontsize=8)
+
+    # Plot 2: Muon comparison (nu vs cosmic)
+    ax2 = axes[1]
     muon_nu_mask = all_labels == 1
     muon_cosmic_mask = all_labels == 2
+
     if muon_nu_mask.sum() > 0:
-        ax.scatter(
+        ax2.scatter(
             embedding[muon_nu_mask, 0],
             embedding[muon_nu_mask, 1],
             c=EXTENDED_CLASS_COLORS[1],
@@ -1004,7 +869,7 @@ def main():
             alpha=0.7,
         )
     if muon_cosmic_mask.sum() > 0:
-        ax.scatter(
+        ax2.scatter(
             embedding[muon_cosmic_mask, 0],
             embedding[muon_cosmic_mask, 1],
             c=EXTENDED_CLASS_COLORS[2],
@@ -1012,63 +877,25 @@ def main():
             s=3,
             alpha=0.7,
         )
-    ax.set_xlabel("t-SNE 1")
-    ax.set_ylabel("t-SNE 2")
-    ax.set_title("Muon: Neutrino vs Cosmic")
-    ax.legend(markerscale=5, loc="best")
-    ax.set_xlim(x_min - x_pad, x_max + x_pad)
-    ax.set_ylim(y_min - y_pad, y_max + y_pad)
 
-    # --- Panel 2: Density plot ---
-    ax = axes_flat[2]
-    hb = ax.hexbin(
+    ax2.set_xlabel("UMAP 1")
+    ax2.set_ylabel("UMAP 2")
+    ax2.set_title("Muon Comparison: Neutrino vs Cosmic Origin")
+    ax2.legend(markerscale=5, loc="best")
+
+    # Plot 3: Density plot
+    ax3 = axes[2]
+    ax3.hexbin(
         embedding[:, 0],
         embedding[:, 1],
         gridsize=50,
         cmap="viridis",
         mincnt=1,
     )
-    ax.set_xlabel("t-SNE 1")
-    ax.set_ylabel("t-SNE 2")
-    ax.set_title("Point Density")
-    plt.colorbar(hb, ax=ax, label="Count")
-    ax.set_xlim(x_min - x_pad, x_max + x_pad)
-    ax.set_ylim(y_min - y_pad, y_max + y_pad)
-
-    # --- Individual class panels ---
-    for i, cls_idx in enumerate(active_classes):
-        ax = axes_flat[n_summary + i]
-        mask = all_labels == cls_idx
-        bg_mask = ~mask
-
-        # Draw all other points in light gray
-        ax.scatter(
-            embedding[bg_mask, 0],
-            embedding[bg_mask, 1],
-            c="#E0E0E0",
-            s=1,
-            alpha=0.3,
-            rasterized=True,
-        )
-        # Draw this class on top
-        ax.scatter(
-            embedding[mask, 0],
-            embedding[mask, 1],
-            c=EXTENDED_CLASS_COLORS.get(cls_idx, "#000000"),
-            s=4,
-            alpha=0.7,
-            label=f"{EXTENDED_CLASS_NAMES[cls_idx]} ({mask.sum()})",
-        )
-        ax.set_xlabel("t-SNE 1")
-        ax.set_ylabel("t-SNE 2")
-        ax.set_title(f"{EXTENDED_CLASS_NAMES[cls_idx]} (n={mask.sum()})")
-        ax.legend(markerscale=4, loc="best", fontsize=8)
-        ax.set_xlim(x_min - x_pad, x_max + x_pad)
-        ax.set_ylim(y_min - y_pad, y_max + y_pad)
-
-    # Hide any unused axes
-    for j in range(n_summary + n_active, len(axes_flat)):
-        axes_flat[j].set_visible(False)
+    ax3.set_xlabel("UMAP 1")
+    ax3.set_ylabel("UMAP 2")
+    ax3.set_title("Point Density")
+    plt.colorbar(ax3.collections[0], ax=ax3, label="Count")
 
     plt.tight_layout()
     plt.savefig(args.output, dpi=150, bbox_inches="tight")
@@ -1082,9 +909,13 @@ def main():
         labels=all_labels,
         class_names=EXTENDED_CLASS_NAMES,
         class_colors=[EXTENDED_CLASS_COLORS[i] for i in range(EXTENDED_NUM_CLASSES)],
-        perplexity=args.perplexity,
-        learning_rate=args.learning_rate,
-        n_iter=args.n_iter,
+        n_neighbors=args.n_neighbors,
+        min_dist=args.min_dist,
+        spread=args.spread,
+        n_epochs=args.n_epochs,
+        metric=args.metric,
+        repulsion_strength=args.repulsion_strength,
+        negative_sample_rate=args.negative_sample_rate,
     )
     print(f"Saved embedding data to {embedding_path}")
 

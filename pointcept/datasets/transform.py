@@ -147,13 +147,25 @@ class NormalizeColor(object):
 
 @TRANSFORMS.register_module()
 class NormalizeCoord(object):
+    def __init__(self, center=None, scale=None):
+        self.center = center
+        self.scale = scale
+
     def __call__(self, data_dict):
         if "coord" in data_dict.keys():
             # modified from pointnet2
-            centroid = np.mean(data_dict["coord"], axis=0)
-            data_dict["coord"] -= centroid
-            m = np.max(np.sqrt(np.sum(data_dict["coord"] ** 2, axis=1)))
-            data_dict["coord"] = data_dict["coord"] / m
+            if self.center is None:
+                centroid = np.mean(data_dict["coord"], axis=0)
+                data_dict["coord"] -= centroid
+            else:
+                centroid = np.array(self.center)
+                data_dict["coord"] -= centroid
+
+            if self.scale is None:
+                m = np.max(np.sqrt(np.sum(data_dict["coord"] ** 2, axis=1)))
+                data_dict["coord"] = data_dict["coord"] / m
+            else:
+                data_dict["coord"] = data_dict["coord"] / self.scale
         return data_dict
 
 
@@ -165,21 +177,29 @@ class PositiveShift(object):
             data_dict["coord"] -= coord_min
         return data_dict
 
-
 @TRANSFORMS.register_module()
 class CenterShift(object):
-    def __init__(self, apply_z=True):
+    def __init__(self, apply_z=True, axes=("x", "y", "z")):
         self.apply_z = apply_z
-
+        if not isinstance(axes, tuple):
+            axes = (axes,)
+        self.axes = axes
+        
     def __call__(self, data_dict):
         if "coord" in data_dict.keys():
-            x_min, y_min, z_min = data_dict["coord"].min(axis=0)
-            x_max, y_max, _ = data_dict["coord"].max(axis=0)
-            if self.apply_z:
-                shift = [(x_min + x_max) / 2, (y_min + y_max) / 2, z_min]
-            else:
-                shift = [(x_min + x_max) / 2, (y_min + y_max) / 2, 0]
-            data_dict["coord"] -= shift
+            for axis in self.axes:
+                if axis == "x":
+                    x_min, y_min, z_min = data_dict["coord"].min(axis=0)
+                    x_max, y_max, z_max = data_dict["coord"].max(axis=0)
+                    data_dict["coord"][:, 0] -= (x_min + x_max) / 2
+                elif axis == "y":
+                    x_min, y_min, z_min = data_dict["coord"].min(axis=0)
+                    x_max, y_max, z_max = data_dict["coord"].max(axis=0)
+                    data_dict["coord"][:, 1] -= (y_min + y_max) / 2
+                elif axis == "z":
+                    x_min, y_min, z_min = data_dict["coord"].min(axis=0)
+                    x_max, y_max, z_max = data_dict["coord"].max(axis=0)
+                    data_dict["coord"][:, 2] -= (z_min + z_max) / 2
         return data_dict
 
 
@@ -328,20 +348,26 @@ class RandomScale(object):
 
 @TRANSFORMS.register_module()
 class RandomFlip(object):
-    def __init__(self, p=0.5):
+    def __init__(self, p=0.5, axes=("x", "y",)):
         self.p = p
+        if not isinstance(axes, tuple):
+            axes = (axes,)
+        self.axes = axes
 
     def __call__(self, data_dict):
-        if np.random.rand() < self.p:
-            if "coord" in data_dict.keys():
+        for axis in self.axes:
+            if axis == "x" and random.random() < self.p:
                 data_dict["coord"][:, 0] = -data_dict["coord"][:, 0]
-            if "normal" in data_dict.keys():
-                data_dict["normal"][:, 0] = -data_dict["normal"][:, 0]
-        if np.random.rand() < self.p:
-            if "coord" in data_dict.keys():
+                if "normal" in data_dict.keys():
+                    data_dict["normal"][:, 0] = -data_dict["normal"][:, 0]
+            elif axis == "y" and random.random() < self.p:
                 data_dict["coord"][:, 1] = -data_dict["coord"][:, 1]
-            if "normal" in data_dict.keys():
-                data_dict["normal"][:, 1] = -data_dict["normal"][:, 1]
+                if "normal" in data_dict.keys():
+                    data_dict["normal"][:, 1] = -data_dict["normal"][:, 1]
+            elif axis == "z" and random.random() < self.p:
+                data_dict["coord"][:, 2] = -data_dict["coord"][:, 2]
+                if "normal" in data_dict.keys():
+                    data_dict["normal"][:, 2] = -data_dict["normal"][:, 2]
         return data_dict
 
 
@@ -459,23 +485,32 @@ class RandomFlipAxis(object):
                     strength[:, [col_a, col_b]] = strength[:, [col_b, col_a]]
         return data_dict
 
-
 @TRANSFORMS.register_module()
 class RandomJitter(object):
-    def __init__(self, sigma=0.01, clip=0.05):
+    def __init__(self, sigma=0.01, clip=0.05, keys=("coord",), p=1.0):
         assert clip > 0
         self.sigma = sigma
         self.clip = clip
-
+        if not isinstance(keys, tuple):
+            keys = (keys,)
+        self.keys = keys
+        self.p = p
     def __call__(self, data_dict):
-        if "coord" in data_dict.keys():
-            jitter = np.clip(
-                self.sigma * np.random.randn(data_dict["coord"].shape[0], 3),
-                -self.clip,
-                self.clip,
-            )
-            data_dict["coord"] += jitter
+        if random.random() > self.p:
+            return data_dict
+        for k in self.keys:
+            if k in data_dict.keys():
+                jitter = np.clip(
+                    self.sigma
+                    * np.random.randn(data_dict[k].shape[0], data_dict[k].shape[1]),
+                    -self.clip,
+                    self.clip,
+                )
+                data_dict[k] += jitter
+            else:
+                raise ValueError(f"Key {k} not found in data_dict")
         return data_dict
+
 
 
 @TRANSFORMS.register_module()
@@ -1783,3 +1818,146 @@ class ImgAugmentation(object):
         correspondence[mask] -= np.array(self.crop_start)
         point["correspondence"] = correspondence.reshape(correspondence_shape)
         return point
+
+
+@TRANSFORMS.register_module()
+class LogTransform(object):
+    """
+    By Sam Young from https://github.com/DeepLearnPhysics/particle-imaging-models/
+    """
+    def __init__(self, min_val=1.0e-2, max_val=20.0, log=True, keys=("energy",)):
+        self.min_val = min_val
+        self.max_val = max_val
+        self.log = log
+        if not isinstance(keys, tuple):
+            keys = (keys,)
+        self.keys = keys
+
+    def log_transform(self, x):
+        """Transform energy to logarithmic scale on [-1,1]"""
+        # [emin, emax] -> [-1,1]
+        y0 = np.log10(self.min_val)
+        y1 = np.log10(self.max_val + self.min_val)
+        return 2 * (np.log10(x + self.min_val) - y0) / (y1 - y0) - 1
+
+    def linear_transform(self, x):
+        """Transform energy to linear scale on [-1,1]"""
+        return 2 * (x - self.min_val) / (self.max_val - self.min_val) - 1
+
+    def __call__(self, data_dict):
+        for k in self.keys:
+            if k in data_dict.keys():
+                data_dict[k] = (
+                    self.log_transform(data_dict[k])
+                    if self.log
+                    else self.linear_transform(data_dict[k])
+                )
+            else:
+                raise ValueError(f"Key {k} not found in data_dict")
+        return data_dict
+
+
+@TRANSFORMS.register_module()
+class GeneratePatchMask(object):
+    """
+    Generate grid-based patch mask for multi-view point clouds.
+
+    Reimplements the masking logic from Sonata's generate_mask() in numpy.
+    Quantizes coordinates into a 3D grid, assigns points to patches,
+    then randomly selects a fraction of patches to mask.
+
+    Operates on concatenated view arrays with cumulative offsets
+    (as produced by MultiViewGenerator).
+
+    Args:
+        mask_size (float): Grid cell size for defining patches.
+        mask_ratio (float): Fraction of patches to mask (0 to 1).
+        prefix (str): Key prefix, e.g. "global" operates on
+            data_dict["global_coord"] and data_dict["global_offset"].
+    """
+
+    def __init__(self, mask_size=2.0, mask_ratio=0.5, prefix="global"):
+        self.mask_size = mask_size
+        self.mask_ratio = mask_ratio
+        self.prefix = prefix
+
+    def __call__(self, data_dict):
+        coord = data_dict[f"{self.prefix}_coord"]
+        offset = data_dict[f"{self.prefix}_offset"]
+        n_total = coord.shape[0]
+
+        mask = np.zeros(n_total, dtype=bool)
+        cluster = np.zeros(n_total, dtype=np.int64)
+
+        prev = 0
+        cluster_offset = 0
+        for off in offset:
+            off = int(off)
+            view_coord = coord[prev:off]
+
+            # Grid quantization (mirrors torch floor-divide in Sonata)
+            min_coord = view_coord.min(axis=0)
+            grid_coord = ((view_coord - min_coord) // self.mask_size).astype(
+                np.int64
+            )
+
+            # Find unique patches and assign each point to its patch
+            _, view_cluster = np.unique(
+                grid_coord, axis=0, return_inverse=True
+            )
+
+            n_patches = int(view_cluster.max() + 1)
+            n_mask = int(n_patches * self.mask_ratio)
+
+            # Randomly select patches to mask
+            mask_patch_ids = np.random.choice(
+                n_patches, size=n_mask, replace=False
+            )
+            view_mask = np.isin(view_cluster, mask_patch_ids)
+
+            mask[prev:off] = view_mask
+            cluster[prev:off] = view_cluster + cluster_offset
+            cluster_offset += n_patches
+            prev = off
+
+        data_dict[f"{self.prefix}_mask"] = mask
+        data_dict[f"{self.prefix}_cluster"] = cluster
+        return data_dict
+
+
+@TRANSFORMS.register_module()
+class ApplyMaskJitter(object):
+    """
+    Apply coordinate jitter to masked points.
+
+    Reimplements the mask jitter from Sonata's forward() in numpy.
+    Generates Gaussian noise for masked point coordinates and clips it.
+
+    Args:
+        jitter_sigma (float): Standard deviation of Gaussian noise.
+        jitter_clip (float or None): Clip noise to +/- this value.
+            Defaults to 2 * jitter_sigma.
+        prefix (str): Key prefix matching GeneratePatchMask.
+    """
+
+    def __init__(self, jitter_sigma=0.125, jitter_clip=None, prefix="global"):
+        self.jitter_sigma = jitter_sigma
+        self.jitter_clip = (
+            jitter_clip if jitter_clip is not None else 2.0 * jitter_sigma
+        )
+        self.prefix = prefix
+
+    def __call__(self, data_dict):
+        coord = data_dict[f"{self.prefix}_coord"]
+        mask = data_dict[f"{self.prefix}_mask"]
+
+        jittered = coord.copy()
+        n_masked = int(mask.sum())
+        if n_masked > 0:
+            noise = np.random.randn(n_masked, 3) * self.jitter_sigma
+            noise = np.clip(noise, -self.jitter_clip, self.jitter_clip)
+            jittered[mask] = jittered[mask] + noise
+
+        data_dict[f"{self.prefix}_jittered_coord"] = jittered
+        return data_dict
+

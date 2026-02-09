@@ -155,7 +155,7 @@ class LArTPCDataset(DefaultDataset):
         label_mode="pid",
         coord_scale=1.0,
         wire_scale=1.0/3456.0,
-        log_transform_edep=True,
+        adc_scale=1.0,
         test_mode=False,
         test_cfg=None,
         cache=False,
@@ -166,6 +166,7 @@ class LArTPCDataset(DefaultDataset):
         true_points_only=False,
         drop_cosmics=False,
         drop_cosmics_prob=0.5,
+        add_min_pixval=1.0e-2,
         **kwargs
     ):
         self.use_reco_coords = use_reco_coords
@@ -173,7 +174,8 @@ class LArTPCDataset(DefaultDataset):
         self.label_mode = label_mode
         self.coord_scale = coord_scale
         self.wire_scale = wire_scale
-        self.log_transform_edep = log_transform_edep
+        self.adc_scale = adc_scale
+        self.add_min_pixval = add_min_pixval
         self.include_ghosts = include_ghosts
         self.exclude_other = exclude_other
         self.data_list_file = data_list_file
@@ -352,14 +354,13 @@ class LArTPCDataset(DefaultDataset):
             # Load energy deposition as strength
             if self.use_edep_as_strength:
                 edep = np.array(f['/entry_0/triplet_data/pixval'], dtype=np.float32)
-                if self.log_transform_edep:
-                    # Normalize pixval (N, 3) - pixel intensities from 3 wire planes
-                    # Each column is the signal from u, v, y wire plane images
-                    strength = (edep / 500.0).astype(np.float32)
-                else:
-                    strength = edep.astype(np.float32)
+                # Scale pixval (N, 3) - pixel intensities from 3 wire planes
+                # Each column is the signal from u, v, y wire plane images
+                strength = (edep / self.adc_scale).astype(np.float32)
             else:
                 strength = np.ones((coord.shape[0], 1), dtype=np.float32)
+            # Add a small value, so that LogTransform (transform.py) does not break
+            strength += self.add_min_pixval
 
             # Load wire coordinates as "color" feature (3 channels like RGB)
             wire_feat = np.stack([
