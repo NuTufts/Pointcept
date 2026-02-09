@@ -69,9 +69,9 @@ TRAIN_FILE_LIST="/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept/
 VAL_FILE_LIST="/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept/lartpc_data_prep/hdflist_combined_prod4_validated_shuffled_valsplit.txt"
 true_points_only=True
 
-max_points_per_view=20480
-max_points_spherecrop=20480
-min_points_spherecrop=4096
+max_points_per_view=10240
+max_points_spherecrop=10240
+min_points_spherecrop=2048
 biased_spherecrop_radius=20.0
 
 # scheduler settings
@@ -170,8 +170,8 @@ model = dict(
     mask_size_start=2.0/coord_scale,    # Start with ~2cm patches
     mask_size_base=15.0/coord_scale,    # End with ~15cm patches
     mask_size_warmup_ratio=0.06,
-    mask_ratio_start=0.2,   # Mask 30% initially
-    mask_ratio_base=0.7,    # Mask 80% at end
+    mask_ratio_start=0.2,   # Initial fraction of patches masked
+    mask_ratio_base=0.7,    # End fraction of patches masked after current_epoch=epoch*mask_ratio_warmup_ratio
     mask_ratio_warmup_ratio=0.06,
     mask_jitter=0.125/coord_scale, # half of grid_size 
 
@@ -192,7 +192,7 @@ model = dict(
 
     # Matching parameters - scaled for LArTPC geometry
     match_max_k=8,
-    match_max_r=5.0,  # ~5cm matching radius
+    match_max_r=2.0*grid_size/coord_scale,  # ~5cm matching radius
 
     # Feature upsampling through decoder levels
     up_cast_level=2,
@@ -267,7 +267,7 @@ transform = [
         global_view_scale=(0.6, 1.0),
         # Local views: crops of 3D regions (valid for spacepoints)
         local_view_num=4,
-        local_view_scale=(0.05, 0.2),
+        local_view_scale=(0.1, 0.3),
         # Shared transforms for all views
         global_shared_transform=[
             # No color augmentation - physics signals should not be modified
