@@ -229,6 +229,12 @@ def parse_args():
         default=False,
         help="Include 'other' class points in the visualization",
     )
+    parser.add_argument(
+        "--normalize-features",
+        action='store_true',
+        default=False,
+        help="L2-normalize feature vectors before running t-SNE",
+    )
     return parser.parse_args()
 
 
@@ -829,6 +835,11 @@ def main():
     )
 
     features_f32 = all_features.astype(np.float32)
+    if args.normalize_features:
+        norms = np.linalg.norm(features_f32, axis=1, keepdims=True)
+        norms = np.maximum(norms, 1e-12)  # avoid division by zero
+        features_f32 = features_f32 / norms
+        print("Applied L2 normalization to feature vectors")
     embedding = reducer.fit_transform(features_f32)
     print(f"t-SNE complete: {embedding.shape}")
 
