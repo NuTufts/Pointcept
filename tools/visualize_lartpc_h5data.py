@@ -163,8 +163,10 @@ def load_event_data(h5file, entry_key):
             'pos': kp_grp['pos'][:],
             'kptype': kp_grp['kptype'][:],
             'pid': kp_grp['pid'][:],
-            'trackid': kp_grp['trackid'][:]
+            'trackid': kp_grp['trackid'][:],
         }
+        if 'startpos' in kp_grp:
+            data['keypoints']['startpos'] = kp_grp['startpos'][:]
 
     return data
 
@@ -385,12 +387,25 @@ def create_3d_scatter(event_data, color_mode='ssnet', show_keypoints=True, show_
         kp_pos = kp_data['pos']
         kp_types = kp_data['kptype']
 
+        kp_trackids = kp_data['trackid']
+        kp_pids = kp_data['pid']
+
         for kptype in np.unique(kp_types):
             mask = kp_types == kptype
             kp_pts = kp_pos[mask]
+            kp_tids = kp_trackids[mask]
+            kp_pids_masked = kp_pids[mask]
 
             if len(kp_pts) == 0:
                 continue
+
+            hover_texts = [
+                f"{KPTYPE_NAMES.get(kptype, 'KP')}<br>"
+                f"({p[0]:.1f}, {p[1]:.1f}, {p[2]:.1f})<br>"
+                f"TrackID: {tid}<br>"
+                f"PID: {get_pdg_name(pid)} ({pid})"
+                for p, tid, pid in zip(kp_pts, kp_tids, kp_pids_masked)
+            ]
 
             fig.add_trace(go.Scatter3d(
                 x=kp_pts[:, 0],
@@ -405,8 +420,45 @@ def create_3d_scatter(event_data, color_mode='ssnet', show_keypoints=True, show_
                 ),
                 name=f"KP: {KPTYPE_NAMES.get(kptype, f'Type {kptype}')}",
                 hoverinfo='text',
-                hovertext=[f"{KPTYPE_NAMES.get(kptype, 'KP')}<br>({p[0]:.1f}, {p[1]:.1f}, {p[2]:.1f})" for p in kp_pts]
+                hovertext=hover_texts,
             ))
+
+        # Add photon start positions (pid == 22)
+        if 'startpos' in kp_data:
+            photon_mask = kp_pids == 22
+            print("number of photon keypoints: ",len(photon_mask))
+            if np.any(photon_mask):
+                photon_startpos = kp_data['startpos'][photon_mask]
+                photon_tids = kp_trackids[photon_mask]
+                photon_pids = kp_pids[photon_mask]
+                photon_kptypes = kp_types[photon_mask]
+
+                hover_texts = [
+                    f"Photon Start<br>"
+                    f"({p[0]:.1f}, {p[1]:.1f}, {p[2]:.1f})<br>"
+                    f"TrackID: {tid}<br>"
+                    f"PID: {get_pdg_name(pid)} ({pid})<br>"
+                    f"KP Type: {KPTYPE_NAMES.get(kpt, f'Type {kpt}')}"
+                    for p, tid, pid, kpt in zip(photon_startpos, photon_tids, photon_pids, photon_kptypes)
+                ]
+
+                fig.add_trace(go.Scatter3d(
+                    x=photon_startpos[:, 0],
+                    y=photon_startpos[:, 1],
+                    z=photon_startpos[:, 2],
+                    mode='markers',
+                    marker=dict(
+                        size=8,
+                        color='rgba(255,165,0,1)',  # orange
+                        symbol='circle',
+                        line=dict(width=2, color='black')
+                    ),
+                    name=f"Photon Start ({len(photon_startpos)})",
+                    hoverinfo='text',
+                    hovertext=hover_texts,
+                ))
+        else:
+            print("startpos not in mckeypoints group")
 
     # Add detector outline
     detdata = DetectorOutline()
