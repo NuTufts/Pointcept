@@ -5,6 +5,7 @@ import argparse
 parser = argparse.ArgumentParser(description='Process larcv/larlite into HDF5 entry data files.')
 parser.add_argument("-i","--input-dlmerged",required=True,type=str,help="Input dlmerged file")
 parser.add_argument("-v","--verbosity",type=int,default=2,help="Verbosity level from normal=2 to debug=0")
+parser.add_argument("-n","--nentries",type=int,default=-1,help="Number of entries to run. (default is -1, which will run all entries in the file.)")
 
 args = parser.parse_args(sys.argv[1:])
 
@@ -16,7 +17,7 @@ from larflow import larflow
 dlmerged_input = args.input_dlmerged
 
 start_entry = 0
-end_entry = -1
+end_entry = args.nentries
 
 # Setup algorithm
 simchmaker = larflow.prep.SimChTripletLabelMaker()
@@ -32,7 +33,8 @@ simchmaker._mcpixelmaker.set_dwire(1)
 simchmaker._mcpixelmaker.set_drow(0)
 
 # set keypoint maker verbosity
-simchmaker._mckpmaker.set_verbosity(args.verbosity)
+#simchmaker._mckpmaker.set_verbosity(args.verbosity)
+simchmaker._shower_fragment_maker.set_verbosity(args.verbosity)
 
 ioll = larlite.storage_manager( larlite.storage_manager.kREAD )
 ioll.add_in_filename( dlmerged_input )
@@ -48,7 +50,7 @@ nentries = ioll.get_entries()
 if end_entry<0 or end_entry>=nentries:
   end_entry = nentries
 else:
-  end_entry = end_entry+1
+  end_entry = end_entry
 
 # process input file name. we will use it to name the invididual event files
 basefilename = os.path.basename( args.input_dlmerged )

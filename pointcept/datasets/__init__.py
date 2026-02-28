@@ -22,6 +22,7 @@ from .shapenet_part import ShapeNetPartDataset
 
 # physics / LArTPC
 from .lartpc import LArTPCDataset, LArTPCInstanceDataset
+from .shower_origin import ShowerOriginDataset, ShowerOriginDatasetSimple
 
 # dataloader
 from .dataloader import MultiDatasetDataloader

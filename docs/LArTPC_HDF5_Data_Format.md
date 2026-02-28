@@ -12,7 +12,9 @@ file.h5
     ├── triplet_data/      # 3D space points with labels
     ├── image_data/        # 2D wire plane images (sparse)
     ├── mckeypoints/       # Monte Carlo truth keypoints
-    └── triplet_truth/     # Truth-matched triplet subset
+    ├── triplet_truth/     # Truth-matched triplet subset
+    ├── mc_particle_tree/  # MC particle hierarchy from Geant4
+    └── shower_fragments/  # DBSCAN-clustered EM shower fragments
 ```
 
 For files with multiple entries, additional groups `entry_1/`, `entry_2/`, etc. are present.
@@ -126,6 +128,7 @@ Monte Carlo truth keypoints mark important physics locations in the event.
 | `kptype` | (K,) | int32 | Keypoint type (see below) |
 | `pid` | (K,) | int32 | PDG particle ID |
 | `trackid` | (K,) | int32 | Geant4 track ID |
+| `startpos` | (K,3) | float32 | 3D creation position (x, y, z) in cm. Only different than pos when particle is photon (pid=22) |
 
 ### Keypoint Types
 
@@ -158,6 +161,152 @@ A subset of triplets with guaranteed truth matching, useful for training on clea
 | `ywire` | (T,) | int32 | Y plane wire |
 | `tick` | (T,) | int32 | Time tick |
 | `row` | (T,) | int32 | Image row |
+
+---
+
+## MC Particle Tree (`/entry_N/mc_particle_tree/`)
+
+The Geant4 Monte Carlo particle hierarchy, stored from the `MCParticleGraph`. Contains per-particle truth information and parent-daughter relationships.
+
+### Per-Particle Datasets
+
+| Dataset | Shape | Dtype | Description |
+|---------|-------|-------|-------------|
+| `trackid` | (P,) | int32 | Geant4 track ID |
+| `pid` | (P,) | int32 | PDG particle ID code |
+| `parent_trackid` | (P,) | int32 | Parent particle's track ID (-1 if none) |
+| `origin` | (P,) | int32 | Origin: 0=unknown, 1=neutrino, 2=cosmic |
+| `energy_mev` | (P,) | float32 | Particle kinetic energy (MeV) |
+| `process_code` | (P,) | int32 | Geant4 creation process (see below) |
+| `start_pos` | (P, 3) | float32 | True start position (x, y, z) in cm |
+| `start_pos_sce` | (P, 3) | float32 | SCE-corrected start position (x, y, z) in cm |
+
+Where P = number of particles in the event.
+
+### Daughter Relationship Datasets
+
+| Dataset | Shape | Dtype | Description |
+|---------|-------|-------|-------------|
+| `num_daughters` | (P,) | int32 | Number of daughter particles per node |
+| `daughter_start_indices` | (P,) | int32 | Start index into `daughter_trackids` for each node |
+| `daughter_trackids` | (D,) | int32 | Flattened array of daughter track IDs |
+
+Where D = total daughter entries across all particles. To get the daughters of particle `i`:
+
+```python
+start = daughter_start_indices[i]
+count = num_daughters[i]
+daughters = daughter_trackids[start:start+count]
+```
+
+### Neutrino Vertex Dataset
+
+| Dataset | Shape | Dtype | Description |
+|---------|-------|-------|-------------|
+| `nu_vertices` | (V, 3) | float32 | Neutrino interaction vertex positions (x, y, z) in cm |
+
+Where V = number of neutrino vertices in the event (typically 0 or 1).
+
+### Process Codes
+
+| Code | Geant4 Process | Description |
+|------|----------------|-------------|
+| 0 | primary | Primary particle from event generator |
+| 1 | Decay | Particle decay |
+| 2 | compt | Compton scattering |
+| 3 | conv | Pair production (photon conversion) |
+| 4 | phot | Photoelectric effect |
+| 5 | eBrem | Electron bremsstrahlung |
+| 6 | eIoni | Electron ionization |
+| 7 | muIoni | Muon ionization |
+| 8 | muBrems | Muon bremsstrahlung |
+| 9 | muPairProd | Muon pair production |
+| 10 | hIoni | Hadron ionization |
+| 11 | hadElastic | Hadronic elastic scattering |
+| 12 | neutronInelastic | Neutron inelastic scattering |
+| 13 | protonInelastic | Proton inelastic scattering |
+| 14 | pi+Inelastic | Pi+ inelastic scattering |
+| 15 | pi-Inelastic | Pi- inelastic scattering |
+| 16 | muMinusCaptureAtRest | Muon capture at rest |
+| 17 | nCapture | Neutron capture |
+| 18 | annihil | Positron annihilation |
+| 19 | CoulombScat | Coulomb scattering |
+| 20 | photonNuclear | Photonuclear interaction |
+| -1 | null | No process information |
+| 99 | other | Other/unknown process |
+
+---
+
+## Shower Fragments (`/entry_N/shower_fragments/`)
+
+DBSCAN-clustered shower fragments produced by `ShowerFragmentOriginMaker`. Each EM shower (photon or electron/positron) is split into multiple fragments based on spatial clustering. Each fragment has its own origin point (where the particle was created) and start point (most upstream point in the cluster along the shower axis).
+
+### Attributes
+
+| Attribute | Type | Description |
+|-----------|------|-------------|
+| `num_fragments` | int | Total number of fragment clusters (F) |
+
+### Datasets
+
+| Dataset | Shape | Dtype | Description |
+|---------|-------|-------|-------------|
+| `trackid` | (F,) | int32 | Geant4 track ID per fragment |
+| `pid` | (F,) | int32 | PDG code per fragment (22=photon, 11=electron, -11=positron) |
+| `istrunk` | (F,) | int32 | 1=trunk (closest to shower start), 2=secondary fragment |
+| `type` | (F,) | int32 | Origin type (see below) |
+| `startpt` | (F, 3) | float32 | Most upstream point per fragment (SCE-corrected, cm) |
+| `originpt` | (F, 3) | float32 | Particle creation point in apparent coordinates (cm). For outside-TPC showers, this is set equal to startpt |
+| `pret0shiftedoriginpt` | (F, 4) | float32 | True MC origin (x, y, z, t) without t0 shift. Used to determine inside/outside TPC classification |
+| `pointindices_flat` | (T,) | int64 | Concatenated indices into triplet_data arrays for all fragments |
+| `pointindices_counts` | (F,) | int32 | Number of points per fragment (used to split pointindices_flat) |
+
+Where F = number of fragments, T = total points across all fragments.
+
+### Origin Type (`type`)
+
+| Value | Name | Description |
+|-------|------|-------------|
+| 0 | nu-inside | Neutrino-origin particle, origin inside TPC |
+| 1 | outside | Particle origin outside TPC active volume |
+| 2 | cosmic-inside | Cosmic-origin particle, origin inside TPC |
+
+The inside/outside determination uses the `pret0shiftedoriginpt` position (true MC coordinates without t0 shift) against the TPC active volume bounds:
+- X: [0.0, 255.6] cm
+- Y: [-116.5, 116.5] cm
+- Z: [0.5, 1035.5] cm
+
+### Reconstructing Per-Fragment Masks
+
+The `pointindices_flat` and `pointindices_counts` arrays store variable-length index lists in a flat format:
+
+```python
+import numpy as np
+
+sf = f['entry_0/shower_fragments']
+num_frags = int(sf.attrs['num_fragments'])
+flat_indices = sf['pointindices_flat'][:]
+index_counts = sf['pointindices_counts'][:]
+n_points = f['entry_0/triplet_data/pos'].shape[0]
+
+offset = 0
+for i in range(num_frags):
+    count = int(index_counts[i])
+    indices = flat_indices[offset:offset+count]
+    offset += count
+
+    mask = np.zeros(n_points, dtype=bool)
+    mask[indices[indices < n_points]] = True
+    # mask now selects triplet_data points belonging to fragment i
+```
+
+### Notes
+
+- Multiple fragments can share the same `trackid` — they are DBSCAN clusters from the same shower particle.
+- The trunk fragment (`istrunk=1`) is the cluster whose start point is closest to the original shower start.
+- `originpt` is in SCE-corrected "apparent" coordinates, suitable as a prediction target for models.
+- For showers originating outside the TPC, `originpt` is set equal to `startpt` since the true origin is not a physically meaningful prediction target in detector coordinates.
+- `pret0shiftedoriginpt` is the raw Geant4 truth position without any time-zero shift applied; it is used only for classification, not as a prediction target.
 
 ---
 
@@ -303,7 +452,8 @@ Features:
 These HDF5 files are produced by `SimChTripletLabelMaker` from the `ubdl/larflow` package:
 - Source: `ubdl/larflow/larflow/PrepFlowMatchData/SimChTripletLabelMaker.cxx`
 - The `save_entry_sparseimg()` method writes the sparse image data
-- The `save_entry()` method writes the triplet and truth data
+- The `save_entry()` method writes the triplet, truth, and shower fragment data
+- Shower fragments are produced by `ShowerFragmentOriginMaker` (`ShowerFragmentOriginMaker.cxx`) using DBSCAN clustering and exported via its `save_entry_to_hdf()` method
 
 ---
 
