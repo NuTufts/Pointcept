@@ -117,10 +117,10 @@ class ToTensor(object):
         elif isinstance(data, str):
             # note that str is also a kind of sequence, judgement should before sequence
             return data
-        elif isinstance(data, int):
-            return torch.LongTensor([data])
-        elif isinstance(data, float):
-            return torch.FloatTensor([data])
+        elif isinstance(data, (int, np.integer)):
+            return torch.LongTensor([int(data)])
+        elif isinstance(data, (float, np.floating)):
+            return torch.FloatTensor([float(data)])
         elif isinstance(data, np.ndarray) and np.issubdtype(data.dtype, bool):
             return torch.from_numpy(data)
         elif isinstance(data, np.ndarray) and np.issubdtype(data.dtype, np.integer):
@@ -166,6 +166,25 @@ class NormalizeCoord(object):
                 data_dict["coord"] = data_dict["coord"] / m
             else:
                 data_dict["coord"] = data_dict["coord"] / self.scale
+        return data_dict
+
+
+@TRANSFORMS.register_module()
+class NormalizeShowerCoords(object):
+    """Normalize coord and all shower-related coordinate keys with the same center/scale."""
+
+    def __init__(self, center, scale,
+                 extra_keys=("origin_coord", "start_coord")):
+        self.center = np.array(center, dtype=np.float32)
+        self.scale = float(scale)
+        self.extra_keys = extra_keys
+
+    def __call__(self, data_dict):
+        for key in ("coord",) + tuple(self.extra_keys):
+            if key in data_dict and data_dict[key] is not None:
+                val = data_dict[key]
+                if isinstance(val, np.ndarray) and val.size > 0:
+                    data_dict[key] = (val - self.center) / self.scale
         return data_dict
 
 

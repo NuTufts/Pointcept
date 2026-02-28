@@ -8,6 +8,7 @@ with Slot Attention for query formation and multi-round cross-attention.
 Author: Claude Code Assistant
 """
 
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -188,14 +189,16 @@ class OriginScoreHead(nn.Module):
 
         x = self.shared(features)
 
-        # Origin score (probability)
-        scores = torch.sigmoid(self.score_head(x)).squeeze(-1)
+        # Origin score: return both logits and sigmoid scores
+        # Cast to float32 to avoid NaN from bfloat16 overflow
+        score_logits = self.score_head(x).float().squeeze(-1)
+        scores = torch.sigmoid(score_logits.clamp(-50, 50))
 
-        output = {'scores': scores}
+        output = {'scores': scores, 'score_logits': score_logits}
 
         if self.predict_distance:
-            # Distance (positive via softplus)
-            distances = F.softplus(self.distance_head(x)).squeeze(-1)
+            # Distance (positive via softplus, cast to float32 for numerical safety)
+            distances = F.softplus(self.distance_head(x).float().clamp(-50, 50)).squeeze(-1)
             output['distances'] = distances
 
         if squeeze_batch:
@@ -456,12 +459,20 @@ class ShowerOriginPredictor(nn.Module):
             -0.5 * (distances_to_origin / self.gaussian_sigma) ** 2
         )
 
-        # Score loss: Binary cross-entropy with soft targets
-        score_loss = F.binary_cross_entropy(
-            pred_scores,
-            target_scores,
-            reduction='mean'
-        )
+        # Score loss: BCE with logits for numerical stability
+        with torch.amp.autocast('cuda', enabled=False):
+            if "score_logits" in predictions:
+                score_loss = F.binary_cross_entropy_with_logits(
+                    predictions["score_logits"].float(),
+                    target_scores.float(),
+                    reduction='mean'
+                )
+            else:
+                score_loss = F.binary_cross_entropy(
+                    pred_scores.float().clamp(1e-7, 1 - 1e-7),
+                    target_scores.float(),
+                    reduction='mean'
+                )
         losses["score_loss"] = score_loss
 
         # Distance loss
@@ -634,12 +645,20 @@ class ShowerOriginPredictorV2(nn.Module):
                 -0.5 * (gt_distances / self.gaussian_sigma) ** 2
             )
 
-            # Score loss
-            score_loss = F.binary_cross_entropy(
-                predictions["scores"],
-                target_scores,
-                reduction='mean'
-            )
+            # Score loss: BCE with logits for numerical stability
+            with torch.amp.autocast('cuda', enabled=False):
+                if "score_logits" in predictions:
+                    score_loss = F.binary_cross_entropy_with_logits(
+                        predictions["score_logits"].float(),
+                        target_scores.float(),
+                        reduction='mean'
+                    )
+                else:
+                    score_loss = F.binary_cross_entropy(
+                        predictions["scores"].float().clamp(1e-7, 1 - 1e-7),
+                        target_scores.float(),
+                        reduction='mean'
+                    )
 
             loss = self.score_loss_weight * score_loss
 
@@ -757,7 +776,6 @@ class ShowerOriginPredictorV3(nn.Module):
         score_loss_weight: float = 1.0,
         distance_loss_weight: float = 0.1,
         classification_loss_weight: float = 1.0,
-        no_object_loss_weight: float = 0.1,
         # Origin classification
         num_origin_classes: int = 3,
         # Virtual grid params
@@ -765,6 +783,7 @@ class ShowerOriginPredictorV3(nn.Module):
         dense_spacing: float = 2.0,
         dense_radius: float = 30.0,
         sparse_spacing: float = 10.0,
+        tpc_bounds: dict = None,
         k_neighbors: int = 8,
         pos_embed_dim: int = 64,
     ):
@@ -779,7 +798,6 @@ class ShowerOriginPredictorV3(nn.Module):
         self.score_loss_weight = score_loss_weight
         self.distance_loss_weight = distance_loss_weight
         self.classification_loss_weight = classification_loss_weight
-        self.no_object_loss_weight = no_object_loss_weight
         self.virtual_grid_enabled = virtual_grid_enabled
 
         # Build backbone (Sonata model)
@@ -787,6 +805,14 @@ class ShowerOriginPredictorV3(nn.Module):
         if freeze_backbone:
             for p in self.backbone.parameters():
                 p.requires_grad = False
+            # Free unused Sonata components to save GPU memory.
+            # When return_point=True, only teacher.backbone is used.
+            if hasattr(self.backbone, 'student'):
+                del self.backbone.student
+            if hasattr(self.backbone, 'teacher'):
+                for key in list(self.backbone.teacher.keys()):
+                    if key != 'backbone':
+                        del self.backbone.teacher[key]
 
         # Slot Attention for query formation from shower features
         self.slot_attention = SlotAttention(
@@ -812,6 +838,7 @@ class ShowerOriginPredictorV3(nn.Module):
                 dense_spacing=dense_spacing,
                 dense_radius=dense_radius,
                 sparse_spacing=sparse_spacing,
+                tpc_bounds=tpc_bounds,
                 k_neighbors=k_neighbors,
                 pos_embed_dim=pos_embed_dim,
             )
@@ -836,11 +863,6 @@ class ShowerOriginPredictorV3(nn.Module):
             dim=backbone_out_channels,
             hidden_dim=hidden_channels,
             num_classes=num_origin_classes,
-        )
-
-        # No-object embedding for unmatched slots (DETR-style)
-        self.no_object_embed = nn.Parameter(
-            torch.randn(1, backbone_out_channels) * 0.02
         )
 
         # Optional: custom criteria if provided
@@ -871,35 +893,71 @@ class ShowerOriginPredictorV3(nn.Module):
         # ==================================================================
         # 1. Encode full event with backbone
         # ==================================================================
+        # PT-v3m2's GridPooling treats 'origin_coord' as per-point coords (N,3)
+        # for pooling, but our dataset uses it for the shower origin point (3,).
+        # Save and remove shower-specific keys before backbone forward.
+        _saved_keys = {}
+        for key in ("origin_coord", "origin_type", "origin_distance",
+                     "shower_mask", "start_coord"):
+            if key in input_dict:
+                _saved_keys[key] = input_dict.pop(key)
+
         if self.freeze_backbone:
             with torch.no_grad():
                 result = self.backbone(input_dict, return_point=True)
         else:
             result = self.backbone(input_dict, return_point=True)
 
+        # Restore saved keys
+        input_dict.update(_saved_keys)
+
         point = result["point"]
-        event_features = point.feat  # (N, D)
-        real_coords = point.coord  # (N, 3)
+        event_features = point.feat  # (N_out, D) — may differ from input N
+        real_coords = point.coord  # (N_out, 3)
+        N_out = event_features.shape[0]
 
         # ==================================================================
-        # 2. Extract shower features (union of all shower masks)
+        # 2. Extract shower features from single fragment mask
         # ==================================================================
         shower_mask = input_dict.get("shower_mask", None)
-        shower_masks_list = input_dict.get("shower_masks", None)
+        input_coords = input_dict.get("coord", None)
 
-        if shower_masks_list is not None and isinstance(shower_masks_list, (list, tuple)):
-            # Multi-shower mode: compute union mask
-            union_mask = torch.zeros(
-                event_features.shape[0], dtype=torch.bool, device=event_features.device
-            )
-            for m in shower_masks_list:
-                union_mask = union_mask | m.bool()
-            shower_features = event_features[union_mask]
-        elif shower_mask is not None:
-            union_mask = shower_mask.bool()
-            shower_features = event_features[union_mask]
+        # Masks are at input resolution; backbone output may be downsampled
+        # (up_cast_level < num_enc_levels). Downsample masks via nearest-
+        # neighbor matching from backbone output coords to input coords.
+        def _downsample_mask(mask_input_res, input_coords, output_coords):
+            """Map a per-input-point mask to per-output-point via NN.
+
+            Uses chunked distance computation to avoid allocating a full
+            (N_out, N_in) matrix which can be ~400MB at N=10K.
+            """
+            if mask_input_res.shape[0] == output_coords.shape[0]:
+                return mask_input_res  # already at output resolution
+            out_f = output_coords.float()
+            in_f = input_coords.float()
+            chunk_size = 1024
+            nn_idx = torch.empty(out_f.shape[0], dtype=torch.long,
+                                 device=out_f.device)
+            for start in range(0, out_f.shape[0], chunk_size):
+                end = min(start + chunk_size, out_f.shape[0])
+                dists = torch.cdist(
+                    out_f[start:end].unsqueeze(0),
+                    in_f.unsqueeze(0),
+                ).squeeze(0)
+                nn_idx[start:end] = dists.argmin(dim=1)
+            return mask_input_res[nn_idx]
+
+        need_downsample = (
+            input_coords is not None
+            and input_coords.shape[0] != N_out
+        )
+
+        if need_downsample and shower_mask is not None:
+            shower_mask = _downsample_mask(shower_mask, input_coords, real_coords)
+
+        if shower_mask is not None:
+            shower_features = event_features[shower_mask.bool()]
         else:
-            # No shower mask: use all event features (unlikely in practice)
             shower_features = event_features
 
         # Handle case where shower has very few points
@@ -912,17 +970,19 @@ class ShowerOriginPredictorV3(nn.Module):
 
         # ==================================================================
         # 3. Slot Attention: aggregate shower features into K slots
+        # Run in float32 to avoid bfloat16 overflow in randomly-initialized layers
         # ==================================================================
-        shower_slots, _ = self.slot_attention(shower_features.unsqueeze(0))
-        shower_slots = shower_slots.squeeze(0)  # (K, D)
+        with torch.amp.autocast('cuda', enabled=False):
+            shower_slots, _ = self.slot_attention(shower_features.float().unsqueeze(0))
+            shower_slots = shower_slots.squeeze(0)  # (K, D)
 
         # ==================================================================
         # 4. (Optional) Virtual grid: generate virtual points and features
         # ==================================================================
         if self.virtual_grid is not None:
-            # Compute shower centroids for dense grid placement
+            # Compute shower centroid for dense grid placement
             shower_centroids = self._compute_shower_centroids(
-                real_coords, shower_masks_list, shower_mask
+                real_coords, shower_mask
             )
 
             virtual_coords, virtual_features, _ = self.virtual_grid(
@@ -946,101 +1006,70 @@ class ShowerOriginPredictorV3(nn.Module):
 
         # ==================================================================
         # 5. Cross-attention: slots query all points (real + virtual)
+        # Run in float32 to avoid bfloat16 overflow in randomly-initialized layers
         # ==================================================================
-        queries = shower_slots
-        for layer in self.cross_attn_layers:
-            queries = layer(
-                queries=queries,
-                keys=all_features,
-                values=all_features,
-            )
-        # queries: (K, D) refined slot representations
+        with torch.amp.autocast('cuda', enabled=False):
+            queries = shower_slots.float()
+            all_features_f32 = all_features.float()
+            for layer in self.cross_attn_layers:
+                queries = layer(
+                    queries=queries,
+                    keys=all_features_f32,
+                    values=all_features_f32,
+                )
+            # queries: (K, D) refined slot representations
 
         # ==================================================================
         # 6. Per-slot predictions
         # ==================================================================
-        per_slot_scores, per_slot_distances, per_slot_cls = (
+        per_slot_scores, per_slot_distances, per_slot_cls, per_slot_logits = (
             self._compute_per_slot_predictions(all_features, queries)
         )
 
         # ==================================================================
-        # 7. Training: Hungarian matching loss
+        # 7. Training: direct single-fragment loss (K=1)
         # ==================================================================
         return_dict = {}
 
-        if self.training or "origin_coords" in input_dict:
-            if "origin_coords" in input_dict:
-                # V3 multi-shower loss with Hungarian matching
-                loss, row_ind, col_ind = self._hungarian_matching_loss(
-                    per_slot_scores,
-                    per_slot_distances,
-                    per_slot_cls,
-                    all_coords,
-                    input_dict,
-                )
-                return_dict["loss"] = loss
-                return_dict["matched_indices"] = (row_ind, col_ind)
-            elif "origin_distance" in input_dict:
-                # Fallback to V2-style single-shower loss
-                loss = self._single_shower_loss(
-                    per_slot_scores,
-                    per_slot_distances,
-                    all_coords,
-                    input_dict,
-                )
-                return_dict["loss"] = loss
+        if self.training or "origin_coord" in input_dict:
+            loss = self._single_fragment_loss(
+                per_slot_scores[0],
+                per_slot_logits[0],
+                per_slot_distances[0] if per_slot_distances else None,
+                per_slot_cls[0],
+                all_coords,
+                input_dict,
+            )
+            return_dict["loss"] = loss
 
         # ==================================================================
         # 8. Inference outputs
         # ==================================================================
         if not self.training:
-            return_dict["per_slot_scores"] = per_slot_scores
-            if per_slot_distances:
-                return_dict["per_slot_distances"] = per_slot_distances
-            return_dict["per_slot_classifications"] = per_slot_cls
-
-            # Per-slot predicted origin class (argmax over logits)
-            return_dict["per_slot_origin_classes"] = [
-                cls.argmax(dim=-1) for cls in per_slot_cls
-            ]
-
-            # Also produce a single merged origin_scores for backward compatibility
-            # Use the best slot (highest max score) as the representative
-            max_scores = [s.max().item() for s in per_slot_scores]
-            best_slot = max_scores.index(max(max_scores))
-
-            # Return only real-point scores (strip virtual points)
             N_real = event_features.shape[0]
-            return_dict["origin_scores"] = per_slot_scores[best_slot][:N_real]
+            return_dict["origin_scores"] = per_slot_scores[0][:N_real]
             if per_slot_distances:
-                return_dict["origin_distances"] = per_slot_distances[best_slot][:N_real]
+                return_dict["origin_distances"] = per_slot_distances[0][:N_real]
+            return_dict["origin_class"] = per_slot_cls[0].argmax(dim=-1)
 
         return return_dict
 
-    def _compute_shower_centroids(self, real_coords, shower_masks_list, shower_mask):
+    def _compute_shower_centroids(self, real_coords, shower_mask):
         """
-        Compute centroids for each shower to place dense grids.
+        Compute centroid for the single shower fragment to place dense grid.
 
         Args:
             real_coords: (N, 3) point coordinates
-            shower_masks_list: list of per-shower boolean masks, or None
-            shower_mask: (N,) union mask, or None
+            shower_mask: (N,) boolean mask, or None
 
         Returns:
             centroids: list of (3,) tensors
         """
         centroids = []
-
-        if shower_masks_list is not None and isinstance(shower_masks_list, (list, tuple)):
-            for m in shower_masks_list:
-                m_bool = m.bool()
-                if m_bool.any():
-                    centroids.append(real_coords[m_bool].mean(dim=0))
-        elif shower_mask is not None:
+        if shower_mask is not None:
             m_bool = shower_mask.bool()
             if m_bool.any():
                 centroids.append(real_coords[m_bool].mean(dim=0))
-
         return centroids
 
     def _compute_per_slot_predictions(self, event_features, queries):
@@ -1058,9 +1087,10 @@ class ShowerOriginPredictorV3(nn.Module):
             queries: (K, D) refined slot representations
 
         Returns:
-            per_slot_scores: list of K (N_total,) score tensors
+            per_slot_scores: list of K (N_total,) score tensors (sigmoid-applied)
             per_slot_distances: list of K (N_total,) distance tensors (or empty list)
             per_slot_cls: list of K (num_classes,) classification logit tensors
+            per_slot_logits: list of K (N_total,) raw logits (for numerically stable BCE)
         """
         K = queries.shape[0]
         N = event_features.shape[0]
@@ -1068,19 +1098,23 @@ class ShowerOriginPredictorV3(nn.Module):
         per_slot_scores = []
         per_slot_distances = []
         per_slot_cls = []
+        per_slot_logits = []
 
         for k in range(K):
             # Broadcast slot query to all points
             slot_query = queries[k:k + 1]  # (1, D)
             broadcast = slot_query.expand(N, -1)  # (N, D)
 
-            # Combine with point features
-            combined = torch.cat([event_features, broadcast], dim=-1)  # (N, 2D)
-            combined = self.combiner(combined)  # (N, D)
+            # Combine with point features — run in float32 to avoid
+            # bfloat16 overflow with large input dim (2*D=2176)
+            with torch.amp.autocast('cuda', enabled=False):
+                combined = torch.cat([event_features.float(), broadcast.float()], dim=-1)  # (N, 2D)
+                combined = self.combiner(combined)  # (N, D)
 
             # Score and distance prediction
             pred = self.score_head(combined)
             per_slot_scores.append(pred["scores"])  # (N,)
+            per_slot_logits.append(pred["score_logits"])  # (N,) raw logits
             if "distances" in pred:
                 per_slot_distances.append(pred["distances"])  # (N,)
 
@@ -1088,167 +1122,73 @@ class ShowerOriginPredictorV3(nn.Module):
             cls_logits = self.classification_head(queries[k])  # (num_classes,)
             per_slot_cls.append(cls_logits)
 
-        return per_slot_scores, per_slot_distances, per_slot_cls
+        return per_slot_scores, per_slot_distances, per_slot_cls, per_slot_logits
 
-    def _hungarian_matching_loss(
-        self, per_slot_scores, per_slot_distances, per_slot_cls, coords, input_dict
+    def _single_fragment_loss(
+        self, scores, logits, distances, cls_logits, coords, input_dict,
     ):
         """
-        Compute loss using Hungarian matching between slots and ground truth showers.
-
-        Builds a cost matrix (K slots x J showers) and solves the optimal
-        assignment using scipy.optimize.linear_sum_assignment.
-
-        Unmatched slots receive a no-object penalty that encourages them
-        to predict low scores everywhere.
+        Compute direct loss for a single fragment (K=1, no Hungarian matching).
 
         Args:
-            per_slot_scores: list of K (N_total,) score tensors
-            per_slot_distances: list of K (N_total,) distance tensors (may be empty)
-            per_slot_cls: list of K (num_classes,) classification logit tensors
+            scores: (N_total,) sigmoid scores from slot 0
+            logits: (N_total,) raw logits from slot 0
+            distances: (N_total,) predicted distances, or None
+            cls_logits: (num_classes,) classification logits from slot 0
             coords: (N_total, 3) point coordinates (real + virtual)
-            input_dict: dict with origin_coords, origin_types
+            input_dict: dict with origin_coord, origin_type, origin_distance
 
         Returns:
             total_loss: scalar loss
-            row_ind: matched slot indices (numpy array)
-            col_ind: matched shower indices (numpy array)
         """
-        from scipy.optimize import linear_sum_assignment
-
-        origin_coords = input_dict["origin_coords"]  # (J, 3)
-        origin_types = input_dict["origin_types"]  # (J,)
-        J = origin_coords.shape[0]
-        K = len(per_slot_scores)
-
         device = coords.device
+        origin_coord = input_dict["origin_coord"]  # (3,)
 
-        # Handle edge case: no showers in event
-        if J == 0:
-            # Penalize all slots to predict low scores
-            total_loss = torch.tensor(0.0, device=device, requires_grad=True)
-            for k in range(K):
-                total_loss = total_loss + per_slot_scores[k].mean() * self.no_object_loss_weight
-            return total_loss, [], []
-
-        # ==================================================================
-        # Build cost matrix (K x J)
-        # ==================================================================
-        cost = torch.zeros(K, J, device=device)
-
-        # Pre-compute Gaussian soft targets for each shower
-        targets_cache = []
-        dist_cache = []
-        for j in range(J):
-            distances_to_origin = torch.norm(
-                coords - origin_coords[j:j + 1], dim=-1
-            )
-            target_scores = torch.exp(
-                -0.5 * (distances_to_origin / self.gaussian_sigma) ** 2
-            )
-            targets_cache.append(target_scores)
-            dist_cache.append(distances_to_origin)
-
-        for k in range(K):
-            for j in range(J):
-                target_scores = targets_cache[j]
-                distances_to_origin = dist_cache[j]
-
-                # Score loss for this (slot, shower) pair
-                score_loss = F.binary_cross_entropy(
-                    per_slot_scores[k], target_scores, reduction='mean'
-                )
-
-                # Classification loss (cross-entropy for multi-class)
-                cls_target = origin_types[j].long().unsqueeze(0).to(device)
-                cls_logits = per_slot_cls[k].unsqueeze(0)  # (1, num_classes)
-                cls_loss = F.cross_entropy(cls_logits, cls_target)
-
-                pair_cost = (
-                    self.score_loss_weight * score_loss
-                    + self.classification_loss_weight * cls_loss
-                )
-
-                # Distance loss if applicable
-                if per_slot_distances:
-                    dist_loss = F.smooth_l1_loss(
-                        per_slot_distances[k], distances_to_origin, reduction='mean'
-                    )
-                    pair_cost = pair_cost + self.distance_loss_weight * dist_loss
-
-                cost[k, j] = pair_cost
-
-        # ==================================================================
-        # Hungarian matching
-        # ==================================================================
-        row_ind, col_ind = linear_sum_assignment(cost.detach().cpu().numpy())
-
-        # ==================================================================
-        # Compute matched loss
-        # ==================================================================
-        total_loss = torch.tensor(0.0, device=device)
-        for r, c in zip(row_ind, col_ind):
-            total_loss = total_loss + cost[r, c]
-
-        # No-object penalty for unmatched slots
-        matched_slots = set(int(r) for r in row_ind)
-        for k in range(K):
-            if k not in matched_slots:
-                # Penalize unmatched slots: their scores should be low everywhere
-                no_obj_loss = per_slot_scores[k].mean() * self.no_object_loss_weight
-                total_loss = total_loss + no_obj_loss
-
-        # Normalize by number of showers
-        if J > 0:
-            total_loss = total_loss / J
-
-        return total_loss, row_ind, col_ind
-
-    def _single_shower_loss(
-        self, per_slot_scores, per_slot_distances, coords, input_dict
-    ):
-        """
-        Fallback V2-style loss for single-shower data.
-
-        Uses mean-pooled slot predictions (mimics V2 behavior) when
-        multi-shower ground truth is not available.
-
-        Args:
-            per_slot_scores: list of K (N_total,) score tensors
-            per_slot_distances: list of K (N_total,) distance tensors
-            coords: (N_total, 3) point coordinates
-            input_dict: dict with origin_distance
-
-        Returns:
-            loss: scalar loss
-        """
-        gt_distances = input_dict["origin_distance"]
-
-        # Average scores across all slots (V2-style aggregation)
-        avg_scores = torch.stack(per_slot_scores, dim=0).mean(dim=0)
-
-        # Truncate to real points only if virtual points present
-        N_gt = gt_distances.shape[0]
-        avg_scores = avg_scores[:N_gt]
-
-        # Gaussian soft labels from distances
+        # Gaussian soft labels from distance to origin
+        distances_to_origin = torch.norm(
+            coords - origin_coord.unsqueeze(0), dim=-1
+        )
         target_scores = torch.exp(
-            -0.5 * (gt_distances / self.gaussian_sigma) ** 2
+            -0.5 * (distances_to_origin / self.gaussian_sigma) ** 2
         )
 
-        # Score loss
-        score_loss = F.binary_cross_entropy(
-            avg_scores, target_scores, reduction='mean'
-        )
-        loss = self.score_loss_weight * score_loss
-
-        # Distance loss
-        if per_slot_distances:
-            avg_distances = torch.stack(per_slot_distances, dim=0).mean(dim=0)
-            avg_distances = avg_distances[:N_gt]
-            distance_loss = F.smooth_l1_loss(
-                avg_distances, gt_distances, reduction='mean'
+        # Score loss: BCE with logits for numerical stability
+        with torch.amp.autocast('cuda', enabled=False):
+            safe_logits = torch.nan_to_num(
+                logits.float(), nan=0.0, posinf=50.0, neginf=-50.0
             )
-            loss = loss + self.distance_loss_weight * distance_loss
+            score_loss = F.binary_cross_entropy_with_logits(
+                safe_logits,
+                target_scores.float(),
+                reduction='mean',
+            )
 
-        return loss
+        total_loss = self.score_loss_weight * score_loss
+
+        # Classification loss (cross-entropy)
+        origin_type = input_dict.get("origin_type", None)
+        if origin_type is not None:
+            ot = origin_type.long()
+            if ot.dim() == 0:
+                ot = ot.unsqueeze(0)
+            with torch.amp.autocast('cuda', enabled=False):
+                safe_cls = torch.nan_to_num(
+                    cls_logits.float(), nan=0.0
+                ).unsqueeze(0)
+                cls_loss = F.cross_entropy(safe_cls, ot.to(device))
+            total_loss = total_loss + self.classification_loss_weight * cls_loss
+
+        # Distance loss (smooth L1)
+        if distances is not None:
+            with torch.amp.autocast('cuda', enabled=False):
+                safe_dist = torch.nan_to_num(
+                    distances.float(), nan=0.0
+                )
+                dist_loss = F.smooth_l1_loss(
+                    safe_dist,
+                    distances_to_origin.float(),
+                    reduction='mean',
+                )
+            total_loss = total_loss + self.distance_loss_weight * dist_loss
+
+        return total_loss

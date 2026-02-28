@@ -24,9 +24,10 @@ import torch.nn.functional as F
 
 
 # ============================================================================
-# MicroBooNE TPC default bounds (cm)
+# MicroBooNE TPC default bounds
 # ============================================================================
-DEFAULT_TPC_BOUNDS = dict(
+# Original bounds in cm
+DEFAULT_TPC_BOUNDS_CM = dict(
     x_min=0.0,
     x_max=255.6,
     y_min=-116.5,
@@ -34,6 +35,22 @@ DEFAULT_TPC_BOUNDS = dict(
     z_min=0.5,
     z_max=1035.5,
 )
+
+# Normalized bounds (v6 NormalizeCoord: center=[125,0,518], scale=179.55)
+# X: [-44, 290] cm extended for drift window -> [-0.94, 0.92]
+# Y: [-116.5, 116.5] cm -> [-0.65, 0.65]
+# Z: [0.5, 1035.5] cm -> [-2.88, 2.88]
+DEFAULT_TPC_BOUNDS_NORMALIZED = dict(
+    x_min=-0.94,
+    x_max=0.92,
+    y_min=-0.65,
+    y_max=0.65,
+    z_min=-2.88,
+    z_max=2.88,
+)
+
+# Default for backward compatibility
+DEFAULT_TPC_BOUNDS = DEFAULT_TPC_BOUNDS_CM
 
 
 # ============================================================================

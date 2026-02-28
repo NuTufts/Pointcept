@@ -1,14 +1,11 @@
 """
 Shower Origin Dataset
 
-Dataset class for shower origin prediction task. Extends LArTPCDataset
-to include shower fragment masks and origin point information.
-
-Supports both single-shower (V2 compatibility) and multi-shower modes.
+Dataset class for shower origin prediction task.
+Supports multi-shower mode with per-fragment masks and origin labels.
 Handles photon showers (pid=22) and electron/positron showers (pid=11/-11).
 
-Supports two HDF5 formats:
-1. New flat format (from C++ ShowerFragmentOriginMaker):
+HDF5 format (from C++ ShowerFragmentOriginMaker):
    - shower_fragments/@num_fragments: int attribute
    - shower_fragments/trackid: (F,) int
    - shower_fragments/pid: (F,) int
@@ -29,11 +26,6 @@ Supports two HDF5 formats:
    startpt when BOTH: (a) nu_vertex_is_visible==0, and (b) there is only
    one visible neutrino-origin shower. In this case the vertex cannot be
    inferred from the available information.
-
-2. Legacy per-fragment format (from Python labeler):
-   - shower_fragments/fragment_0/, fragment_1/, etc.
-
-Author: Claude Code Assistant
 """
 
 import os
@@ -75,9 +67,9 @@ class ShowerOriginDataset(DefaultDataset):
         log_transform_edep: Whether to apply log transform to energy deposits
         gaussian_sigma: Sigma for Gaussian distance labels (in coord units)
         max_showers_per_event: Maximum showers to include per event (default: 4)
-        min_shower_points: Minimum points for a valid shower fragment (legacy format)
         min_fragment_points: Minimum points for a DBSCAN fragment to be included (default: 20)
         include_cosmic_showers: Whether to include cosmic-origin showers
+        include_ghosts: Whether to include ghost points (default: False)
         balance_origins: Whether to balance neutrino/cosmic samples
         **kwargs: Additional arguments passed to DefaultDataset
     """
@@ -88,16 +80,11 @@ class ShowerOriginDataset(DefaultDataset):
         "color",
         "segment",
         "shower_mask",
-        "shower_masks",
+        "fragment_centroid",
         "origin_coord",
-        "origin_coords",
-        "origin_types",
+        "origin_type",
         "origin_distance",
-        "num_showers",
-        "valid_showers_mask",
-        "particle_pids",
-        "start_coords",
-        "fragment_trackids",
+        "start_coord",
     ]
 
     ORIGIN_TYPES = ["inside", "outside", "on_track"]
@@ -116,6 +103,7 @@ class ShowerOriginDataset(DefaultDataset):
         min_shower_points=10,
         min_fragment_points=20,
         include_cosmic_showers=True,
+        include_ghosts=False,
         balance_origins=False,
         wire_scale=1.0/3456.0,
         **kwargs,
@@ -128,6 +116,7 @@ class ShowerOriginDataset(DefaultDataset):
         self.min_shower_points = min_shower_points
         self.min_fragment_points = min_fragment_points
         self.include_cosmic_showers = include_cosmic_showers
+        self.include_ghosts = include_ghosts
         self.balance_origins = balance_origins
         self.wire_scale = wire_scale
         self.data_list_file = data_list_file
@@ -193,54 +182,23 @@ class ShowerOriginDataset(DefaultDataset):
         Each event (file) is one sample, regardless of how many shower
         fragments it contains. The per-fragment filtering (min points,
         origin type) is applied at load time in get_data().
-
-        Supports both the new flat format (pointindices_flat) and
-        the legacy per-fragment group format.
         """
         self.event_index = []
 
         for file_idx, filepath in enumerate(self.data_list):
             try:
                 with h5py.File(filepath, 'r') as f:
-                    # Check if shower_fragments group exists
                     if 'entry_0/shower_fragments' not in f:
                         continue
-
                     sf = f['entry_0/shower_fragments']
-
-                    # New flat format: check num_fragments attribute
-                    if 'pointindices_flat' in sf:
-                        num_frags = int(sf.attrs.get('num_fragments', 0))
-                        if num_frags > 0:
-                            self.event_index.append(file_idx)
-                    else:
-                        # Legacy per-fragment group format
-                        fragment_names = [k for k in sf.keys()
-                                         if k.startswith('fragment_')]
-                        n_valid = 0
-                        for frag_name in fragment_names:
-                            frag = sf[frag_name]
-                            if 'has_valid_tracking' in frag:
-                                if not bool(frag['has_valid_tracking'][()]):
-                                    continue
-                            if 'mask' in frag:
-                                mask = frag['mask'][:]
-                                if mask.sum() < self.min_shower_points:
-                                    continue
-                            if not self.include_cosmic_showers and 'origin_type' in frag:
-                                origin_type = frag['origin_type'][()]
-                                if origin_type == 1:
-                                    continue
-                            n_valid += 1
-                        if n_valid > 0:
-                            self.event_index.append(file_idx)
-
+                    if 'pointindices_flat' not in sf:
+                        continue
+                    num_frags = int(sf.attrs.get('num_fragments', 0))
+                    if num_frags > 0:
+                        self.event_index.append(file_idx)
             except Exception as e:
                 print(f"Warning: Could not process {filepath}: {e}")
                 continue
-
-        # Legacy compatibility: also keep fragment_index for V2 fallback
-        self.fragment_index = self.event_index
 
     def __len__(self):
         return len(self.event_index) * self.loop
@@ -279,11 +237,22 @@ class ShowerOriginDataset(DefaultDataset):
             else:
                 coord = triplet['pos'][:].astype(np.float32) * self.coord_scale
 
+            n_points_orig = coord.shape[0]
+
+            # Ghost point filtering using hasmatch (0=ghost, 1=true)
+            ghost_mask = None
+            if not self.include_ghosts and 'hasmatch' in triplet:
+                hasmatch = triplet['hasmatch'][:].astype(np.int64)
+                ghost_mask = (hasmatch == 1)
+                coord = coord[ghost_mask]
+
             n_points = coord.shape[0]
 
             # Load energy features
             if 'pixval' in triplet:
                 pixval = triplet['pixval'][:].astype(np.float32)
+                if ghost_mask is not None:
+                    pixval = pixval[ghost_mask]
                 if self.log_transform_edep:
                     pixval = np.log1p(np.clip(pixval, 0, None))
                 strength = pixval
@@ -295,6 +264,10 @@ class ShowerOriginDataset(DefaultDataset):
                 uwire = triplet['uwire'][:].astype(np.float32) * self.wire_scale
                 vwire = triplet['vwire'][:].astype(np.float32) * self.wire_scale
                 ywire = triplet['ywire'][:].astype(np.float32) * self.wire_scale
+                if ghost_mask is not None:
+                    uwire = uwire[ghost_mask]
+                    vwire = vwire[ghost_mask]
+                    ywire = ywire[ghost_mask]
                 color = np.stack([uwire, vwire, ywire], axis=-1)
             else:
                 color = np.zeros((n_points, 3), dtype=np.float32)
@@ -311,229 +284,159 @@ class ShowerOriginDataset(DefaultDataset):
             if 'shower_fragments' in entry:
                 sf = entry['shower_fragments']
 
-                # Detect format: new flat format vs legacy per-fragment groups
-                if 'pointindices_flat' in sf:
-                    # === New flat format from C++ ShowerFragmentOriginMaker ===
-                    num_frags = int(sf.attrs.get('num_fragments', 0))
-                    if num_frags > 0:
-                        trackids = sf['trackid'][:]
-                        pids = sf['pid'][:]
-                        istrunk = sf['istrunk'][:]
-                        frag_types = sf['type'][:]
-                        startpts = sf['startpt'][:]
-                        originpts = sf['originpt'][:]
-                        flat_indices = sf['pointindices_flat'][:]
-                        index_counts = sf['pointindices_counts'][:]
+                # Build index remap for ghost filtering: original index -> filtered index
+                # Fragment point indices reference the original (unfiltered) array,
+                # so we need to map them to the filtered (ghost-removed) array.
+                if ghost_mask is not None:
+                    index_remap = np.full(n_points_orig, -1, dtype=np.int64)
+                    index_remap[ghost_mask] = np.arange(n_points)
+                else:
+                    index_remap = None
 
-                        # Load nu_vertex_is_visible flag (single scalar).
-                        # 1 = a neutrino vertex keypoint (kNuVertex) exists,
-                        # meaning the vertex is visible from other particles.
-                        if 'nu_vertex_is_visible' in sf:
-                            nu_vtx_visible = int(sf['nu_vertex_is_visible'][()])
+                num_frags = int(sf.attrs.get('num_fragments', 0))
+                if num_frags > 0:
+                    trackids = sf['trackid'][:]
+                    pids = sf['pid'][:]
+                    istrunk = sf['istrunk'][:]
+                    frag_types = sf['type'][:]
+                    startpts = sf['startpt'][:]
+                    originpts = sf['originpt'][:]
+                    flat_indices = sf['pointindices_flat'][:]
+                    index_counts = sf['pointindices_counts'][:]
+
+                    # Load nu_vertex_is_visible flag (single scalar).
+                    # 1 = a neutrino vertex keypoint (kNuVertex) exists,
+                    # meaning the vertex is visible from other particles.
+                    if 'nu_vertex_is_visible' in sf:
+                        nu_vtx_visible = int(sf['nu_vertex_is_visible'][()])
+                    else:
+                        nu_vtx_visible = 1  # default: assume visible for old data
+
+                    # First pass: count unique visible nu-origin (type-0) trackids
+                    visible_nu_trackids = set()
+                    offset = 0
+                    for i in range(num_frags):
+                        count = int(index_counts[i])
+                        if count >= self.min_fragment_points and int(frag_types[i]) == 0:
+                            visible_nu_trackids.add(int(trackids[i]))
+                        offset += count
+                    n_visible_nu_showers = len(visible_nu_trackids)
+
+                    # Determine if type-0 origins should be moved to startpt:
+                    # When the nu vertex is NOT visible AND there is only
+                    # one visible nu-origin shower, the vertex cannot be
+                    # inferred — override origin to trunk startpt.
+                    override_nu_origin = (nu_vtx_visible == 0
+                                          and n_visible_nu_showers <= 1)
+
+                    # Find trunk startpt per trackid for origin override
+                    trunk_startpt = {}
+                    if override_nu_origin:
+                        for i in range(num_frags):
+                            tid = int(trackids[i])
+                            if tid in visible_nu_trackids and int(istrunk[i]) == 1:
+                                trunk_startpt[tid] = startpts[i].astype(np.float32)
+
+                    offset = 0
+                    for i in range(num_frags):
+                        if len(shower_masks_list) >= self.max_showers_per_event:
+                            break
+
+                        count = int(index_counts[i])
+                        indices = flat_indices[offset:offset+count]
+                        offset += count
+
+                        # Build boolean mask, remapping indices if ghosts were removed
+                        fmask = np.zeros(n_points, dtype=bool)
+                        if index_remap is not None:
+                            valid_idx = indices[indices < n_points_orig]
+                            remapped = index_remap[valid_idx]
+                            remapped = remapped[remapped >= 0]  # drop ghost points
+                            fmask[remapped] = True
                         else:
-                            nu_vtx_visible = 1  # default: assume visible for old data
-
-                        # First pass: count unique visible nu-origin (type-0) trackids
-                        visible_nu_trackids = set()
-                        offset = 0
-                        for i in range(num_frags):
-                            count = int(index_counts[i])
-                            if count >= self.min_fragment_points and int(frag_types[i]) == 0:
-                                visible_nu_trackids.add(int(trackids[i]))
-                            offset += count
-                        n_visible_nu_showers = len(visible_nu_trackids)
-
-                        # Determine if type-0 origins should be moved to startpt:
-                        # When the nu vertex is NOT visible AND there is only
-                        # one visible nu-origin shower, the vertex cannot be
-                        # inferred — override origin to trunk startpt.
-                        override_nu_origin = (nu_vtx_visible == 0
-                                              and n_visible_nu_showers <= 1)
-
-                        # Find trunk startpt per trackid for origin override
-                        trunk_startpt = {}
-                        if override_nu_origin:
-                            for i in range(num_frags):
-                                tid = int(trackids[i])
-                                if tid in visible_nu_trackids and int(istrunk[i]) == 1:
-                                    trunk_startpt[tid] = startpts[i].astype(np.float32)
-
-                        offset = 0
-                        for i in range(num_frags):
-                            if len(shower_masks_list) >= self.max_showers_per_event:
-                                break
-
-                            count = int(index_counts[i])
-                            indices = flat_indices[offset:offset+count]
-                            offset += count
-
-                            # Build boolean mask
-                            fmask = np.zeros(n_points, dtype=bool)
                             valid_idx = indices[indices < n_points]
                             fmask[valid_idx] = True
 
-                            if fmask.sum() < self.min_fragment_points:
-                                continue
-
-                            # Origin type determined by C++ using pret0shiftedoriginpt:
-                            # 0=nu-inside, 1=outside, 2=cosmic-inside
-                            frag_origin_type = int(frag_types[i])
-
-                            if not self.include_cosmic_showers and frag_origin_type == 2:
-                                continue
-
-                            frag_origin = originpts[i].astype(np.float32) * self.coord_scale
-                            frag_start = startpts[i].astype(np.float32) * self.coord_scale
-                            frag_tid = int(trackids[i])
-
-                            # Override origin for type-0 fragments when the nu
-                            # vertex is not visible and there's only one visible
-                            # nu-origin shower (vertex cannot be inferred).
-                            if override_nu_origin and frag_origin_type == 0:
-                                if frag_tid in trunk_startpt:
-                                    frag_origin = trunk_startpt[frag_tid] * self.coord_scale
-                                else:
-                                    frag_origin = frag_start
-
-                            frag_is_vertex = (frag_origin_type == 0
-                                              and not override_nu_origin)
-
-                            shower_masks_list.append(fmask)
-                            origin_coords_list.append(frag_origin)
-                            start_coords_list.append(frag_start)
-                            origin_types_list.append(frag_origin_type)
-                            is_vertex_list.append(frag_is_vertex)
-                            particle_pids_list.append(int(pids[i]))
-                            fragment_trackids_list.append(frag_tid)
-                else:
-                    # === Legacy per-fragment group format ===
-                    fragment_names = sorted(
-                        [k for k in sf.keys() if k.startswith('fragment_')]
-                    )
-                    for frag_name in fragment_names:
-                        if len(shower_masks_list) >= self.max_showers_per_event:
-                            break
-                        frag = sf[frag_name]
-                        if 'has_valid_tracking' in frag:
-                            if not bool(frag['has_valid_tracking'][()]):
-                                continue
-                        if 'mask' in frag:
-                            fmask = frag['mask'][:].astype(bool)
-                        elif 'indices' in frag:
-                            fmask = np.zeros(n_points, dtype=bool)
-                            indices = frag['indices'][:]
-                            fmask[indices] = True
-                        else:
+                        if fmask.sum() < self.min_fragment_points:
                             continue
-                        if fmask.sum() < self.min_shower_points:
+
+                        # Origin type determined by C++ using pret0shiftedoriginpt:
+                        # 0=nu-inside, 1=outside, 2=cosmic-inside
+                        frag_origin_type = int(frag_types[i])
+
+                        if not self.include_cosmic_showers and frag_origin_type == 2:
                             continue
-                        if 'origin_type' in frag:
-                            frag_origin_type = int(frag['origin_type'][()])
-                        else:
-                            frag_origin_type = 0
-                        if not self.include_cosmic_showers and frag_origin_type == 1:
-                            continue
-                        if 'origin_coord' in frag:
-                            frag_origin = frag['origin_coord'][:].astype(np.float32) * self.coord_scale
-                        else:
-                            frag_origin = coord[fmask].mean(axis=0)
-                        if 'is_vertex' in frag:
-                            frag_is_vertex = bool(frag['is_vertex'][()])
-                        else:
-                            frag_is_vertex = (frag_origin_type == 0)
-                        if 'particle_pid' in frag:
-                            frag_pid = int(frag['particle_pid'][()])
-                        else:
-                            frag_pid = 22
+
+                        frag_origin = originpts[i].astype(np.float32) * self.coord_scale
+                        frag_start = startpts[i].astype(np.float32) * self.coord_scale
+                        frag_tid = int(trackids[i])
+
+                        # Override origin for type-0 fragments when the nu
+                        # vertex is not visible and there's only one visible
+                        # nu-origin shower (vertex cannot be inferred).
+                        if override_nu_origin and frag_origin_type == 0:
+                            if frag_tid in trunk_startpt:
+                                frag_origin = trunk_startpt[frag_tid] * self.coord_scale
+                            else:
+                                frag_origin = frag_start
+
+                        frag_is_vertex = (frag_origin_type == 0
+                                          and not override_nu_origin)
+
                         shower_masks_list.append(fmask)
                         origin_coords_list.append(frag_origin)
-                        start_coords_list.append(frag_origin)  # legacy: no startpt, use origin
+                        start_coords_list.append(frag_start)
                         origin_types_list.append(frag_origin_type)
                         is_vertex_list.append(frag_is_vertex)
-                        particle_pids_list.append(frag_pid)
-                        fragment_trackids_list.append(-1)  # legacy: no trackid
+                        particle_pids_list.append(int(pids[i]))
+                        fragment_trackids_list.append(frag_tid)
 
         num_showers = len(shower_masks_list)
-        max_s = self.max_showers_per_event
 
-        # Build union mask
+        # Randomly select 1 fragment for this training example
         if num_showers > 0:
-            union_mask = np.zeros(n_points, dtype=bool)
-            for m in shower_masks_list:
-                union_mask = union_mask | m
+            idx = np.random.randint(num_showers)
+            selected_mask = shower_masks_list[idx]
+            selected_origin = origin_coords_list[idx]
+            selected_type = origin_types_list[idx]
+            selected_start = start_coords_list[idx]
         else:
-            union_mask = np.zeros(n_points, dtype=bool)
+            # No valid fragments: use a dummy zero mask and centroid fallback
+            selected_mask = np.zeros(n_points, dtype=bool)
+            selected_origin = coord.mean(axis=0)
+            selected_type = -1
+            selected_start = coord.mean(axis=0)
 
-        # Pad shower_masks to (max_showers_per_event, N)
-        padded_shower_masks = np.zeros((max_s, n_points), dtype=np.float32)
-        for i in range(num_showers):
-            padded_shower_masks[i, :] = shower_masks_list[i].astype(np.float32)
-
-        # Pad origin_coords to (max_showers_per_event, 3)
-        padded_origin_coords = np.full((max_s, 3), SHOWER_PAD_SENTINEL, dtype=np.float32)
-        for i in range(num_showers):
-            padded_origin_coords[i, :] = origin_coords_list[i]
-
-        # Pad origin_types to (max_showers_per_event,)
-        padded_origin_types = np.full((max_s,), -1, dtype=np.int64)
-        for i in range(num_showers):
-            padded_origin_types[i] = origin_types_list[i]
-
-        # Valid showers mask
-        valid_showers_mask = np.zeros(max_s, dtype=bool)
-        valid_showers_mask[:num_showers] = True
-
-        # Pad is_vertex
-        padded_is_vertex = np.zeros(max_s, dtype=bool)
-        for i in range(num_showers):
-            padded_is_vertex[i] = is_vertex_list[i]
-
-        # Pad particle_pids
-        padded_particle_pids = np.full((max_s,), 0, dtype=np.int64)
-        for i in range(num_showers):
-            padded_particle_pids[i] = particle_pids_list[i]
-
-        # Pad start_coords (auxiliary supervision target)
-        padded_start_coords = np.full((max_s, 3), SHOWER_PAD_SENTINEL, dtype=np.float32)
-        for i in range(num_showers):
-            padded_start_coords[i, :] = start_coords_list[i]
-
-        # Pad fragment_trackids
-        padded_fragment_trackids = np.full((max_s,), -1, dtype=np.int64)
-        for i in range(num_showers):
-            padded_fragment_trackids[i] = fragment_trackids_list[i]
-
-        # V2 compatibility: single-shower fallback
-        if num_showers > 0:
-            first_origin = origin_coords_list[0]
+        # Compute fragment centroid for BiasedSphereCrop anchor
+        if selected_mask.any():
+            fragment_centroid = coord[selected_mask].mean(axis=0).reshape(1, 3)
         else:
-            first_origin = coord.mean(axis=0)
+            fragment_centroid = coord.mean(axis=0).reshape(1, 3)
 
+        # Distance from every point to the selected origin
         origin_distance = np.linalg.norm(
-            coord - first_origin.reshape(1, 3), axis=1
+            coord - selected_origin.reshape(1, 3), axis=1
         ).astype(np.float32)
 
-        # Build data dict
         data_dict = {
             "coord": coord,
             "strength": strength,
             "color": color,
-            # Union shower mask (backward compatible)
-            "shower_mask": union_mask.astype(np.float32),
-            # Multi-shower data (padded for batching)
-            "shower_masks": padded_shower_masks,
-            "origin_coords": padded_origin_coords,
-            "origin_types": padded_origin_types,
-            "particle_pids": padded_particle_pids,
-            "start_coords": padded_start_coords,
-            "fragment_trackids": padded_fragment_trackids,
-            "num_showers": np.int64(num_showers),
-            "valid_showers_mask": valid_showers_mask,
-            "origin_is_vertex": padded_is_vertex,
-            # V2 single-shower compatibility
-            "origin_coord": first_origin,
+            "shower_mask": selected_mask.astype(np.float32),
+            "fragment_centroid": fragment_centroid.astype(np.float32),
+            "origin_coord": selected_origin.astype(np.float32),
+            "origin_type": np.int64(selected_type),
+            "start_coord": selected_start.astype(np.float32),
             "origin_distance": origin_distance,
             "name": os.path.basename(filepath),
+            # Register per-point keys for index_operator (used by
+            # BiasedSphereCrop, GridSample, SphereCrop, etc.)
+            "index_valid_keys": [
+                "coord", "color", "normal", "superpoint", "strength",
+                "segment", "instance",
+                # shower-specific per-point keys
+                "shower_mask", "origin_distance",
+            ],
         }
 
         return data_dict
