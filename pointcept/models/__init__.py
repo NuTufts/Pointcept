@@ -26,3 +26,6 @@ from .masked_scene_contrast import *
 from .point_prompt_training import *
 from .sonata import *
 from .concerto import *
+
+# Shower Origin Prediction
+from .shower_origin import *
