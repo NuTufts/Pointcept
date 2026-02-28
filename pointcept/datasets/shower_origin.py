@@ -22,6 +22,13 @@ Supports two HDF5 formats:
 
    Origin type is determined in C++ using pret0shiftedoriginpt to check
    if the true origin is inside/outside the TPC.
+   - shower_fragments/nu_vertex_is_visible: int (scalar) — 1 if a neutrino
+     vertex keypoint (kNuVertex) exists, 0 otherwise.
+
+   For type-0 (nu-inside) fragments, the origin is overridden to the trunk
+   startpt when BOTH: (a) nu_vertex_is_visible==0, and (b) there is only
+   one visible neutrino-origin shower. In this case the vertex cannot be
+   inferred from the available information.
 
 2. Legacy per-fragment format (from Python labeler):
    - shower_fragments/fragment_0/, fragment_1/, etc.
@@ -318,6 +325,39 @@ class ShowerOriginDataset(DefaultDataset):
                         flat_indices = sf['pointindices_flat'][:]
                         index_counts = sf['pointindices_counts'][:]
 
+                        # Load nu_vertex_is_visible flag (single scalar).
+                        # 1 = a neutrino vertex keypoint (kNuVertex) exists,
+                        # meaning the vertex is visible from other particles.
+                        if 'nu_vertex_is_visible' in sf:
+                            nu_vtx_visible = int(sf['nu_vertex_is_visible'][()])
+                        else:
+                            nu_vtx_visible = 1  # default: assume visible for old data
+
+                        # First pass: count unique visible nu-origin (type-0) trackids
+                        visible_nu_trackids = set()
+                        offset = 0
+                        for i in range(num_frags):
+                            count = int(index_counts[i])
+                            if count >= self.min_fragment_points and int(frag_types[i]) == 0:
+                                visible_nu_trackids.add(int(trackids[i]))
+                            offset += count
+                        n_visible_nu_showers = len(visible_nu_trackids)
+
+                        # Determine if type-0 origins should be moved to startpt:
+                        # When the nu vertex is NOT visible AND there is only
+                        # one visible nu-origin shower, the vertex cannot be
+                        # inferred — override origin to trunk startpt.
+                        override_nu_origin = (nu_vtx_visible == 0
+                                              and n_visible_nu_showers <= 1)
+
+                        # Find trunk startpt per trackid for origin override
+                        trunk_startpt = {}
+                        if override_nu_origin:
+                            for i in range(num_frags):
+                                tid = int(trackids[i])
+                                if tid in visible_nu_trackids and int(istrunk[i]) == 1:
+                                    trunk_startpt[tid] = startpts[i].astype(np.float32)
+
                         offset = 0
                         for i in range(num_frags):
                             if len(shower_masks_list) >= self.max_showers_per_event:
@@ -344,7 +384,19 @@ class ShowerOriginDataset(DefaultDataset):
 
                             frag_origin = originpts[i].astype(np.float32) * self.coord_scale
                             frag_start = startpts[i].astype(np.float32) * self.coord_scale
-                            frag_is_vertex = (frag_origin_type == 0)
+                            frag_tid = int(trackids[i])
+
+                            # Override origin for type-0 fragments when the nu
+                            # vertex is not visible and there's only one visible
+                            # nu-origin shower (vertex cannot be inferred).
+                            if override_nu_origin and frag_origin_type == 0:
+                                if frag_tid in trunk_startpt:
+                                    frag_origin = trunk_startpt[frag_tid] * self.coord_scale
+                                else:
+                                    frag_origin = frag_start
+
+                            frag_is_vertex = (frag_origin_type == 0
+                                              and not override_nu_origin)
 
                             shower_masks_list.append(fmask)
                             origin_coords_list.append(frag_origin)
@@ -352,7 +404,7 @@ class ShowerOriginDataset(DefaultDataset):
                             origin_types_list.append(frag_origin_type)
                             is_vertex_list.append(frag_is_vertex)
                             particle_pids_list.append(int(pids[i]))
-                            fragment_trackids_list.append(int(trackids[i]))
+                            fragment_trackids_list.append(frag_tid)
                 else:
                     # === Legacy per-fragment group format ===
                     fragment_names = sorted(

@@ -26,8 +26,11 @@ Displays:
 import os
 import sys
 import argparse
+import tempfile
 import h5py
 import numpy as np
+
+from pointcept.datasets.shower_origin import ShowerOriginDataset
 
 import dash
 from dash import dcc, html
@@ -113,101 +116,53 @@ if "hasmatch" in triplet:
 else:
     print(f"Loaded {npts} spacepoints (no hasmatch info)")
 
-# Load shower fragments
+# ──────────────────────────────────────────────────────────────────
+# Load display-only fragment fields from HDF5
+# ──────────────────────────────────────────────────────────────────
 if "shower_fragments" not in entry:
     print("No shower_fragments group found in this entry.")
     sys.exit(1)
 
 sf = entry["shower_fragments"]
+raw_display_data = []
 
-fragments = []
-
-# Detect format: new flat format vs legacy per-fragment groups
 if "pointindices_flat" in sf:
-    # === New flat format from C++ ShowerFragmentOriginMaker ===
     num_fragments_raw = int(sf.attrs.get("num_fragments", 0))
     print(f"Found {num_fragments_raw} shower fragments (new flat format)")
-
-    trackids_arr = np.array(sf["trackid"])
-    pids_arr = np.array(sf["pid"])
     istrunk_arr = np.array(sf["istrunk"])
-    frag_types_arr = np.array(sf["type"])
-    startpts_arr = np.array(sf["startpt"], dtype=np.float32)
     originpts_arr = np.array(sf["originpt"], dtype=np.float32)
-    pret0pts_arr = np.array(sf["pret0shiftedoriginpt"], dtype=np.float32) if "pret0shiftedoriginpt" in sf else None
+    pret0pts_arr = (np.array(sf["pret0shiftedoriginpt"], dtype=np.float32)
+                    if "pret0shiftedoriginpt" in sf else None)
     flat_indices = np.array(sf["pointindices_flat"])
     index_counts = np.array(sf["pointindices_counts"])
 
+    # Build ordered list of raw display data, matching data loader's skip logic
+    # (same iteration order and min_fragment_points=20 threshold)
     offset = 0
     for i in range(num_fragments_raw):
         count = int(index_counts[i])
         indices = flat_indices[offset:offset+count]
         offset += count
-
-        # Build boolean mask
         fmask = np.zeros(npts, dtype=bool)
         valid_idx = indices[indices < npts]
         fmask[valid_idx] = True
-
-        frag = {
-            "mask": fmask,
-            "origin_coord": originpts_arr[i],
-            "start_coord": startpts_arr[i],
-            "pret0_origin": pret0pts_arr[i] if pret0pts_arr is not None else None,
-            "origin_type": int(frag_types_arr[i]),
+        if fmask.sum() < 20:  # matches ShowerOriginDataset.min_fragment_points
+            continue
+        raw_display_data.append({
             "istrunk": int(istrunk_arr[i]),
-            "trackid": int(trackids_arr[i]),
-            "particle_pid": int(pids_arr[i]),
-        }
-
-        # Apply PID filter
-        if args.filter_pid is not None and frag["particle_pid"] != args.filter_pid:
-            continue
-
-        nvis = int(np.sum(frag["mask"]))
-
-        # Apply minimum fragment size filter
-        if args.min_frag_pts > 0 and nvis < args.min_frag_pts:
-            continue
-
-        otype = ORIGIN_NAMES.get(frag["origin_type"], f"UNK({frag['origin_type']})")
-        trunk_str = "trunk" if frag["istrunk"] == 1 else "secondary"
-        pid_str = {22: "photon", 11: "e-", -11: "e+"}.get(frag["particle_pid"], str(frag["particle_pid"]))
-        print(f"  Fragment {i}: {nvis} pts, {otype}, {trunk_str}, pid={pid_str}, "
-              f"trackid={frag['trackid']}")
-        fragments.append(frag)
+            "pret0_origin": pret0pts_arr[i].copy() if pret0pts_arr is not None else None,
+            "origin_coord_raw": originpts_arr[i].copy(),
+        })
 else:
-    # === Legacy per-fragment group format ===
     num_fragments_raw = int(sf.attrs.get("num_fragments", 0))
     print(f"Found {num_fragments_raw} shower fragments (legacy format)")
-
     for i in range(num_fragments_raw):
         fg = sf[f"fragment_{i}"]
-        frag = {
-            "mask": np.array(fg["mask"], dtype=bool),
-            "origin_coord": np.array(fg["origin_coord"], dtype=np.float32),
-            "start_coord": np.array(fg["origin_coord"], dtype=np.float32),  # no startpt in legacy
-            "pret0_origin": None,
-            "origin_type": int(np.array(fg["origin_type"])),
+        raw_display_data.append({
             "istrunk": 0,
-            "trackid": int(np.array(fg.get("primary_trackid", fg.get("photon_trackid", -1)))),
-            "particle_pid": int(np.array(fg["particle_pid"])) if "particle_pid" in fg else 22,
-        }
-
-        if args.filter_pid is not None and frag["particle_pid"] != args.filter_pid:
-            continue
-
-        nvis = int(np.sum(frag["mask"]))
-
-        if args.min_frag_pts > 0 and nvis < args.min_frag_pts:
-            continue
-
-        otype = ORIGIN_NAMES.get(frag["origin_type"], f"UNK({frag['origin_type']})")
-        pid_str = {22: "photon", 11: "e-", -11: "e+"}.get(frag["particle_pid"], str(frag["particle_pid"]))
-        print(f"  Fragment {i}: {nvis} pts, {otype}, pid={pid_str}, trackid={frag['trackid']}")
-        fragments.append(frag)
-
-num_fragments = len(fragments)  # update after filtering
+            "pret0_origin": None,
+            "origin_coord_raw": np.array(fg["origin_coord"], dtype=np.float32),
+        })
 
 # Load keypoints if requested
 kpdata = None
@@ -221,6 +176,95 @@ if args.show_keypoints and "mckeypoints" in entry:
     }
 
 fh5.close()
+
+# ──────────────────────────────────────────────────────────────────
+# Load training-view data via ShowerOriginDataset
+# ──────────────────────────────────────────────────────────────────
+# Uses the actual data loader class so origin points (including the
+# nu_vertex_is_visible + single-shower override logic) are identical
+# to what the model receives during training.
+tmpfd, tmppath = tempfile.mkstemp(suffix='.txt')
+with os.fdopen(tmpfd, 'w') as tmpf:
+    tmpf.write(os.path.abspath(args.input_h5) + '\n')
+
+try:
+    dataset = ShowerOriginDataset(
+        split="train",
+        data_root="/tmp",
+        data_list_file=tmppath,
+        transform=None,
+        coord_scale=1.0,  # keep cm for visualization
+        min_fragment_points=20,
+        max_showers_per_event=64,
+        include_cosmic_showers=True,
+    )
+    training_data = dataset.get_data(0)
+finally:
+    os.unlink(tmppath)
+
+# ──────────────────────────────────────────────────────────────────
+# Build fragment list (training data + display fields)
+# ──────────────────────────────────────────────────────────────────
+fragments = []
+num_training_showers = int(training_data["num_showers"])
+print(f"ShowerOriginDataset returned {num_training_showers} fragments")
+
+override_nu_origin = False  # detect from origin comparison
+
+for j in range(num_training_showers):
+    if not training_data["valid_showers_mask"][j]:
+        break
+
+    mask = training_data["shower_masks"][j].astype(bool)
+    origin = training_data["origin_coords"][j]
+    origin_type = int(training_data["origin_types"][j])
+    start = training_data["start_coords"][j]
+    tid = int(training_data["fragment_trackids"][j])
+    ppid = int(training_data["particle_pids"][j])
+    is_vertex = bool(training_data["origin_is_vertex"][j])
+
+    # Get display-only fields from raw HDF5 data
+    raw = (raw_display_data[j] if j < len(raw_display_data)
+           else {"istrunk": 0, "pret0_origin": None,
+                 "origin_coord_raw": origin.copy()})
+    raw_origin = raw["origin_coord_raw"]
+    is_overridden = not np.allclose(origin, raw_origin, atol=0.01)
+    if is_overridden:
+        override_nu_origin = True
+
+    frag = {
+        "mask": mask,
+        "origin_coord": origin,
+        "origin_coord_raw": raw_origin,
+        "start_coord": start,
+        "pret0_origin": raw["pret0_origin"],
+        "origin_type": origin_type,
+        "istrunk": raw["istrunk"],
+        "trackid": tid,
+        "particle_pid": ppid,
+        "origin_is_vertex": is_vertex,
+        "origin_overridden": is_overridden,
+    }
+
+    # Apply PID filter
+    if args.filter_pid is not None and frag["particle_pid"] != args.filter_pid:
+        continue
+
+    nvis = int(np.sum(frag["mask"]))
+
+    # Apply minimum fragment size filter (display-level)
+    if args.min_frag_pts > 0 and nvis < args.min_frag_pts:
+        continue
+
+    otype = ORIGIN_NAMES.get(frag["origin_type"], f"UNK({frag['origin_type']})")
+    trunk_str = "trunk" if frag["istrunk"] == 1 else "secondary"
+    pid_str = {22: "photon", 11: "e-", -11: "e+"}.get(frag["particle_pid"], str(frag["particle_pid"]))
+    override_str = " [ORIGIN->STARTPT]" if is_overridden else ""
+    print(f"  Fragment {j}: {nvis} pts, {otype}, {trunk_str}, pid={pid_str}, "
+          f"trackid={frag['trackid']}{override_str}")
+    fragments.append(frag)
+
+num_fragments = len(fragments)
 
 # ──────────────────────────────────────────────────────────────────
 # Build point filter (true-match only by default)
@@ -361,13 +405,18 @@ for i, frag in enumerate(fragments):
     })
 
 # ── Origin point markers (one per unique trackid to avoid clutter) ──
+# Origin coords reflect the data loader's override logic: when nu_vertex
+# is not visible and only one nu-origin shower exists, type-0 origins
+# are moved to the trunk startpt.
 seen_origin_trackids = set()
 for i, frag in enumerate(fragments):
     oc = frag["origin_coord"]
+    oc_raw = frag["origin_coord_raw"]
     otype = frag["origin_type"]
     ftid = frag["trackid"]
     ppid = frag["particle_pid"]
     p0 = frag["pret0_origin"]
+    is_overridden = frag["origin_overridden"]
 
     otype_str = ORIGIN_NAMES.get(otype, f"UNK({otype})")
     origin_color = ORIGIN_COLORS.get(otype, "rgba(255,255,255,1)")
@@ -379,6 +428,18 @@ for i, frag in enumerate(fragments):
     else:
         pret0_str = "N/A"
 
+    # Build override info for hover
+    if is_overridden:
+        raw_str = f"({oc_raw[0]:.1f}, {oc_raw[1]:.1f}, {oc_raw[2]:.1f})"
+        override_hover = (f"<b>Overridden</b>: YES (moved to startpt)<br>"
+                          f"<b>Raw HDF5 Origin</b>: {raw_str}<br>")
+        label_text = f"O:{ftid}*"
+        name_suffix = " [OVR]"
+    else:
+        override_hover = ""
+        label_text = f"O:{ftid}"
+        name_suffix = ""
+
     # Only show one origin marker per unique trackid
     if ftid not in seen_origin_trackids:
         seen_origin_trackids.add(ftid)
@@ -388,14 +449,15 @@ for i, frag in enumerate(fragments):
             "y": [oc[1]],
             "z": [oc[2]],
             "mode": "markers+text",
-            "name": f"origin tid={ftid} ({pid_str},{otype_str})",
-            "text": [f"O:{ftid}"],
+            "name": f"origin tid={ftid} ({pid_str},{otype_str}){name_suffix}",
+            "text": [label_text],
             "textposition": "top center",
             "textfont": {"color": "white", "size": 10},
             "hovertemplate": (
                 f"<b>Origin (tid={ftid})</b><br>"
                 f"<b>Type</b>: {otype_str}<br>"
                 f"<b>Particle</b>: {pid_str} (pid={ppid})<br>"
+                + override_hover +
                 "<b>x</b>: %{x:.2f}<br>"
                 "<b>y</b>: %{y:.2f}<br>"
                 "<b>z</b>: %{z:.2f}<br>"
@@ -519,8 +581,11 @@ axis_template = {
 }
 
 fname = os.path.basename(args.input_h5)
+override_info = ""
+if override_nu_origin:
+    override_info = " | ORIGIN OVERRIDE ACTIVE"
 title_text = (f"{fname} | {entry_key} | {num_fragments} fragments | "
-              f"colorby={args.colorby}")
+              f"colorby={args.colorby}{override_info}")
 
 plot_layout = {
     "title": {"text": title_text, "font": {"color": "white", "size": 14}},
@@ -549,11 +614,16 @@ for i, frag in enumerate(fragments):
     otype = ORIGIN_NAMES.get(frag["origin_type"], "UNK")
     trunk_str = "trunk" if frag["istrunk"] == 1 else ("sec" if frag["istrunk"] == 2 else "?")
     oc = frag["origin_coord"]
+    oc_raw = frag["origin_coord_raw"]
     sc = frag["start_coord"]
     nvis = int(np.sum(frag["mask"] & true_mask))
     pid_str = {22: "photon", 11: "e-", -11: "e+"}.get(frag["particle_pid"], str(frag["particle_pid"]))
     p0 = frag["pret0_origin"]
     pret0_str = f"({p0[0]:.1f}, {p0[1]:.1f}, {p0[2]:.1f})" if p0 is not None else "N/A"
+    is_ovr = frag["origin_overridden"]
+    origin_display = f"({oc[0]:.1f}, {oc[1]:.1f}, {oc[2]:.1f})"
+    if is_ovr:
+        origin_display += f" (was {oc_raw[0]:.1f},{oc_raw[1]:.1f},{oc_raw[2]:.1f})"
     summary_rows.append(
         html.Tr([
             html.Td(str(i), style={"padding": "4px 8px"}),
@@ -568,8 +638,15 @@ for i, frag in enumerate(fragments):
             html.Td(str(frag["trackid"]), style={"padding": "4px 8px"}),
             html.Td(f"({sc[0]:.1f}, {sc[1]:.1f}, {sc[2]:.1f})",
                      style={"padding": "4px 8px"}),
-            html.Td(f"({oc[0]:.1f}, {oc[1]:.1f}, {oc[2]:.1f})",
-                     style={"padding": "4px 8px"}),
+            html.Td(origin_display, style={
+                "padding": "4px 8px",
+                "color": "#ff6b6b" if is_ovr else "inherit",
+            }),
+            html.Td("YES" if is_ovr else "", style={
+                "padding": "4px 8px",
+                "color": "#ff6b6b" if is_ovr else "inherit",
+                "fontWeight": "bold" if is_ovr else "normal",
+            }),
             html.Td(pret0_str, style={"padding": "4px 8px"}),
         ])
     )
@@ -583,7 +660,8 @@ summary_table = html.Table(
         html.Th("Trunk", style={"padding": "4px 8px"}),
         html.Th("TrackID", style={"padding": "4px 8px"}),
         html.Th("Start Pt", style={"padding": "4px 8px"}),
-        html.Th("Origin Pt", style={"padding": "4px 8px"}),
+        html.Th("Origin Pt (training)", style={"padding": "4px 8px"}),
+        html.Th("Ovr", style={"padding": "4px 8px"}),
         html.Th("PreT0 Origin", style={"padding": "4px 8px"}),
     ]))] + [html.Tbody(summary_rows)],
     style={
