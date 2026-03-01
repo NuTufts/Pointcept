@@ -281,6 +281,8 @@ class ShowerOriginDataset(DefaultDataset):
             particle_pids_list = []
             fragment_trackids_list = []
 
+            n_inside = 0
+
             if 'shower_fragments' in entry:
                 sf = entry['shower_fragments']
 
@@ -294,6 +296,7 @@ class ShowerOriginDataset(DefaultDataset):
                     index_remap = None
 
                 num_frags = int(sf.attrs.get('num_fragments', 0))
+                #print("num fragments: ",num_frags)
                 if num_frags > 0:
                     trackids = sf['trackid'][:]
                     pids = sf['pid'][:]
@@ -339,8 +342,8 @@ class ShowerOriginDataset(DefaultDataset):
 
                     offset = 0
                     for i in range(num_frags):
-                        if len(shower_masks_list) >= self.max_showers_per_event:
-                            break
+                        #if len(shower_masks_list) >= self.max_showers_per_event:
+                        #    break
 
                         count = int(index_counts[i])
                         indices = flat_indices[offset:offset+count]
@@ -367,6 +370,9 @@ class ShowerOriginDataset(DefaultDataset):
                         if not self.include_cosmic_showers and frag_origin_type == 2:
                             continue
 
+                        if frag_origin_type==0:
+                            n_inside += 1
+
                         frag_origin = originpts[i].astype(np.float32) * self.coord_scale
                         frag_start = startpts[i].astype(np.float32) * self.coord_scale
                         frag_tid = int(trackids[i])
@@ -392,10 +398,12 @@ class ShowerOriginDataset(DefaultDataset):
                         fragment_trackids_list.append(frag_tid)
 
         num_showers = len(shower_masks_list)
+        #print("num inside fragments:  ",n_inside)
 
         # Randomly select 1 fragment for this training example
         if num_showers > 0:
             idx = np.random.randint(num_showers)
+            #print("selected fragment idx=",idx," of ",num_showers)
             selected_mask = shower_masks_list[idx]
             selected_origin = origin_coords_list[idx]
             selected_type = origin_types_list[idx]

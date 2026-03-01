@@ -912,147 +912,217 @@ class ShowerOriginPredictorV3(nn.Module):
         input_dict.update(_saved_keys)
 
         point = result["point"]
-        event_features = point.feat  # (N_out, D) — may differ from input N
-        real_coords = point.coord  # (N_out, 3)
-        N_out = event_features.shape[0]
+        event_features = point.feat  # (N_total_out, D) — concatenated across batch
+        real_coords = point.coord  # (N_total_out, 3)
 
         # ==================================================================
-        # 2. Extract shower features from single fragment mask
+        # 2. Determine batch size and per-sample boundaries
         # ==================================================================
-        shower_mask = input_dict.get("shower_mask", None)
-        input_coords = input_dict.get("coord", None)
+        output_offset = getattr(point, 'offset', None)
+        input_offset = input_dict.get("offset", None)
 
-        # Masks are at input resolution; backbone output may be downsampled
-        # (up_cast_level < num_enc_levels). Downsample masks via nearest-
-        # neighbor matching from backbone output coords to input coords.
-        def _downsample_mask(mask_input_res, input_coords, output_coords):
-            """Map a per-input-point mask to per-output-point via NN.
-
-            Uses chunked distance computation to avoid allocating a full
-            (N_out, N_in) matrix which can be ~400MB at N=10K.
-            """
-            if mask_input_res.shape[0] == output_coords.shape[0]:
-                return mask_input_res  # already at output resolution
-            out_f = output_coords.float()
-            in_f = input_coords.float()
-            chunk_size = 1024
-            nn_idx = torch.empty(out_f.shape[0], dtype=torch.long,
-                                 device=out_f.device)
-            for start in range(0, out_f.shape[0], chunk_size):
-                end = min(start + chunk_size, out_f.shape[0])
-                dists = torch.cdist(
-                    out_f[start:end].unsqueeze(0),
-                    in_f.unsqueeze(0),
-                ).squeeze(0)
-                nn_idx[start:end] = dists.argmin(dim=1)
-            return mask_input_res[nn_idx]
-
-        need_downsample = (
-            input_coords is not None
-            and input_coords.shape[0] != N_out
-        )
-
-        if need_downsample and shower_mask is not None:
-            shower_mask = _downsample_mask(shower_mask, input_coords, real_coords)
-
-        if shower_mask is not None:
-            shower_features = event_features[shower_mask.bool()]
+        if output_offset is not None:
+            B = output_offset.shape[0]
+        elif input_offset is not None:
+            B = input_offset.shape[0]
         else:
-            shower_features = event_features
+            B = 1
 
-        # Handle case where shower has very few points
-        if shower_features.size(0) < self.num_slots:
-            mean_feat = shower_features.mean(dim=0, keepdim=True)
-            padding = mean_feat.expand(
-                self.num_slots - shower_features.size(0), -1
-            )
-            shower_features = torch.cat([shower_features, padding], dim=0)
+        # Gather full-batch tensors
+        shower_mask_all = input_dict.get("shower_mask", None)
+        input_coords_all = input_dict.get("coord", None)
+        origin_coord_all = input_dict.get("origin_coord", None)
+        origin_type_all = input_dict.get("origin_type", None)
 
-        # ==================================================================
-        # 3. Slot Attention: aggregate shower features into K slots
-        # Run in float32 to avoid bfloat16 overflow in randomly-initialized layers
-        # ==================================================================
-        with torch.amp.autocast('cuda', enabled=False):
-            shower_slots, _ = self.slot_attention(shower_features.float().unsqueeze(0))
-            shower_slots = shower_slots.squeeze(0)  # (K, D)
+        # Reshape origin_coord from (B*3,) to (B, 3) when batched
+        if origin_coord_all is not None:
+            if origin_coord_all.dim() == 1 and B > 1:
+                origin_coord_all = origin_coord_all.view(B, 3)
+            elif origin_coord_all.dim() == 1 and B == 1:
+                origin_coord_all = origin_coord_all.unsqueeze(0)
 
         # ==================================================================
-        # 4. (Optional) Virtual grid: generate virtual points and features
-        # ==================================================================
-        if self.virtual_grid is not None:
-            # Compute shower centroid for dense grid placement
-            shower_centroids = self._compute_shower_centroids(
-                real_coords, shower_mask
-            )
-
-            virtual_coords, virtual_features, _ = self.virtual_grid(
-                real_coords, event_features, shower_centroids
-            )
-
-            # Concatenate real and virtual points for cross-attention
-            if virtual_coords.shape[0] > 0:
-                all_features = torch.cat(
-                    [event_features, virtual_features], dim=0
-                )  # (N+V, D)
-                all_coords = torch.cat(
-                    [real_coords, virtual_coords], dim=0
-                )  # (N+V, 3)
-            else:
-                all_features = event_features
-                all_coords = real_coords
-        else:
-            all_features = event_features
-            all_coords = real_coords
-
-        # ==================================================================
-        # 5. Cross-attention: slots query all points (real + virtual)
-        # Run in float32 to avoid bfloat16 overflow in randomly-initialized layers
-        # ==================================================================
-        with torch.amp.autocast('cuda', enabled=False):
-            queries = shower_slots.float()
-            all_features_f32 = all_features.float()
-            for layer in self.cross_attn_layers:
-                queries = layer(
-                    queries=queries,
-                    keys=all_features_f32,
-                    values=all_features_f32,
-                )
-            # queries: (K, D) refined slot representations
-
-        # ==================================================================
-        # 6. Per-slot predictions
-        # ==================================================================
-        per_slot_scores, per_slot_distances, per_slot_cls, per_slot_logits = (
-            self._compute_per_slot_predictions(all_features, queries)
-        )
-
-        # ==================================================================
-        # 7. Training: direct single-fragment loss (K=1)
+        # 3-8. Process each sample in the batch independently
         # ==================================================================
         return_dict = {}
+        batch_losses = []
+        batch_eval_outputs = []
 
-        if self.training or "origin_coord" in input_dict:
-            loss = self._single_fragment_loss(
-                per_slot_scores[0],
-                per_slot_logits[0],
-                per_slot_distances[0] if per_slot_distances else None,
-                per_slot_cls[0],
-                all_coords,
-                input_dict,
+        for b in range(B):
+            # --- Per-sample slicing ---
+            if output_offset is not None:
+                out_s = 0 if b == 0 else output_offset[b - 1].item()
+                out_e = output_offset[b].item()
+            else:
+                out_s, out_e = 0, event_features.shape[0]
+
+            if input_offset is not None:
+                in_s = 0 if b == 0 else input_offset[b - 1].item()
+                in_e = input_offset[b].item()
+            else:
+                in_s = 0
+                in_e = (input_coords_all.shape[0]
+                        if input_coords_all is not None else 0)
+
+            sample_features = event_features[out_s:out_e]  # (N_out_b, D)
+            sample_coords = real_coords[out_s:out_e]        # (N_out_b, 3)
+            N_out_b = sample_features.shape[0]
+
+            # --- Shower mask (input resolution → output resolution) ---
+            sample_mask = None
+            if shower_mask_all is not None:
+                sample_mask = shower_mask_all[in_s:in_e]
+                sample_input_coords = (
+                    input_coords_all[in_s:in_e]
+                    if input_coords_all is not None else None
+                )
+                if (sample_input_coords is not None
+                        and sample_mask.shape[0] != N_out_b):
+                    sample_mask = self._downsample_mask(
+                        sample_mask, sample_input_coords, sample_coords
+                    )
+
+            if sample_mask is not None:
+                shower_features = sample_features[sample_mask.bool()]
+            else:
+                shower_features = sample_features
+
+            if shower_features.size(0) < self.num_slots:
+                mean_feat = shower_features.mean(dim=0, keepdim=True)
+                padding = mean_feat.expand(
+                    self.num_slots - shower_features.size(0), -1
+                )
+                shower_features = torch.cat([shower_features, padding], dim=0)
+
+            # --- Slot Attention (float32) ---
+            with torch.amp.autocast('cuda', enabled=False):
+                shower_slots, _ = self.slot_attention(
+                    shower_features.float().unsqueeze(0)
+                )
+                shower_slots = shower_slots.squeeze(0)  # (K, D)
+
+            # --- Virtual grid (optional) ---
+            if self.virtual_grid is not None:
+                shower_centroids = self._compute_shower_centroids(
+                    sample_coords, sample_mask
+                )
+                virtual_coords, virtual_features, _ = self.virtual_grid(
+                    sample_coords, sample_features, shower_centroids
+                )
+                if virtual_coords.shape[0] > 0:
+                    all_features = torch.cat(
+                        [sample_features, virtual_features], dim=0
+                    )
+                    all_coords = torch.cat(
+                        [sample_coords, virtual_coords], dim=0
+                    )
+                else:
+                    all_features = sample_features
+                    all_coords = sample_coords
+            else:
+                all_features = sample_features
+                all_coords = sample_coords
+
+            # --- Cross-attention (float32) ---
+            with torch.amp.autocast('cuda', enabled=False):
+                queries = shower_slots.float()
+                all_features_f32 = all_features.float()
+                for layer in self.cross_attn_layers:
+                    queries = layer(
+                        queries=queries,
+                        keys=all_features_f32,
+                        values=all_features_f32,
+                    )
+
+            # --- Per-slot predictions ---
+            per_slot_scores, per_slot_distances, per_slot_cls, per_slot_logits = (
+                self._compute_per_slot_predictions(all_features, queries)
             )
-            return_dict["loss"] = loss
+
+            # --- Loss ---
+            if self.training or origin_coord_all is not None:
+                sample_input = {"origin_coord": origin_coord_all[b]}
+                if origin_type_all is not None:
+                    if origin_type_all.dim() == 0:
+                        sample_input["origin_type"] = origin_type_all
+                    else:
+                        sample_input["origin_type"] = origin_type_all[b]
+                loss = self._single_fragment_loss(
+                    per_slot_scores[0],
+                    per_slot_logits[0],
+                    per_slot_distances[0] if per_slot_distances else None,
+                    per_slot_cls[0],
+                    all_coords,
+                    sample_input,
+                )
+                batch_losses.append(loss)
+
+            # --- Eval outputs ---
+            if not self.training:
+                N_real = sample_features.shape[0]
+                batch_eval_outputs.append({
+                    "origin_scores": per_slot_scores[0][:N_real],
+                    "all_coords": sample_coords,
+                    "origin_class": per_slot_cls[0].argmax(dim=-1),
+                    "origin_distances": (
+                        per_slot_distances[0][:N_real]
+                        if per_slot_distances else None
+                    ),
+                })
 
         # ==================================================================
-        # 8. Inference outputs
+        # Aggregate across batch
         # ==================================================================
-        if not self.training:
-            N_real = event_features.shape[0]
-            return_dict["origin_scores"] = per_slot_scores[0][:N_real]
-            if per_slot_distances:
-                return_dict["origin_distances"] = per_slot_distances[0][:N_real]
-            return_dict["origin_class"] = per_slot_cls[0].argmax(dim=-1)
+        if batch_losses:
+            return_dict["loss"] = torch.stack(batch_losses).mean()
+
+        if not self.training and batch_eval_outputs:
+            if len(batch_eval_outputs) == 1:
+                # Single sample: flat tensors (backward compatible)
+                return_dict["origin_scores"] = batch_eval_outputs[0]["origin_scores"]
+                return_dict["all_coords"] = batch_eval_outputs[0]["all_coords"]
+                return_dict["origin_class"] = batch_eval_outputs[0]["origin_class"]
+                if batch_eval_outputs[0]["origin_distances"] is not None:
+                    return_dict["origin_distances"] = batch_eval_outputs[0]["origin_distances"]
+            else:
+                # Multi-sample: per-sample lists + stacked class tensor
+                return_dict["origin_scores"] = [
+                    o["origin_scores"] for o in batch_eval_outputs
+                ]
+                return_dict["all_coords"] = [
+                    o["all_coords"] for o in batch_eval_outputs
+                ]
+                return_dict["origin_class"] = torch.stack([
+                    o["origin_class"] for o in batch_eval_outputs
+                ])
+                dists = [o["origin_distances"] for o in batch_eval_outputs]
+                if dists[0] is not None:
+                    return_dict["origin_distances"] = dists
 
         return return_dict
+
+    @staticmethod
+    def _downsample_mask(mask_input_res, input_coords, output_coords):
+        """Map a per-input-point mask to per-output-point via nearest-neighbor.
+
+        Uses chunked distance computation to avoid allocating a full
+        (N_out, N_in) matrix which can be ~400MB at N=10K.
+        """
+        if mask_input_res.shape[0] == output_coords.shape[0]:
+            return mask_input_res  # already at output resolution
+        out_f = output_coords.float()
+        in_f = input_coords.float()
+        chunk_size = 1024
+        nn_idx = torch.empty(out_f.shape[0], dtype=torch.long,
+                             device=out_f.device)
+        for start in range(0, out_f.shape[0], chunk_size):
+            end = min(start + chunk_size, out_f.shape[0])
+            dists = torch.cdist(
+                out_f[start:end].unsqueeze(0),
+                in_f.unsqueeze(0),
+            ).squeeze(0)
+            nn_idx[start:end] = dists.argmin(dim=1)
+        return mask_input_res[nn_idx]
 
     def _compute_shower_centroids(self, real_coords, shower_mask):
         """

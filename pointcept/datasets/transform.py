@@ -352,9 +352,10 @@ class RandomRotateTargetAngle(object):
 
 @TRANSFORMS.register_module()
 class RandomScale(object):
-    def __init__(self, scale=None, anisotropic=False):
+    def __init__(self, scale=None, anisotropic=False, extra_coord_keys=()):
         self.scale = scale if scale is not None else [0.95, 1.05]
         self.anisotropic = anisotropic
+        self.extra_coord_keys = extra_coord_keys
 
     def __call__(self, data_dict):
         if "coord" in data_dict.keys():
@@ -362,6 +363,9 @@ class RandomScale(object):
                 self.scale[0], self.scale[1], 3 if self.anisotropic else 1
             )
             data_dict["coord"] *= scale
+            for key in self.extra_coord_keys:
+                if key in data_dict and data_dict[key] is not None:
+                    data_dict[key] = data_dict[key] * scale
         return data_dict
 
 
@@ -419,10 +423,11 @@ class RandomFlipAxis(object):
     This maps points on one side of center to the other side.
     """
     def __init__(self, p=0.5, axis="z", center="mean", swap_strength_columns=None,
-                 wire_projections=None, 
+                 wire_projections=None,
                  wire_pitch=0.3,
                  coord_scale=1.0,
-                 wire_scale=1.0/3456.0):
+                 wire_scale=1.0/3456.0,
+                 extra_coord_keys=()):
         self.p = p
         if isinstance(axis, str):
             self.axis = {"x": 0, "y": 1, "z": 2}[axis.lower()]
@@ -430,6 +435,7 @@ class RandomFlipAxis(object):
             self.axis = axis
         self.center = center
         self.swap_strength_columns = swap_strength_columns
+        self.extra_coord_keys = extra_coord_keys
 
         # Precompute wire projection arrays if provided
         self.wire_pitch  = wire_pitch
@@ -485,6 +491,19 @@ class RandomFlipAxis(object):
                     c = float(self.center)
                 # Flip: new = 2*center - old
                 data_dict["coord"][:, self.axis] = 2 * c - coord[:, self.axis]
+
+                # Apply same flip to extra coordinate keys
+                for key in self.extra_coord_keys:
+                    if key in data_dict and data_dict[key] is not None:
+                        val = data_dict[key]
+                        if val.ndim == 1 and val.shape[0] >= self.axis + 1:
+                            # (3,) vector like origin_coord
+                            data_dict[key] = val.copy()
+                            data_dict[key][self.axis] = 2 * c - val[self.axis]
+                        elif val.ndim == 2 and val.shape[1] >= self.axis + 1:
+                            # (N, 3) array
+                            data_dict[key] = val.copy()
+                            data_dict[key][:, self.axis] = 2 * c - val[:, self.axis]
 
                 # Recalculate wire coordinates if projections are defined
                 if self.wire_origins is not None and "color" in data_dict.keys():

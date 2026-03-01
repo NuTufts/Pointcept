@@ -27,7 +27,8 @@ _base_ = ["../_base_/default_runtime.py"]
 # =============================================================================
 # Training settings
 # =============================================================================
-batch_size = 8  # Smaller batch due to per-slot memory
+batch_size = 16  # Smaller batch due to per-slot memory
+batch_size_val = 16
 num_worker = 4
 mix_prob = 0.0
 empty_cache = True  # Free CUDA cache between forward/backward to reduce peak memory
@@ -37,8 +38,8 @@ wandb_project = "pointcept-shower-origin"
 save_path = "shower_origin/sonata_v1m1_v3_v6backbone"
 
 epoch = 1000
-eval_epoch = 1000  # Disable periodic eval (no compatible evaluator yet)
-evaluate = False  # No compatible evaluator for shower origin prediction yet
+eval_epoch = 10  # Evaluate every 10 epochs
+evaluate = True
 base_lr = 1.0e-5  # Lower LR since only training head
 
 # Backend settings (must match v6 pretrained model)
@@ -49,9 +50,9 @@ amp_dtype = "bfloat16"
 grid_size = 0.25  # cm (applied before NormalizeShowerCoords)
 
 # Point limits (reduced from 10240 to reduce GPU memory usage)
-max_points_spherecrop = 5120
+max_points_spherecrop = 10240
 min_points_spherecrop = 512
-biased_spherecrop_radius = 5.0  # cm (applied before NormalizeShowerCoords)
+biased_spherecrop_radius = 0.005  # cm (applied before NormalizeShowerCoords)
 
 # Coordinate normalization (must match v6 pretraining)
 coord_center = [125.0, 0.0, 518.0]
@@ -61,7 +62,7 @@ coord_scale = 1036.0 * 3**0.5 / 2.0 / 5.0  # ~179.55
 # Data files
 # =============================================================================
 TRAIN_FILE_LIST = "/home/twongjirad/working/larbys/gen2/container_u22/Pointcept/shower_origin_single_event_test.txt"
-VAL_FILE_LIST = "/home/twongjirad/working/larbys/gen2/container_u22/Pointcept/shower_origin_single_event_test.txt"
+VAL_FILE_LIST = "/home/twongjirad/working/larbys/gen2/container_u22/Pointcept/shower_origin_single_event_val.txt"
 
 # =============================================================================
 # Model configuration
@@ -128,17 +129,17 @@ model = dict(
     slot_iterations=3,
 
     # Cross-attention config
-    num_cross_attn_layers=3,
-    num_heads=8,
+    num_cross_attn_layers=5,
+    num_heads=16,
 
     # Score head config
     hidden_channels=256,
-    predict_distance=True,
+    predict_distance=False,
 
     # Loss weights
     score_loss_weight=1.0,
     distance_loss_weight=0.1,
-    classification_loss_weight=1.0,
+    classification_loss_weight=0.5,
 
     # Gaussian sigma for soft labels (normalized units: 4cm / 179.55 ≈ 0.022)
     gaussian_sigma=0.022,
@@ -174,8 +175,8 @@ scheduler = dict(
     max_lr=[base_lr],
     pct_start=0.1,
     anneal_strategy="cos",
-    div_factor=10.0,
-    final_div_factor=100.0,
+    div_factor=100.0,
+    final_div_factor=10.0,
 )
 
 # =============================================================================
@@ -201,6 +202,7 @@ _dataset_common = dict(
     wire_scale=1.0/3456.0,
     min_shower_points=20,
     include_ghosts=False,  # Match v6 backbone pretraining (no ghosts)
+    max_showers_per_event=200,
 )
 
 # =============================================================================
@@ -225,7 +227,7 @@ data = dict(
                 radius=biased_spherecrop_radius,
                 point_max=max_points_spherecrop,
                 point_min=min_points_spherecrop,
-                prob_random=0.25,
+                prob_random=0.0,
                 max_retries=100,
                 fallback_to_random=True,
             ),
@@ -253,23 +255,31 @@ data = dict(
                 keys=("strength",),
             ),
             # 5. Augmentation (in normalized coords)
-            dict(type="RandomScale", scale=[0.95, 1.05]),
-            dict(
-                type="RandomFlipAxis",
-                p=0.5,
-                axis="y",
-                center="mean",
-                coord_scale=1.0,
-                swap_strength_columns=(0, 1),
-            ),
-            dict(
-                type="RandomFlipAxis",
-                p=0.5,
-                axis="z",
-                center="mean",
-                coord_scale=1.0,
-                swap_strength_columns=(0, 1),
-            ),
+            # extra_coord_keys ensures origin_coord/start_coord are
+            # transformed consistently with coord
+            # dict(
+            #     type="RandomScale",
+            #     scale=[0.95, 1.05],
+            #     extra_coord_keys=("origin_coord", "start_coord"),
+            # ),
+            # dict(
+            #     type="RandomFlipAxis",
+            #     p=0.5,
+            #     axis="y",
+            #     center="mean",
+            #     coord_scale=1.0,
+            #     swap_strength_columns=(0, 1),
+            #     extra_coord_keys=("origin_coord", "start_coord"),
+            # ),
+            # dict(
+            #     type="RandomFlipAxis",
+            #     p=0.5,
+            #     axis="z",
+            #     center="mean",
+            #     coord_scale=1.0,
+            #     swap_strength_columns=(0, 1),
+            #     extra_coord_keys=("origin_coord", "start_coord"),
+            # ),
             # 6. Convert to tensors
             dict(type="ToTensor"),
             # 7. Collect with coord+strength = 6 input channels
@@ -292,7 +302,7 @@ data = dict(
                 radius=biased_spherecrop_radius,
                 point_max=max_points_spherecrop,
                 point_min=min_points_spherecrop,
-                prob_random=0.25,
+                prob_random=0.0,
                 max_retries=100,
                 fallback_to_random=True,
             ),
@@ -372,5 +382,6 @@ hooks = [
     dict(type="SonataCheckpointLoader"),
     dict(type="IterationTimer", warmup_iter=2),
     dict(type="InformationWriter"),
+    dict(type="ShowerOriginEvaluator", score_threshold=0.05),
     dict(type="CheckpointSaver", save_freq=None),
 ]
