@@ -4,13 +4,13 @@ WORKDIR=/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept/lartpc_da
 UBDL_DIR=/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/ubdl
 INPUTLIST=${WORKDIR}/inputlists/bnb_nu_corsika_prod2.txt
 JOBIDLIST=${WORKDIR}/jobidlist_bnb_nu_corsika.txt
-OUTPUT_DIR=/cluster/tufts/wongjiradlab/larbys/data/ub_on_tufts/hdf5/bnb_nu_corsika/
+OUTPUT_DIR=/cluster/tufts/wongjiradlab/larbys/data/ub_on_tufts/hdf5/v3_showerfragments/bnb_nu_corsika/
 SCRIPT=process_dlmerged_to_hdf5_event_files.py
 
-OFFSET=1001
+OFFSET=0
 TAG=coriska_bnb_nu
 
-stride=10
+stride=50
 jobid=${SLURM_ARRAY_TASK_ID}
 let startline=$(expr "${OFFSET}+${stride}*${jobid}")
 
@@ -36,7 +36,7 @@ cd $local_jobdir
 # copy the job script
 cp $WORKDIR/${SCRIPT} .
 
-for i in {1..10}
+for i in {1..50}
 do
 
     let lineno=$startline+$i

@@ -2,13 +2,13 @@
 
 WORKDIR=/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept/lartpc_data_prep
 UBDL_DIR=/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/ubdl
-INPUTLIST=${WORKDIR}/inputlists/bnb_nu_pi0_corsika_prod2.txt
-JOBIDLIST=${WORKDIR}/jobidlist_bnbnu_pi0_corsika.txt
-OUTPUT_DIR=/cluster/tufts/wongjiradlab/larbys/data/ub_on_tufts/hdf5/v3_showerfragments/bnb_nu_pi0_corsika/
+INPUTLIST=${WORKDIR}/inputlists/bnb_nu_chargedpiplus_corsika_prod2.txt
+JOBIDLIST=${WORKDIR}/jobidlist_bnbnu_chargedpiplus_corsika_prod2.txt
+OUTPUT_DIR=/cluster/tufts/wongjiradlab/larbys/data/ub_on_tufts/hdf5/v3_showerfragments/bnb_nu_chargedpiplus_corsika/
 SCRIPT=process_dlmerged_to_hdf5_event_files.py
 
 OFFSET=0
-TAG=coriska_bnb_nu_pi0
+TAG=coriska_bnb_nu_chargedpiplus
 
 stride=50
 jobid=${SLURM_ARRAY_TASK_ID}
