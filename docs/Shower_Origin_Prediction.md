@@ -200,9 +200,41 @@ The dataset returns a dict with these keys for the model:
 | `feat` | (N, C) | Point features (from Collect transform) |
 | `shower_masks` | (max_showers, N) | Per-shower boolean masks, padded |
 | `origin_coords` | (max_showers, 3) | Ground truth origin coordinates |
-| `origin_types` | (max_showers,) | 0=INSIDE, 1=OUTSIDE |
+| `origin_types` | (max_showers,) | 0=INSIDE, 1=OUTSIDE, 2=ON_TRACK |
 | `valid_showers_mask` | (max_showers,) | Which shower slots are real vs padding |
 | `num_showers` | int | Actual number of showers in event |
+
+## Input data sets: ROOT files containing different type of simulated data
+
+List with ROOT files are in `/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept/lartpc_data_prep/inputlists/`.
+
+| Sample Name | file list | Num files | Description |
+|---|---|---|---|
+| bnb_nu_corsika           | bnb_nu_corsika_prod2.txt     | 5000 | BNB neutrino flux (all flavors). Nu interactions created within Liquid Argon volume. Includes cosmic simulation. |
+| bnb_nu_pi0_corsika       | bnb_nu_pi0_corsika_prod2.txt | 4995 | Same as bnb_nu_corsika because intended pi0 filter did not work properly. But sample name kept. |
+| bnb_nu_pi0filter_corsika | bnb_nu_pi0filter_corsika.txt | 8313 | BNB flux with all flavors. Only nu interactions in the LAr volume where at least 1 pi0 created. Includes cosmics. |
+| bnb_nue_corsika          | bnb_nue_corsika_prod2.txt    | 4999 | BNB flux but only nue flavor. Nu interactions created inside TPC. Includes cosmics. |
+| bnb_nu_chargedpiplus_corsika | bnb_nu_chargedpiplus_corsika_prod2.txt | 8050 | BNB flux with all flavors. Only nu interactions in the LAr volume where at least 1 charged pion created. Includes cosmics. |
+
+### Production scripts
+
+Located on the Tufts cluster at `/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept/lartpc_data_prep/`.
+
+Each data set has a slurm submission script. It calls a bash script which runs `process_dlmerged_to_hdf5_event_files.py` on N files from the input lists. 
+We refer to N as the 'stride' in the bash scripts.
+
+Need to make sure that the right output folder is being used for the created hdf5 files: 
+
+Our new files with the shower fragment data will be stored in the folder: `/cluster/tufts/wongjiradlab/larbys/data/ub_on_tufts/hdf5/v3_showerfragments/[sample name]`.
+
+| Sample Name | Number of jobs required | stride | slurm script | bash script |
+|---|---|---|---|---|
+| bnb_nu_corsika | 100 | 50 | submit_bnbnu_corsika.sh | run_corsika_bnb_nu.sh | 
+| bnb_nu_pi0_corsika | 100 | 50 | submit_bnbnu_pi0_corsika.sh | run_corsika_bnb_nu_pi0.sh |
+| bnb_nu_pi0filter_corsika | 83 | 100 | submit_bnbnu_pi0filter_corsika.sh | run_corsika_bnb_nu_pi0filter.sh | 
+| bnb_nue_corsika | 100 | 50 | submit_bnbnue_corsika.sh | run_corsika_bnb_nue.sh |
+| bnb_nu_chargedpiplus_corsika | 81 | 100 | submit_bnbnu_chargedpiplus_corsika.sh | run_corsika_bnb_nu_chargedpiplus.sh | 
+
 
 ## File Inventory
 
@@ -279,6 +311,13 @@ The dataset returns a dict with these keys for the model:
   - [x] Validation on 8 events (17 files total, 9 without new format): 572 fragments (60 type-0, 81 type-1, 431 type-2), 6 pi0 pairs (4 both-visible, 2 single-visible), 2 single-photon cases correctly overridden
   - [x] Validation script: `lartpc_data_prep/validate_shower_origins.py`
 
+- [ ] **Phase 3**: Data production
+  - [x] Submit test job and look at file size increase. Not very large.
+  - [x] Submit for bnb_nu_pi0filter_corsika sample ( `lartpc_data_prep/submit_bnbnu_pi0filter_corsika.sh` )
+  - [ ] Submit for bnb_nu_corsika sample ( `lartpc_data_prep/submit_bnbnu_corsika.sh` )
+  - [ ] Submit for bnb_nu_pi0_corsika sample ( `lartpc_data_prep/submit_bnbnu_pi0_corsika.sh` )
+  - [ ] Submit for bnb_nue_corsika sample ( `lartpc_data_prep/submit_bnbnue_corsika.sh` )
+  - [ ] Submit for bnb_nu_chargedpiplus_corsika ( `lartpc_data_prep/submit_bnbnu_chargedpiplus_corsika.sh` )
 ### Done
 
 - [x] **Phase 2**: Integration testing
@@ -287,6 +326,8 @@ The dataset returns a dict with these keys for the model:
   - [x] Data augmentation fix: `RandomScale` and `RandomFlipAxis` now transform `origin_coord`/`start_coord` consistently with `coord` via `extra_coord_keys` (was root cause of model not learning)
   - [x] BiasedSphereCrop `prob_random` set to 0.0 to prevent crops that miss the target fragment
   - [x] Overfitting test on single event (43 fragments, 10 epochs) — model learns successfully
+
+
 
 #### Single-Event Overfit Results (43 fragments, 10 epochs, batch_size=16)
 
@@ -310,6 +351,7 @@ Peak distance in cm: value × coord_scale (179.55).
 - [ ] **Phase 3**: Production
   - [ ] Full-scale data prep via SLURM (all available ROOT files -> HDF5 -> shower_fragments)
   - [ ] Multi-GPU training run on full dataset
+  - [ ] Consider if some kind of validation check is needed for the new shower fragment data. For past version of data, used `Pointcept/lartpc_data_prep/validate_hdf5_files.py`.
 - [ ] **Phase 4**: Evaluation
   - [ ] Analyze prediction quality on held-out data (origin localization error, inside/outside accuracy)
   - [ ] Ablation: with/without virtual grid
@@ -336,6 +378,23 @@ With `prob_random=0.25`, 25% of crops used a random point as center, often far f
 ### Fragment Sampling Bias (Fixed)
 
 A cap on max fragments per event caused the same 4 fragments to be selected repeatedly. Fixed to sample from all available fragments.
+
+### Increase in file size when including shower fragments and mc particle tree
+
+Looked at the first few files made with new shower fragments and mc particle tree inside, comparing with the last version.
+
+```
+[twongj01@p1cmp028 mlreco_dlmerged2hdf5_coriska_bnb_nu_pi0filter_jobid000]$ ls -lh /cluster/tufts/wongjiradlab/larbys/data/ub_on_tufts/hdf5/v2_expandedclasses/bnb_nu_pi0filter_corsika/000/000/ | head -n 5
+-rw-rw---- 1 twongj01 wongjiradlab 9.6M Jan 13 10:48 pointceptdata_dlmerged_coriska_bnb_nu_pi0filter_fileno000001_entry000000.h5
+-rw-rw---- 1 twongj01 wongjiradlab  12M Jan 13 10:48 pointceptdata_dlmerged_coriska_bnb_nu_pi0filter_fileno000001_entry000001.h5
+-rw-rw---- 1 twongj01 wongjiradlab 4.0M Jan 13 10:48 pointceptdata_dlmerged_coriska_bnb_nu_pi0filter_fileno000001_entry000002.h5
+[twongj01@p1cmp028 mlreco_dlmerged2hdf5_coriska_bnb_nu_pi0filter_jobid000]$ ls -lh /cluster/tufts/wongjiradlab/larbys/data/ub_on_tufts/hdf5/v3_showerfragments/bnb_nu_pi0filter_corsika/000/000/ | head -n 5
+-rw-rw---- 1 twongj01 wongjiradlab 9.8M Mar  1 09:14 pointceptdata_dlmerged_coriska_bnb_nu_pi0filter_fileno000001_entry000000.h5
+-rw-rw---- 1 twongj01 wongjiradlab  12M Mar  1 09:14 pointceptdata_dlmerged_coriska_bnb_nu_pi0filter_fileno000001_entry000001.h5
+-rw-rw---- 1 twongj01 wongjiradlab 4.1M Mar  1 09:14 pointceptdata_dlmerged_coriska_bnb_nu_pi0filter_fileno000001_entry000002.h5
+```
+
+The increase in size is tolerable. Can go ahead with making new files. When done v2 can be removed.
 
 ## Open Questions
 
