@@ -1,9 +1,14 @@
 import os,sys
+import ROOT as rt
 
 #inputlist = "inputlists/bnb_nu_corsika.txt"
 #outfolder = "/cluster/tufts/wongjiradlab/larbys/data/ub_on_tufts/hdf5/bnb_nu_corsika/"
-inputlist = "inputlists/bnb_nue_corsika.txt"
-outfolder = "/cluster/tufts/wongjiradlab/larbys/data/ub_on_tufts/hdf5/bnb_nue_corsika/"
+
+#inputlist = "inputlists/bnb_nue_corsika.txt"
+#outfolder = "/cluster/tufts/wongjiradlab/larbys/data/ub_on_tufts/hdf5/bnb_nue_corsika/"
+
+inputlist = "inputlists/bnb_nu_pi0filter_corsika.txt"
+outfolder = "/cluster/tufts/wongjiradlab/larbys/data/ub_on_tufts/hdf5/v3_showerfragments/bnb_nu_pi0filter_corsika/"
 
 goodlist_name = "goodlist_"+os.path.basename(inputlist)
 badlist_name  = "badlist_"+os.path.basename(inputlist)
@@ -17,8 +22,22 @@ idx = 1
 for l in linput:
     l = l.strip()
     lbase = os.path.basename(l)
-    input_dict[lbase] = {"index":idx,"numentries":0,"entries":[]}
+
+    # get number of entries
+    print(l)
+    inputentries = 0
+    try:
+        tfile = rt.TFile( l, "open" )
+        larlite_id_tree = tfile.Get("larlite_id_tree")
+        inputentries = larlite_id_tree.GetEntries()
+        tfile.Close()
+    except:
+        continue
+
+    input_dict[lbase] = {"index":idx,"numentries":0,"entries":[],"inputentries":inputentries}
+    
     idx += 1
+    
 print("Number of input root files: ",len(input_dict))
 
 # parse good run list
@@ -96,7 +115,7 @@ for inputfile in input_dict:
     if inputfile in goodfiles:
         continue
     info = input_dict[inputfile]
-    if info['numentries']!=20:
+    if info['numentries']!=info['inputentries']:
         print(inputfile," is missing entries: ",info['numentries'])
         print(info['index'],file=frerun_indices)
     else:

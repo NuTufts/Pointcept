@@ -91,7 +91,8 @@ class ShowerOriginEvaluator(HookBase):
         torch.cuda.empty_cache()
         self.trainer.model.eval()
 
-        gaussian_sigma = self.trainer.model.gaussian_sigma
+        model = getattr(self.trainer.model, "module", self.trainer.model)
+        gaussian_sigma = model.gaussian_sigma
         all_peak_distances = []  # track individually for median
 
         for i, input_dict in enumerate(self.trainer.val_loader):

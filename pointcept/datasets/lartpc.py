@@ -356,7 +356,7 @@ class LArTPCDataset(DefaultDataset):
                 edep = np.array(f['/entry_0/triplet_data/pixval'], dtype=np.float32)
                 # Scale pixval (N, 3) - pixel intensities from 3 wire planes
                 # Each column is the signal from u, v, y wire plane images
-                strength = (edep / self.adc_scale).astype(np.float32)
+                strength = (np.clip(edep,a_min=0,a_max=1000.0) / self.adc_scale).astype(np.float32)
             else:
                 strength = np.ones((coord.shape[0], 1), dtype=np.float32)
             # Add a small value, so that LogTransform (transform.py) does not break
