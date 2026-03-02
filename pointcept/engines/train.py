@@ -246,8 +246,36 @@ class Trainer(TrainerBase):
             loss.backward()
         self._gradient_accumulation_counter += 1
 
+        # Check for NaN/Inf gradients after backward pass
+        nan_grad_params = []
+        for name, param in self.model.named_parameters():
+            if param.grad is not None:
+                if not torch.isfinite(param.grad).all():
+                    grad = param.grad
+                    nan_count = torch.isnan(grad).sum().item()
+                    inf_count = torch.isinf(grad).sum().item()
+                    grad_finite = grad[torch.isfinite(grad)]
+                    nan_grad_params.append(name)
+                    self.logger.error(
+                        f"NaN/Inf gradient in '{name}': "
+                        f"shape={list(grad.shape)}, "
+                        f"nan={nan_count}, inf={inf_count}, "
+                        f"finite_abs_max={grad_finite.abs().max().item() if grad_finite.numel() > 0 else 'N/A'}"
+                    )
+
+        if nan_grad_params:
+            self.logger.error(
+                f"Found NaN/Inf gradients in {len(nan_grad_params)} params at "
+                f"Epoch {self.comm_info.get('epoch', '?')}, "
+                f"Iter {self.comm_info.get('iter', '?')}. "
+                f"Skipping optimizer step to prevent weight corruption."
+            )
+            if "name" in input_dict:
+                self.logger.error(f"  Batch sample names: {input_dict['name']}")
+            self.optimizer.zero_grad()
+            self._gradient_accumulation_counter = 0
         # Perform optimizer step only when enough gradients have accumulated
-        if self._gradient_accumulation_counter >= self.cfg.gradient_accumulation_steps:
+        elif self._gradient_accumulation_counter >= self.cfg.gradient_accumulation_steps:
             if self.cfg.enable_amp:
                 self.scaler.unscale_(self.optimizer)
                 if self.cfg.clip_grad is not None:

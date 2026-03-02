@@ -1006,6 +1006,18 @@ class ShowerOriginPredictorV3(nn.Module):
                 )
                 shower_slots = shower_slots.squeeze(0)  # (K, D)
 
+            # Debug: log tensor stats at key points
+            if self.training:
+                import logging as _logging
+                _dbg = _logging.getLogger("nan_debug")
+                _dbg.info(
+                    f"[sample {b}] backbone_feats: "
+                    f"abs_max={sample_features.abs().max().item():.4f}, "
+                    f"shower_feats({shower_features.shape[0]} pts): "
+                    f"abs_max={shower_features.abs().max().item():.4f}, "
+                    f"slots: abs_max={shower_slots.abs().max().item():.4f}"
+                )
+
             # --- Virtual grid (optional) ---
             if self.virtual_grid is not None:
                 shower_centroids = self._compute_shower_centroids(
@@ -1032,12 +1044,19 @@ class ShowerOriginPredictorV3(nn.Module):
             with torch.amp.autocast('cuda', enabled=False):
                 queries = shower_slots.float()
                 all_features_f32 = all_features.float()
-                for layer in self.cross_attn_layers:
+                for _layer_idx, layer in enumerate(self.cross_attn_layers):
                     queries = layer(
                         queries=queries,
                         keys=all_features_f32,
                         values=all_features_f32,
                     )
+                    if self.training:
+                        _dbg.info(
+                            f"[sample {b}] cross_attn[{_layer_idx}]: "
+                            f"queries abs_max={queries.abs().max().item():.4f}, "
+                            f"has_nan={torch.isnan(queries).any().item()}, "
+                            f"has_inf={torch.isinf(queries).any().item()}"
+                        )
                 queries = self.query_norm(queries)
 
             # --- Per-slot predictions ---
@@ -1176,10 +1195,20 @@ class ShowerOriginPredictorV3(nn.Module):
         per_slot_cls = []
         per_slot_logits = []
 
+        import logging as _logging
+        _dbg = _logging.getLogger("nan_debug")
+
         for k in range(K):
             # Broadcast slot query to all points
             slot_query = queries[k:k + 1]  # (1, D)
             broadcast = slot_query.expand(N, -1)  # (N, D)
+
+            if self.training:
+                _dbg.info(
+                    f"[slot {k}] query abs_max={slot_query.abs().max().item():.4f}, "
+                    f"event_feats abs_max={event_features.abs().max().item():.4f}, "
+                    f"N={N}"
+                )
 
             # Combine with point features — run in float32 to avoid
             # bfloat16 overflow with large input dim (2*D=2176)
