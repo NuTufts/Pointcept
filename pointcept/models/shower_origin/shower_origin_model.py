@@ -831,6 +831,10 @@ class ShowerOriginPredictorV3(nn.Module):
             for _ in range(num_cross_attn_layers)
         ])
 
+        # Final LayerNorm after cross-attention stack to prevent
+        # residual connections from accumulating extreme values
+        self.query_norm = nn.LayerNorm(backbone_out_channels)
+
         # Virtual grid generator (NEW in V3)
         self.virtual_grid = None
         if virtual_grid_enabled:
@@ -1034,6 +1038,7 @@ class ShowerOriginPredictorV3(nn.Module):
                         keys=all_features_f32,
                         values=all_features_f32,
                     )
+                queries = self.query_norm(queries)
 
             # --- Per-slot predictions ---
             per_slot_scores, per_slot_distances, per_slot_cls, per_slot_logits = (
