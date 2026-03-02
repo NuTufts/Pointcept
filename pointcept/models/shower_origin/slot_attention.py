@@ -135,6 +135,7 @@ class SlotAttention(nn.Module):
             # Attention scores: (B, K, N)
             # Each slot queries all input points
             attn_logits = torch.einsum('bkd,bnd->bkn', q, k) * self.scale
+            attn_logits = attn_logits.clamp(-50, 50)
 
             # KEY DIFFERENCE FROM STANDARD ATTENTION:
             # Softmax over slots (dim=1), not over inputs

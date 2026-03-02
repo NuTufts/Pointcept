@@ -110,6 +110,7 @@ class CrossAttentionBlock(nn.Module):
 
         # Attention
         attn = torch.matmul(q, k.transpose(-2, -1)) * self.scale
+        attn = attn.clamp(-50, 50)
         attn_weights = F.softmax(attn, dim=-1)
         attn_weights = self.attn_dropout(attn_weights)
 
