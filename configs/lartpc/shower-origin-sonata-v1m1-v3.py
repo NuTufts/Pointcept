@@ -27,24 +27,27 @@ _base_ = ["../_base_/default_runtime.py"]
 # =============================================================================
 # Training settings
 # =============================================================================
-batch_size = 16  # Smaller batch due to per-slot memory
-batch_size_val = 16
-num_worker = 4
+batch_size = 120  # Smaller batch due to per-slot memory
+batch_size_val = 96
+num_worker = 20
 mix_prob = 0.0
 empty_cache = True  # Free CUDA cache between forward/backward to reduce peak memory
-enable_amp = True
+enable_amp = False
 enable_wandb = True
 wandb_project = "pointcept-shower-origin"
-save_path = "shower_origin/sonata_v1m1_v3_v6backbone"
+save_path = "shower_origin/sonata_v1m1_v3_v6backbone_p1cmp075test"
+clip_grad = 1.0
 
 epoch = 1000
-eval_epoch = 10  # Evaluate every 10 epochs
+eval_epoch = 1000  # Evaluate every 10 epochs
 evaluate = True
-base_lr = 1.0e-5  # Lower LR since only training head
+base_lr = 1.0e-4  # Lower LR since only training head
 
 # Backend settings (must match v6 pretrained model)
-flash_backend = 'flash_attn'
-amp_dtype = "bfloat16"
+#flash_backend = 'flash_attn'
+#amp_dtype = "bfloat16"
+flash_backend='xformers'   # backend needed to run on P100
+amp_dtype = "float16"      # use this with xformer backend on P100
 
 # Grid size must match pretraining
 grid_size = 0.25  # cm (applied before NormalizeShowerCoords)
@@ -61,8 +64,17 @@ coord_scale = 1036.0 * 3**0.5 / 2.0 / 5.0  # ~179.55
 # =============================================================================
 # Data files
 # =============================================================================
-TRAIN_FILE_LIST = "/home/twongjirad/working/larbys/gen2/container_u22/Pointcept/shower_origin_single_event_test.txt"
-VAL_FILE_LIST = "/home/twongjirad/working/larbys/gen2/container_u22/Pointcept/shower_origin_single_event_val.txt"
+#TRAIN_FILE_LIST = "/home/twongjirad/working/larbys/gen2/container_u22/Pointcept/shower_origin_single_event_test.txt"
+#VAL_FILE_LIST = "/home/twongjirad/working/larbys/gen2/container_u22/Pointcept/shower_origin_single_event_val.txt"
+
+TRAIN_FILE_LIST = "/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept/lartpc_data_prep/hdflist_showerfragment_bnb_nu_pi0filter_dev_train.txt"
+VAL_FILE_LIST = "/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept/lartpc_data_prep/hdflist_showerfragment_bnb_nu_pi0filter_dev_val.txt"
+
+# ============================================================================
+# Pretraining weights
+# ============================================================================
+weight = "/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept/sonata/lartpc_v6_h200_noghosts_pretrain/lartpc_v6_h200_noghosts_pretrain_epoch50.pth"
+
 
 # =============================================================================
 # Model configuration
@@ -175,8 +187,8 @@ scheduler = dict(
     max_lr=[base_lr],
     pct_start=0.1,
     anneal_strategy="cos",
-    div_factor=100.0,
-    final_div_factor=10.0,
+    div_factor=10.0,
+    final_div_factor=100.0,
 )
 
 # =============================================================================
@@ -380,6 +392,8 @@ data = dict(
 hooks = [
     # Load pretrained Sonata v6 weights into backbone
     dict(type="SonataCheckpointLoader"),
+#    dict(type="GradScalerMonitor", log_frequency=10), # AMP overflow tracking
+    dict(type="AdamStateMonitor", log_frequency=10),  # gradient/param monitoring
     dict(type="IterationTimer", warmup_iter=2),
     dict(type="InformationWriter"),
     dict(type="ShowerOriginEvaluator", score_threshold=0.05),
