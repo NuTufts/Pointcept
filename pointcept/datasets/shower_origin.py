@@ -426,6 +426,31 @@ class ShowerOriginDataset(DefaultDataset):
             coord - selected_origin.reshape(1, 3), axis=1
         ).astype(np.float32)
 
+        # Validate data for NaN/Inf before returning
+        _arrays_to_check = {
+            "coord": coord, "strength": strength,
+            "selected_origin": selected_origin,
+            "selected_start": selected_start,
+            "origin_distance": origin_distance,
+            "fragment_centroid": fragment_centroid,
+        }
+        for _name, _arr in _arrays_to_check.items():
+            if not np.all(np.isfinite(_arr)):
+                import logging
+                logger = logging.getLogger(__name__)
+                logger.error(
+                    f"NaN/Inf in '{_name}' for file={os.path.basename(filepath)}, "
+                    f"fragment_idx={idx if num_showers > 0 else 'N/A'}/{num_showers}, "
+                    f"origin_type={selected_type}, "
+                    f"n_points={len(coord)}, "
+                    f"nan_count={np.isnan(_arr).sum()}, inf_count={np.isinf(_arr).sum()}"
+                )
+
+        sample_id = (
+            f"{os.path.basename(filepath)}:frag{idx if num_showers > 0 else 'none'}"
+            f"/{num_showers}:type{selected_type}"
+        )
+
         data_dict = {
             "coord": coord,
             "strength": strength,
@@ -436,7 +461,7 @@ class ShowerOriginDataset(DefaultDataset):
             "origin_type": np.int64(selected_type),
             "start_coord": selected_start.astype(np.float32),
             "origin_distance": origin_distance,
-            "name": os.path.basename(filepath),
+            "name": sample_id,
             # Register per-point keys for index_operator (used by
             # BiasedSphereCrop, GridSample, SphereCrop, etc.)
             "index_valid_keys": [

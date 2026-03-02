@@ -206,6 +206,39 @@ class Trainer(TrainerBase):
                 output_dict["loss"] / self.cfg.gradient_accumulation_steps
             )  # scale loss
 
+        # NaN/Inf detection: log batch info when loss goes bad
+        if not torch.isfinite(loss):
+            self.logger.error(
+                f"NaN/Inf loss detected! "
+                f"Epoch {self.comm_info.get('epoch', '?')}, "
+                f"Iter {self.comm_info.get('iter', '?')}"
+            )
+            # Log sample names if available
+            if "name" in input_dict:
+                self.logger.error(f"  Batch sample names: {input_dict['name']}")
+            # Log which input tensors contain NaN/Inf
+            for key, val in input_dict.items():
+                if isinstance(val, torch.Tensor) and val.is_floating_point():
+                    has_nan = torch.isnan(val).any().item()
+                    has_inf = torch.isinf(val).any().item()
+                    if has_nan or has_inf:
+                        self.logger.error(
+                            f"  Input '{key}': shape={val.shape}, "
+                            f"has_nan={has_nan}, has_inf={has_inf}, "
+                            f"min={val[torch.isfinite(val)].min().item() if torch.isfinite(val).any() else 'N/A'}, "
+                            f"max={val[torch.isfinite(val)].max().item() if torch.isfinite(val).any() else 'N/A'}"
+                        )
+            # Log which output tensors contain NaN/Inf
+            for key, val in output_dict.items():
+                if isinstance(val, torch.Tensor) and val.is_floating_point():
+                    has_nan = torch.isnan(val).any().item()
+                    has_inf = torch.isinf(val).any().item()
+                    if has_nan or has_inf:
+                        self.logger.error(
+                            f"  Output '{key}': shape={val.shape}, "
+                            f"has_nan={has_nan}, has_inf={has_inf}"
+                        )
+
         # Backward pass
         if self.cfg.enable_amp:
             self.scaler.scale(loss).backward()
