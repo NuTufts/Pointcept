@@ -3,7 +3,8 @@
 WORKDIR=/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept/lartpc_data_prep
 UBDL_DIR=/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/ubdl
 INPUTLIST=${WORKDIR}/inputlists/bnb_nu_pi0filter_corsika.txt
-JOBIDLIST=${WORKDIR}/jobidlist_bnbnu_pi0_corsika.txt
+#JOBIDLIST=${WORKDIR}/jobidlist_bnbnu_pi0_corsika.txt
+JOBIDLIST=${WORKDIR}/rerunid_bnb_nu_pi0filter_corsika.txt
 OUTPUT_DIR=/cluster/tufts/wongjiradlab/larbys/data/ub_on_tufts/hdf5/v3_showerfragments/bnb_nu_pi0filter_corsika/
 SCRIPT=process_dlmerged_to_hdf5_event_files.py
 
