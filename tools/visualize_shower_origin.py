@@ -1,11 +1,16 @@
 """
-Visualize Shower Origin data after the training transform pipeline.
+Visualize Shower Origin data from the data loader.
 
-Reads a shower-origin config file, builds the dataset + transforms,
-and displays one sample showing three 3D views:
+Reads a shower-origin config file, builds the dataset (without training
+transforms), and displays one sample showing three 3D views:
   1. All points colored by shower_mask (shower vs non-shower)
-  2. All points colored by origin_distance (Gaussian-like target)
-  3. Shower points only, colored by origin_distance, with origin marker
+  2. All points colored by origin_distance (from data loader, cm-space)
+  3. All points colored by Gaussian target score (recomputed in normalized
+     space, matching _single_fragment_loss)
+
+The data is shown AFTER NormalizeShowerCoords (same coordinate frame the
+model sees), but without GridSample/BiasedSphereCrop so all points are
+visible.
 
 A "Next Sample" button loads the next entry; "Go" jumps to a specific index.
 
@@ -21,7 +26,6 @@ Usage:
 import os
 import sys
 import argparse
-import copy
 
 import numpy as np
 
@@ -34,7 +38,7 @@ from dash.dependencies import Input, Output, State
 
 from pointcept.utils.config import Config
 from pointcept.datasets.builder import DATASETS
-from pointcept.datasets.transform import Compose
+from pointcept.datasets.transform import Compose, TRANSFORMS
 
 
 # ── Origin type labels ──────────────────────────────────────────────────────
@@ -88,7 +92,7 @@ def empty_figure(title="N/A"):
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Visualize shower origin data after transform pipeline"
+        description="Visualize shower origin data from data loader"
     )
     parser.add_argument(
         "-c", "--config", required=True, type=str, help="Config file path"
@@ -110,34 +114,62 @@ def parse_args():
     return parser.parse_args()
 
 
-# ── Build dataset ───────────────────────────────────────────────────────────
+# ── Build dataset (without transforms) ─────────────────────────────────────
 
 def build_dataset(cfg, split, data_list_override=None):
-    """Build the dataset with its full transform pipeline."""
+    """
+    Build the dataset WITHOUT transforms.
+
+    We call get_data() directly and apply NormalizeShowerCoords manually
+    so we have access to all data fields (name, origin_distance, etc.)
+    that would otherwise be dropped by Collect.
+    """
     dataset_cfg = getattr(cfg.data, split).copy()
 
     if data_list_override is not None:
-        dataset_cfg["data_list_file"] = data_list_override
+        # Resolve to absolute path so get_data_list() doesn't join with data_root
+        dataset_cfg["data_list_file"] = os.path.abspath(data_list_override)
+
+    # Remove transforms — we apply them manually in process_entry
+    dataset_cfg["transform"] = []
 
     dataset = DATASETS.build(dataset_cfg)
     return dataset
 
 
+def build_normalizer(cfg, split):
+    """
+    Extract the NormalizeShowerCoords transform from the config so we can
+    apply it manually to the raw data.
+    """
+    dataset_cfg = getattr(cfg.data, split)
+    for t in dataset_cfg.get("transform", []):
+        if t.get("type") == "NormalizeShowerCoords":
+            return TRANSFORMS.build(t)
+    return None
+
+
 # ── Data processing ─────────────────────────────────────────────────────────
 
-def process_entry(dataset, idx):
+def process_entry(dataset, idx, normalizer=None):
     """
-    Load one sample through the dataset (with transforms).
+    Load one sample via get_data() (no training transforms) and optionally
+    apply NormalizeShowerCoords.
 
     Returns dict with numpy arrays:
         coord, shower_mask, origin_coord, origin_type,
-        origin_distance, strength, name
+        origin_distance, strength, start_coord, name
     """
-    data = dataset[idx]
+    data = dataset.get_data(idx)
+
+    # Apply NormalizeShowerCoords to put coords in model's frame
+    if normalizer is not None:
+        data = normalizer(data)
 
     result = {}
     for key in ("coord", "shower_mask", "origin_coord", "origin_type",
-                "origin_distance", "strength", "start_coord"):
+                "origin_distance", "strength", "start_coord",
+                "fragment_centroid", "color"):
         if key in data:
             val = data[key]
             if hasattr(val, "numpy"):
@@ -146,11 +178,6 @@ def process_entry(dataset, idx):
                 result[key] = val
             else:
                 result[key] = val
-
-    # feat is the concatenated feature tensor from Collect
-    if "feat" in data:
-        val = data["feat"]
-        result["feat"] = val.numpy() if hasattr(val, "numpy") else val
 
     result["name"] = data.get("name", f"entry_{idx}")
 
@@ -292,7 +319,7 @@ def build_shower_mask_figure(data, title="Shower Mask"):
 def build_origin_distance_figure(data, title="origin_distance (from data loader)"):
     """
     All points colored by the raw origin_distance field from the data loader.
-    This is the field as-is from the dataset/transform pipeline.
+    This field is computed in get_data() BEFORE normalization (cm-space).
     Origin point as a large green marker.
     """
     coord = data["coord"]
@@ -319,7 +346,7 @@ def build_origin_distance_figure(data, title="origin_distance (from data loader)
                 "reversescale": True,
                 "size": 2,
                 "opacity": 0.8,
-                "colorbar": {"title": "dist", "len": 0.6},
+                "colorbar": {"title": "dist (cm)", "len": 0.6},
                 "cmin": 0,
                 "cmax": float(np.percentile(dist, 95)),
             },
@@ -328,7 +355,7 @@ def build_origin_distance_figure(data, title="origin_distance (from data loader)
                 "<b>x</b>: %{x:.3f}<br>"
                 "<b>y</b>: %{y:.3f}<br>"
                 "<b>z</b>: %{z:.3f}<br>"
-                "<b>dist</b>: %{customdata[0]:.4f}"
+                "<b>dist</b>: %{customdata[0]:.1f} cm"
                 "<extra></extra>"
             ),
         })
@@ -366,12 +393,12 @@ def build_origin_distance_figure(data, title="origin_distance (from data loader)
 def build_gaussian_target_figure(data, gaussian_sigma, title="Gaussian Target (loss computation)"):
     """
     All points colored by Gaussian target score.
-    Recomputed from origin_coord + coord, matching _single_fragment_loss.
+    Recomputed from origin_coord + coord in normalized space,
+    matching _single_fragment_loss.
     Origin as green marker.
     """
     coord = data["coord"]
     origin = data.get("origin_coord")
-    dist = data.get("origin_distance")
     npts = coord.shape[0]
 
     traces = []
@@ -380,10 +407,9 @@ def build_gaussian_target_figure(data, gaussian_sigma, title="Gaussian Target (l
     if origin is not None:
         gt_dist = np.linalg.norm(coord - origin[np.newaxis, :], axis=1)
         gt_score = np.exp(-0.5 * (gt_dist / gaussian_sigma) ** 2)
-    elif dist is not None:
-        gt_score = np.exp(-0.5 * (dist / gaussian_sigma) ** 2)
     else:
         gt_score = None
+        gt_dist = None
 
     if gt_score is not None:
         traces.append({
@@ -404,7 +430,7 @@ def build_gaussian_target_figure(data, gaussian_sigma, title="Gaussian Target (l
             },
             "customdata": np.stack([
                 gt_score,
-                gt_dist if origin is not None else dist,
+                gt_dist,
             ], axis=1),
             "hovertemplate": (
                 "<b>x</b>: %{x:.3f}<br>"
@@ -451,6 +477,7 @@ args = parse_args()
 cfg = Config.fromfile(args.config)
 
 dataset = build_dataset(cfg, args.split, data_list_override=args.data_list)
+normalizer = build_normalizer(cfg, args.split)
 
 # Extract gaussian_sigma from model config
 gaussian_sigma = 4.0
@@ -459,8 +486,22 @@ if hasattr(cfg, "model") and "gaussian_sigma" in cfg.model:
 
 n_entries = len(dataset)
 print(f"Dataset: {n_entries} entries (split={args.split})")
+print(f"  data_list: {len(dataset.data_list)} files")
+print(f"  event_index: {len(dataset.event_index)} events with shower_fragments")
 print(f"gaussian_sigma: {gaussian_sigma}")
+print(f"Normalizer: {normalizer}")
 print(f"Config: {args.config}")
+
+if n_entries == 0:
+    print("\nERROR: No events with shower_fragments found!")
+    print("  The data_list files may not contain shower_fragments data.")
+    if len(dataset.data_list) > 0:
+        print(f"  First file: {dataset.data_list[0]}")
+    print("\n  Try using --data-list to point to a file list with shower fragment HDF5 files.")
+    print("  Example: python tools/visualize_shower_origin.py "
+          "-c configs/lartpc/shower-origin-sonata-v1m1-v3.py "
+          "--data-list /path/to/shower_origin_filelist.txt")
+    sys.exit(1)
 
 
 # ── Dash app ────────────────────────────────────────────────────────────────
@@ -533,7 +574,7 @@ app.layout = html.Div(
                     type="number",
                     value=args.entry,
                     min=0,
-                    max=n_entries - 1,
+                    max=max(n_entries - 1, 0),
                     placeholder="Entry index",
                     style={
                         "fontSize": "14px",
@@ -631,7 +672,7 @@ def update_display(next_clicks, random_clicks, go_clicks,
     # Process entry (retry on failure)
     for attempt in range(5):
         try:
-            data = process_entry(dataset, idx)
+            data = process_entry(dataset, idx, normalizer=normalizer)
             break
         except Exception as e:
             print(f"Error processing entry {idx}: {e}")
@@ -649,7 +690,7 @@ def update_display(next_clicks, random_clicks, go_clicks,
 
     # Build figures
     mask_fig = build_shower_mask_figure(data, title="Shower Mask")
-    dist_fig = build_origin_distance_figure(data, title="origin_distance (data loader)")
+    dist_fig = build_origin_distance_figure(data, title="origin_distance (data loader, cm)")
     gauss_fig = build_gaussian_target_figure(
         data, gaussian_sigma, title="Gaussian Target (loss computation)"
     )
@@ -658,6 +699,8 @@ def update_display(next_clicks, random_clicks, go_clicks,
     origin_type_val = data.get("origin_type", -1)
     if hasattr(origin_type_val, "item"):
         origin_type_val = origin_type_val.item()
+    elif isinstance(origin_type_val, np.ndarray):
+        origin_type_val = int(origin_type_val.flat[0])
     origin_type_name = ORIGIN_TYPE_NAMES.get(int(origin_type_val), "unknown")
 
     mask = data.get("shower_mask")

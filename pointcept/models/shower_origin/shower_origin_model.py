@@ -1009,7 +1009,7 @@ class ShowerOriginPredictorV3(nn.Module):
             # Debug: log tensor stats at key points
             if self.training:
                 import logging as _logging
-                _dbg = _logging.getLogger("nan_debug")
+                _dbg = _logging.getLogger("pointcept")
                 _dbg.info(
                     f"[sample {b}] backbone_feats: "
                     f"abs_max={sample_features.abs().max().item():.4f}, "
@@ -1196,7 +1196,7 @@ class ShowerOriginPredictorV3(nn.Module):
         per_slot_logits = []
 
         import logging as _logging
-        _dbg = _logging.getLogger("nan_debug")
+        _dbg = _logging.getLogger("pointcept")
 
         for k in range(K):
             # Broadcast slot query to all points
