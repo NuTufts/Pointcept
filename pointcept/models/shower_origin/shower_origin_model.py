@@ -1089,6 +1089,7 @@ class ShowerOriginPredictorV3(nn.Module):
                     "origin_scores": per_slot_scores[0][:N_real],
                     "all_coords": sample_coords,
                     "origin_class": per_slot_cls[0].argmax(dim=-1),
+                    "origin_class_logits": per_slot_cls[0],
                     "origin_distances": (
                         per_slot_distances[0][:N_real]
                         if per_slot_distances else None
@@ -1107,6 +1108,7 @@ class ShowerOriginPredictorV3(nn.Module):
                 return_dict["origin_scores"] = batch_eval_outputs[0]["origin_scores"]
                 return_dict["all_coords"] = batch_eval_outputs[0]["all_coords"]
                 return_dict["origin_class"] = batch_eval_outputs[0]["origin_class"]
+                return_dict["origin_class_logits"] = batch_eval_outputs[0]["origin_class_logits"]
                 if batch_eval_outputs[0]["origin_distances"] is not None:
                     return_dict["origin_distances"] = batch_eval_outputs[0]["origin_distances"]
             else:
@@ -1119,6 +1121,9 @@ class ShowerOriginPredictorV3(nn.Module):
                 ]
                 return_dict["origin_class"] = torch.stack([
                     o["origin_class"] for o in batch_eval_outputs
+                ])
+                return_dict["origin_class_logits"] = torch.stack([
+                    o["origin_class_logits"] for o in batch_eval_outputs
                 ])
                 dists = [o["origin_distances"] for o in batch_eval_outputs]
                 if dists[0] is not None:

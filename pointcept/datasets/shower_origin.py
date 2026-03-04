@@ -474,6 +474,203 @@ class ShowerOriginDataset(DefaultDataset):
 
         return data_dict
 
+    def get_all_fragments(self, idx):
+        """
+        Return a list of data_dicts, one per valid fragment in the event.
+
+        Same event-loading and fragment-collection logic as get_data(), but
+        iterates over ALL valid fragments instead of randomly selecting one.
+        Each returned dict has the same structure as get_data() output.
+
+        Arrays (coord, strength, color) are copied per fragment because
+        downstream transforms (BiasedSphereCrop, GridSample) modify in-place.
+        """
+        idx = idx % len(self.event_index)
+        file_idx = self.event_index[idx]
+        filepath = self.data_list[file_idx]
+
+        with h5py.File(filepath, 'r') as f:
+            entry = f['entry_0']
+            triplet = entry['triplet_data']
+
+            # Load point cloud data
+            if self.use_reco_coords and 'pos' in triplet:
+                coord = triplet['pos'][:].astype(np.float32) * self.coord_scale
+            else:
+                coord = triplet['pos'][:].astype(np.float32) * self.coord_scale
+
+            n_points_orig = coord.shape[0]
+
+            # Ghost point filtering
+            ghost_mask = None
+            if not self.include_ghosts and 'hasmatch' in triplet:
+                hasmatch = triplet['hasmatch'][:].astype(np.int64)
+                ghost_mask = (hasmatch == 1)
+                coord = coord[ghost_mask]
+
+            n_points = coord.shape[0]
+
+            # Load energy features
+            if 'pixval' in triplet:
+                pixval = triplet['pixval'][:].astype(np.float32)
+                if ghost_mask is not None:
+                    pixval = pixval[ghost_mask]
+                if self.log_transform_edep:
+                    pixval = np.log1p(np.clip(pixval, 0, None))
+                strength = pixval
+            else:
+                strength = np.ones((n_points, 1), dtype=np.float32)
+
+            # Load wire coordinates
+            if all(k in triplet for k in ['uwire', 'vwire', 'ywire']):
+                uwire = triplet['uwire'][:].astype(np.float32) * self.wire_scale
+                vwire = triplet['vwire'][:].astype(np.float32) * self.wire_scale
+                ywire = triplet['ywire'][:].astype(np.float32) * self.wire_scale
+                if ghost_mask is not None:
+                    uwire = uwire[ghost_mask]
+                    vwire = vwire[ghost_mask]
+                    ywire = ywire[ghost_mask]
+                color = np.stack([uwire, vwire, ywire], axis=-1)
+            else:
+                color = np.zeros((n_points, 3), dtype=np.float32)
+
+            # Collect all valid shower fragments
+            shower_masks_list = []
+            origin_coords_list = []
+            start_coords_list = []
+            origin_types_list = []
+            is_vertex_list = []
+            particle_pids_list = []
+            fragment_trackids_list = []
+
+            if 'shower_fragments' in entry:
+                sf = entry['shower_fragments']
+
+                if ghost_mask is not None:
+                    index_remap = np.full(n_points_orig, -1, dtype=np.int64)
+                    index_remap[ghost_mask] = np.arange(n_points)
+                else:
+                    index_remap = None
+
+                num_frags = int(sf.attrs.get('num_fragments', 0))
+                if num_frags > 0:
+                    trackids = sf['trackid'][:]
+                    pids = sf['pid'][:]
+                    istrunk = sf['istrunk'][:]
+                    frag_types = sf['type'][:]
+                    startpts = sf['startpt'][:]
+                    originpts = sf['originpt'][:]
+                    flat_indices = sf['pointindices_flat'][:]
+                    index_counts = sf['pointindices_counts'][:]
+
+                    if 'nu_vertex_is_visible' in sf:
+                        nu_vtx_visible = int(sf['nu_vertex_is_visible'][()])
+                    else:
+                        nu_vtx_visible = 1
+
+                    visible_nu_trackids = set()
+                    offset = 0
+                    for i in range(num_frags):
+                        count = int(index_counts[i])
+                        if count >= self.min_fragment_points and int(frag_types[i]) == 0:
+                            visible_nu_trackids.add(int(trackids[i]))
+                        offset += count
+                    n_visible_nu_showers = len(visible_nu_trackids)
+
+                    override_nu_origin = (nu_vtx_visible == 0
+                                          and n_visible_nu_showers <= 1)
+
+                    trunk_startpt = {}
+                    if override_nu_origin:
+                        for i in range(num_frags):
+                            tid = int(trackids[i])
+                            if tid in visible_nu_trackids and int(istrunk[i]) == 1:
+                                trunk_startpt[tid] = startpts[i].astype(np.float32)
+
+                    offset = 0
+                    for i in range(num_frags):
+                        count = int(index_counts[i])
+                        indices = flat_indices[offset:offset+count]
+                        offset += count
+
+                        fmask = np.zeros(n_points, dtype=bool)
+                        if index_remap is not None:
+                            valid_idx = indices[indices < n_points_orig]
+                            remapped = index_remap[valid_idx]
+                            remapped = remapped[remapped >= 0]
+                            fmask[remapped] = True
+                        else:
+                            valid_idx = indices[indices < n_points]
+                            fmask[valid_idx] = True
+
+                        if fmask.sum() < self.min_fragment_points:
+                            continue
+
+                        frag_origin_type = int(frag_types[i])
+
+                        if not self.include_cosmic_showers and frag_origin_type == 2:
+                            continue
+
+                        frag_origin = originpts[i].astype(np.float32) * self.coord_scale
+                        frag_start = startpts[i].astype(np.float32) * self.coord_scale
+                        frag_tid = int(trackids[i])
+
+                        if override_nu_origin and frag_origin_type == 0:
+                            if frag_tid in trunk_startpt:
+                                frag_origin = trunk_startpt[frag_tid] * self.coord_scale
+                            else:
+                                frag_origin = frag_start
+
+                        shower_masks_list.append(fmask)
+                        origin_coords_list.append(frag_origin)
+                        start_coords_list.append(frag_start)
+                        origin_types_list.append(frag_origin_type)
+                        particle_pids_list.append(int(pids[i]))
+                        fragment_trackids_list.append(frag_tid)
+
+        # Build one data_dict per fragment
+        results = []
+        for fi in range(len(shower_masks_list)):
+            selected_mask = shower_masks_list[fi]
+            selected_origin = origin_coords_list[fi]
+            selected_type = origin_types_list[fi]
+            selected_start = start_coords_list[fi]
+
+            if selected_mask.any():
+                fragment_centroid = coord[selected_mask].mean(axis=0).reshape(1, 3)
+            else:
+                fragment_centroid = coord.mean(axis=0).reshape(1, 3)
+
+            origin_distance = np.linalg.norm(
+                coord - selected_origin.reshape(1, 3), axis=1
+            ).astype(np.float32)
+
+            sample_id = (
+                f"{os.path.basename(filepath)}:frag{fi}"
+                f"/{len(shower_masks_list)}:type{selected_type}"
+            )
+
+            data_dict = {
+                "coord": coord.copy(),
+                "strength": strength.copy(),
+                "color": color.copy(),
+                "shower_mask": selected_mask.astype(np.float32),
+                "fragment_centroid": fragment_centroid.astype(np.float32),
+                "origin_coord": selected_origin.astype(np.float32),
+                "origin_type": np.int64(selected_type),
+                "start_coord": selected_start.astype(np.float32),
+                "origin_distance": origin_distance,
+                "name": sample_id,
+                "index_valid_keys": [
+                    "coord", "color", "normal", "superpoint", "strength",
+                    "segment", "instance",
+                    "shower_mask", "origin_distance",
+                ],
+            }
+            results.append(data_dict)
+
+        return results
+
 
 @DATASETS.register_module()
 class ShowerOriginDatasetSimple(DefaultDataset):
