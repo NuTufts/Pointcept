@@ -660,6 +660,8 @@ class ShowerOriginDataset(DefaultDataset):
                 "origin_type": np.int64(selected_type),
                 "start_coord": selected_start.astype(np.float32),
                 "origin_distance": origin_distance,
+                "trackid": fragment_trackids_list[fi],
+                "pid": particle_pids_list[fi],
                 "name": sample_id,
                 "index_valid_keys": [
                     "coord", "color", "normal", "superpoint", "strength",
