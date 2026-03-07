@@ -1074,6 +1074,31 @@ def main():
     plt.savefig(args.output, dpi=150, bbox_inches="tight")
     print(f"Saved visualization to {args.output}")
 
+    # --- Standalone "All Classes" figure ---
+    fig_all, ax_all = plt.subplots(1, 1, figsize=(10, 8))
+    for cls_idx in classes_to_collect:
+        mask = all_labels == cls_idx
+        if mask.sum() > 0:
+            ax_all.scatter(
+                embedding[mask, 0],
+                embedding[mask, 1],
+                c=EXTENDED_CLASS_COLORS.get(cls_idx, "#000000"),
+                label=f"{EXTENDED_CLASS_NAMES[cls_idx]} ({mask.sum()})",
+                s=2,
+                alpha=0.6,
+            )
+    ax_all.set_xlabel("t-SNE 1")
+    ax_all.set_ylabel("t-SNE 2")
+    init_label = "RANDOM INIT" if args.random_init else "trained"
+    ax_all.set_title(f"All Points [{init_label}]\nperplexity={args.perplexity}")
+    ax_all.legend(markerscale=5, loc="best", fontsize=8)
+    ax_all.set_xlim(x_min - x_pad, x_max + x_pad)
+    ax_all.set_ylim(y_min - y_pad, y_max + y_pad)
+    all_classes_path = args.output.rsplit(".", 1)[0] + "_all_classes." + args.output.rsplit(".", 1)[1]
+    fig_all.tight_layout()
+    fig_all.savefig(all_classes_path, dpi=150, bbox_inches="tight")
+    print(f"Saved standalone all-classes figure to {all_classes_path}")
+
     # Save embedding data
     embedding_path = args.output.rsplit(".", 1)[0] + "_embedding.npz"
     np.savez(
