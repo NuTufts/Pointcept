@@ -7,6 +7,7 @@ parser.add_argument("-i","--input-dlmerged",required=True,type=str,help="Input d
 parser.add_argument("-v","--verbosity",type=int,default=2,help="Verbosity level from normal=2 to debug=0")
 parser.add_argument("-n","--nentries",type=int,default=-1,help="Number of entries to run. (default is -1, which will run all entries in the file.)")
 parser.add_argument('-d','--is-data',default=False,action='store_true',help='if provided, set to run in data mode (no simulation information processed.)')
+parser.add_argument('-r','--reverse-tick',default=False,action='store_true',help='if flag provided, assume larcv data is stored in tick-backward format and reverse upon loading.')
 
 args = parser.parse_args(sys.argv[1:])
 
@@ -45,9 +46,32 @@ ioll.add_in_filename( dlmerged_input )
 ioll.set_verbosity(2)
 ioll.open()
 
-iolcv = larcv.IOManager( larcv.IOManager.kREAD, "larcv" )
+tick_direction=larcv.IOManager.kTickForward
+if args.reverse_tick:
+  tick_direction=larcv.IOManager.kTickBackward 
+
+iolcv = larcv.IOManager( larcv.IOManager.kREAD, "larcv", tick_direction )
 iolcv.add_in_file( dlmerged_input )
-iolcv.set_verbosity(2)
+iolcv.specify_data_read( "image2d", "wire" )
+iolcv.specify_data_read( "image2d", "wiremc" )
+iolcv.specify_data_read( "image2d", "thrumu" )
+iolcv.specify_data_read( "image2d", "ancestor" )
+iolcv.specify_data_read( "image2d", "segment" )
+iolcv.specify_data_read( "image2d", "instance" )
+iolcv.specify_data_read( "image2d", "larflow" )
+iolcv.specify_data_read( "chstatus", "wire" )
+iolcv.specify_data_read( "chstatus", "wiremc" )
+iolcv.specify_data_read( "image2d", "ubspurn_plane0" )
+iolcv.specify_data_read( "image2d", "ubspurn_plane1" )
+iolcv.specify_data_read( "image2d", "ubspurn_plane2" )
+iolcv.specify_data_read( "sparseimage", "sparseuresnetout" )
+iolcv.specify_data_read( "sparseimage", "sparsessnet" ) 
+
+if args.reverse_tick:
+  print("REVERSE TICK-ORDER OF LARCV DATA")
+  iolcv.reverse_all_products()
+
+iolcv.set_verbosity(0)
 iolcv.initialize()
 
 nentries = ioll.get_entries()

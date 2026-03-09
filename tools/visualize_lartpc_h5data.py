@@ -107,7 +107,12 @@ def get_pdg_name(pdg_code):
 
 
 def load_event_data(h5file, entry_key):
-    """Load data for a single entry from the HDF5 file."""
+    """Load data for a single entry from the HDF5 file.
+
+    Handles both simulation (MC) and data-only files. In data-only mode,
+    truth fields (pid, origin, hasmatch, trackid, ssnet_label) are not
+    present in triplet_data and will be filled with defaults.
+    """
     entry_grp = h5file[entry_key]
 
     data = {}
@@ -116,26 +121,49 @@ def load_event_data(h5file, entry_key):
     triplet_data = entry_grp['triplet_data']
     data['pos'] = triplet_data['pos'][:]
     data['pixval'] = triplet_data['pixval'][:]
-    data['pid'] = triplet_data['pid'][:]
-    data['origin'] = triplet_data['origin'][:]
-    data['hasmatch'] = triplet_data['hasmatch'][:]
-    data['trackid'] = triplet_data['trackid'][:]
     data['uwire'] = triplet_data['uwire'][:]
     data['vwire'] = triplet_data['vwire'][:]
     data['ywire'] = triplet_data['ywire'][:]
     data['tick'] = triplet_data['tick'][:]
 
+    n_points = len(data['pos'])
+
+    # Detect data-only mode: truth fields absent from triplet_data
+    data['is_data'] = 'pid' not in triplet_data
+
+    # Load truth fields if available, otherwise fill with defaults
+    if 'pid' in triplet_data:
+        data['pid'] = triplet_data['pid'][:]
+    else:
+        data['pid'] = np.zeros(n_points, dtype=np.int32)
+
+    if 'origin' in triplet_data:
+        data['origin'] = triplet_data['origin'][:]
+    else:
+        data['origin'] = np.zeros(n_points, dtype=np.int32)
+
+    if 'hasmatch' in triplet_data:
+        data['hasmatch'] = triplet_data['hasmatch'][:]
+    else:
+        # In data-only mode, all points are "real" (no ghost labeling)
+        data['hasmatch'] = np.ones(n_points, dtype=np.int32)
+
+    if 'trackid' in triplet_data:
+        data['trackid'] = triplet_data['trackid'][:]
+    else:
+        data['trackid'] = np.zeros(n_points, dtype=np.int32)
+
     # Load ssnet labels if available
     if 'ssnet_label' in triplet_data:
         data['ssnet_label'] = triplet_data['ssnet_label'][:]
     else:
-        data['ssnet_label'] = np.zeros(len(data['pos']), dtype=np.int32)
+        data['ssnet_label'] = np.zeros(n_points, dtype=np.int32)
 
     # Load energy deposition
     if 'edep' in triplet_data:
         data['edep'] = triplet_data['edep'][:]
     else:
-        data['edep'] = np.zeros((len(data['pos']), 3), dtype=np.float32)
+        data['edep'] = np.zeros((n_points, 3), dtype=np.float32)
 
     # Load wire plane images (sparse format)
     image_data = entry_grp['image_data']
@@ -202,6 +230,7 @@ def create_3d_scatter(event_data, color_mode='ssnet', show_keypoints=True, show_
             'tick': event_data['tick'][true_mask],
             'pixval': event_data['pixval'][true_mask],
             'edep': event_data['edep'][true_mask],
+            'is_data': event_data.get('is_data', False),
         }
         # Keep keypoints unchanged
         if 'keypoints' in event_data:
@@ -223,6 +252,8 @@ def create_3d_scatter(event_data, color_mode='ssnet', show_keypoints=True, show_
 
     fig = go.Figure()
 
+    is_data = event_data.get('is_data', False)
+
     # Create hover text
     def make_hover_text(indices):
         hover_texts = []
@@ -231,14 +262,17 @@ def create_3d_scatter(event_data, color_mode='ssnet', show_keypoints=True, show_
                 f"x: {pos[i, 0]:.1f}<br>"
                 f"y: {pos[i, 1]:.1f}<br>"
                 f"z: {pos[i, 2]:.1f}<br>"
-                f"PID: {get_pdg_name(display_data['pid'][i])} ({display_data['pid'][i]})<br>"
-                f"SSNET: {SSNET_CLASS_NAMES.get(display_data['ssnet_label'][i], 'unknown')}<br>"
-                f"Origin: {ORIGIN_NAMES.get(display_data['origin'][i], 'unknown')}<br>"
-                f"TrackID: {display_data['trackid'][i]}<br>"
                 f"Wires: ({display_data['uwire'][i]}, {display_data['vwire'][i]}, {display_data['ywire'][i]})<br>"
                 f"Tick: {display_data['tick'][i]}<br>"
                 f"PixVal: ({display_data['pixval'][i, 0]:.1f}, {display_data['pixval'][i, 1]:.1f}, {display_data['pixval'][i, 2]:.1f})"
             )
+            if not is_data:
+                text += (
+                    f"<br>PID: {get_pdg_name(display_data['pid'][i])} ({display_data['pid'][i]})<br>"
+                    f"SSNET: {SSNET_CLASS_NAMES.get(display_data['ssnet_label'][i], 'unknown')}<br>"
+                    f"Origin: {ORIGIN_NAMES.get(display_data['origin'][i], 'unknown')}<br>"
+                    f"TrackID: {display_data['trackid'][i]}"
+                )
             hover_texts.append(text)
         return hover_texts
 
@@ -811,21 +845,34 @@ def main():
 
     start_entry = min(args.start_entry, num_entries - 1)
 
-    # Color mode options
-    color_options = [
-        {'label': 'SSNET Class', 'value': 'ssnet'},
-        {'label': 'Origin (Nu/Cosmic)', 'value': 'origin'},
-        {'label': 'Track ID', 'value': 'trackid'},
-        {'label': 'True/Ghost', 'value': 'hasmatch'},
-        {'label': 'Pixel Value', 'value': 'pixval'},
-        {'label': 'Energy Deposition', 'value': 'edep'},
-    ]
+    # Detect data-only mode from the first entry
+    first_entry_grp = h5file[entry_keys[0]]
+    is_data_file = 'pid' not in first_entry_grp['triplet_data']
+
+    # Color mode options - filter out MC-only options for data files
+    if is_data_file:
+        color_options = [
+            {'label': 'Pixel Value', 'value': 'pixval'},
+            {'label': 'Energy Deposition', 'value': 'edep'},
+        ]
+        default_color_mode = 'pixval'
+    else:
+        color_options = [
+            {'label': 'SSNET Class', 'value': 'ssnet'},
+            {'label': 'Origin (Nu/Cosmic)', 'value': 'origin'},
+            {'label': 'Track ID', 'value': 'trackid'},
+            {'label': 'True/Ghost', 'value': 'hasmatch'},
+            {'label': 'Pixel Value', 'value': 'pixval'},
+            {'label': 'Energy Deposition', 'value': 'edep'},
+        ]
+        default_color_mode = 'ssnet'
 
     # Create Dash app
     app = Dash(__name__, suppress_callback_exceptions=True)
 
     app.layout = html.Div([
-        html.H1("LArTPC Data Viewer", style={'textAlign': 'center'}),
+        html.H1("LArTPC Data Viewer" + (" (Data-Only Mode)" if is_data_file else ""),
+                style={'textAlign': 'center'}),
 
         # File info
         html.Div([
@@ -863,7 +910,7 @@ def main():
                 dcc.Dropdown(
                     id='color-mode-dropdown',
                     options=color_options,
-                    value='ssnet',
+                    value=default_color_mode,
                     style={'width': '200px', 'display': 'inline-block'}
                 ),
             ], style={'display': 'inline-block', 'marginRight': '30px'}),
@@ -872,10 +919,10 @@ def main():
                 dcc.Checklist(
                     id='show-keypoints',
                     options=[{'label': ' Show Keypoints', 'value': 'show'}],
-                    value=['show'],
+                    value=['show'] if not is_data_file else [],
                     style={'display': 'inline-block'}
                 ),
-            ], style={'display': 'inline-block', 'marginRight': '30px'}),
+            ], style={'display': 'inline-block' if not is_data_file else 'none', 'marginRight': '30px'}),
 
             html.Div([
                 dcc.Checklist(
@@ -884,7 +931,7 @@ def main():
                     value=[],  # Default off
                     style={'display': 'inline-block'}
                 ),
-            ], style={'display': 'inline-block', 'marginRight': '30px'}),
+            ], style={'display': 'inline-block' if not is_data_file else 'none', 'marginRight': '30px'}),
 
             html.Div([
                 html.Label('Marker Size:', style={'fontWeight': 'bold', 'marginRight': '10px'}),
@@ -1005,18 +1052,23 @@ def main():
 
         # Statistics
         n_points = len(event_data['pos'])
-        n_true = np.sum(event_data['hasmatch'] == 1)
-        n_ghost = np.sum(event_data['hasmatch'] == 0)
-        n_nu = np.sum(event_data['origin'] == 1)
-        n_cosmic = np.sum(event_data['origin'] == 2)
+        is_data = event_data.get('is_data', False)
 
-        stats_text = (
-            f"Total Points: {n_points} | "
-            f"True: {n_true} ({100*n_true/n_points:.1f}%) | "
-            f"Ghost: {n_ghost} ({100*n_ghost/n_points:.1f}%) | "
-            f"Neutrino: {n_nu} ({100*n_nu/n_points:.1f}%) | "
-            f"Cosmic: {n_cosmic} ({100*n_cosmic/n_points:.1f}%)"
-        )
+        if is_data:
+            stats_text = f"Total Points: {n_points} | Data-only mode (no MC truth)"
+        else:
+            n_true = np.sum(event_data['hasmatch'] == 1)
+            n_ghost = np.sum(event_data['hasmatch'] == 0)
+            n_nu = np.sum(event_data['origin'] == 1)
+            n_cosmic = np.sum(event_data['origin'] == 2)
+
+            stats_text = (
+                f"Total Points: {n_points} | "
+                f"True: {n_true} ({100*n_true/n_points:.1f}%) | "
+                f"Ghost: {n_ghost} ({100*n_ghost/n_points:.1f}%) | "
+                f"Neutrino: {n_nu} ({100*n_nu/n_points:.1f}%) | "
+                f"Cosmic: {n_cosmic} ({100*n_cosmic/n_points:.1f}%)"
+            )
 
         # 3D scatter plot
         scatter_fig = create_3d_scatter(
@@ -1047,6 +1099,7 @@ def main():
             'ssnet_label': event_data['ssnet_label'].tolist(),
             'origin': event_data['origin'].tolist(),
             'hasmatch': event_data['hasmatch'].tolist(),
+            'is_data': is_data,
         }
 
         # Reset clicked point data and hide info box
@@ -1101,12 +1154,6 @@ def main():
         ywire = wire_data['ywire'][point_idx]
         tick = wire_data['tick'][point_idx]
 
-        # Get additional point info
-        pid = wire_data['pid'][point_idx]
-        ssnet = wire_data['ssnet_label'][point_idx]
-        origin = wire_data['origin'][point_idx]
-        hasmatch = wire_data['hasmatch'][point_idx]
-
         # Load event data again for the zoomed image
         entry_key = entry_keys[entry_idx]
         event_data = load_event_data(h5file, entry_key)
@@ -1117,16 +1164,21 @@ def main():
         )
 
         # Create info text
-        origin_name = ORIGIN_NAMES.get(origin, 'unknown')
-        ssnet_name = SSNET_CLASS_NAMES.get(ssnet, 'unknown')
-        pdg_name = get_pdg_name(pid)
-        match_str = "True" if hasmatch == 1 else "Ghost"
-
+        is_data = wire_data.get('is_data', False)
         info_text = (
             f"Selected Point: 3D=({clicked_x:.1f}, {clicked_y:.1f}, {clicked_z:.1f}) | "
-            f"Wires: U={uwire}, V={vwire}, Y={ywire} | Tick={tick} | "
-            f"PID={pdg_name} | SSNET={ssnet_name} | Origin={origin_name} | {match_str}"
+            f"Wires: U={uwire}, V={vwire}, Y={ywire} | Tick={tick}"
         )
+        if not is_data:
+            pid = wire_data['pid'][point_idx]
+            ssnet = wire_data['ssnet_label'][point_idx]
+            origin = wire_data['origin'][point_idx]
+            hasmatch = wire_data['hasmatch'][point_idx]
+            origin_name = ORIGIN_NAMES.get(origin, 'unknown')
+            ssnet_name = SSNET_CLASS_NAMES.get(ssnet, 'unknown')
+            pdg_name = get_pdg_name(pid)
+            match_str = "True" if hasmatch == 1 else "Ghost"
+            info_text += f" | PID={pdg_name} | SSNET={ssnet_name} | Origin={origin_name} | {match_str}"
 
         info_style = {
             'textAlign': 'center',
