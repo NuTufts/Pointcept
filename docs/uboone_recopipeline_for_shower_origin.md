@@ -22,7 +22,7 @@ and provide a detailed plan for implementation.
      The information from the shower fragment origin model is used to select neutrino-candidate fragments.
      We also use it to build the shower.
 
-## Notes on Step 1
+## Step 1: Making spacepoints with SSNet labels from data
 
 The input that will go into step one is made by taking (real or simulated) data from the experiment
 and processing it through `ubdl/lantern_scripts.sh` which runs `ubdl/larflow/larmatchnet/larmatch/deploy_larmatchme.py`
@@ -93,6 +93,143 @@ for ientry in range(nentries):
 
 The header and source code for the `larlite::storage_manager` class is in `ubdl/larlite/larlite/DataFormat/storage_manager.h/.cxx`
 
+### Additional larflow3dhit member variables used
+
+Beyond the float vector, the `larflow3dhit` class has member variables relevant to Step 2:
+
+- `hit.tick` (int): Image row (tick) — used to sample pixel values from wire-plane images.
+- `hit.targetwire` (std::vector\<int\>): Wire indices per plane. `targetwire[0]`=U, `targetwire[1]`=V, `targetwire[2]`=Y.
+- `hit.renormed_shower_score` (float): Combined SSNet shower probability. Computed in `FlowMatchHitMaker::store_2dssnet_score` as the sum of the renormalized shower + delta + michel scores (indices 2, 3, 4 of the 5-class SSNet output: hip, mip, shower, delta, michel). This is the score used to classify hits as shower-like for DBSCAN clustering.
+
+## Step 2: Convert larlite ROOT to ShowerOriginDataset HDF5
+
+### Overview
+
+Step 2 converts the larlite ROOT output from Step 1 into per-event HDF5 files
+compatible with `ShowerOriginDataset` (`pointcept/datasets/shower_origin.py`).
+Since this is reco data (no MC truth), shower fragments are created by:
+
+1. Selecting shower-like hits using `hit.renormed_shower_score >= threshold`
+2. Clustering with DBSCAN (eps=3.0 cm, min_samples=4, matching the C++ `ShowerFragmentOriginMaker`)
+3. Computing a PCA-based start point per fragment (most upstream point along principal axis)
+
+Truth-only fields (`originpt`, `type`, `pret0shiftedoriginpt`) are filled with placeholders
+since the model will predict these values at inference time.
+
+### Script: `lartpc_data_prep/convert_larlite_to_showerorigin_h5.py`
+
+Converts a larlite ROOT file into one HDF5 file per event.
+
+**Usage:**
+
+```bash
+python lartpc_data_prep/convert_larlite_to_showerorigin_h5.py \
+    --input-larlite output_larlite.root \
+    --output-dir ./showerorigin_h5/ \
+    --input-larcv output_larcv.root \
+    --shower-threshold 0.5
+```
+
+**Command line arguments:**
+
+| Argument | Default | Description |
+|---|---|---|
+| `--input-larlite` | (required) | Larlite ROOT file from `deploy_larmatchme.py` |
+| `--input-larcv` | None | Larcv ROOT file for wire-plane pixel values. If not provided, `pixval` is filled with ones. |
+| `--output-dir` | (required) | Output directory for per-event HDF5 files |
+| `--min-score` | None | Optional stricter larmatch score filter (ghosts already removed by deploy) |
+| `--shower-threshold` | 0.5 | Threshold on `renormed_shower_score` for DBSCAN input |
+| `--dbscan-eps` | 3.0 | DBSCAN neighborhood radius (cm) |
+| `--dbscan-min-samples` | 4 | DBSCAN minimum cluster size |
+| `--min-fragment-points` | 20 | Minimum points per fragment to keep |
+| `--hit-producer` | "larmatch" | larlite producer name for larflow3dhit |
+| `-n` / `--nentries` | -1 | Max entries to process (-1 = all) |
+| `--start-entry` | 0 | First entry to process |
+
+**Output HDF5 schema (per event):**
+
+```
+entry_0/
+  triplet_data/
+    pos:          (N, 3) float32  — x, y, z coordinates (cm)
+    pixval:       (N, 3) float32  — wire-plane ADC values [U, V, Y]
+    uwire:        (N,)   float32  — U wire index
+    vwire:        (N,)   float32  — V wire index
+    ywire:        (N,)   float32  — Y wire index
+    hasmatch:     (N,)   int64    — all ones (ghosts already removed)
+    shower_score: (N,)   float32  — renormed_shower_score per hit
+    lm_score:     (N,)   float32  — larmatch score per hit
+  shower_fragments/
+    @num_fragments: int
+    pointindices_flat:   (T,) int64   — concatenated point indices
+    pointindices_counts: (F,) int64   — points per fragment
+    startpt:             (F, 3) float32 — PCA-based start point
+    trackid:             (F,) int64   — sequential dummy IDs (0, 1, 2, ...)
+    pid:                 (F,) int64   — all 22 (photon, generic shower)
+    istrunk:             (F,) int64   — all 1 (each fragment independent)
+    type:                (F,) int64   — all -1 (unknown, model predicts this)
+    originpt:            (F, 3) float32 — placeholder zeros (model predicts)
+    pret0shiftedoriginpt:(F, 4) float32 — placeholder zeros (no MC truth)
+    nu_vertex_is_visible: int64        — 0 (unknown for reco data)
+```
+
+**Output file naming:** `showerorigin_<input_basename>_entry<NNNNNN>.h5`
+
+**Key implementation details:**
+
+- `extract_hits()`: Reads `larflow3dhit` objects via `larlite.storage_manager`, extracting
+  `pos`, `tick`, `targetwire`, `renormed_shower_score`, and larmatch score.
+- `LArCVPixelReader`: Manages a `larcv.IOManager` for sampling wire-plane pixel values.
+  Uses `hit.tick` → `meta.row(tick)` and `hit.targetwire[plane]` → `meta.col(wire)` to
+  index into each plane's `Image2D`. Opened once and reused across entries.
+- `cluster_shower_fragments()`: Selects shower hits by threshold, runs `sklearn.cluster.DBSCAN`,
+  filters clusters below `min_fragment_points`.
+- `compute_start_point()`: PCA via SVD on cluster points; picks the point with smallest
+  projection along the principal axis (most upstream).
+
+### Visualization: `tools/visualize_shower_origin_reco.py`
+
+Interactive Dash/Plotly 3D viewer for inspecting the reco HDF5 output.
+Reads HDF5 files directly without requiring the Pointcept dataset class or config system.
+
+**Usage:**
+
+```bash
+# Single file
+python tools/visualize_shower_origin_reco.py --input /path/to/event.h5
+
+# Directory of files
+python tools/visualize_shower_origin_reco.py --input-dir ./showerorigin_h5/
+
+# File list
+python tools/visualize_shower_origin_reco.py --data-list /path/to/filelist.txt
+```
+
+**Panels:**
+
+- **Row 1, Left — Selected Fragment**: The currently selected fragment highlighted in red
+  with its PCA start point as a cyan cross marker. Non-fragment points in gray.
+  MicroBooNE detector outline shown.
+- **Row 1, Right — Shower Score**: All points colored by `renormed_shower_score` (0–1 colormap).
+  Validates the SSNet classification that drives DBSCAN clustering.
+- **Row 2, Full Width — All Fragments**: Each DBSCAN cluster in a distinct color.
+  All start points labeled S0, S1, etc. Shows the full fragment inventory for the event.
+
+**Navigation:**
+
+- Event: Next Event / Random / Go-to-index buttons
+- Fragment: Dropdown selector (avoids reloading HDF5 on fragment switch via `dcc.Store` caching)
+
+### Completion Status
+
+- [x] Conversion script (`convert_larlite_to_showerorigin_h5.py`)
+- [x] Reco visualization script (`visualize_shower_origin_reco.py`)
+- [x] Validate on a set of events: check fragment counts, sizes, and start points
+- [x] Implement `load_pixval_from_larcv()` — currently uses `hit.tick` + `hit.targetwire` to sample
+  from `image2d` "wire" product. Needs testing with actual larcv files to verify
+  coordinate mapping is correct.
+- [ ] Test that `ShowerOriginDataset` can load the reco HDF5 files end-to-end
+  (the `type=-1` placeholder passes through without filtering issues)
 
 ## Analyzing the output before full integration
 
