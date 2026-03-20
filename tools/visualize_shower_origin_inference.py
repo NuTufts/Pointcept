@@ -428,17 +428,48 @@ def build_predicted_scores_figure(result, gaussian_sigma=None,
         title, npts, camera_up={"x": 0, "y": 1, "z": 0})}
 
 
-def build_shower_mask_figure(result):
-    """Shower mask + GT markers (raw coords)."""
-    coord = result["coord"]
-    mask = result["shower_mask"]
-    origin = result["origin_coord"]
+FRAGMENT_COLORS = [
+    "rgba(255, 50, 50, 0.8)",    # red
+    "rgba(50, 150, 255, 0.8)",   # blue
+    "rgba(50, 255, 50, 0.8)",    # green
+    "rgba(255, 200, 50, 0.8)",   # yellow
+    "rgba(200, 50, 255, 0.8)",   # purple
+    "rgba(255, 128, 0, 0.8)",    # orange
+    "rgba(0, 255, 200, 0.8)",    # teal
+    "rgba(255, 50, 200, 0.8)",   # pink
+    "rgba(128, 255, 128, 0.8)",  # light green
+    "rgba(128, 128, 255, 0.8)",  # light blue
+    "rgba(255, 255, 128, 0.8)",  # light yellow
+    "rgba(255, 128, 128, 0.8)",  # light red
+]
+
+
+def build_shower_mask_figure(all_results, selected_idx=0):
+    """All fragments shown with distinct colors + labeled text markers.
+
+    Uses raw coords from the first result (all fragments share the same
+    event point cloud). Each fragment's shower mask is shown in a distinct
+    color, with a text label at its centroid showing the fragment number.
+    The selected fragment is highlighted with larger markers.
+    """
+    if not all_results:
+        return empty_figure("All Fragments (no data)")
+
+    # All fragments share the same raw coord array
+    coord = all_results[0]["coord"]
     npts = coord.shape[0]
+    n_frags = len(all_results)
 
     traces = []
-    shower = mask.astype(bool) if mask is not None else np.zeros(npts, dtype=bool)
-    non_shower = ~shower
 
+    # Build union mask across all fragments
+    any_shower = np.zeros(npts, dtype=bool)
+    for r in all_results:
+        mask = r["shower_mask"]
+        if mask is not None:
+            any_shower |= mask.astype(bool)
+
+    non_shower = ~any_shower
     if non_shower.sum() > 0:
         traces.append({
             "type": "scatter3d",
@@ -447,50 +478,81 @@ def build_shower_mask_figure(result):
             "z": coord[non_shower, 2].tolist(),
             "mode": "markers",
             "name": f"non-shower ({int(non_shower.sum()):,})",
-            "marker": {"color": "rgba(120,120,120,0.3)", "size": 2},
+            "marker": {"color": "rgba(120,120,120,0.2)", "size": 1},
+            "hoverinfo": "skip",
         })
 
-    if shower.sum() > 0:
+    # Each fragment in a distinct color
+    for fi, r in enumerate(all_results):
+        mask = r["shower_mask"]
+        if mask is None:
+            continue
+        shower = mask.astype(bool)
+        if shower.sum() == 0:
+            continue
+
+        is_selected = (fi == selected_idx)
+        color = FRAGMENT_COLORS[fi % len(FRAGMENT_COLORS)]
+        size = 4 if is_selected else 2
+        opacity_str = "1.0" if is_selected else "0.6"
+
+        # Prediction info for hover
+        pred_class = r.get("pred_class", -1)
+        pred_name = ORIGIN_TYPE_NAMES.get(pred_class, "?")
+
         traces.append({
             "type": "scatter3d",
             "x": coord[shower, 0].tolist(),
             "y": coord[shower, 1].tolist(),
             "z": coord[shower, 2].tolist(),
             "mode": "markers",
-            "name": f"shower ({int(shower.sum()):,})",
-            "marker": {"color": "rgba(255,50,50,0.8)", "size": 2},
+            "name": f"frag {fi} ({int(shower.sum())}, pred={pred_name})"
+                    + (" *" if is_selected else ""),
+            "marker": {"color": color, "size": size},
+            "hovertemplate": (
+                f"<b>frag {fi}</b> (pred={pred_name})<br>"
+                "<b>x</b>: %{x:.1f}<br>"
+                "<b>y</b>: %{y:.1f}<br>"
+                "<b>z</b>: %{z:.1f}<extra></extra>"
+            ),
         })
 
-    # GT origin (green diamond)
-    if origin is not None:
-        traces.append({
-            "type": "scatter3d",
-            "x": [float(origin[0])],
-            "y": [float(origin[1])],
-            "z": [float(origin[2])],
-            "mode": "markers",
-            "name": "GT origin",
-            "marker": {
-                "color": "lime", "size": 10, "symbol": "diamond",
-                "line": {"color": "white", "width": 2},
-            },
-        })
+    # Text labels at each fragment centroid
+    for fi, r in enumerate(all_results):
+        mask = r["shower_mask"]
+        if mask is None:
+            continue
+        shower = mask.astype(bool)
+        if shower.sum() == 0:
+            continue
 
-    # GT start (cyan cross)
-    start = result.get("start_coord")
-    if start is not None:
-        start = np.asarray(start)
+        centroid = coord[shower].mean(axis=0)
+        pred_class = r.get("pred_class", -1)
+        pred_name = ORIGIN_TYPE_NAMES.get(pred_class, "?")
+
         traces.append({
             "type": "scatter3d",
-            "x": [float(start[0])],
-            "y": [float(start[1])],
-            "z": [float(start[2])],
-            "mode": "markers",
-            "name": "GT start",
+            "x": [float(centroid[0])],
+            "y": [float(centroid[1])],
+            "z": [float(centroid[2])],
+            "mode": "text+markers",
+            "text": [f"F{fi}"],
+            "textposition": "top center",
+            "textfont": {"color": "white", "size": 11},
             "marker": {
-                "color": "cyan", "size": 8, "symbol": "cross",
+                "color": FRAGMENT_COLORS[fi % len(FRAGMENT_COLORS)],
+                "size": 6,
+                "symbol": "circle",
                 "line": {"color": "white", "width": 1},
             },
+            "hovertemplate": (
+                f"<b>Fragment {fi}</b><br>"
+                f"pred: {pred_name}<br>"
+                f"pts: {int(shower.sum())}<br>"
+                "centroid: (%{x:.1f}, %{y:.1f}, %{z:.1f})"
+                "<extra></extra>"
+            ),
+            "showlegend": False,
         })
 
     # Add MicroBooNE detector outline
@@ -508,8 +570,10 @@ def build_shower_mask_figure(result):
             "showlegend": False,
         })
 
+    title = f"All Fragments ({n_frags} frags, selected=F{selected_idx})"
+
     return {"data": traces, "layout": make_layout(
-        "Shower Mask + GT (raw coords)", npts,
+        title, npts, height=650,
         camera_up={"x": 0, "y": 1, "z": 0},
         aspect_ratio={"x": 1, "y": 1, "z": 4},
         axis_labels=["X (cm)", "Y (cm)", "Z (cm)"],
@@ -651,8 +715,8 @@ BTN_STYLE = {
     "marginRight": "10px",
 }
 
-GRAPH_STYLE = {
-    "width": "33.3%",
+GRAPH_STYLE_HALF = {
+    "width": "50%",
     "display": "inline-block",
     "verticalAlign": "top",
 }
@@ -713,14 +777,17 @@ app.layout = html.Div(
             style={"color": "#888", "fontSize": "12px", "marginBottom": "15px"},
         ),
 
-        # Three-panel view
+        # Row 1: Predicted Scores + Classification (side by side)
         html.Div([
             html.Div([dcc.Graph(id="scores-graph", config={"scrollZoom": True})],
-                      style=GRAPH_STYLE),
-            html.Div([dcc.Graph(id="mask-graph", config={"scrollZoom": True})],
-                      style=GRAPH_STYLE),
+                      style=GRAPH_STYLE_HALF),
             html.Div([dcc.Graph(id="class-graph", config={"scrollZoom": True})],
-                      style=GRAPH_STYLE),
+                      style=GRAPH_STYLE_HALF),
+        ]),
+
+        # Row 2: All Fragments (full width)
+        html.Div([
+            dcc.Graph(id="mask-graph", config={"scrollZoom": True}),
         ]),
 
         # Hidden stores
@@ -821,7 +888,7 @@ def on_fragment_select(frag_idx, cache_data, current_idx):
         r, gaussian_sigma=gaussian_sigma,
         coord_center=coord_center, coord_scale=coord_scale,
     )
-    mask_fig = build_shower_mask_figure(r)
+    mask_fig = build_shower_mask_figure(results, selected_idx=frag_idx)
     class_fig = build_classification_figure(r, ORIGIN_TYPE_NAMES)
 
     # Info

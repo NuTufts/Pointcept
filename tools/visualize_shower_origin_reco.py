@@ -57,6 +57,8 @@ AXIS_TEMPLATE = {
 }
 
 # Distinct colors for fragment display
+TYPE_NAMES = {0: "inside", 1: "outside", 2: "on_track", 3: "ghost", 4: "true_track", -1: "unknown"}
+
 FRAGMENT_COLORS = [
     "rgba(255, 50, 50, 0.8)",    # red
     "rgba(50, 150, 255, 0.8)",   # blue
@@ -226,6 +228,8 @@ def load_event(filepath, min_fragment_points=20):
                 flat_indices = sf['pointindices_flat'][:]
                 index_counts = sf['pointindices_counts'][:]
                 startpts = sf['startpt'][:] if 'startpt' in sf else None
+                originpts = sf['originpt'][:] if 'originpt' in sf else None
+                frag_types = sf['type'][:] if 'type' in sf else None
 
                 offset = 0
                 for i in range(num_frags):
@@ -251,6 +255,10 @@ def load_event(filepath, min_fragment_points=20):
                     }
                     if startpts is not None:
                         frag["startpt"] = startpts[i].astype(np.float32)
+                    if originpts is not None:
+                        frag["originpt"] = originpts[i].astype(np.float32)
+                    if frag_types is not None:
+                        frag["type"] = int(frag_types[i])
 
                     fragments.append(frag)
 
@@ -322,7 +330,7 @@ def build_fragment_mask_figure(data, frag_idx=0,
                 ),
             })
 
-        # Start point marker
+        # Start point marker (magenta cross)
         if selected_frag and "startpt" in selected_frag:
             sp = selected_frag["startpt"]
             traces.append({
@@ -333,7 +341,7 @@ def build_fragment_mask_figure(data, frag_idx=0,
                 "mode": "markers",
                 "name": "start pt",
                 "marker": {
-                    "color": "cyan", "size": 10,
+                    "color": "magenta", "size": 10,
                     "symbol": "cross",
                     "line": {"color": "white", "width": 2},
                 },
@@ -343,6 +351,30 @@ def build_fragment_mask_figure(data, frag_idx=0,
                     "<extra></extra>"
                 ),
             })
+
+        # Origin point marker (cyan diamond)
+        if selected_frag and "originpt" in selected_frag:
+            op = selected_frag["originpt"]
+            # Only show if origin is non-zero (not a placeholder)
+            if np.any(op != 0):
+                traces.append({
+                    "type": "scatter3d",
+                    "x": [float(op[0])],
+                    "y": [float(op[1])],
+                    "z": [float(op[2])],
+                    "mode": "markers",
+                    "name": "origin pt",
+                    "marker": {
+                        "color": "cyan", "size": 12,
+                        "symbol": "diamond",
+                        "line": {"color": "white", "width": 2},
+                    },
+                    "hovertemplate": (
+                        "<b>ORIGIN</b><br>"
+                        "x: %{x:.1f}<br>y: %{y:.1f}<br>z: %{z:.1f}"
+                        "<extra></extra>"
+                    ),
+                })
     else:
         traces.append({
             "type": "scatter3d",
@@ -469,11 +501,16 @@ def build_all_fragments_figure(data, title="All Fragments"):
             ),
         })
 
+    # Label color by fragment type
+    TYPE_LABEL_COLORS = {0: "red", 1: "lime", 2: "dodgerblue", 4: "yellow"}
+
     # Start point markers for all fragments
     for fi, frag in enumerate(frags):
         if "startpt" not in frag:
             continue
         sp = frag["startpt"]
+        ftype = frag.get("type", -1)
+        label_color = TYPE_LABEL_COLORS.get(ftype, "white")
         traces.append({
             "type": "scatter3d",
             "x": [float(sp[0])],
@@ -483,9 +520,9 @@ def build_all_fragments_figure(data, title="All Fragments"):
             "name": f"start {fi}",
             "text": [f"S{fi}"],
             "textposition": "top center",
-            "textfont": {"color": "white", "size": 10},
+            "textfont": {"color": label_color, "size": 10},
             "marker": {
-                "color": "white", "size": 8,
+                "color": label_color, "size": 8,
                 "symbol": "cross",
                 "line": {"color": "black", "width": 1},
             },
@@ -685,7 +722,9 @@ def on_event_change(next_clicks, random_clicks, go_clicks,
     # Build dropdown options
     options = []
     for i, frag in enumerate(data["fragments"]):
-        label = f"Fragment {i}: {frag['npts']} pts"
+        ftype = frag.get("type", -1)
+        type_name = TYPE_NAMES.get(ftype, f"type{ftype}")
+        label = f"Fragment {i}: {frag['npts']} pts, {type_name}"
         options.append({"label": label, "value": i})
 
     # Serialize for dcc.Store (numpy arrays -> lists)
@@ -700,6 +739,9 @@ def on_event_change(next_clicks, random_clicks, go_clicks,
                 "index": f["index"],
                 "startpt": f["startpt"].tolist()
                            if "startpt" in f else None,
+                "originpt": f["originpt"].tolist()
+                            if "originpt" in f else None,
+                "type": f.get("type", -1),
             }
             for f in data["fragments"]
         ],
@@ -756,6 +798,9 @@ def on_fragment_select(frag_idx, cache):
                 "index": f["index"],
                 "startpt": np.array(f["startpt"], dtype=np.float32)
                            if f["startpt"] is not None else None,
+                "originpt": np.array(f["originpt"], dtype=np.float32)
+                            if f.get("originpt") is not None else None,
+                "type": f.get("type", -1),
             }
             for f in cache["fragments"]
         ],

@@ -363,8 +363,9 @@ class ShowerOriginDataset(DefaultDataset):
                         if fmask.sum() < self.min_fragment_points:
                             continue
 
-                        # Origin type determined by C++ using pret0shiftedoriginpt:
+                        # Origin type:
                         # 0=nu-inside, 1=outside, 2=cosmic-inside
+                        # 3=ghost, 4=true_track (reco fragments only)
                         frag_origin_type = int(frag_types[i])
 
                         if not self.include_cosmic_showers and frag_origin_type == 2:

@@ -779,6 +779,9 @@ class ShowerOriginPredictorV3(nn.Module):
         classification_loss_weight: float = 1.0,
         # Origin classification
         num_origin_classes: int = 3,
+        # Reco-fragment classification (5 classes: +ghost, +true_track)
+        num_reco_classes: int = 5,
+        use_reco_classes: bool = False,
         # Virtual grid params
         virtual_grid_enabled: bool = True,
         dense_spacing: float = 2.0,
@@ -800,6 +803,7 @@ class ShowerOriginPredictorV3(nn.Module):
         self.distance_loss_weight = distance_loss_weight
         self.classification_loss_weight = classification_loss_weight
         self.virtual_grid_enabled = virtual_grid_enabled
+        self.use_reco_classes = use_reco_classes
 
         # Build backbone (Sonata model)
         self.backbone = build_model(backbone)
@@ -868,6 +872,14 @@ class ShowerOriginPredictorV3(nn.Module):
             dim=backbone_out_channels,
             hidden_dim=hidden_channels,
             num_classes=num_origin_classes,
+        )
+
+        # Reco classification head: 5 classes (adds ghost + true_track)
+        self.num_reco_classes = num_reco_classes
+        self.reco_classification_head = OriginClassificationHead(
+            dim=backbone_out_channels,
+            hidden_dim=hidden_channels,
+            num_classes=num_reco_classes,
         )
 
         # Optional: custom criteria if provided
@@ -1228,8 +1240,12 @@ class ShowerOriginPredictorV3(nn.Module):
             if "distances" in pred:
                 per_slot_distances.append(pred["distances"])  # (N,)
 
-            # Classification: origin type (INSIDE/OUTSIDE/ON_TRACK)
-            cls_logits = self.classification_head(queries[k])  # (num_classes,)
+            # Classification: origin type
+            # Use reco head (5 classes) or standard head (3 classes)
+            if self.use_reco_classes:
+                cls_logits = self.reco_classification_head(queries[k])
+            else:
+                cls_logits = self.classification_head(queries[k])
             per_slot_cls.append(cls_logits)
 
         return per_slot_scores, per_slot_distances, per_slot_cls, per_slot_logits
@@ -1239,6 +1255,10 @@ class ShowerOriginPredictorV3(nn.Module):
     ):
         """
         Compute direct loss for a single fragment (K=1, no Hungarian matching).
+
+        For ghost (type=3) and true_track (type=4) fragments, only the
+        classification loss is computed — score and distance losses are
+        skipped since these fragments have no meaningful origin point.
 
         Args:
             scores: (N_total,) sigmoid scores from slot 0
@@ -1254,51 +1274,63 @@ class ShowerOriginPredictorV3(nn.Module):
         device = coords.device
         origin_coord = input_dict["origin_coord"]  # (3,)
 
-        # Gaussian soft labels from distance to origin
-        distances_to_origin = torch.norm(
-            coords - origin_coord.unsqueeze(0), dim=-1
-        )
-        target_scores = torch.exp(
-            -0.5 * (distances_to_origin / self.gaussian_sigma) ** 2
-        )
-
-        # Score loss: BCE with logits for numerical stability
-        with torch.amp.autocast('cuda', enabled=False):
-            safe_logits = torch.nan_to_num(
-                logits.float(), nan=0.0, posinf=50.0, neginf=-50.0
-            )
-            score_loss = F.binary_cross_entropy_with_logits(
-                safe_logits,
-                target_scores.float(),
-                reduction='mean',
-            )
-
-        total_loss = self.score_loss_weight * score_loss
-
-        # Classification loss (cross-entropy)
+        # Determine origin type for loss masking
         origin_type = input_dict.get("origin_type", None)
+        origin_type_val = -1
+        if origin_type is not None:
+            origin_type_val = int(origin_type.item()) if origin_type.dim() == 0 else int(origin_type[0].item())
+
+        # Score and distance loss: skip for ghost (3) and true_track (4)
+        # These fragments have no meaningful origin point.
+        total_loss = torch.tensor(0.0, device=device)
+
+        if origin_type_val < 3:
+            # Gaussian soft labels from distance to origin
+            distances_to_origin = torch.norm(
+                coords - origin_coord.unsqueeze(0), dim=-1
+            )
+            target_scores = torch.exp(
+                -0.5 * (distances_to_origin / self.gaussian_sigma) ** 2
+            )
+
+            # Score loss: BCE with logits for numerical stability
+            with torch.amp.autocast('cuda', enabled=False):
+                safe_logits = torch.nan_to_num(
+                    logits.float(), nan=0.0, posinf=50.0, neginf=-50.0
+                )
+                score_loss = F.binary_cross_entropy_with_logits(
+                    safe_logits,
+                    target_scores.float(),
+                    reduction='mean',
+                )
+
+            total_loss = total_loss + self.score_loss_weight * score_loss
+
+            # Distance loss (smooth L1)
+            if distances is not None:
+                with torch.amp.autocast('cuda', enabled=False):
+                    safe_dist = torch.nan_to_num(
+                        distances.float(), nan=0.0
+                    )
+                    dist_loss = F.smooth_l1_loss(
+                        safe_dist,
+                        distances_to_origin.float(),
+                        reduction='mean',
+                    )
+                total_loss = total_loss + self.distance_loss_weight * dist_loss
+
+        # Classification loss (cross-entropy) — always applied for all classes
+        # Skip only when origin_type is negative (truly unknown)
         if origin_type is not None:
             ot = origin_type.long()
             if ot.dim() == 0:
                 ot = ot.unsqueeze(0)
-            with torch.amp.autocast('cuda', enabled=False):
-                safe_cls = torch.nan_to_num(
-                    cls_logits.float(), nan=0.0
-                ).unsqueeze(0)
-                cls_loss = F.cross_entropy(safe_cls, ot.to(device))
-            total_loss = total_loss + self.classification_loss_weight * cls_loss
-
-        # Distance loss (smooth L1)
-        if distances is not None:
-            with torch.amp.autocast('cuda', enabled=False):
-                safe_dist = torch.nan_to_num(
-                    distances.float(), nan=0.0
-                )
-                dist_loss = F.smooth_l1_loss(
-                    safe_dist,
-                    distances_to_origin.float(),
-                    reduction='mean',
-                )
-            total_loss = total_loss + self.distance_loss_weight * dist_loss
+            if (ot >= 0).all():
+                with torch.amp.autocast('cuda', enabled=False):
+                    safe_cls = torch.nan_to_num(
+                        cls_logits.float(), nan=0.0
+                    ).unsqueeze(0)
+                    cls_loss = F.cross_entropy(safe_cls, ot.to(device))
+                total_loss = total_loss + self.classification_loss_weight * cls_loss
 
         return total_loss

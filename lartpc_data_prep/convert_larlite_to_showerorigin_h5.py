@@ -98,6 +98,10 @@ def parse_args():
         help="Name of the larflow3dhit producer (default: 'larmatch')."
     )
     parser.add_argument(
+        "--adc", type=str, default="wire",
+        help="Name of the ADC wire image producer (default: 'wire')."
+    )
+    parser.add_argument(
         "--tick-backward", default=False, action='store_true',
         help="If flag provided, input file is expected to be in reverse-tick format and will be reversed upon loading."
     )
@@ -410,6 +414,7 @@ def write_event_h5(output_path, hit_data, fragments):
         triplet.create_dataset("uwire", data=hit_data["uwire"])
         triplet.create_dataset("vwire", data=hit_data["vwire"])
         triplet.create_dataset("ywire", data=hit_data["ywire"])
+        triplet.create_dataset("tick", data=hit_data["tick"])
         # All hits are kept (no ghost filtering needed at load time)
         triplet.create_dataset(
             "hasmatch",
@@ -532,7 +537,7 @@ def main():
     # Open larcv reader if provided
     larcv_reader = None
     if args.input_larcv is not None:
-        larcv_reader = LArCVPixelReader(args.input_larcv, is_tick_backward=args.tick_backward)
+        larcv_reader = LArCVPixelReader(args.input_larcv, wire_producer=args.adc, is_tick_backward=args.tick_backward)
 
     # Open larlite file
     io = larlite.storage_manager(larlite.storage_manager.kREAD)
