@@ -167,6 +167,7 @@ class LArTPCDataset(DefaultDataset):
         drop_cosmics=False,
         drop_cosmics_prob=0.5,
         add_min_pixval=1.0e-2,
+        data_only=False,
         **kwargs
     ):
         self.use_reco_coords = use_reco_coords
@@ -182,6 +183,7 @@ class LArTPCDataset(DefaultDataset):
         self.true_points_only = true_points_only
         self.drop_cosmics = drop_cosmics
         self.drop_cosmics_prob = drop_cosmics_prob
+        self.data_only = data_only
         self.min_points_required = 100
 
         # Call parent init (this will call get_data_list)
@@ -289,6 +291,19 @@ class LArTPCDataset(DefaultDataset):
             return self.split
         return self.split[0]
 
+    def _has_truth(self, f):
+        """Check whether the HDF5 file contains truth-level fields.
+
+        Returns:
+            bool: True if truth fields should be loaded.
+        """
+        if self.data_only is True:
+            return False
+        if self.data_only is False:
+            return True
+        # data_only="auto": probe the file
+        return 'origin' in f['/entry_0/triplet_data']
+
     def get_data(self, idx):
         """
         Load data from HDF5 file and format for Pointcept.
@@ -301,11 +316,6 @@ class LArTPCDataset(DefaultDataset):
         split = self.get_split_name(idx)
 
         with h5py.File(data_path, 'r') as f:
-            #entrydata = f['/entry_0']
-            #print(entrydata.keys())
-            #tripletdata = entrydata['triplet_data']
-            #print(tripletdata.keys())
-            
             # Load coordinates
             coord = np.array(f['/entry_0/triplet_data/pos'], dtype=np.float32)
 
@@ -313,52 +323,74 @@ class LArTPCDataset(DefaultDataset):
             if self.coord_scale != 1.0:
                 coord = coord * self.coord_scale
 
-            # Load origin tag
-            # origin flags: 0=no ground truth, 1=neutrino, 2=cosmic
-            origin = f['/entry_0/triplet_data/origin'][:]
+            N = coord.shape[0]
+            has_truth = self._has_truth(f)
 
-            # Load and map semantic labels
-            if self.label_mode == 'pid':
-                pid = f['/entry_0/triplet_data/pid'][:]
-                segment = self._map_pid_to_class(pid)
-            elif self.label_mode == 'ssnet':
-                ssnetlabels = f['/entry_0/triplet_data/ssnet_label'][:]
-                segment = self._map_ssnetlabel_to_class(ssnetlabels)
-            elif self.label_mode == 'origin':
-                segment = self._map_origin_to_class(origin)
+            if has_truth:
+                # Load origin tag
+                # origin flags: 0=no ground truth, 1=neutrino, 2=cosmic
+                origin = f['/entry_0/triplet_data/origin'][:]
+
+                # Load and map semantic labels
+                if self.label_mode == 'pid':
+                    pid = f['/entry_0/triplet_data/pid'][:]
+                    segment = self._map_pid_to_class(pid)
+                elif self.label_mode == 'ssnet':
+                    ssnetlabels = f['/entry_0/triplet_data/ssnet_label'][:]
+                    segment = self._map_ssnetlabel_to_class(ssnetlabels)
+                elif self.label_mode == 'origin':
+                    segment = self._map_origin_to_class(origin)
+                else:
+                    raise ValueError(f"Unknown label_mode: {self.label_mode}")
+
+                # Count points per class for the active classes only
+                if self.label_mode == 'ssnet':
+                    active_classes = list(range(8))
+                    ghost_class = 8
+                    other_class = 9
+                else:
+                    active_classes = list(range(5))
+                    ghost_class = 5
+                    other_class = 6
+                if self.include_ghosts:
+                    active_classes.append(ghost_class)
+                if not self.exclude_other:
+                    active_classes.append(other_class)
+
+                nclasses = len(active_classes)
+                classcounts = np.zeros((1, nclasses), dtype=np.int64)
+                for i, class_idx in enumerate(active_classes):
+                    classcounts[0, i] = (segment == class_idx).sum()
+
+                # Load instance labels (track IDs)
+                trackid = f['/entry_0/triplet_data/trackid'][:]
+                instance = trackid.astype(np.int32)
+
+                # Load true-ghost labels. 0=ghost, 1=true
+                hasmatch = np.array(f['/entry_0/triplet_data/hasmatch'], dtype=np.int64)
+
+                # Get keypoints and pass neutrino keypoint for biased sampling
+                keypoint_pos  = np.array(f['/entry_0/mckeypoints/pos'], dtype=np.float32)
+                keypoint_type = np.array(f['/entry_0/mckeypoints/kptype'], dtype=np.int64)
+                nu_keypoint_mask = keypoint_type == 0
+                nu_vertices = keypoint_pos[nu_keypoint_mask[:], :]
             else:
-                raise ValueError(f"Unknown label_mode: {self.label_mode}")
-
-            # Count points per class for the active classes only
-            # For ssnet mode: 0=electron, 1=muon, 2=pion, 3=proton, 4=gamma, 5=michel, 6=delta, 7=led, 8=ghost, 9=other
-            # For pid mode: 0=electron, 1=muon, 2=pion, 3=proton, 4=gamma, 5=ghost, 6=other
-            # Build list of active class indices
-            if self.label_mode == 'ssnet':
-                active_classes = list(range(8))  # 8 particle classes for ssnet
-                ghost_class = 8
-                other_class = 9
-            else:
-                active_classes = list(range(5))  # 5 particle classes for pid/origin
-                ghost_class = 5
-                other_class = 6
-            if self.include_ghosts:
-                active_classes.append(ghost_class)
-            if not self.exclude_other:
-                active_classes.append(other_class)
-
-            nclasses = len(active_classes)
-            classcounts = np.zeros((1, nclasses), dtype=np.int64)
-            for i, class_idx in enumerate(active_classes):
-                classcounts[0, i] = (segment == class_idx).sum()
+                # Data-only path: no truth fields available
+                origin = np.zeros(N, dtype=np.int32)
+                segment = np.full(N, fill_value=-1, dtype=np.int32)
+                instance = np.full(N, fill_value=-1, dtype=np.int32)
+                hasmatch = np.ones(N, dtype=np.int64)
+                nu_vertices = np.zeros((0, 3), dtype=np.float32)
+                classcounts = np.zeros((1, 0), dtype=np.int64)
 
             # Load energy deposition as strength
             if self.use_edep_as_strength:
                 edep = np.array(f['/entry_0/triplet_data/pixval'], dtype=np.float32)
                 # Scale pixval (N, 3) - pixel intensities from 3 wire planes
                 # Each column is the signal from u, v, y wire plane images
-                strength = (np.clip(edep,a_min=0,a_max=1000.0) / self.adc_scale).astype(np.float32)
+                strength = (np.clip(edep, a_min=0, a_max=1000.0) / self.adc_scale).astype(np.float32)
             else:
-                strength = np.ones((coord.shape[0], 1), dtype=np.float32)
+                strength = np.ones((N, 1), dtype=np.float32)
             # Add a small value, so that LogTransform (transform.py) does not break
             strength += self.add_min_pixval
 
@@ -370,20 +402,6 @@ class LArTPCDataset(DefaultDataset):
             ], axis=1).astype(np.float32)
             wire_feat *= self.wire_scale
 
-            # Load instance labels (track IDs)
-            trackid = f['/entry_0/triplet_data/trackid'][:]
-            instance = trackid.astype(np.int32)
-
-            # Load true-ghost labels. 0=ghost, 1=true
-            hasmatch = np.array(f['/entry_0/triplet_data/hasmatch'],dtype=np.int64)
-
-            # Get keypoints and pass neutrino keypoint for biased sampling
-            # kptype: 0=Nu, 1=TrackStart, 2=TrackEnd, 3=Shower, 4=Michel, 5=Delta
-            keypoint_pos  = np.array(f['/entry_0/mckeypoints/pos'],dtype=np.float32)
-            keypoint_type = np.array(f['/entry_0/mckeypoints/kptype'],dtype=np.int64)
-            nu_keypoint_mask = keypoint_type==0  # Select Nu keypoints (type 0)
-            nu_vertices = keypoint_pos[nu_keypoint_mask[:],:]
-
         data_dict = {
             "coord": coord,
             "strength": strength,
@@ -392,30 +410,26 @@ class LArTPCDataset(DefaultDataset):
             "instance": instance,
             "name": name,
             "split": split,
-            "segment_counts": classcounts,  # (1, nclasses) - counts per class for this sample
-            "nu_vertices":nu_vertices,
-            "origin":origin
+            "segment_counts": classcounts,
+            "nu_vertices": nu_vertices,
+            "origin": origin
         }
 
-        #print("self.true_points_only: ",self.true_points_only)
         filtered = False
-        if self.true_points_only:
+        if has_truth and self.true_points_only:
             # mask out ghost points
-            #print("RETURN TRUE POINTS ONLY: ",hasmatch.shape)
-            ghost_mask = hasmatch==1
+            ghost_mask = hasmatch == 1
             for k in data_dict:
-                if k in ['coord','strength','color','segment','instance','origin']:
-                    #print(k,data_dict[k].shape)
-                    data_dict[k] = data_dict[k][ ghost_mask[:] ]
+                if k in ['coord', 'strength', 'color', 'segment', 'instance', 'origin']:
+                    data_dict[k] = data_dict[k][ghost_mask[:]]
             filtered = True
 
-        if self.drop_cosmics and np.random.random()<self.drop_cosmics_prob:
-            nu_mask = data_dict['origin']==1
-            if nu_mask.sum()>self.min_points_required:
+        if has_truth and self.drop_cosmics and np.random.random() < self.drop_cosmics_prob:
+            nu_mask = data_dict['origin'] == 1
+            if nu_mask.sum() > self.min_points_required:
                 for k in data_dict:
-                    if k in ['coord','strength','color','segment','instance','origin']:
-                        #print(k,data_dict[k].shape)
-                        data_dict[k] = data_dict[k][ nu_mask[:] ]
+                    if k in ['coord', 'strength', 'color', 'segment', 'instance', 'origin']:
+                        data_dict[k] = data_dict[k][nu_mask[:]]
                 filtered = True
 
         if filtered:
@@ -445,7 +459,6 @@ class LArTPCDataset(DefaultDataset):
                 result = self.get_data(new_idx)
                 self._retry_count = 0  # Reset on success
                 return result
-
 
         return data_dict
 
