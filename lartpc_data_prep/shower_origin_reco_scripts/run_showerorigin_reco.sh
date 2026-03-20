@@ -72,7 +72,7 @@ for (( i=1; i<=stride; i++ )); do
 
     # ---- STEP 1: Run lantern workflow inside lantern container ----
     echo "--- STEP 1: lantern workflow ---" >> ${local_logfile}
-    apptainer exec --bind /cluster:/cluster,/tmp:/tmp \
+    apptainer exec --bind /cluster/tufts:/cluster/tufts,/tmp:/tmp \
         ${LANTERN_CONTAINER} \
         bash -c "cd ${local_jobdir} && source ${WORKDIR}/run_step1_lantern.sh ${local_jobdir}" \
         >> ${local_logfile} 2>&1

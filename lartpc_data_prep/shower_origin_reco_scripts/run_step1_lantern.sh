@@ -83,7 +83,7 @@ echo "Copied local lantern scripts to workdir"
 # ---- SSNet inference (using local bug-fixed script) ----
 echo "----------------------------------------------"
 echo "Running SSNet inference"
-CMD="python3 ./inference_sparse_ssnet_uboone.py -i ${larsoftout} -w ${SSNET_DIR}/weights -o ssnet_output.root"
+CMD="python3 ./inference_sparse_ssnet_uboone.py -i ${larsoftout} -w ${SSNET_DIR}/weights -o ssnet_output.root --adcname wiremc"
 echo ${CMD}
 ${CMD}
 
@@ -96,7 +96,7 @@ fi
 echo "Merging SSNet output with merged_dlreco..."
 cp ${larsoftout} ${baseinput}
 rootcp ssnet_output.root:sparseimg_sparseuresnetout_tree ${baseinput}
-python3 ./recreate_ubspurn.py -i ${baseinput} -o ssnet_ubspurn_output.root
+python3 ./recreate_ubspurn.py -i ${baseinput} -o ssnet_ubspurn_output.root --adcname wiremc
 inputTrees=$(rootls ssnet_ubspurn_output.root)
 for tree in ${inputTrees}; do
     rootcp ssnet_ubspurn_output.root:${tree} ${baseinput}
