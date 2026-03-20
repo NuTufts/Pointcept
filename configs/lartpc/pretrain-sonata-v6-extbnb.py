@@ -65,8 +65,8 @@ enable_wandb = True
 wandb_project = "pointcept"
 save_path = "sonata/lartpc_v6_h200_extbnb_run1"
 
-TRAIN_FILE_LIST="/cluster/tufts/wongjiradlab/hmcgui01/mphys/Pointcept/lartpc_data_prep/combined_extbnb_run3_g1_g2_shuffled_training.txt"
-VAL_FILE_LIST="/cluster/tufts/wongjiradlab/hmcgui01/mphys/Pointcept/lartpc_data_prep/combined_extbnb_run3_g1_g2_shuffled_validation.txt"
+TRAIN_FILE_LIST="/cluster/tufts/wongjiradlab/twongj01/mphys/Pointcept/lartpc_data_prep/h5lists/combined_extbnb_run3_g1_g2_shuffled_training.txt"
+VAL_FILE_LIST="/cluster/tufts/wongjiradlab/twongj01/mphys/Pointcept/lartpc_data_prep/h5lists/combined_extbnb_run3_g1_g2_shuffled_validation.txt"
 true_points_only=False
 
 max_points_per_view=20480
