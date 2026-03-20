@@ -14,7 +14,7 @@ INPUTLIST=${POINTCEPT_DIR}/lartpc_data_prep/inputlists/bnb_nu_pi0filter_corsika.
 OUTPUT_DIR=/cluster/tufts/wongjiradlab/larbys/data/ub_on_tufts/hdf5/shower_origin_reco/bnb_nu_pi0filter_corsika
 LANTERN_CONTAINER=/cvmfs/uboone.opensciencegrid.org/containers/lantern_v2_me_06_03_prod
 POINTCEPT_CONTAINER=/cluster/tufts/wongjiradlabnu/larbys/larbys-container/pointcept_cuml.sif
-TAG=showerorigin_reco
+TAG=showerorigin_reco_pi0filter
 stride=10
 OFFSET=0
 # =======================================================
@@ -98,7 +98,7 @@ for (( i=1; i<=stride; i++ )); do
     echo "--- STEPS 2-4: pointcept processing ---" >> ${local_logfile}
     apptainer exec --bind /cluster:/cluster,/tmp:/tmp \
         ${POINTCEPT_CONTAINER} \
-        bash -c "cd ${local_jobdir} && source ${WORKDIR}/run_step234_pointcept.sh ${local_jobdir}" \
+        bash -c "cd ${local_jobdir} && source ${WORKDIR}/run_step234_pointcept.sh ${local_jobdir} ${lineno} ${TAG}" \
         >> ${local_logfile} 2>&1
     step234_status=$?
     echo "Steps 2-4 exit status: ${step234_status}" >> ${local_logfile}

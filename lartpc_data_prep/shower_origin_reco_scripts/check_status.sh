@@ -5,8 +5,18 @@
 # Reports total files, completed, and missing/failed.
 # Optionally writes a rerun file list.
 #
-# Usage: bash check_status.sh [--rerun rerun_list.txt]
+# Usage: bash check_status.sh <tag> [--rerun rerun_list.txt]
+#   tag: dataset label used in merged output filenames (e.g. showerorigin_reco_pi0filter)
 #
+
+TAG=$1
+shift
+
+if [ -z "${TAG}" ]; then
+    echo "ERROR: tag argument required"
+    echo "Usage: bash check_status.sh <tag> [--rerun rerun_list.txt]"
+    exit 1
+fi
 
 POINTCEPT_DIR=/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept
 INPUTLIST=${POINTCEPT_DIR}/lartpc_data_prep/inputlists/bnb_nu_pi0filter_corsika.txt
@@ -46,8 +56,9 @@ for (( lineno=1; lineno<=nlines; lineno++ )); do
     zsubdir2=$(printf %03d ${nsubdir2})
     outfolder=${OUTPUT_DIR}/${zsubdir1}/${zsubdir2}
 
-    # Check if any merged H5 files exist for this input
-    nmerged=$(ls ${outfolder}/merged_*.h5 2>/dev/null | wc -l)
+    # Check if any merged H5 files exist for this input (fileno is embedded in filename)
+    zlineno=$(printf "%05d" ${lineno})
+    nmerged=$(ls ${outfolder}/merged_${TAG}_fileno${zlineno}_*.h5 2>/dev/null | wc -l)
 
     if [ ${nmerged} -gt 0 ]; then
         let completed+=1

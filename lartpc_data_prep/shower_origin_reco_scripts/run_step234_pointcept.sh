@@ -7,15 +7,31 @@
 #   Step 3: process_dlmerged_to_hdf5_event_files.py (truth H5)
 #   Step 4: merge_reco_truth_showerorigin.py (merged H5)
 #
-# Usage: source run_step234_pointcept.sh <workdir_path>
+# Usage: source run_step234_pointcept.sh <workdir_path> <fileno> <tag>
+#   fileno: the input file's line number in the input list, used to make output filenames unique
+#   tag: dataset label inserted into merged output filenames
 #
 
 WORKDIR_PATH=$1
+FILENO=$2
+FILETAG=$3
 
 if [ -z "${WORKDIR_PATH}" ]; then
     echo "ERROR: workdir path not provided"
     exit 1
 fi
+
+if [ -z "${FILENO}" ]; then
+    echo "ERROR: fileno not provided"
+    exit 1
+fi
+
+if [ -z "${FILETAG}" ]; then
+    echo "ERROR: tag not provided"
+    exit 1
+fi
+
+ZFILENO=$(printf "%05d" ${FILENO})
 
 cd ${WORKDIR_PATH}
 echo "Steps 2-4 workdir: $(pwd)"
@@ -124,8 +140,8 @@ for reco_file in ${RECO_DIR}/showerorigin_*.h5; do
         continue
     fi
 
-    # Output merged filename
-    merged_outfile=${MERGED_DIR}/merged_showerorigin_${entry_part}.h5
+    # Output merged filename — includes tag and fileno to avoid collisions across input files/datasets
+    merged_outfile=${MERGED_DIR}/merged_${FILETAG}_fileno${ZFILENO}_${entry_part}.h5
 
     CMD="python3 ${SCRIPT_DIR}/merge_reco_truth_showerorigin.py \
         --reco-h5 ${reco_file} \
