@@ -246,57 +246,84 @@ class Trainer(TrainerBase):
             loss.backward()
         self._gradient_accumulation_counter += 1
 
-        # Check for NaN/Inf gradients after backward pass
-        nan_grad_params = []
-        for name, param in self.model.named_parameters():
-            if param.grad is not None:
-                if not torch.isfinite(param.grad).all():
-                    grad = param.grad
-                    nan_count = torch.isnan(grad).sum().item()
-                    inf_count = torch.isinf(grad).sum().item()
-                    grad_finite = grad[torch.isfinite(grad)]
-                    nan_grad_params.append(name)
-                    self.logger.error(
-                        f"NaN/Inf gradient in '{name}': "
-                        f"shape={list(grad.shape)}, "
-                        f"nan={nan_count}, inf={inf_count}, "
-                        f"finite_abs_max={grad_finite.abs().max().item() if grad_finite.numel() > 0 else 'N/A'}"
-                    )
-
-        if nan_grad_params:
-            self.logger.error(
-                f"Found NaN/Inf gradients in {len(nan_grad_params)} params at "
-                f"Epoch {self.comm_info.get('epoch', '?')}, "
-                f"Iter {self.comm_info.get('iter', '?')}. "
-                f"Skipping optimizer step to prevent weight corruption."
-            )
-            if "name" in input_dict:
-                self.logger.error(f"  Batch sample names: {input_dict['name']}")
-            self.optimizer.zero_grad()
-            self._gradient_accumulation_counter = 0
         # Perform optimizer step only when enough gradients have accumulated
-        elif self._gradient_accumulation_counter >= self.cfg.gradient_accumulation_steps:
+        if self._gradient_accumulation_counter >= self.cfg.gradient_accumulation_steps:
             if self.cfg.enable_amp:
+                # Unscale gradients FIRST so inf/nan checks are on true gradient magnitudes
                 self.scaler.unscale_(self.optimizer)
+
+                # Check for NaN/Inf gradients on unscaled gradients
+                nan_grad_params = []
+                for name, param in self.model.named_parameters():
+                    if param.grad is not None:
+                        if not torch.isfinite(param.grad).all():
+                            grad = param.grad
+                            nan_count = torch.isnan(grad).sum().item()
+                            inf_count = torch.isinf(grad).sum().item()
+                            grad_finite = grad[torch.isfinite(grad)]
+                            nan_grad_params.append(name)
+                            self.logger.error(
+                                f"NaN/Inf gradient in '{name}': "
+                                f"shape={list(grad.shape)}, "
+                                f"nan={nan_count}, inf={inf_count}, "
+                                f"finite_abs_max={grad_finite.abs().max().item() if grad_finite.numel() > 0 else 'N/A'}"
+                            )
+                if nan_grad_params:
+                    self.logger.error(
+                        f"Found NaN/Inf gradients in {len(nan_grad_params)} params at "
+                        f"Epoch {self.comm_info.get('epoch', '?')}, "
+                        f"Iter {self.comm_info.get('iter', '?')}. "
+                        f"GradScaler will skip optimizer step and adjust scale."
+                    )
+                    if "name" in input_dict:
+                        self.logger.error(f"  Batch sample names: {input_dict['name']}")
+
                 if self.cfg.clip_grad is not None:
                     torch.nn.utils.clip_grad_norm_(
                         self.model.parameters(), self.cfg.clip_grad
                     )
+                # scaler.step automatically skips the optimizer step if inf/nan gradients are present
                 self.scaler.step(self.optimizer)
 
-                # When enable amp, optimizer.step call are skipped if the loss scaling factor is too large.
-                # Fix torch warning scheduler step before optimizer step.
+                # scaler.update adjusts the scale factor (reduces it on overflow, grows it on success)
                 scale = self.scaler.get_scale()
                 self.scaler.update()
                 if scale <= self.scaler.get_scale():
                     self.scheduler.step()
             else:
-                if self.cfg.clip_grad is not None:
-                    torch.nn.utils.clip_grad_norm_(
-                        self.model.parameters(), self.cfg.clip_grad
+                # Non-AMP path: check for NaN/Inf gradients
+                nan_grad_params = []
+                for name, param in self.model.named_parameters():
+                    if param.grad is not None:
+                        if not torch.isfinite(param.grad).all():
+                            grad = param.grad
+                            nan_count = torch.isnan(grad).sum().item()
+                            inf_count = torch.isinf(grad).sum().item()
+                            grad_finite = grad[torch.isfinite(grad)]
+                            nan_grad_params.append(name)
+                            self.logger.error(
+                                f"NaN/Inf gradient in '{name}': "
+                                f"shape={list(grad.shape)}, "
+                                f"nan={nan_count}, inf={inf_count}, "
+                                f"finite_abs_max={grad_finite.abs().max().item() if grad_finite.numel() > 0 else 'N/A'}"
+                            )
+                if nan_grad_params:
+                    self.logger.error(
+                        f"Found NaN/Inf gradients in {len(nan_grad_params)} params at "
+                        f"Epoch {self.comm_info.get('epoch', '?')}, "
+                        f"Iter {self.comm_info.get('iter', '?')}. "
+                        f"Skipping optimizer step to prevent weight corruption."
                     )
-                self.optimizer.step()
-                self.scheduler.step()
+                    if "name" in input_dict:
+                        self.logger.error(f"  Batch sample names: {input_dict['name']}")
+                    self.optimizer.zero_grad()
+                else:
+                    if self.cfg.clip_grad is not None:
+                        torch.nn.utils.clip_grad_norm_(
+                            self.model.parameters(), self.cfg.clip_grad
+                        )
+                    self.optimizer.step()
+                    self.scheduler.step()
 
             # Reset grad accumulation counter
             self._gradient_accumulation_counter = 0
