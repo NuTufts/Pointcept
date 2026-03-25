@@ -551,7 +551,7 @@ class RandomJitter(object):
 
 @TRANSFORMS.register_module()
 class MultiplicativeRandomJitter(object):
-    def __init__(self, sigma=0.05, clip=0.05, keys=("energy",), p=0.5):
+    def __init__(self, sigma=0.05, clip=0.05, keys=("energy",), p=0.5, log_space=False):
         assert clip > 0
         self.sigma = sigma
         self.clip = clip
@@ -559,6 +559,7 @@ class MultiplicativeRandomJitter(object):
             keys = (keys,)
         self.keys = keys
         self.p = p
+        self.log_space = log_space
 
     def __call__(self, data_dict):
         if random.random() > self.p:
@@ -570,7 +571,12 @@ class MultiplicativeRandomJitter(object):
                     -self.clip,
                     self.clip,
                 )
-                data_dict[k] *= 1.0 + noise
+                if self.log_space:
+                    # Additive noise in log10 space equivalent to multiplicative
+                    # noise in linear space: log10(x*(1+n)) = log10(x) + log10(1+n)
+                    data_dict[k] += np.log10(1.0 + noise)
+                else:
+                    data_dict[k] *= 1.0 + noise
             else:
                 raise ValueError(f"Key {k} not found in data_dict")
         return data_dict
