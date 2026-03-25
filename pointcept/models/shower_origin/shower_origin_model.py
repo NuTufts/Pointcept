@@ -866,21 +866,24 @@ class ShowerOriginPredictorV3(nn.Module):
             predict_distance=predict_distance,
         )
 
-        # Classification head (V3): per-slot origin type (INSIDE/OUTSIDE/ON_TRACK)
+        # Classification head: create only the one that will be used to avoid
+        # unused parameters breaking DDP gradient reduction.
         self.num_origin_classes = num_origin_classes
-        self.classification_head = OriginClassificationHead(
-            dim=backbone_out_channels,
-            hidden_dim=hidden_channels,
-            num_classes=num_origin_classes,
-        )
-
-        # Reco classification head: 5 classes (adds ghost + true_track)
         self.num_reco_classes = num_reco_classes
-        self.reco_classification_head = OriginClassificationHead(
-            dim=backbone_out_channels,
-            hidden_dim=hidden_channels,
-            num_classes=num_reco_classes,
-        )
+        if self.use_reco_classes:
+            self.classification_head = None
+            self.reco_classification_head = OriginClassificationHead(
+                dim=backbone_out_channels,
+                hidden_dim=hidden_channels,
+                num_classes=num_reco_classes,
+            )
+        else:
+            self.classification_head = OriginClassificationHead(
+                dim=backbone_out_channels,
+                hidden_dim=hidden_channels,
+                num_classes=num_origin_classes,
+            )
+            self.reco_classification_head = None
 
         # Optional: custom criteria if provided
         self.criteria = build_criteria(criteria) if criteria else None

@@ -19,7 +19,8 @@ from .default import HookBase
 from .builder import HOOKS
 
 # Origin type class names (must match dataset encoding)
-ORIGIN_CLASS_NAMES = ["inside", "outside", "on_track"]
+# Types 0-2 are truth-based, types 3-4 are reco-specific
+ORIGIN_CLASS_NAMES = ["inside", "outside", "on_track", "ghost", "true_track"]
 
 
 @HOOKS.register_module()
@@ -135,33 +136,9 @@ class ShowerOriginEvaluator(HookBase):
                 coords = coords_list[j]
                 origin_coord = origin_coords[j]
 
-                # --- Recompute GT Gaussian at output resolution ---
-                gt_dist = torch.norm(
-                    coords - origin_coord.unsqueeze(0), dim=-1
-                )
-                gt_scores = torch.exp(
-                    -0.5 * (gt_dist / gaussian_sigma) ** 2
-                )
-
-                # --- Score metrics (threshold both sides) ---
-                gt_pos = gt_scores > self.score_threshold
-                gt_neg = ~gt_pos
-                pred_pos = pred_scores > self.score_threshold
-                pred_neg = ~pred_pos
-
-                tp = (pred_pos & gt_pos).sum().item()
-                fp = (pred_pos & gt_neg).sum().item()
-                tn = (pred_neg & gt_neg).sum().item()
-                fn = (pred_neg & gt_pos).sum().item()
-
-                # --- Peak localization ---
-                peak_idx = pred_scores.argmax()
-                peak_coord = coords[peak_idx]
-                peak_distance = torch.norm(peak_coord - origin_coord).item()
-
-                # --- Classification ---
-                pred_cls = cls_out[j]
+                # Determine origin type for this sample
                 gt_cls = None
+                gt_cls_val = -1
                 if origin_type_raw is not None:
                     if origin_type_raw.dim() == 0:
                         gt_cls = origin_type_raw
@@ -169,11 +146,47 @@ class ShowerOriginEvaluator(HookBase):
                         gt_cls = origin_type_raw[0]
                     else:
                         gt_cls = origin_type_raw[j]
+                    gt_cls_val = gt_cls.long().item()
 
+                # --- Score and peak metrics ---
+                # Skip for ghost (3) and true_track (4) — origin_coord is
+                # placeholder zeros, so Gaussian target is meaningless.
+                # Also skip for unknown (-1).
+                has_valid_origin = (0 <= gt_cls_val < 3)
+
+                tp = fp = tn = fn = 0
+                peak_distance = None
+                if has_valid_origin:
+                    # Recompute GT Gaussian at output resolution
+                    gt_dist = torch.norm(
+                        coords - origin_coord.unsqueeze(0), dim=-1
+                    )
+                    gt_scores = torch.exp(
+                        -0.5 * (gt_dist / gaussian_sigma) ** 2
+                    )
+
+                    gt_pos = gt_scores > self.score_threshold
+                    gt_neg = ~gt_pos
+                    pred_pos = pred_scores > self.score_threshold
+                    pred_neg = ~pred_pos
+
+                    tp = (pred_pos & gt_pos).sum().item()
+                    fp = (pred_pos & gt_neg).sum().item()
+                    tn = (pred_neg & gt_neg).sum().item()
+                    fn = (pred_neg & gt_pos).sum().item()
+
+                    # Peak localization
+                    peak_idx = pred_scores.argmax()
+                    peak_coord = coords[peak_idx]
+                    peak_distance = torch.norm(
+                        peak_coord - origin_coord
+                    ).item()
+
+                # --- Classification ---
                 cls_correct = 0
                 cls_total = 0
-                if gt_cls is not None:
-                    gt_cls_val = gt_cls.long().item()
+                if gt_cls_val >= 0:
+                    pred_cls = cls_out[j]
                     pred_cls_val = (
                         pred_cls.item() if pred_cls.dim() == 0
                         else pred_cls[0].item()
@@ -193,11 +206,12 @@ class ShowerOriginEvaluator(HookBase):
                 # Accumulate
                 if j == 0:
                     self.trainer.storage.put_scalar("val_loss", loss.item())
-                self.trainer.storage.put_scalar("val_tp", tp)
-                self.trainer.storage.put_scalar("val_fp", fp)
-                self.trainer.storage.put_scalar("val_tn", tn)
-                self.trainer.storage.put_scalar("val_fn", fn)
-                all_peak_distances.append(peak_distance)
+                if has_valid_origin:
+                    self.trainer.storage.put_scalar("val_tp", tp)
+                    self.trainer.storage.put_scalar("val_fp", fp)
+                    self.trainer.storage.put_scalar("val_tn", tn)
+                    self.trainer.storage.put_scalar("val_fn", fn)
+                    all_peak_distances.append(peak_distance)
                 self.trainer.storage.put_scalar("val_cls_correct", cls_correct)
                 self.trainer.storage.put_scalar("val_cls_total", cls_total)
 
