@@ -63,7 +63,7 @@ amp_dtype = "bfloat16" # use this for default 'flash_attn' backend
 
 enable_wandb = True
 wandb_project = "pointcept"
-save_path = "sonata/lartpc_v6_h200_noghosts_pretrain"
+save_path = "sonata/lartpc_v6_h200_noghosts_pretrain_logspace_restart"
 
 TRAIN_FILE_LIST="/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept/lartpc_data_prep/hdflist_combined_prod4_validated_shuffled_trainsplit.txt"
 VAL_FILE_LIST="/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept/lartpc_data_prep/hdflist_combined_prod4_validated_shuffled_valsplit.txt"

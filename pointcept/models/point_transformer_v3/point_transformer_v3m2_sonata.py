@@ -6,6 +6,7 @@ Please cite our work if the code is helpful to you.
 """
 
 from addict import Dict
+import math
 import torch
 import torch.nn as nn
 from torch.nn.init import trunc_normal_
@@ -84,12 +85,19 @@ class SerializedAttention(PointModule):
         upcast_attention=True,
         upcast_softmax=True,
         flash_backend="flash_attn",  # Options: "flash_attn", "xformers", or None
+        mup_enabled=False,
     ):
         super().__init__()
         assert channels % num_heads == 0
         self.channels = channels
         self.num_heads = num_heads
-        self.scale = qk_scale or (channels // num_heads) ** -0.5
+        head_dim = channels // num_heads
+        if mup_enabled:
+            # muP: use 1/d_head instead of 1/sqrt(d_head) to keep attention
+            # logits O(1) regardless of width
+            self.scale = 1.0 / head_dim
+        else:
+            self.scale = qk_scale or head_dim ** -0.5
         self.order_index = order_index
         self.upcast_attention = upcast_attention
         self.upcast_softmax = upcast_softmax
@@ -347,6 +355,7 @@ class Block(PointModule):
         upcast_attention=True,
         upcast_softmax=True,
         flash_backend="flash_attn",  # Options: "flash_attn", "xformers", or None
+        mup_enabled=False,
     ):
         super().__init__()
         self.channels = channels
@@ -384,6 +393,7 @@ class Block(PointModule):
             upcast_attention=upcast_attention,
             upcast_softmax=upcast_softmax,
             flash_backend=flash_backend,
+            mup_enabled=mup_enabled,
         )
         self.norm2 = PointSequential(norm_layer(channels))
         self.ls2 = PointSequential(
@@ -637,6 +647,8 @@ class PointTransformerV3(PointModule):
         enc_mode=False,
         freeze_encoder=False,
         flash_backend="flash_attn",  # Options: "flash_attn", "xformers", or None
+        mup_enabled=False,
+        mup_base_width=None,
     ):
         super().__init__()
         self.num_stages = len(enc_depths)
@@ -644,6 +656,8 @@ class PointTransformerV3(PointModule):
         self.shuffle_orders = shuffle_orders
         self.enc_mode = enc_mode
         self.freeze_encoder = freeze_encoder
+        self.mup_enabled = mup_enabled
+        self.mup_base_width = mup_base_width
 
         assert self.num_stages == len(stride) + 1
         assert self.num_stages == len(enc_depths)
@@ -712,6 +726,7 @@ class PointTransformerV3(PointModule):
                         upcast_attention=upcast_attention,
                         upcast_softmax=upcast_softmax,
                         flash_backend=flash_backend,
+                        mup_enabled=mup_enabled,
                     ),
                     name=f"block{i}",
                 )
@@ -765,6 +780,7 @@ class PointTransformerV3(PointModule):
                             upcast_attention=upcast_attention,
                             upcast_softmax=upcast_softmax,
                             flash_backend=flash_backend,
+                            mup_enabled=mup_enabled,
                         ),
                         name=f"block{i}",
                     )
@@ -774,18 +790,35 @@ class PointTransformerV3(PointModule):
                 p.requires_grad = False
             for p in self.enc.parameters():
                 p.requires_grad = False
-        self.apply(self._init_weights)
+        self.apply(self._make_init_weights(mup_enabled))
 
     @staticmethod
-    def _init_weights(module):
-        if isinstance(module, nn.Linear):
-            trunc_normal_(module.weight, std=0.02)
-            if module.bias is not None:
-                nn.init.zeros_(module.bias)
-        elif isinstance(module, spconv.SubMConv3d):
-            trunc_normal_(module.weight, std=0.02)
-            if module.bias is not None:
-                nn.init.zeros_(module.bias)
+    def _make_init_weights(mup_enabled=False):
+        """Return an init_weights function, optionally with muP fan-in scaling."""
+        def _init_weights(module):
+            if isinstance(module, nn.Linear):
+                if mup_enabled:
+                    fan_in = module.in_features
+                    std = 1.0 / math.sqrt(fan_in)
+                else:
+                    std = 0.02
+                trunc_normal_(module.weight, std=std)
+                if module.bias is not None:
+                    nn.init.zeros_(module.bias)
+            elif isinstance(module, spconv.SubMConv3d):
+                if mup_enabled:
+                    # fan_in = kernel_volume * in_channels
+                    # spconv weight shape: (kernel_volume, in_channels, out_channels)
+                    # or (out_channels, kernel_volume, in_channels) depending on version
+                    w = module.weight
+                    fan_in = w.numel() // w.shape[0] if w.dim() >= 2 else w.numel()
+                    std = 1.0 / math.sqrt(fan_in)
+                else:
+                    std = 0.02
+                trunc_normal_(module.weight, std=std)
+                if module.bias is not None:
+                    nn.init.zeros_(module.bias)
+        return _init_weights
 
     def forward(self, data_dict):
         point = Point(data_dict)

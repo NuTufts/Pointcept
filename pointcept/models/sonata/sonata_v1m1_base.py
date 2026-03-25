@@ -8,6 +8,7 @@ Please cite our work if the code is helpful to you.
 from itertools import chain
 from packaging import version
 from functools import partial
+import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -31,14 +32,16 @@ class OnlineCluster(nn.Module):
         hidden_channels=4096,
         embed_channels=512,
         num_prototypes=4096,
+        mup_enabled=False,
     ):
         super().__init__()
+        self.mup_enabled = mup_enabled
         self.mlp = nn.Sequential(
             nn.Linear(in_channels, hidden_channels),
             nn.GELU(),
             nn.Linear(hidden_channels, embed_channels),
         )
-        self.apply(self._init_weights)
+        self.apply(self._make_init_weights(mup_enabled))
         if version.parse(torch.__version__) >= version.parse("2.1.0"):
             self.prototype = torch.nn.utils.parametrizations.weight_norm(
                 nn.Linear(embed_channels, num_prototypes, bias=False)
@@ -53,12 +56,28 @@ class OnlineCluster(nn.Module):
             self.prototype.weight_g.data.fill_(1)
             self.prototype.weight_g.requires_grad = False
 
+        # muP: initialize prototype direction vector smaller (output/readout layer)
+        if mup_enabled:
+            with torch.no_grad():
+                if version.parse(torch.__version__) >= version.parse("2.1.0"):
+                    nn.init.zeros_(self.prototype.parametrizations.weight.original1)
+                else:
+                    nn.init.zeros_(self.prototype.weight_v)
+
     @staticmethod
-    def _init_weights(m):
-        if isinstance(m, nn.Linear):
-            trunc_normal_(m.weight, std=0.02)
-            if isinstance(m, nn.Linear) and m.bias is not None:
-                nn.init.constant_(m.bias, 0)
+    def _make_init_weights(mup_enabled=False):
+        """Return an init function, optionally with muP fan-in scaling."""
+        def _init_weights(m):
+            if isinstance(m, nn.Linear):
+                if mup_enabled:
+                    fan_in = m.in_features
+                    std = 1.0 / math.sqrt(fan_in)
+                else:
+                    std = 0.02
+                trunc_normal_(m.weight, std=std)
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0)
+        return _init_weights
 
     def forward(self, feat):
         feat = self.mlp(feat)
@@ -99,8 +118,12 @@ class Sonata(PointModel):
         match_max_k=8,
         match_max_r=0.08,
         up_cast_level=2,
+        mup_enabled=False,
+        mup_base_width=None,
     ):
         super(Sonata, self).__init__()
+        self.mup_enabled = mup_enabled
+        self.mup_base_width = mup_base_width
         self.mask_loss_weight = mask_loss_weight
         self.roll_mask_loss_weight = roll_mask_loss_weight
         self.unmask_loss_weight = unmask_loss_weight
@@ -169,6 +192,7 @@ class Sonata(PointModel):
             hidden_channels=head_hidden_channels,
             embed_channels=head_embed_channels,
             num_prototypes=head_num_prototypes,
+            mup_enabled=mup_enabled,
         )
         if self.mask_loss_weight > 0 or self.roll_mask_loss_weight > 0:
             student_model_dict["mask_head"] = head()
