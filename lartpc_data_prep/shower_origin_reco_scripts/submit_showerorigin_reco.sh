@@ -6,8 +6,8 @@
 #SBATCH --mem-per-cpu=8000
 #SBATCH --cpus-per-task=1
 #SBATCH --time=3-00:00:00
-#SBATCH --partition=wongjiradlab
-#SBATCH --array=0
+#SBATCH --partition=batch
+#SBATCH --array=800-831
 
 WORKDIR=/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept/lartpc_data_prep/shower_origin_reco_scripts
 
