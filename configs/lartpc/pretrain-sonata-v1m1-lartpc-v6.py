@@ -276,6 +276,7 @@ transform = [
                 clip=0.05,
                 keys=("strength"),
                 p=0.8,
+                log_space=True, # original v6 pre-training model had bug where scaling of 10^(1+noise) was used.
             ),
         ],
         # Per-view augmentations
@@ -361,7 +362,7 @@ val_transform = [
     dict(
         type="LogTransform",
         min_val=0.01,
-        max_val=500.0,
+        max_val=1000.0,
         log=True,
         keys=("strength",),
     ),
