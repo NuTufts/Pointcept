@@ -35,7 +35,7 @@ empty_cache = True  # Free CUDA cache between forward/backward to reduce peak me
 enable_amp = False
 enable_wandb = True
 wandb_project = "pointcept-shower-origin"
-save_path = "shower_origin/sonata_v1m1_v3_v6backbone_pax_pi0filter"
+save_path = "shower_origin/sonata_v1m1_v3_v6backbone_pax_pi0filter_recofragments"
 clip_grad = 1.0
 
 epoch = 300
@@ -64,14 +64,9 @@ coord_scale = 1036.0 * 3**0.5 / 2.0 / 5.0  # ~179.55
 # =============================================================================
 # Data files
 # =============================================================================
-#TRAIN_FILE_LIST = "/home/twongjirad/working/larbys/gen2/container_u22/Pointcept/shower_origin_single_event_test.txt"
-#VAL_FILE_LIST = "/home/twongjirad/working/larbys/gen2/container_u22/Pointcept/shower_origin_single_event_val.txt"
+TRAIN_FILE_LIST = "/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept/lartpc_data_prep/shower_origin_reco_scripts/h5list_showeroriginreco_ncpi0filter_validated_train.txt"
+VAL_FILE_LIST = "/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept/lartpc_data_prep/shower_origin_reco_scripts/h5list_showeroriginreco_ncpi0filter_validated_val.txt"
 
-#TRAIN_FILE_LIST = "/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept/lartpc_data_prep/hdflist_showerfragment_bnb_nu_pi0filter_dev_train.txt"
-#VAL_FILE_LIST = "/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept/lartpc_data_prep/hdflist_showerfragment_bnb_nu_pi0filter_dev_val.txt"
-
-TRAIN_FILE_LIST = "/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept/lartpc_data_prep/hdflist_showerfragment_bnb_nu_pi0filter_train.txt"
-VAL_FILE_LIST   = "/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept/lartpc_data_prep/hdflist_showerfragment_bnb_nu_pi0filter_val.txt"
 
 # ============================================================================
 # Pretraining weights
@@ -159,8 +154,10 @@ model = dict(
     # Gaussian sigma for soft labels (normalized units: 4cm / 179.55 ≈ 0.022)
     gaussian_sigma=0.022,
 
-    # Origin classification: 3 classes (INSIDE, OUTSIDE, ON_TRACK)
+    # Origin classification: 3 base classes (INSIDE, OUTSIDE, ON_TRACK)
+    # + 2 reco classes (GHOST, TRUE_TRACK) = 5 total via reco head
     num_origin_classes=3,
+    use_reco_classes=True,
 
     # Freeze backbone (critical for linear probe style training)
     freeze_backbone=True,
