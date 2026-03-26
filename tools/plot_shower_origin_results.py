@@ -15,7 +15,23 @@ import matplotlib.pyplot as plt
 from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay
 
 
-CLASS_NAMES = {0: "inside", 1: "outside", 2: "on_track"}
+CLASS_NAMES_3 = {0: "inside", 1: "outside", 2: "on_track"}
+CLASS_NAMES_5 = {0: "inside", 1: "outside", 2: "cosmic_inside",
+                 3: "ghost", 4: "true_track"}
+
+# GT origin types that have no meaningful ground truth origin point.
+# Distance/score metrics are NaN for these.
+NO_GT_ORIGIN_TYPES = {-1, 3, 4}
+
+
+def detect_class_names(df):
+    """Auto-detect 3-class vs 5-class from the data."""
+    gt_types = set(df["gt_origin_type"].unique())
+    pred_types = set(df["pred_class"].unique())
+    all_types = gt_types | pred_types
+    if all_types & {3, 4}:
+        return CLASS_NAMES_5
+    return CLASS_NAMES_3
 
 
 def load_results(path):
@@ -30,23 +46,32 @@ def load_results(path):
 
 # ── Plot 1: Confusion matrix ─────────────────────────────────────────────────
 
-def plot_confusion_matrix(df, outdir):
-    labels = sorted(df["gt_origin_type"].unique())
-    display_labels = [CLASS_NAMES.get(l, str(l)) for l in labels]
+def plot_confusion_matrix(df, outdir, class_names):
+    """Confusion matrix over all classes (GT vs predicted).
 
-    cm = confusion_matrix(df["gt_origin_type"], df["pred_class"], labels=labels)
+    For reco 5-class mode, ghost/track GT types have no origin-score GT
+    but *do* have a GT class label, so they appear in the confusion matrix.
+    """
+    # Use the union of GT types and predicted classes as labels
+    all_labels = sorted(set(df["gt_origin_type"].unique()) |
+                        set(df["pred_class"].unique()))
+    display_labels = [class_names.get(l, str(l)) for l in all_labels]
 
-    fig, ax = plt.subplots(figsize=(6, 5))
+    cm = confusion_matrix(df["gt_origin_type"], df["pred_class"],
+                          labels=all_labels)
+
+    fig, ax = plt.subplots(figsize=(max(6, len(all_labels) + 2),
+                                    max(5, len(all_labels) + 1)))
     disp = ConfusionMatrixDisplay(cm, display_labels=display_labels)
     disp.plot(ax=ax, cmap="Blues", values_format="d")
     ax.set_title("Origin Type Classification")
     ax.set_xlabel("Predicted")
     ax.set_ylabel("Ground Truth")
 
-    # Add accuracy annotation
+    # Overall accuracy
     acc = (df["gt_origin_type"] == df["pred_class"]).mean()
     ax.text(
-        0.02, 0.98, f"Accuracy: {acc:.1%}",
+        0.02, 0.98, f"Overall accuracy: {acc:.1%}",
         transform=ax.transAxes, va="top", fontsize=11,
         bbox=dict(boxstyle="round", facecolor="white", alpha=0.8),
     )
@@ -59,22 +84,37 @@ def plot_confusion_matrix(df, outdir):
 
 # ── Plot 2: Peak-to-GT distance histograms per class ─────────────────────────
 
-def plot_distance_histograms(df, outdir, coord_scale=179.44046366413568):
-    classes = sorted(df["gt_origin_type"].unique())
-    n = len(classes)
+def plot_distance_histograms(df, outdir, class_names,
+                             coord_scale=179.44046366413568):
+    """Distance histograms only for classes with a meaningful GT origin.
 
+    Ghost (3), true_track (4), and unknown (-1) are skipped since their
+    peak_gt_dist values are NaN.
+    """
+    # Filter to classes that have GT origin
+    classes = sorted(c for c in df["gt_origin_type"].unique()
+                     if c not in NO_GT_ORIGIN_TYPES)
+    if not classes:
+        print("  distance_by_class.png  SKIPPED (no classes with GT origin)")
+        return
+
+    n = len(classes)
     fig, axes = plt.subplots(1, n, figsize=(5 * n, 4))
     if n == 1:
         axes = [axes]
 
     for ax, cls in zip(axes, classes):
         subset = df[df["gt_origin_type"] == cls]
-        dists = subset["peak_gt_dist"] * coord_scale
-        name = CLASS_NAMES.get(cls, str(cls))
+        dists = subset["peak_gt_dist"].dropna() * coord_scale
+        name = class_names.get(cls, str(cls))
+
+        if len(dists) == 0:
+            ax.set_title(f"{name} (n=0)")
+            continue
 
         ax.hist(dists, bins=50, range=(0, dists.quantile(0.98)), alpha=0.8,
                 edgecolor="black", linewidth=0.5)
-        ax.set_title(f"{name} (n={len(subset)})")
+        ax.set_title(f"{name} (n={len(dists)})")
         ax.set_xlabel("Peak-to-GT distance (cm)")
         ax.axvline(dists.median(), color="red", linestyle="--", linewidth=1.5,
                    label=f"median={dists.median():.1f} cm")
@@ -90,10 +130,18 @@ def plot_distance_histograms(df, outdir, coord_scale=179.44046366413568):
 
 # ── Plot 3: Max score histograms (predicted peak vs GT nearest) per class ────
 
-def plot_score_histograms(df, outdir):
-    classes = sorted(df["gt_origin_type"].unique())
-    n = len(classes)
+def plot_score_histograms(df, outdir, class_names):
+    """Score histograms only for classes with a meaningful GT origin.
 
+    Ghost/track/unknown types are skipped since gt_nearest_score is NaN.
+    """
+    classes = sorted(c for c in df["gt_origin_type"].unique()
+                     if c not in NO_GT_ORIGIN_TYPES)
+    if not classes:
+        print("  scores_by_class.png  SKIPPED (no classes with GT origin)")
+        return
+
+    n = len(classes)
     fig, axes = plt.subplots(1, n, figsize=(5 * n, 4))
     if n == 1:
         axes = [axes]
@@ -102,11 +150,11 @@ def plot_score_histograms(df, outdir):
 
     for ax, cls in zip(axes, classes):
         subset = df[df["gt_origin_type"] == cls]
-        name = CLASS_NAMES.get(cls, str(cls))
+        name = class_names.get(cls, str(cls))
 
-        ax.hist(subset["pred_peak_score"], bins=bins, alpha=0.6,
+        ax.hist(subset["pred_peak_score"].dropna(), bins=bins, alpha=0.6,
                 label="pred peak score", edgecolor="black", linewidth=0.3)
-        ax.hist(subset["gt_nearest_score"], bins=bins, alpha=0.6,
+        ax.hist(subset["gt_nearest_score"].dropna(), bins=bins, alpha=0.6,
                 label="GT nearest score", edgecolor="black", linewidth=0.3)
         ax.set_title(f"{name} (n={len(subset)})")
         ax.set_xlabel("Score")
@@ -136,13 +184,17 @@ def main():
     os.makedirs(args.outdir, exist_ok=True)
 
     df = load_results(args.input)
+    class_names = detect_class_names(df)
+    is_reco = class_names is CLASS_NAMES_5
+
     print(f"Loaded {len(df)} fragments from {args.input}")
-    print(f"  Classes: { {int(k): v for k, v in df['gt_origin_type'].value_counts().items()} }")
+    print(f"  Mode: {'reco 5-class' if is_reco else 'standard 3-class'}")
+    print(f"  GT type counts: { {class_names.get(int(k), int(k)): v for k, v in df['gt_origin_type'].value_counts().items()} }")
     print()
 
-    plot_confusion_matrix(df, args.outdir)
-    plot_distance_histograms(df, args.outdir)
-    plot_score_histograms(df, args.outdir)
+    plot_confusion_matrix(df, args.outdir, class_names)
+    plot_distance_histograms(df, args.outdir, class_names)
+    plot_score_histograms(df, args.outdir, class_names)
 
     print(f"\nAll plots saved to {args.outdir}/")
 
