@@ -808,10 +808,15 @@ class PointTransformerV3(PointModule):
             elif isinstance(module, spconv.SubMConv3d):
                 if mup_enabled:
                     # fan_in = kernel_volume * in_channels
-                    # spconv weight shape: (kernel_volume, in_channels, out_channels)
-                    # or (out_channels, kernel_volume, in_channels) depending on version
-                    w = module.weight
-                    fan_in = w.numel() // w.shape[0] if w.dim() >= 2 else w.numel()
+                    # spconv SubMConv3d has in_channels and kernel_size attributes
+                    ks = module.kernel_size
+                    if isinstance(ks, (list, tuple)):
+                        kernel_vol = 1
+                        for k in ks:
+                            kernel_vol *= k
+                    else:
+                        kernel_vol = ks ** 3  # assume cubic kernel
+                    fan_in = kernel_vol * module.in_channels
                     std = 1.0 / math.sqrt(fan_in)
                 else:
                     std = 0.02

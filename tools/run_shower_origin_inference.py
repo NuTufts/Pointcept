@@ -4,9 +4,14 @@ Batch shower origin inference script.
 Runs inference on all shower fragments across an entire dataset and saves
 per-fragment results to an HDF5 file for downstream analysis with pandas.
 
+Supports both the original 3-class model (INSIDE, OUTSIDE, ON_TRACK) and
+the reco 5-class model (INSIDE, OUTSIDE, COSMIC_INSIDE, GHOST, TRUE_TRACK).
+For reco classes, ghost (type=3) and true_track (type=4) fragments have no
+meaningful ground truth origin, so GT-based distance metrics are set to NaN.
+
 Usage:
     python tools/run_shower_origin_inference.py \
-        -c configs/lartpc/shower-origin-sonata-v1m1-v3.py \
+        -c configs/lartpc/shower-origin-sonata-v1m1-v3-reco-fragments-p1cmp075.py \
         --checkpoint path/to/model.pth \
         --data-list filelist.txt \
         --output results.h5 \
@@ -216,12 +221,22 @@ def run_event_inference(dataset, event_idx, transform, model, device):
 # ── Per-fragment scalar extraction ────────────────────────────────────────────
 
 def extract_row(result, event_idx, event_file, frag_idx, coord_center, coord_scale):
-    """Extract a flat dict of scalars from one fragment result."""
+    """Extract a flat dict of scalars from one fragment result.
+
+    For ghost (gt_origin_type=3) and true_track (gt_origin_type=4) fragments,
+    the ground truth origin point is a placeholder (zeros) and has no physical
+    meaning. GT-based distance metrics are set to NaN for these fragments.
+    """
     origin = np.array(result["origin_coord"], dtype=np.float32)
     start = np.array(result["start_coord"], dtype=np.float32)
     pred_coords = result["pred_coords"]
     pred_scores = result["pred_scores"]
     logits = result["pred_class_logits"]
+    gt_origin_type = int(result["origin_type"])
+
+    # Ghost (3) and true_track (4) fragments have no meaningful GT origin.
+    # Also treat type=-1 (unknown/reco-only data) the same way.
+    has_gt_origin = gt_origin_type not in (-1, 3, 4)
 
     # Softmax for class probabilities
     probs = np.exp(logits - logits.max())
@@ -232,21 +247,27 @@ def extract_row(result, event_idx, event_file, frag_idx, coord_center, coord_sca
     peak_coord = pred_coords[peak_idx]
     peak_score = float(pred_scores[peak_idx])
 
-    # Normalize GT origin to model coordinate frame for distance computation
-    if coord_center is not None and coord_scale is not None:
-        center = np.array(coord_center, dtype=np.float32)
-        gt_norm = (origin - center) / coord_scale
+    if has_gt_origin:
+        # Normalize GT origin to model coordinate frame for distance computation
+        if coord_center is not None and coord_scale is not None:
+            center = np.array(coord_center, dtype=np.float32)
+            gt_norm = (origin - center) / coord_scale
+        else:
+            gt_norm = origin
+
+        # GT nearest score: find spacepoint closest to GT origin in normalized coords
+        dists = np.linalg.norm(pred_coords - gt_norm[np.newaxis, :], axis=1)
+        nearest_idx = int(np.argmin(dists))
+        gt_nearest_score = float(pred_scores[nearest_idx])
+        gt_nearest_dist = float(dists[nearest_idx])
+
+        # Peak to GT distance (in normalized coords)
+        peak_gt_dist = float(np.linalg.norm(peak_coord - gt_norm))
     else:
-        gt_norm = origin
-
-    # GT nearest score: find spacepoint closest to GT origin in normalized coords
-    dists = np.linalg.norm(pred_coords - gt_norm[np.newaxis, :], axis=1)
-    nearest_idx = int(np.argmin(dists))
-    gt_nearest_score = float(pred_scores[nearest_idx])
-    gt_nearest_dist = float(dists[nearest_idx])
-
-    # Peak to GT distance (in normalized coords)
-    peak_gt_dist = float(np.linalg.norm(peak_coord - gt_norm))
+        # No meaningful GT origin — distance metrics are undefined
+        gt_nearest_score = float("nan")
+        gt_nearest_dist = float("nan")
+        peak_gt_dist = float("nan")
 
     # Shower point count (raw, before transforms)
     shower_mask = result["shower_mask"]
@@ -266,7 +287,7 @@ def extract_row(result, event_idx, event_file, frag_idx, coord_center, coord_sca
         "gt_start_x": float(start[0]),
         "gt_start_y": float(start[1]),
         "gt_start_z": float(start[2]),
-        "gt_origin_type": int(result["origin_type"]),
+        "gt_origin_type": gt_origin_type,
         "n_shower_points": n_shower_points,
         # Model predictions
         "pred_peak_x": float(peak_coord[0]),
@@ -320,6 +341,20 @@ def save_results_h5(rows, output_path):
 def main():
     args = parse_args()
     cfg = Config.fromfile(args.config)
+
+    # Detect reco classes from model config
+    use_reco_classes = cfg.model.get("use_reco_classes", False)
+    if use_reco_classes:
+        CLASS_NAMES = {0: "INSIDE", 1: "OUTSIDE", 2: "COSMIC_INSIDE",
+                       3: "GHOST", 4: "TRUE_TRACK"}
+        # Types with no meaningful GT origin point
+        NO_GT_ORIGIN_TYPES = {-1, 3, 4}
+    else:
+        CLASS_NAMES = {0: "INSIDE", 1: "OUTSIDE", 2: "ON_TRACK"}
+        NO_GT_ORIGIN_TYPES = {-1}
+    num_classes = len(CLASS_NAMES)
+    print(f"Classification mode: {'reco 5-class' if use_reco_classes else 'standard 3-class'}")
+    print(f"  Classes: {CLASS_NAMES}")
 
     # Device
     if args.device:
@@ -389,6 +424,46 @@ def main():
 
     print(f"\nProcessed {n_entries} events: "
           f"{n_fragments_total} fragments, {n_errors} errors")
+
+    # Print summary breakdown by GT class and prediction accuracy
+    if rows:
+        from collections import Counter
+        gt_counts = Counter(r["gt_origin_type"] for r in rows)
+        pred_counts = Counter(r["pred_class"] for r in rows)
+
+        print("\n--- GT origin type distribution ---")
+        for t in sorted(gt_counts.keys()):
+            name = CLASS_NAMES.get(t, f"UNKNOWN({t})")
+            print(f"  {name} (type={t}): {gt_counts[t]}")
+
+        print("\n--- Predicted class distribution ---")
+        for t in sorted(pred_counts.keys()):
+            name = CLASS_NAMES.get(t, f"UNKNOWN({t})")
+            print(f"  {name} (class={t}): {pred_counts[t]}")
+
+        # Classification accuracy per GT type (skip types with no GT)
+        print("\n--- Classification accuracy by GT type ---")
+        for t in sorted(gt_counts.keys()):
+            if t in NO_GT_ORIGIN_TYPES:
+                name = CLASS_NAMES.get(t, f"UNKNOWN({t})")
+                print(f"  {name} (type={t}): N/A (no GT origin)")
+                continue
+            matching = [r for r in rows if r["gt_origin_type"] == t]
+            correct = sum(1 for r in matching if r["pred_class"] == t)
+            name = CLASS_NAMES.get(t, f"UNKNOWN({t})")
+            acc = correct / len(matching) * 100 if matching else 0
+            print(f"  {name} (type={t}): {correct}/{len(matching)} = {acc:.1f}%")
+
+        # Origin score accuracy (only for types with GT origin)
+        has_gt = [r for r in rows if r["gt_origin_type"] not in NO_GT_ORIGIN_TYPES]
+        if has_gt:
+            dists = [r["peak_gt_dist"] for r in has_gt if not np.isnan(r["peak_gt_dist"])]
+            if dists:
+                print(f"\n--- Origin prediction (types with GT, n={len(dists)}) ---")
+                print(f"  Mean peak-to-GT dist: {np.mean(dists):.4f} (normalized)")
+                print(f"  Median peak-to-GT dist: {np.median(dists):.4f}")
+                within_5cm = sum(1 for d in dists if d < 5.0 / 179.55)
+                print(f"  Within 5 cm: {within_5cm}/{len(dists)} = {within_5cm/len(dists)*100:.1f}%")
 
     # Save
     save_results_h5(rows, args.output)

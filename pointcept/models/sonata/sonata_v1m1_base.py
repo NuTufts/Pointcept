@@ -56,13 +56,16 @@ class OnlineCluster(nn.Module):
             self.prototype.weight_g.data.fill_(1)
             self.prototype.weight_g.requires_grad = False
 
-        # muP: initialize prototype direction vector smaller (output/readout layer)
+        # muP: initialize prototype direction vector small (output/readout layer)
+        # Note: cannot use zeros because weight_norm computes v/||v||, which is NaN when v=0.
+        # Instead use a small std proportional to 1/fan_in (muP output scaling).
         if mup_enabled:
             with torch.no_grad():
+                small_std = 1.0 / (embed_channels * num_prototypes)
                 if version.parse(torch.__version__) >= version.parse("2.1.0"):
-                    nn.init.zeros_(self.prototype.parametrizations.weight.original1)
+                    trunc_normal_(self.prototype.parametrizations.weight.original1, std=small_std)
                 else:
-                    nn.init.zeros_(self.prototype.weight_v)
+                    trunc_normal_(self.prototype.weight_v, std=small_std)
 
     @staticmethod
     def _make_init_weights(mup_enabled=False):

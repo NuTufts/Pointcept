@@ -122,7 +122,7 @@ model = dict(
     # backbone - student & teacher
     backbone=dict(
         type="PT-v3m2",  # Must use v3m2 for SONATA (supports mask_token)
-        in_channels=6,  # strength only (3: pixel values from u,v,y planes) - no wire coords to avoid geometric trap
+        in_channels=6,  # strength only (3: pixel values from u,v,y planes) - in v6, we add point coordinates to increase info
         order=("z", "z-trans","hilbert", "hilbert-trans"),
         stride=(2, 2, 2, 2),
         enc_depths=(3, 3, 3, 9, 3), # voxel size at each encoder layer: (0.25, 0.5, 1.0, 2.0, 4.0);
