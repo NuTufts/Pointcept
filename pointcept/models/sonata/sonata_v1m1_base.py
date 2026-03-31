@@ -466,12 +466,12 @@ class Sonata(PointModel):
                         self.teacher_temp,
                     )
 
-                # loss
+                # loss (clamp log_softmax to prevent -inf from log(0))
                 mask_loss = -torch.sum(
                     mask_target_sim
                     * F.log_softmax(
                         mask_pred_sim[match_index[:, 0]] / self.student_temp, dim=-1
-                    ),
+                    ).clamp(min=-100),
                     dim=-1,
                 )
                 mask_loss = torch_scatter.segment_coo(
@@ -502,7 +502,7 @@ class Sonata(PointModel):
                     roll_mask_target_sim
                     * F.log_softmax(
                         mask_pred_sim[match_index[:, 0]] / self.student_temp, dim=-1
-                    ),
+                    ).clamp(min=-100),
                     dim=-1,
                 )
                 roll_mask_loss = torch_scatter.segment_coo(
@@ -541,7 +541,7 @@ class Sonata(PointModel):
                 unmask_target_sim
                 * F.log_softmax(
                     unmask_pred_sim[match_index[:, 0]] / self.student_temp, dim=-1
-                ),
+                ).clamp(min=-100),
                 dim=-1,
             )
             unmask_loss = torch_scatter.segment_coo(

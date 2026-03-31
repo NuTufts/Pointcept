@@ -206,12 +206,13 @@ class Trainer(TrainerBase):
                 output_dict["loss"] / self.cfg.gradient_accumulation_steps
             )  # scale loss
 
-        # NaN/Inf detection: log batch info when loss goes bad
+        # NaN/Inf detection: log batch info and skip batch when loss goes bad
         if not torch.isfinite(loss):
             self.logger.error(
                 f"NaN/Inf loss detected! "
                 f"Epoch {self.comm_info.get('epoch', '?')}, "
-                f"Iter {self.comm_info.get('iter', '?')}"
+                f"Iter {self.comm_info.get('iter', '?')}. "
+                f"Skipping this batch to prevent crash."
             )
             # Log sample names if available
             if "name" in input_dict:
@@ -238,9 +239,16 @@ class Trainer(TrainerBase):
                             f"  Output '{key}': shape={val.shape}, "
                             f"has_nan={has_nan}, has_inf={has_inf}"
                         )
+            # Skip this batch entirely: clear accumulated grads and reset counter
+            self.optimizer.zero_grad()
+            self._gradient_accumulation_counter = 0
+            if self.cfg.empty_cache:
+                torch.cuda.empty_cache()
+            self.comm_info["model_output_dict"] = output_dict
+            return
 
         # Backward pass
-        if self.cfg.enable_amp:
+        if self.cfg.enable_amp and self.scaler is not None:
             self.scaler.scale(loss).backward()
         else:
             loss.backward()
@@ -248,7 +256,7 @@ class Trainer(TrainerBase):
 
         # Perform optimizer step only when enough gradients have accumulated
         if self._gradient_accumulation_counter >= self.cfg.gradient_accumulation_steps:
-            if self.cfg.enable_amp:
+            if self.cfg.enable_amp and self.scaler is not None:
                 # Unscale gradients FIRST so inf/nan checks are on true gradient magnitudes
                 self.scaler.unscale_(self.optimizer)
 
@@ -291,7 +299,8 @@ class Trainer(TrainerBase):
                 if scale <= self.scaler.get_scale():
                     self.scheduler.step()
             else:
-                # Non-AMP path: check for NaN/Inf gradients
+                # AMP without GradScaler (bfloat16) or non-AMP path:
+                # check for NaN/Inf gradients manually
                 nan_grad_params = []
                 for name, param in self.model.named_parameters():
                     if param.grad is not None:
@@ -434,13 +443,18 @@ class Trainer(TrainerBase):
         return build_scheduler(self.cfg.scheduler, self.optimizer)
 
     def build_scaler(self):
-        if version.parse(torch.__version__) >= version.parse("2.4"):
-            grad_scaler = partial(torch.amp.GradScaler, device="cuda")
-        else:
-            # deprecated warning
-            grad_scaler = torch.cuda.amp.GradScaler
-        scaler = grad_scaler() if self.cfg.enable_amp else None
-        return scaler
+        # GradScaler is only needed for float16 AMP. bfloat16 has the same
+        # exponent range as float32, so loss scaling is unnecessary and can
+        # cause a "death spiral" where repeated overflow events erode the
+        # scale factor until gradients underflow and training produces NaN.
+        amp_dtype = getattr(self.cfg, "amp_dtype", "float16")
+        if self.cfg.enable_amp and amp_dtype == "float16":
+            if version.parse(torch.__version__) >= version.parse("2.4"):
+                grad_scaler = partial(torch.amp.GradScaler, device="cuda")
+            else:
+                grad_scaler = torch.cuda.amp.GradScaler
+            return grad_scaler()
+        return None
 
 
 @TRAINERS.register_module("MultiDatasetTrainer")
