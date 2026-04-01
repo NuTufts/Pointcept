@@ -202,7 +202,7 @@ class CheckpointSaver(HookBase):
                     "scheduler": self.trainer.scheduler.state_dict(),
                     "scaler": (
                         self.trainer.scaler.state_dict()
-                        if self.trainer.cfg.enable_amp
+                        if self.trainer.scaler is not None
                         else None
                     ),
                     "best_metric_value": self.trainer.best_metric_value,
@@ -326,7 +326,7 @@ class CheckpointLoader(HookBase):
                     self.trainer.optimizer.load_state_dict(checkpoint["optimizer"])
                     self.trainer.scheduler.load_state_dict(checkpoint["scheduler"])
 
-                if self.trainer.cfg.enable_amp:
+                if self.trainer.scaler is not None and checkpoint.get("scaler") is not None:
                     self.trainer.scaler.load_state_dict(checkpoint["scaler"])
         else:
             self.trainer.logger.info(f"No weight found at: {self.trainer.cfg.weight}")
@@ -384,7 +384,7 @@ class SonataCheckpointLoader(HookBase):
                 self.trainer.best_metric_value = checkpoint["best_metric_value"]
                 self.trainer.optimizer.load_state_dict(checkpoint["optimizer"])
                 self.trainer.scheduler.load_state_dict(checkpoint["scheduler"])
-                if self.trainer.cfg.enable_amp:
+                if self.trainer.scaler is not None and checkpoint.get("scaler") is not None:
                     self.trainer.scaler.load_state_dict(checkpoint["scaler"])
         else:
             self.trainer.logger.info(f"No weight found at: {self.trainer.cfg.weight}")

@@ -416,7 +416,24 @@ class Block(PointModule):
 
     def forward(self, point: Point):
         shortcut = point.feat
-        point = self.cpe(point)
+        # Run CPE sparse convolution in float32 to prevent inf gradients.
+        # The SubMConv3d at fine resolution (enc0) is prone to gradient
+        # overflow in bfloat16 due to limited mantissa precision.
+        orig_dtype = point.feat.dtype
+        if orig_dtype != torch.float32:
+            point.feat = point.feat.float()
+            if "sparse_conv_feat" in point.keys():
+                point.sparse_conv_feat = point.sparse_conv_feat.replace_feature(
+                    point.feat
+                )
+        with torch.amp.autocast("cuda", enabled=False):
+            point = self.cpe(point)
+        if point.feat.dtype != orig_dtype:
+            point.feat = point.feat.to(orig_dtype)
+            if "sparse_conv_feat" in point.keys():
+                point.sparse_conv_feat = point.sparse_conv_feat.replace_feature(
+                    point.feat
+                )
         point.feat = shortcut + point.feat
         shortcut = point.feat
         if self.pre_norm:
