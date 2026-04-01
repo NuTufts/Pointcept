@@ -17,6 +17,12 @@ POINTCEPT_CONTAINER=/cluster/tufts/wongjiradlabnu/larbys/larbys-container/pointc
 TAG=showerorigin_reco_pi0filter
 stride=10
 OFFSET=0
+
+# Step 5-7 configuration (shower origin inference + merger + ROOT output)
+SHOWER_ORIGIN_CONFIG=${POINTCEPT_DIR}/configs/lartpc/shower-origin-sonata-v1m1-v3-reco-fragments-p1cmp075.py
+SHOWER_ORIGIN_CKPT=${POINTCEPT_DIR}/shower_origin/sonata_v1m1_v3_v6backbone_pax_pi0filter_recofragments/model/model_epoch165.pth
+DEVICE=cuda  # Set to "cuda" if using GPU partition (cpu-mode does not work)
+ROOT_OUTPUT_DIR=/cluster/tufts/wongjiradlab/larbys/data/ub_on_tufts/root/shower_reco/bnb_nu_pi0filter_corsika
 # =======================================================
 
 jobid=${SLURM_ARRAY_TASK_ID}
@@ -109,11 +115,35 @@ for (( i=1; i<=stride; i++ )); do
         continue
     fi
 
-    # Copy final merged H5 files to output dir
+    # Compute output subdirectories
     let nsubdir1=$(expr "${lineno}/1000")
     zsubdir1=$(printf %03d ${nsubdir1})
     let nsubdir2=$(expr "${lineno}/100")
     zsubdir2=$(printf %03d ${nsubdir2})
+
+    # ---- STEPS 5-7: Run shower origin inference + merging + ROOT output ----
+    echo "--- STEPS 5-7: shower origin pipeline ---" >> ${local_logfile}
+    export SHOWER_ORIGIN_CONFIG SHOWER_ORIGIN_CKPT DEVICE
+    apptainer exec --bind /cluster:/cluster,/tmp:/tmp \
+        ${POINTCEPT_CONTAINER} \
+        bash -c "cd ${local_jobdir} && source ${WORKDIR}/run_step567_pointcept.sh ${local_jobdir} ${lineno} ${TAG}" \
+        >> ${local_logfile} 2>&1
+    step567_status=$?
+    echo "Steps 5-7 exit status: ${step567_status}" >> ${local_logfile}
+
+    if [ ${step567_status} -ne 0 ]; then
+        echo "Steps 5-7 FAILED for line ${lineno} (H5 output still available)" >> ${local_logfile}
+    fi
+
+    # Copy ROOT files to output dir
+    nroot=$(ls ${local_jobdir}/showerreco_*.root 2>/dev/null | wc -l)
+    if [ ${nroot} -gt 0 ]; then
+        mkdir -p ${ROOT_OUTPUT_DIR}/${zsubdir1}/${zsubdir2}/
+        cp ${local_jobdir}/showerreco_*.root ${ROOT_OUTPUT_DIR}/${zsubdir1}/${zsubdir2}/
+        echo "Copied ${nroot} ROOT file(s) to ${ROOT_OUTPUT_DIR}/${zsubdir1}/${zsubdir2}/" >> ${local_logfile}
+    fi
+
+    # Copy final merged H5 files to output dir
     outfolder=${OUTPUT_DIR}/${zsubdir1}/${zsubdir2}/
     mkdir -p ${outfolder}
 

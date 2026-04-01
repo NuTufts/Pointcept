@@ -411,6 +411,13 @@ def write_merged_h5(reco_f, output_path, match_idx, per_point_truth,
 
     with h5py.File(output_path, "w") as out:
         entry = out.create_group("entry_0")
+
+        # Propagate run/subrun/event attributes from reco H5 if present
+        reco_entry = reco_f["entry_0"]
+        for attr_name in ("run", "subrun", "event"):
+            if attr_name in reco_entry.attrs:
+                entry.attrs[attr_name] = int(reco_entry.attrs[attr_name])
+
         td = entry.create_group("triplet_data")
 
         # Copy all existing reco triplet_data datasets

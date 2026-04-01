@@ -392,7 +392,7 @@ def compute_start_point(cluster_pos):
     return cluster_pos[start_idx].copy()
 
 
-def write_event_h5(output_path, hit_data, fragments):
+def write_event_h5(output_path, hit_data, fragments, run=-1, subrun=-1, event=-1):
     """
     Write a single event to an HDF5 file in ShowerOriginDataset format.
 
@@ -406,6 +406,11 @@ def write_event_h5(output_path, hit_data, fragments):
 
     with h5py.File(output_path, 'w') as f:
         entry = f.create_group("entry_0")
+
+        # Store run/subrun/event for downstream matching
+        entry.attrs["run"] = int(run)
+        entry.attrs["subrun"] = int(subrun)
+        entry.attrs["event"] = int(event)
 
         # --- triplet_data group ---
         triplet = entry.create_group("triplet_data")
@@ -577,6 +582,11 @@ def main():
             print(f"  [{ientry}] No hits, skipping.")
             continue
 
+        # Extract run/subrun/event from larlite storage_manager
+        rse_run = io.run_id()
+        rse_subrun = io.subrun_id()
+        rse_event = io.event_id()
+
         nhits = hit_data["pos"].shape[0]
 
         # Load pixval from larcv if provided
@@ -607,7 +617,8 @@ def main():
         # Write HDF5
         outname = f"showerorigin_{base}_entry{ientry:06d}.h5"
         outpath = os.path.join(args.output_dir, outname)
-        write_event_h5(outpath, hit_data, fragments)
+        write_event_h5(outpath, hit_data, fragments,
+                       run=rse_run, subrun=rse_subrun, event=rse_event)
 
         frag_sizes = [len(f["point_indices"]) for f in fragments]
         n_shower = (hit_data["shower_score"] >= args.shower_threshold).sum()
