@@ -7,7 +7,7 @@ parser.add_argument("-i","--input-dlmerged",required=True,type=str,help="Input d
 parser.add_argument("-v","--verbosity",type=int,default=2,help="Verbosity level from normal=2 to debug=0")
 parser.add_argument("-n","--nentries",type=int,default=-1,help="Number of entries to run. (default is -1, which will run all entries in the file.)")
 parser.add_argument('-d','--is-data',default=False,action='store_true',help='if provided, set to run in data mode (no simulation information processed.)')
-parser.add_argument('-r','--reverse-tick',default=False,action='store_true',help='if flag provided, assume larcv data is stored in tick-backward format and reverse upon loading.')
+parser.add_argument('-tb','--tick-backward',default=False,action='store_true',help='if flag provided, assume larcv data is stored in tick-backward format and reverse upon loading.')
 parser.add_argument('--mcc9',default=False,action='store_true',help='if provided, set to run in mcc9 mode (use mcc9 truth information).')
 parser.add_argument('--adc',default="wiremc",type=str,help="ADC image name to use for the input images.")
 

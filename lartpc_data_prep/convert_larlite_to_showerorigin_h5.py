@@ -102,7 +102,7 @@ def parse_args():
         help="Name of the ADC wire image producer (default: 'wire')."
     )
     parser.add_argument(
-        "--tick-backward", default=False, action='store_true',
+        "-tb","--tick-backward", default=False, action='store_true',
         help="If flag provided, input file is expected to be in reverse-tick format and will be reversed upon loading."
     )
     return parser.parse_args()

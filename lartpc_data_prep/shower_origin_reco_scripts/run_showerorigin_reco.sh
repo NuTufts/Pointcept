@@ -10,19 +10,25 @@
 WORKDIR=/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept/lartpc_data_prep/shower_origin_reco_scripts
 UBDL_DIR=/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/ubdl
 POINTCEPT_DIR=/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept
-INPUTLIST=${POINTCEPT_DIR}/lartpc_data_prep/inputlists/bnb_nu_pi0filter_corsika.txt
-OUTPUT_DIR=/cluster/tufts/wongjiradlab/larbys/data/ub_on_tufts/hdf5/shower_origin_reco/bnb_nu_pi0filter_corsika
+#INPUTLIST=${POINTCEPT_DIR}/lartpc_data_prep/inputlists/bnb_nu_pi0filter_corsika.txt
+INPUTLIST=${POINTCEPT_DIR}/lartpc_data_prep/mcc9_v29e_dl_run3b_bnb_nu_overlay_nocrtremerge_devlist.txt
+OUTPUT_DIR=/cluster/tufts/wongjiradlab/larbys/data/ub_on_tufts/hdf5/shower_origin_reco/mcc9_v29e_dl_run3b_bnb_nu_overlay_test
 LANTERN_CONTAINER=/cvmfs/uboone.opensciencegrid.org/containers/lantern_v2_me_06_03_prod
 POINTCEPT_CONTAINER=/cluster/tufts/wongjiradlabnu/larbys/larbys-container/pointcept_cuml.sif
-TAG=showerorigin_reco_pi0filter
-stride=10
+ADCNAME=wire
+TBFLAG="-tb"
+TAG=showerorigin_reco_mcc9_v29e_dl_run3b_bnb_nu_overlay_test
+stride=1
 OFFSET=0
+
+# Set variable below when testing. Comment out when running on cluster.
+SLURM_ARRAY_TASK_ID=0
 
 # Step 5-7 configuration (shower origin inference + merger + ROOT output)
 SHOWER_ORIGIN_CONFIG=${POINTCEPT_DIR}/configs/lartpc/shower-origin-sonata-v1m1-v3-reco-fragments-p1cmp075.py
 SHOWER_ORIGIN_CKPT=${POINTCEPT_DIR}/shower_origin/sonata_v1m1_v3_v6backbone_pax_pi0filter_recofragments/model/model_epoch165.pth
 DEVICE=cuda  # Set to "cuda" if using GPU partition (cpu-mode does not work)
-ROOT_OUTPUT_DIR=/cluster/tufts/wongjiradlab/larbys/data/ub_on_tufts/root/shower_reco/bnb_nu_pi0filter_corsika
+ROOT_OUTPUT_DIR=/cluster/tufts/wongjiradlab/larbys/data/ub_on_tufts/root/shower_reco/mcc9_v29e_dl_run3b_bnb_nu_overlay_test
 # =======================================================
 
 jobid=${SLURM_ARRAY_TASK_ID}
@@ -80,7 +86,7 @@ for (( i=1; i<=stride; i++ )); do
     echo "--- STEP 1: lantern workflow ---" >> ${local_logfile}
     apptainer exec --bind /cluster/tufts:/cluster/tufts,/tmp:/tmp \
         ${LANTERN_CONTAINER} \
-        bash -c "cd ${local_jobdir} && source ${WORKDIR}/run_step1_lantern.sh ${local_jobdir}" \
+        bash -c "cd ${local_jobdir} && source ${WORKDIR}/run_step1_lantern.sh ${local_jobdir} ${ADCNAME} ${TBFLAG}" \
         >> ${local_logfile} 2>&1
     step1_status=$?
     echo "Step 1 exit status: ${step1_status}" >> ${local_logfile}
@@ -102,9 +108,9 @@ for (( i=1; i<=stride; i++ )); do
 
     # ---- STEPS 2-4: Run pointcept processing inside pointcept container ----
     echo "--- STEPS 2-4: pointcept processing ---" >> ${local_logfile}
-    apptainer exec --bind /cluster:/cluster,/tmp:/tmp \
+    apptainer exec --nv --bind /cluster:/cluster,/tmp:/tmp \
         ${POINTCEPT_CONTAINER} \
-        bash -c "cd ${local_jobdir} && source ${WORKDIR}/run_step234_pointcept.sh ${local_jobdir} ${lineno} ${TAG}" \
+        bash -c "cd ${local_jobdir} && source ${WORKDIR}/run_step234_pointcept.sh ${local_jobdir} ${lineno} ${TAG} ${ADCNAME}" \
         >> ${local_logfile} 2>&1
     step234_status=$?
     echo "Steps 2-4 exit status: ${step234_status}" >> ${local_logfile}
@@ -124,7 +130,7 @@ for (( i=1; i<=stride; i++ )); do
     # ---- STEPS 5-7: Run shower origin inference + merging + ROOT output ----
     echo "--- STEPS 5-7: shower origin pipeline ---" >> ${local_logfile}
     export SHOWER_ORIGIN_CONFIG SHOWER_ORIGIN_CKPT DEVICE
-    apptainer exec --bind /cluster:/cluster,/tmp:/tmp \
+    apptainer exec --nv --bind /cluster:/cluster,/tmp:/tmp \
         ${POINTCEPT_CONTAINER} \
         bash -c "cd ${local_jobdir} && source ${WORKDIR}/run_step567_pointcept.sh ${local_jobdir} ${lineno} ${TAG}" \
         >> ${local_logfile} 2>&1
