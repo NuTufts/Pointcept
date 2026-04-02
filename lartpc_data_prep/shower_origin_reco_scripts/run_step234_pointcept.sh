@@ -17,6 +17,7 @@ FILENO=$2
 FILETAG=$3
 ADCNAME=$4
 TBFLAG=$5
+MCC9FLAG=$6
 
 if [ -z "${WORKDIR_PATH}" ]; then
     echo "ERROR: workdir path not provided"
@@ -94,7 +95,7 @@ ls -lh ${RECO_DIR}/showerorigin_*.h5 2>/dev/null
 echo "----------------------------------------------"
 echo "STEP 3: process_dlmerged_to_hdf5_event_files.py"
 CMD="python3 ${SCRIPT_DIR}/process_dlmerged_to_hdf5_event_files.py \
-    -i ${DLMERGED_FILE} --adc ${ADCNAME} ${TBFLAG} --mcc9"
+    -i ${DLMERGED_FILE} --adc ${ADCNAME} ${TBFLAG} ${MCC9FLAG}"
 echo ${CMD}
 ${CMD}
 step3_status=$?

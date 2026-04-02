@@ -17,6 +17,7 @@ LANTERN_CONTAINER=/cvmfs/uboone.opensciencegrid.org/containers/lantern_v2_me_06_
 POINTCEPT_CONTAINER=/cluster/tufts/wongjiradlabnu/larbys/larbys-container/pointcept_cuml.sif
 ADCNAME=wire
 TBFLAG="-tb"
+MCC9FLAG="--mcc9"
 TAG=showerorigin_reco_mcc9_v29e_dl_run3b_bnb_nu_overlay_test
 stride=1
 OFFSET=0
@@ -110,7 +111,7 @@ for (( i=1; i<=stride; i++ )); do
     echo "--- STEPS 2-4: pointcept processing ---" >> ${local_logfile}
     apptainer exec --nv --bind /cluster:/cluster,/tmp:/tmp \
         ${POINTCEPT_CONTAINER} \
-        bash -c "cd ${local_jobdir} && source ${WORKDIR}/run_step234_pointcept.sh ${local_jobdir} ${lineno} ${TAG} ${ADCNAME}" \
+        bash -c "cd ${local_jobdir} && source ${WORKDIR}/run_step234_pointcept.sh ${local_jobdir} ${lineno} ${TAG} ${ADCNAME} ${MCC9FLAG}" \
         >> ${local_logfile} 2>&1
     step234_status=$?
     echo "Steps 2-4 exit status: ${step234_status}" >> ${local_logfile}

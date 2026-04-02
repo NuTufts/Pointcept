@@ -53,7 +53,7 @@ ioll.set_verbosity(2)
 ioll.open()
 
 tick_direction=larcv.IOManager.kTickForward
-if args.reverse_tick:
+if args.tick_backward:
   tick_direction=larcv.IOManager.kTickBackward 
 
 iolcv = larcv.IOManager( larcv.IOManager.kREAD, "larcv", tick_direction )
@@ -73,7 +73,7 @@ iolcv.specify_data_read( "image2d", "ubspurn_plane2" )
 iolcv.specify_data_read( "sparseimage", "sparseuresnetout" )
 iolcv.specify_data_read( "sparseimage", "sparsessnet" ) 
 
-if args.reverse_tick:
+if args.tick_backward:
   print("REVERSE TICK-ORDER OF LARCV DATA")
   iolcv.reverse_all_products()
 

@@ -108,7 +108,7 @@ done
 # ---- LArMatch deploy ----
 echo "----------------------------------------------"
 echo "Running LArMatch deploy"
-CMD="python3 ${LARMATCH_DIR}/deploy_larmatchme.py --config-file ${CONFIG_FILE} --supera ${baseinput} --weights ${LARMATCH_DIR}/${WEIGHT_FILE} --output ${lm_outfile} --min-score 0.5 --adc-name wire --chstatus-name wire --device-name cpu --use-skip-limit ${TBFLAG} -n 1"
+CMD="python3 ${LARMATCH_DIR}/deploy_larmatchme.py --config-file ${CONFIG_FILE} --supera ${baseinput} --weights ${LARMATCH_DIR}/${WEIGHT_FILE} --output ${lm_outfile} --min-score 0.5 --adc-name wire --chstatus-name wire --device-name cpu --use-skip-limit ${TBFLAG}"
 echo ${CMD}
 ${CMD}
 
