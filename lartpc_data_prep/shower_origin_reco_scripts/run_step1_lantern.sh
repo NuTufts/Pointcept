@@ -9,6 +9,8 @@
 #
 
 WORKDIR_PATH=$1
+ADCNAME=$2
+TBFLAG=$3
 
 if [ -z "${WORKDIR_PATH}" ]; then
     echo "ERROR: workdir path not provided"
@@ -83,7 +85,7 @@ echo "Copied local lantern scripts to workdir"
 # ---- SSNet inference (using local bug-fixed script) ----
 echo "----------------------------------------------"
 echo "Running SSNet inference"
-CMD="python3 ./inference_sparse_ssnet_uboone.py -i ${larsoftout} -w ${SSNET_DIR}/weights -o ssnet_output.root --adcname wiremc"
+CMD="python3 ./inference_sparse_ssnet_uboone.py -i ${larsoftout} -w ${SSNET_DIR}/weights -o ssnet_output.root --adcname ${ADCNAME} ${TBFLAG}"
 echo ${CMD}
 ${CMD}
 
@@ -95,8 +97,9 @@ fi
 # ---- Merge SSNet output ----
 echo "Merging SSNet output with merged_dlreco..."
 cp ${larsoftout} ${baseinput}
+chmod a+rw ${baseinput}
 rootcp ssnet_output.root:sparseimg_sparseuresnetout_tree ${baseinput}
-python3 ./recreate_ubspurn.py -i ${baseinput} -o ssnet_ubspurn_output.root --adcname wiremc
+python3 ./recreate_ubspurn.py -i ${baseinput} -o ssnet_ubspurn_output.root --adcname ${ADCNAME} ${TBFLAG}
 inputTrees=$(rootls ssnet_ubspurn_output.root)
 for tree in ${inputTrees}; do
     rootcp ssnet_ubspurn_output.root:${tree} ${baseinput}
@@ -105,7 +108,7 @@ done
 # ---- LArMatch deploy ----
 echo "----------------------------------------------"
 echo "Running LArMatch deploy"
-CMD="python3 ${LARMATCH_DIR}/deploy_larmatchme.py --config-file ${CONFIG_FILE} --supera ${baseinput} --weights ${LARMATCH_DIR}/${WEIGHT_FILE} --output ${lm_outfile} --min-score 0.5 --adc-name wire --chstatus-name wire --device-name cpu --use-skip-limit"
+CMD="python3 ${LARMATCH_DIR}/deploy_larmatchme.py --config-file ${CONFIG_FILE} --supera ${baseinput} --weights ${LARMATCH_DIR}/${WEIGHT_FILE} --output ${lm_outfile} --min-score 0.5 --adc-name wire --chstatus-name wire --device-name cpu --use-skip-limit ${TBFLAG}"
 echo ${CMD}
 ${CMD}
 

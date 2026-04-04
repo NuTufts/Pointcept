@@ -15,6 +15,9 @@
 WORKDIR_PATH=$1
 FILENO=$2
 FILETAG=$3
+ADCNAME=$4
+TBFLAG=$5
+MCC9FLAG=$6
 
 if [ -z "${WORKDIR_PATH}" ]; then
     echo "ERROR: workdir path not provided"
@@ -74,7 +77,7 @@ echo "STEP 2: convert_larlite_to_showerorigin_h5.py"
 CMD="python3 ${SCRIPT_DIR}/convert_larlite_to_showerorigin_h5.py \
     -i ${LARLITE_FILE} \
     --input-larcv ${DLMERGED_FILE} \
-    -o ${RECO_DIR}"
+    -o ${RECO_DIR} --adc ${ADCNAME} ${TBFLAG}"
 echo ${CMD}
 ${CMD}
 step2_status=$?
@@ -92,7 +95,7 @@ ls -lh ${RECO_DIR}/showerorigin_*.h5 2>/dev/null
 echo "----------------------------------------------"
 echo "STEP 3: process_dlmerged_to_hdf5_event_files.py"
 CMD="python3 ${SCRIPT_DIR}/process_dlmerged_to_hdf5_event_files.py \
-    -i ${DLMERGED_FILE}"
+    -i ${DLMERGED_FILE} --adc ${ADCNAME} ${TBFLAG} ${MCC9FLAG}"
 echo ${CMD}
 ${CMD}
 step3_status=$?

@@ -7,7 +7,9 @@ parser.add_argument("-i","--input-dlmerged",required=True,type=str,help="Input d
 parser.add_argument("-v","--verbosity",type=int,default=2,help="Verbosity level from normal=2 to debug=0")
 parser.add_argument("-n","--nentries",type=int,default=-1,help="Number of entries to run. (default is -1, which will run all entries in the file.)")
 parser.add_argument('-d','--is-data',default=False,action='store_true',help='if provided, set to run in data mode (no simulation information processed.)')
-parser.add_argument('-r','--reverse-tick',default=False,action='store_true',help='if flag provided, assume larcv data is stored in tick-backward format and reverse upon loading.')
+parser.add_argument('-tb','--tick-backward',default=False,action='store_true',help='if flag provided, assume larcv data is stored in tick-backward format and reverse upon loading.')
+parser.add_argument('--mcc9',default=False,action='store_true',help='if provided, set to run in mcc9 mode (use mcc9 truth information).')
+parser.add_argument('--adc',default="wiremc",type=str,help="ADC image name to use for the input images.")
 
 args = parser.parse_args(sys.argv[1:])
 
@@ -25,6 +27,7 @@ end_entry = args.nentries
 simchmaker = larflow.prep.SimChTripletLabelMaker()
 simchmaker.set_verbosity(args.verbosity)
 simchmaker.save_truth_tripletinfo( True )
+simchmaker.set_adc_treename( args.adc )
 if args.is_data:
   print("Running in DATA mode")
   simchmaker.set_is_data()
@@ -36,6 +39,9 @@ simchmaker._mcpixelmaker.set_driftwc_source()
 # how much do we bleed out the truth labels?
 simchmaker._mcpixelmaker.set_dwire(1)
 simchmaker._mcpixelmaker.set_drow(0)
+if args.mcc9:
+  print("RUNNING IN MCC9 MODE")
+  simchmaker.process_mcc9_sim()
 
 # set keypoint maker verbosity
 #simchmaker._mckpmaker.set_verbosity(args.verbosity)
@@ -47,7 +53,7 @@ ioll.set_verbosity(2)
 ioll.open()
 
 tick_direction=larcv.IOManager.kTickForward
-if args.reverse_tick:
+if args.tick_backward:
   tick_direction=larcv.IOManager.kTickBackward 
 
 iolcv = larcv.IOManager( larcv.IOManager.kREAD, "larcv", tick_direction )
@@ -67,7 +73,7 @@ iolcv.specify_data_read( "image2d", "ubspurn_plane2" )
 iolcv.specify_data_read( "sparseimage", "sparseuresnetout" )
 iolcv.specify_data_read( "sparseimage", "sparsessnet" ) 
 
-if args.reverse_tick:
+if args.tick_backward:
   print("REVERSE TICK-ORDER OF LARCV DATA")
   iolcv.reverse_all_products()
 
