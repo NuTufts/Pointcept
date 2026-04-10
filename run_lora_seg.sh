@@ -14,7 +14,7 @@ export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
 #WEIGHTS=/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept/sonata/lartpc_v5_h200_noghosts/model/model_last.pth
 WEIGHTS=/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept/sonata/lartpc_v6_h200_noghosts_pretrain_logspace_resume/model/model_last.pth
-#export WANDB_API_KEY="wandb_v1_JzdGdSIxN1z8lEAT8URJxXolzDo_lvZ"
+
 python3 tools/train.py \
     --config configs/lartpc/lorafinetune-sonata-v1m1-lartpc-v6-fixed.py \
     --num-gpus 4 \

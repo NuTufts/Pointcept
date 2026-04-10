@@ -19,6 +19,6 @@ module load apptainer/1.2.4-suid
 
 # run job script inside container
 apptainer exec --nv --bind /cluster:/cluster \
-    --env WANDB_API_KEY="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" \
+    --env WANDB_API_KEY="add your key here" \
     --env WANDB_MODE=offline \
     $container bash -c "cd ${WORKDIR} && source run_lora_finetune_lartpc_deghost.sh"
