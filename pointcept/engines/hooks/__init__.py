@@ -6,3 +6,4 @@ from .prototype_usage_logger import *
 from .feature_std_monitor import *
 
 from .builder import build_hooks
+from .lora_checkpoint_hook import *
