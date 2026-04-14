@@ -29,6 +29,15 @@ ROOT files from:
 
 (Input lists are in `/cluster/tufts/wongjiradlab/hmcgui01/mphys/Pointcept/lartpc_data_prep/inputlists/`)
 
+For additional simulated datasets made for Pointcept training (i.e. not official MicroBooNE production files), 
+see the folder:
+
+```
+/cluster/tufts/wongjiradlab/larbys/data/ub_on_tufts/
+```
+
+which contains dlmerged ROOT files with simch-based truth.
+
 ## Usage
 
 ```bash

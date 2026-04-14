@@ -7,7 +7,7 @@
 #SBATCH --cpus-per-task=1
 #SBATCH --time=3-00:00:00
 #SBATCH --partition=batch
-#SBATCH --array=0-0
+#SBATCH --array=200-399
 
 WORKDIR=/cluster/tufts/wongjiradlab/twongj01/mphys/Pointcept/lartpc_data_prep/extbnb_larmatch
 
