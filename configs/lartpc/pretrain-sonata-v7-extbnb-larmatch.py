@@ -23,6 +23,11 @@ Coordinates:
 v6 changes:
   - apply LogTransform to input ADC values
   - provide coordinates to features like Panda does
+
+v7 changes:
+  - use validated extbnb larmatch file list (530k files with larmatch scores)
+  - enable larmatch score filtering with random threshold drawn from [0.15, 0.75]
+    per sample, providing data augmentation via variable ghost removal
 """
 
 # =============================================================================
@@ -63,11 +68,15 @@ amp_dtype = "bfloat16" # use this for default 'flash_attn' backend
 
 enable_wandb = True
 wandb_project = "pointcept"
-save_path = "sonata/lartpc_v6_h200_extbnb_run1"
+save_path = "sonata/lartpc_v7_h200_extbnb_larmatch_run1"
 
-TRAIN_FILE_LIST="/cluster/tufts/wongjiradlab/hmcgui01/mphys/Pointcept/lartpc_data_prep/extbnb_g1_g2_100_filenames_only.txt"
-VAL_FILE_LIST="/cluster/tufts/wongjiradlab/hmcgui01/mphys/Pointcept/lartpc_data_prep/extbnb_g1_g2_100_filenames_only.txt"
+TRAIN_FILE_LIST="/cluster/tufts/wongjiradlab/twongj01/mphys/Pointcept/lartpc_data_prep/extbnb_larmatch/hdlist_extbnb_larmatch_run3_g1_sonata_validated.txt"
+VAL_FILE_LIST="/cluster/tufts/wongjiradlab/twongj01/mphys/Pointcept/lartpc_data_prep/extbnb_larmatch/hdlist_extbnb_larmatch_run3_g1_sonata_validated.txt"
 true_points_only=False
+
+# Larmatch score filtering: each sample draws a threshold uniformly from this range
+filter_larmatch=True
+larmatch_threshold_range=(0.15, 0.75)
 
 max_points_per_view=20480
 max_points_spherecrop=20480
@@ -410,6 +419,8 @@ data = dict(
         loop=1,
         true_points_only=true_points_only,
         data_only=True,
+        filter_larmatch=filter_larmatch,
+        larmatch_threshold_range=larmatch_threshold_range,
     ),
     val=dict(
         type=dataset_type,
@@ -426,6 +437,8 @@ data = dict(
         loop=1,
         true_points_only=true_points_only,
         data_only=True,
+        filter_larmatch=filter_larmatch,
+        larmatch_threshold_range=larmatch_threshold_range,
     ),
 )
 

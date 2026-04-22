@@ -43,6 +43,11 @@ class LArTPCDataset(DefaultDataset):
         log_transform_edep (bool): Apply log(1+x) transform to energy deposition
         drop_cosmics (bool): default False. If True, drop cosmic and ghost spacepoints with probability, drop_cosmics_prob.
         drop_cosmics_prob (float): default 0.5. If drop_cosmics is true, drop cosmics with this probability.
+        filter_larmatch (bool): default False. If True and 'larmatch_score' exists in the
+            HDF5 file, filter points by a randomly drawn larmatch score threshold.
+        larmatch_threshold_range (tuple): default (0.15, 0.75). The (low, high) range from
+            which the larmatch score threshold is drawn uniformly each time a sample is loaded.
+            Points with larmatch_score > threshold are kept.
         **kwargs: Additional arguments passed to DefaultDataset
 
     Data Loading Priority:
@@ -168,6 +173,8 @@ class LArTPCDataset(DefaultDataset):
         drop_cosmics_prob=0.5,
         add_min_pixval=1.0e-2,
         data_only=False,
+        filter_larmatch=False,
+        larmatch_threshold_range=(0.15, 0.75),
         **kwargs
     ):
         self.use_reco_coords = use_reco_coords
@@ -184,6 +191,8 @@ class LArTPCDataset(DefaultDataset):
         self.drop_cosmics = drop_cosmics
         self.drop_cosmics_prob = drop_cosmics_prob
         self.data_only = data_only
+        self.filter_larmatch = filter_larmatch
+        self.larmatch_threshold_range = larmatch_threshold_range
         self.min_points_required = 100
 
         # Call parent init (this will call get_data_list)
@@ -402,6 +411,13 @@ class LArTPCDataset(DefaultDataset):
             ], axis=1).astype(np.float32)
             wire_feat *= self.wire_scale
 
+            # Load larmatch score if available and filtering is enabled
+            larmatch_score = None
+            if self.filter_larmatch and 'larmatch_score' in f['/entry_0/triplet_data']:
+                larmatch_score = np.array(
+                    f['/entry_0/triplet_data/larmatch_score'], dtype=np.float32
+                )
+
         data_dict = {
             "coord": coord,
             "strength": strength,
@@ -430,6 +446,24 @@ class LArTPCDataset(DefaultDataset):
                 for k in data_dict:
                     if k in ['coord', 'strength', 'color', 'segment', 'instance', 'origin']:
                         data_dict[k] = data_dict[k][nu_mask[:]]
+                filtered = True
+
+        if larmatch_score is not None:
+            # Draw a random threshold uniformly from the configured range
+            lo, hi = self.larmatch_threshold_range
+            threshold = np.random.uniform(lo, hi)
+            lm_mask = larmatch_score > threshold
+            # Apply the same mask used by prior filters (true_points_only, drop_cosmics)
+            if filtered and len(lm_mask) != data_dict['coord'].shape[0]:
+                # Reconstruct mask after prior filtering
+                if has_truth and self.true_points_only:
+                    lm_mask = lm_mask[hasmatch == 1]
+                if has_truth and self.drop_cosmics:
+                    lm_mask = lm_mask[nu_mask[:]]
+            if lm_mask.sum() >= self.min_points_required:
+                for k in data_dict:
+                    if k in ['coord', 'strength', 'color', 'segment', 'instance', 'origin']:
+                        data_dict[k] = data_dict[k][lm_mask[:]]
                 filtered = True
 
         if filtered:
