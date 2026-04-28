@@ -84,6 +84,9 @@ def parse_args():
                    help="cm (default: 300.0)")
     p.add_argument("--min-points-fraction-in-cone", type=float, default=0.5,
                    help="0-1 (default: 0.5)")
+    p.add_argument("--combined-output", default=None,
+                   help="If set, write all events into a single ROOT file at "
+                        "this path instead of one ROOT file per input H5.")
 
     return p.parse_args()
 
@@ -477,10 +480,16 @@ def write_root_output(event_results: list[dict], output_path: str):
     os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
 
     with uproot.recreate(output_path) as f:
-        # Use mktree + extend to force TTree output.
-        # Direct assignment (f["name"] = data) defaults to RNTuple in
-        # uproot 5.x, which does not support all awkward array layouts.
-        f.mktree("shower_reco", tree_data)
+        # Build type-only spec so mktree creates an empty TTree,
+        # then extend fills it once.  Direct assignment defaults to
+        # RNTuple in uproot 5.x which chokes on some awkward layouts.
+        type_spec = {}
+        for key, arr in tree_data.items():
+            if isinstance(arr, ak.Array):
+                type_spec[key] = ak.type(arr)
+            else:
+                type_spec[key] = arr.dtype
+        f.mktree("shower_reco", type_spec)
         f["shower_reco"].extend(tree_data)
 
     print(f"Wrote {len(event_results)} events to {output_path}")
@@ -533,6 +542,9 @@ def main():
 
     os.makedirs(args.output_dir, exist_ok=True)
 
+    # When --combined-output is set, accumulate all results and write once
+    all_results = [] if args.combined_output else None
+
     # Process each input file
     for h5_path in input_files:
         h5_path = os.path.abspath(h5_path)
@@ -579,11 +591,6 @@ def main():
             print(f"  Processing failed, skipping.")
             continue
 
-        # Write ROOT output — one file per input H5
-        basename = os.path.splitext(os.path.basename(h5_path))[0]
-        root_path = os.path.join(args.output_dir, f"showerreco_{basename}.root")
-        write_root_output([result], root_path)
-
         # Summary
         n_frags = len(result["fragments"])
         n_showers = len(result["merged_showers"])
@@ -591,6 +598,23 @@ def main():
         n_missed = len(result["missed_true"])
         print(f"  Fragments: {n_frags}, Merged showers: {n_showers}, "
               f"Unmerged: {n_unmerged}, Missed true: {n_missed}")
+
+        if all_results is not None:
+            all_results.append(result)
+        else:
+            # Write ROOT output — one file per input H5
+            basename = os.path.splitext(os.path.basename(h5_path))[0]
+            root_path = os.path.join(args.output_dir, f"showerreco_{basename}.root")
+            write_root_output([result], root_path)
+
+    # Write combined ROOT file with all events
+    if all_results is not None:
+        if all_results:
+            combined_path = args.combined_output
+            os.makedirs(os.path.dirname(combined_path) or ".", exist_ok=True)
+            write_root_output(all_results, combined_path)
+        else:
+            print("No events produced results; combined ROOT file not written.")
 
     print("\nDone.")
 

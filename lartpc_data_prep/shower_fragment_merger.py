@@ -111,63 +111,81 @@ def merge_fragments(
             # Map local cluster indices back to global fragment indices
             cluster_global = [frag_indices[j] for j in cluster_local_ids]
 
-            # Mean predicted origin for this cluster
-            cluster_origins = np.array(
-                [fragments[gi].pred_origin_cm for gi in cluster_global]
-            )
-            mean_origin = cluster_origins.mean(axis=0)
+            # Iteratively extract showers from this cluster.
+            # After merging one shower (trunk + cone members), remove those
+            # fragments and repeat on the remainder.  This handles cases
+            # like pi0 -> 2 photons where two showers share a common origin.
+            remaining = list(cluster_global)
 
-            # Identify trunk fragment
-            trunk_global = _identify_trunk(
-                fragments, cluster_global, mean_origin
-            )
-
-            # Compute shower axis from trunk PCA
-            trunk_frag = fragments[trunk_global]
-            axis = _compute_shower_axis(trunk_frag.raw_coords_cm)
-
-            # Find start point
-            start_point = _find_start_point(
-                trunk_frag.raw_coords_cm,
-                mean_origin,
-                all_pred_scores=[fragments[gi].pred_scores for gi in cluster_global],
-                all_pred_coords_cm=[fragments[gi].pred_coords_cm for gi in cluster_global],
-            )
-
-            # Orient axis away from origin (toward shower body)
-            trunk_centroid = trunk_frag.raw_coords_cm.mean(axis=0)
-            if np.dot(axis, trunk_centroid - start_point) < 0:
-                axis = -axis
-
-            # Cone membership test for non-trunk fragments
-            merged_indices = [trunk_global]
-            for gi in cluster_global:
-                if gi == trunk_global:
-                    continue
-                frag = fragments[gi]
-                in_cone = _test_cone_membership(
-                    frag.raw_coords_cm,
-                    apex=start_point,
-                    axis=axis,
-                    half_angle_deg=config.cone_half_angle,
-                    max_length=config.cone_max_length,
+            while remaining:
+                # Mean predicted origin for remaining fragments
+                cluster_origins = np.array(
+                    [fragments[gi].pred_origin_cm for gi in remaining]
                 )
-                fraction_in_cone = in_cone.sum() / max(len(in_cone), 1)
-                if fraction_in_cone >= config.min_points_fraction_in_cone:
-                    merged_indices.append(gi)
+                mean_origin = cluster_origins.mean(axis=0)
 
-            shower = MergedShower(
-                shower_id=shower_id_counter,
-                trunk_fragment_idx=trunk_global,
-                fragment_indices=merged_indices,
-                predicted_origin_cm=mean_origin,
-                shower_axis=axis,
-                start_point_cm=start_point,
-                pred_class=pred_class,
-            )
-            merged_showers.append(shower)
-            assigned.update(merged_indices)
-            shower_id_counter += 1
+                # Identify trunk fragment
+                trunk_global = _identify_trunk(
+                    fragments, remaining, mean_origin
+                )
+
+                # Compute shower axis from trunk PCA
+                trunk_frag = fragments[trunk_global]
+                axis = _compute_shower_axis(trunk_frag.raw_coords_cm)
+
+                # Find start point
+                start_point = _find_start_point(
+                    trunk_frag.raw_coords_cm,
+                    mean_origin,
+                    all_pred_scores=[fragments[gi].pred_scores for gi in remaining],
+                    all_pred_coords_cm=[fragments[gi].pred_coords_cm for gi in remaining],
+                )
+
+                # Orient axis away from origin (toward shower body)
+                trunk_centroid = trunk_frag.raw_coords_cm.mean(axis=0)
+                if np.dot(axis, trunk_centroid - start_point) < 0:
+                    axis = -axis
+
+                # Cone membership test for non-trunk fragments
+                merged_indices = [trunk_global]
+                for gi in remaining:
+                    if gi == trunk_global:
+                        continue
+                    frag = fragments[gi]
+                    in_cone = _test_cone_membership(
+                        frag.raw_coords_cm,
+                        apex=start_point,
+                        axis=axis,
+                        half_angle_deg=config.cone_half_angle,
+                        max_length=config.cone_max_length,
+                    )
+                    fraction_in_cone = in_cone.sum() / max(len(in_cone), 1)
+                    if fraction_in_cone >= config.min_points_fraction_in_cone:
+                        merged_indices.append(gi)
+
+                shower = MergedShower(
+                    shower_id=shower_id_counter,
+                    trunk_fragment_idx=trunk_global,
+                    fragment_indices=merged_indices,
+                    predicted_origin_cm=mean_origin,
+                    shower_axis=axis,
+                    start_point_cm=start_point,
+                    pred_class=pred_class,
+                )
+                merged_showers.append(shower)
+                assigned.update(merged_indices)
+                shower_id_counter += 1
+
+                # Remove merged fragments from remaining
+                merged_set = set(merged_indices)
+                remaining = [gi for gi in remaining if gi not in merged_set]
+
+                # If only the trunk was merged (no additional fragments joined),
+                # and there are remaining fragments, they each failed the cone
+                # test against this trunk.  Pick a new trunk from the remainder
+                # on the next iteration. But if a single-fragment "shower" was
+                # created and nothing else changed, the next iteration will
+                # pick a different trunk -- so we just continue.
 
     unmerged = [i for i in range(len(fragments)) if i not in assigned]
     return merged_showers, unmerged

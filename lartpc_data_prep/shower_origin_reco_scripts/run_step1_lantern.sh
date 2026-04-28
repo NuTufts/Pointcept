@@ -48,8 +48,11 @@ cd ${LASTDIR}
 
 echo "Environment setup complete"
 
-# Find the input merged_dlreco ROOT file
+# Find the input ROOT file (supports merged_dlreco*, merged_dlana*, dlmerged* naming)
 larsoftout=$(find . -maxdepth 1 -type f -name 'merged_dlreco*.root' -printf '%f\n' | head -1)
+if [ -z "${larsoftout}" ]; then
+    larsoftout=$(find . -maxdepth 1 -type f -name 'merged_dlana*.root' -printf '%f\n' | head -1)
+fi
 if [ -z "${larsoftout}" ]; then
     larsoftout=$(find . -maxdepth 1 -type f -name 'dlmerged*.root' -printf '%f\n' | head -1)
 fi

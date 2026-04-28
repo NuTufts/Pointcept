@@ -28,7 +28,7 @@ INPUTLIST=${POINTCEPT_DIR}/lartpc_data_prep/mcc9_v29e_dl_run3b_bnb_nu_overlay_no
 H5_INPUT_DIR=/cluster/tufts/wongjiradlab/larbys/data/ub_on_tufts/hdf5/shower_origin_reco/mcc9_v29e_dl_run3b_bnb_nu_overlay_test
 
 # ROOT output directory
-ROOT_OUTPUT_DIR=/cluster/tufts/wongjiradlab/larbys/data/ub_on_tufts/root/shower_reco/mcc9_v29e_dl_run3b_bnb_nu_overlay_test
+ROOT_OUTPUT_DIR=/cluster/tufts/wongjiradlab/larbys/data/ub_on_tufts/root/shower_reco/mcc9_v29e_dl_run3b_bnb_nu_overlay_test_showerrecoonly
 
 # Tag used by Steps 1-4 to name the merged H5 files
 TAG=showerorigin_reco_mcc9_v29e_dl_run3b_bnb_nu_overlay_test
