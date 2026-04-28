@@ -25,7 +25,7 @@
 # (where list-name is the file list basename without extension).
 #
 #SBATCH --partition=batch
-#SBATCH --time=11:30:00
+#SBATCH --time=2:00:00
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8
@@ -61,7 +61,21 @@ SOURCE_PREFIX="$2"
 shift 2
 EXTRA_ARGS=("$@")
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Resolve script directory. On Tufts, sbatch stages this script into
+# /var/spool/slurm/jobXXXX/ and runs it from there, so BASH_SOURCE points at
+# the spool copy. Prefer SLURM_SUBMIT_DIR when it actually contains
+# tar_and_transfer.py; otherwise fall back to BASH_SOURCE (interactive use).
+if [[ -n "${SLURM_SUBMIT_DIR:-}" && -f "${SLURM_SUBMIT_DIR}/tar_and_transfer.py" ]]; then
+    SCRIPT_DIR="${SLURM_SUBMIT_DIR}"
+else
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+fi
+if [[ ! -f "${SCRIPT_DIR}/tar_and_transfer.py" ]]; then
+    echo "ERROR: tar_and_transfer.py not found in ${SCRIPT_DIR}" >&2
+    echo "       Submit with: cd <isambard-dir> && sbatch submit_transfer.sh ..." >&2
+    exit 1
+fi
+SCRIPT_PATH="${SCRIPT_DIR}/$(basename "${BASH_SOURCE[0]}")"
 mkdir -p "${SCRIPT_DIR}/logs"
 
 STAGING_DIR="${ISAMBARD_STAGING_DIR:-/cluster/tufts/wongjiradlab/larbys/data/ub_on_tufts/isambard_staging}"
@@ -154,7 +168,7 @@ if [[ -z "${DEP}" ]]; then
     echo "WARNING: no SLURM_JOB_ID; cannot chain (run via sbatch, not directly)."
     exit ${PY_EXIT}
 fi
-NEXT=$(sbatch --parsable --dependency=afterany:"${DEP}" "$0" "${ORIG_ARGS[@]}") || NEXT=""
+NEXT=$(sbatch --parsable --chdir="${SCRIPT_DIR}" --dependency=afterany:"${DEP}" "${SCRIPT_PATH}" "${ORIG_ARGS[@]}") || NEXT=""
 if [[ -n "${NEXT}" ]]; then
     echo "Submitted chained successor: jobid=${NEXT} (chain ${count}/${MAX_CHAIN})"
     echo "Remember to refresh the clifton cert before this job ends."

@@ -64,20 +64,26 @@ def log(msg):
 
 
 def group_files_by_leaf(file_list_path, source_prefix):
-    """Return dict: rel_dir -> sorted list of relative file paths."""
+    """Return dict: rel_dir -> sorted list of relative file paths.
+
+    Both `source_prefix` and each input path are passed through
+    os.path.normpath, so quirks like doubled slashes (`/foo//bar`) collapse
+    consistently before the prefix check.
+    """
     groups = defaultdict(list)
     skipped = 0
     total = 0
     with open(file_list_path) as f:
         for line in f:
-            path = line.strip()
-            if not path:
+            raw = line.strip()
+            if not raw:
                 continue
             total += 1
+            path = os.path.normpath(raw)
             if not path.startswith(source_prefix):
                 skipped += 1
                 if skipped <= 5:
-                    log(f"WARNING: path does not start with prefix, skipping: {path}")
+                    log(f"WARNING: path does not start with prefix, skipping: {raw}")
                 continue
             rel = path[len(source_prefix):]
             rel_dir = os.path.dirname(rel)
@@ -187,7 +193,9 @@ def rsync_to_remote(local_path, remote_host, remote_path, dry_run):
 def main():
     args = parse_args()
 
-    source_prefix = args.source_prefix
+    # Normalize the prefix the same way input paths get normalized so we
+    # don't get spurious mismatches from doubled slashes etc.
+    source_prefix = os.path.normpath(args.source_prefix)
     if not source_prefix.endswith("/"):
         source_prefix = source_prefix + "/"
     if not os.path.isdir(source_prefix):
