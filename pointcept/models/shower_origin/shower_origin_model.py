@@ -1460,4 +1460,16 @@ class ShowerOriginPredictorV3(nn.Module):
                     cls_loss = F.cross_entropy(safe_cls, ot.to(device))
                 total_loss = total_loss + self.classification_loss_weight * cls_loss
 
+        # DDP keep-alive: every head's output must touch the loss graph on
+        # every rank/iteration, even when its physical loss is skipped (e.g.
+        # ghost/true_track/unknown fragments skip score+regression). Without
+        # this, DDP raises "Expected to have finished reduction" on ranks
+        # whose batch happens to draw such a fragment, because the combiner,
+        # score head, and regression head receive no gradients.
+        with torch.amp.autocast('cuda', enabled=False):
+            keep_alive = 0.0 * logits.float().sum() + 0.0 * cls_logits.float().sum()
+            if pred_origin is not None:
+                keep_alive = keep_alive + 0.0 * pred_origin.float().sum()
+        total_loss = total_loss + keep_alive
+
         return total_loss
