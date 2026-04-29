@@ -717,6 +717,44 @@ class OriginClassificationHead(nn.Module):
         return self.mlp(slot_feature)
 
 
+class OriginRegressionHead(nn.Module):
+    """
+    Per-slot 3D origin regression head.
+
+    Maps a slot's feature vector to a 3D offset. The predicted origin is
+    computed as `anchor + offset`, where `anchor` is the fragment centroid
+    (in normalized coords, deterministic from input points). Training the
+    network to regress an offset (rather than an absolute position) keeps
+    the target magnitude small and bounded — typical fragment-to-origin
+    distances are <30 cm in normalized units (~0.17), versus full-detector
+    span of ~6 in z.
+
+    Args:
+        dim: Slot feature dimension
+        hidden_dim: Hidden layer dimension
+    """
+
+    def __init__(self, dim: int, hidden_dim: int = 128):
+        super().__init__()
+        self.mlp = nn.Sequential(
+            nn.Linear(dim, hidden_dim),
+            nn.GELU(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.GELU(),
+            nn.Linear(hidden_dim, 3),
+        )
+
+    def forward(self, slot_feature):
+        """
+        Args:
+            slot_feature: (D,) single slot feature vector
+
+        Returns:
+            offset: (3,) predicted offset in normalized coords
+        """
+        return self.mlp(slot_feature)
+
+
 @MODELS.register_module("ShowerOriginPredictorV3")
 class ShowerOriginPredictorV3(nn.Module):
     """
@@ -777,6 +815,16 @@ class ShowerOriginPredictorV3(nn.Module):
         score_loss_weight: float = 1.0,
         distance_loss_weight: float = 0.1,
         classification_loss_weight: float = 1.0,
+        # New target routing (defaults preserve old V3 behavior):
+        #   score_target_key: which input_dict key holds the score-head Gaussian
+        #     peak target. New training runs should set this to
+        #     "trunk_start_coord" (peak guaranteed to be at a real spacepoint).
+        #     Backwards compat: "origin_coord" reproduces old V3.
+        #   enable_origin_regression: turn on the new per-slot 3D origin
+        #     regression head (predicts an offset from the fragment centroid).
+        score_target_key: str = "origin_coord",
+        enable_origin_regression: bool = False,
+        origin_regression_loss_weight: float = 0.5,
         # Origin classification
         num_origin_classes: int = 3,
         # Reco-fragment classification (5 classes: +ghost, +true_track)
@@ -804,6 +852,9 @@ class ShowerOriginPredictorV3(nn.Module):
         self.classification_loss_weight = classification_loss_weight
         self.virtual_grid_enabled = virtual_grid_enabled
         self.use_reco_classes = use_reco_classes
+        self.score_target_key = score_target_key
+        self.enable_origin_regression = enable_origin_regression
+        self.origin_regression_loss_weight = origin_regression_loss_weight
 
         # Build backbone (Sonata model)
         self.backbone = build_model(backbone)
@@ -885,6 +936,16 @@ class ShowerOriginPredictorV3(nn.Module):
             )
             self.reco_classification_head = None
 
+        # Per-slot 3D origin regression head (predicts offset from centroid).
+        # Only built when enabled, to keep DDP gradient reduction clean.
+        if self.enable_origin_regression:
+            self.origin_regression_head = OriginRegressionHead(
+                dim=backbone_out_channels,
+                hidden_dim=hidden_channels,
+            )
+        else:
+            self.origin_regression_head = None
+
         # Optional: custom criteria if provided
         self.criteria = build_criteria(criteria) if criteria else None
 
@@ -918,7 +979,7 @@ class ShowerOriginPredictorV3(nn.Module):
         # Save and remove shower-specific keys before backbone forward.
         _saved_keys = {}
         for key in ("origin_coord", "origin_type", "origin_distance",
-                     "shower_mask", "start_coord"):
+                     "shower_mask", "start_coord", "trunk_start_coord"):
             if key in input_dict:
                 _saved_keys[key] = input_dict.pop(key)
 
@@ -953,13 +1014,28 @@ class ShowerOriginPredictorV3(nn.Module):
         input_coords_all = input_dict.get("coord", None)
         origin_coord_all = input_dict.get("origin_coord", None)
         origin_type_all = input_dict.get("origin_type", None)
+        trunk_start_coord_all = input_dict.get("trunk_start_coord", None)
 
-        # Reshape origin_coord from (B*3,) to (B, 3) when batched
-        if origin_coord_all is not None:
-            if origin_coord_all.dim() == 1 and B > 1:
-                origin_coord_all = origin_coord_all.view(B, 3)
-            elif origin_coord_all.dim() == 1 and B == 1:
-                origin_coord_all = origin_coord_all.unsqueeze(0)
+        def _to_b3(t):
+            """Reshape a per-sample 3-vector batch from (B*3,) to (B, 3)."""
+            if t is None:
+                return None
+            if t.dim() == 1 and B > 1:
+                return t.view(B, 3)
+            if t.dim() == 1 and B == 1:
+                return t.unsqueeze(0)
+            return t
+
+        origin_coord_all = _to_b3(origin_coord_all)
+        trunk_start_coord_all = _to_b3(trunk_start_coord_all)
+
+        # Score-head Gaussian-peak target: prefer trunk_start_coord, else origin_coord.
+        # When score_target_key=="origin_coord", this exactly reproduces old V3.
+        if (self.score_target_key == "trunk_start_coord"
+                and trunk_start_coord_all is not None):
+            score_target_all = trunk_start_coord_all
+        else:
+            score_target_all = origin_coord_all
 
         # ==================================================================
         # 3-8. Process each sample in the batch independently
@@ -1079,6 +1155,23 @@ class ShowerOriginPredictorV3(nn.Module):
                 self._compute_per_slot_predictions(all_features, queries)
             )
 
+            # --- Per-slot 3D origin regression (slot 0 only when K=1) ---
+            # Predicted origin = fragment_centroid + offset, in normalized coords.
+            # Centroid is taken from the input-resolution shower mask (same frame
+            # as origin_coord / trunk_start_coord, both already normalized).
+            pred_origin = None
+            if self.enable_origin_regression and self.origin_regression_head is not None:
+                with torch.amp.autocast('cuda', enabled=False):
+                    centroid = self._compute_fragment_centroid(
+                        sample_input_coords=input_coords_all[in_s:in_e]
+                            if input_coords_all is not None else None,
+                        sample_mask=shower_mask_all[in_s:in_e]
+                            if shower_mask_all is not None else None,
+                        fallback_coords=sample_coords,
+                    )
+                    offset = self.origin_regression_head(queries[0].float())
+                    pred_origin = centroid + offset
+
             # --- Loss ---
             if self.training or origin_coord_all is not None:
                 sample_input = {"origin_coord": origin_coord_all[b]}
@@ -1087,11 +1180,13 @@ class ShowerOriginPredictorV3(nn.Module):
                         sample_input["origin_type"] = origin_type_all
                     else:
                         sample_input["origin_type"] = origin_type_all[b]
+                if score_target_all is not None:
+                    sample_input["score_target_coord"] = score_target_all[b]
                 loss = self._single_fragment_loss(
                     per_slot_scores[0],
                     per_slot_logits[0],
-                    per_slot_distances[0] if per_slot_distances else None,
                     per_slot_cls[0],
+                    pred_origin,
                     all_coords,
                     sample_input,
                 )
@@ -1105,10 +1200,7 @@ class ShowerOriginPredictorV3(nn.Module):
                     "all_coords": sample_coords,
                     "origin_class": per_slot_cls[0].argmax(dim=-1),
                     "origin_class_logits": per_slot_cls[0],
-                    "origin_distances": (
-                        per_slot_distances[0][:N_real]
-                        if per_slot_distances else None
-                    ),
+                    "origin_pred_coord": pred_origin,
                 })
 
         # ==================================================================
@@ -1124,8 +1216,8 @@ class ShowerOriginPredictorV3(nn.Module):
                 return_dict["all_coords"] = batch_eval_outputs[0]["all_coords"]
                 return_dict["origin_class"] = batch_eval_outputs[0]["origin_class"]
                 return_dict["origin_class_logits"] = batch_eval_outputs[0]["origin_class_logits"]
-                if batch_eval_outputs[0]["origin_distances"] is not None:
-                    return_dict["origin_distances"] = batch_eval_outputs[0]["origin_distances"]
+                if batch_eval_outputs[0]["origin_pred_coord"] is not None:
+                    return_dict["origin_pred_coord"] = batch_eval_outputs[0]["origin_pred_coord"]
             else:
                 # Multi-sample: per-sample lists + stacked class tensor
                 return_dict["origin_scores"] = [
@@ -1140,9 +1232,9 @@ class ShowerOriginPredictorV3(nn.Module):
                 return_dict["origin_class_logits"] = torch.stack([
                     o["origin_class_logits"] for o in batch_eval_outputs
                 ])
-                dists = [o["origin_distances"] for o in batch_eval_outputs]
-                if dists[0] is not None:
-                    return_dict["origin_distances"] = dists
+                preds = [o["origin_pred_coord"] for o in batch_eval_outputs]
+                if preds[0] is not None:
+                    return_dict["origin_pred_coord"] = torch.stack(preds)
 
         return return_dict
 
@@ -1168,6 +1260,32 @@ class ShowerOriginPredictorV3(nn.Module):
             ).squeeze(0)
             nn_idx[start:end] = dists.argmin(dim=1)
         return mask_input_res[nn_idx]
+
+    def _compute_fragment_centroid(
+        self, sample_input_coords, sample_mask, fallback_coords,
+    ):
+        """
+        Compute the fragment centroid used as the regression-head anchor.
+
+        The centroid is computed in the input coordinate frame (which is the
+        same frame as origin_coord / trunk_start_coord — both already pass
+        through NormalizeShowerCoords). When the input coords or mask are
+        unavailable, falls back to the post-backbone coords.
+
+        Args:
+            sample_input_coords: (N_in, 3) input-resolution coords or None
+            sample_mask: (N_in,) shower mask at input resolution or None
+            fallback_coords: (N_out, 3) post-backbone coords (last resort)
+
+        Returns:
+            centroid: (3,) tensor in normalized coords
+        """
+        if sample_input_coords is not None and sample_mask is not None:
+            m = sample_mask.bool()
+            if m.any():
+                return sample_input_coords[m].float().mean(dim=0)
+            return sample_input_coords.float().mean(dim=0)
+        return fallback_coords.float().mean(dim=0)
 
     def _compute_shower_centroids(self, real_coords, shower_mask):
         """
@@ -1254,28 +1372,32 @@ class ShowerOriginPredictorV3(nn.Module):
         return per_slot_scores, per_slot_distances, per_slot_cls, per_slot_logits
 
     def _single_fragment_loss(
-        self, scores, logits, distances, cls_logits, coords, input_dict,
+        self, scores, logits, cls_logits, pred_origin, coords, input_dict,
     ):
         """
         Compute direct loss for a single fragment (K=1, no Hungarian matching).
 
         For ghost (type=3) and true_track (type=4) fragments, only the
-        classification loss is computed — score and distance losses are
-        skipped since these fragments have no meaningful origin point.
+        classification loss is computed — score and origin-regression losses
+        are skipped since these fragments have no meaningful origin point.
 
         Args:
             scores: (N_total,) sigmoid scores from slot 0
             logits: (N_total,) raw logits from slot 0
-            distances: (N_total,) predicted distances, or None
             cls_logits: (num_classes,) classification logits from slot 0
+            pred_origin: (3,) predicted origin coord (centroid + offset),
+                or None if origin regression is disabled
             coords: (N_total, 3) point coordinates (real + virtual)
-            input_dict: dict with origin_coord, origin_type, origin_distance
+            input_dict: dict with origin_coord, origin_type, and optionally
+                score_target_coord (the score-head Gaussian peak target;
+                falls back to origin_coord for backward compat)
 
         Returns:
             total_loss: scalar loss
         """
         device = coords.device
         origin_coord = input_dict["origin_coord"]  # (3,)
+        score_target = input_dict.get("score_target_coord", origin_coord)
 
         # Determine origin type for loss masking
         origin_type = input_dict.get("origin_type", None)
@@ -1283,17 +1405,18 @@ class ShowerOriginPredictorV3(nn.Module):
         if origin_type is not None:
             origin_type_val = int(origin_type.item()) if origin_type.dim() == 0 else int(origin_type[0].item())
 
-        # Score and distance loss: skip for ghost (3) and true_track (4)
-        # These fragments have no meaningful origin point.
+        # Score and origin-regression losses: skip for ghost (3) and
+        # true_track (4) — these fragments have no meaningful origin point.
         total_loss = torch.tensor(0.0, device=device)
 
-        if origin_type_val < 3:
-            # Gaussian soft labels from distance to origin
-            distances_to_origin = torch.norm(
-                coords - origin_coord.unsqueeze(0), dim=-1
+        if origin_type_val >= 0 and origin_type_val < 3:
+            # Gaussian soft labels — peak located at score_target
+            # (trunk_start_coord under the new scheme; origin_coord under old).
+            distances_to_target = torch.norm(
+                coords - score_target.unsqueeze(0), dim=-1
             )
             target_scores = torch.exp(
-                -0.5 * (distances_to_origin / self.gaussian_sigma) ** 2
+                -0.5 * (distances_to_target / self.gaussian_sigma) ** 2
             )
 
             # Score loss: BCE with logits for numerical stability
@@ -1309,18 +1432,19 @@ class ShowerOriginPredictorV3(nn.Module):
 
             total_loss = total_loss + self.score_loss_weight * score_loss
 
-            # Distance loss (smooth L1)
-            if distances is not None:
+            # Origin regression loss: smooth L1 against true origin_coord
+            if self.enable_origin_regression and pred_origin is not None:
                 with torch.amp.autocast('cuda', enabled=False):
-                    safe_dist = torch.nan_to_num(
-                        distances.float(), nan=0.0
+                    safe_pred = torch.nan_to_num(
+                        pred_origin.float(), nan=0.0
                     )
-                    dist_loss = F.smooth_l1_loss(
-                        safe_dist,
-                        distances_to_origin.float(),
+                    reg_loss = F.smooth_l1_loss(
+                        safe_pred,
+                        origin_coord.float(),
                         reduction='mean',
                     )
-                total_loss = total_loss + self.distance_loss_weight * dist_loss
+                total_loss = (total_loss
+                              + self.origin_regression_loss_weight * reg_loss)
 
         # Classification loss (cross-entropy) — always applied for all classes
         # Skip only when origin_type is negative (truly unknown)

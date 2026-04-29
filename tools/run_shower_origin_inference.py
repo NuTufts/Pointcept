@@ -172,6 +172,16 @@ def run_event_inference(dataset, event_idx, transform, model, device):
     offset = batched["offset"].cpu()
     n_frags = len(offset)
 
+    # Optional: per-fragment 3D regressed origin (V3 + enable_origin_regression).
+    pred_origin_raw = output.get("origin_pred_coord", None)
+    all_pred_origins = None
+    if pred_origin_raw is not None:
+        po = pred_origin_raw.cpu()
+        if po.dim() == 1:
+            all_pred_origins = [po]
+        else:
+            all_pred_origins = [po[i] for i in range(po.shape[0])]
+
     if n_frags == 1:
         all_scores = [output["origin_scores"].cpu()]
         all_coords = [output["all_coords"].cpu()]
@@ -206,14 +216,17 @@ def run_event_inference(dataset, event_idx, transform, model, device):
         coords_np = all_coords[i].float().numpy()
         logits_np = all_logits[i].float().numpy()
 
-        results.append({
+        result = {
             **gt,
             "pred_scores": scores_np,
             "pred_coords": coords_np,
             "pred_class": all_classes[i],
             "pred_class_logits": logits_np,
             "n_points_model": coords_np.shape[0],
-        })
+        }
+        if all_pred_origins is not None and i < len(all_pred_origins):
+            result["pred_origin_coord"] = all_pred_origins[i].float().numpy()
+        results.append(result)
 
     return results
 

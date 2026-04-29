@@ -146,13 +146,24 @@ model = dict(
     hidden_channels=256,
     predict_distance=False,
 
+    # New target routing:
+    # - score head Gaussian peak target = trunk-fragment startpt
+    #   (always at a real spacepoint; shared across same-shower fragments
+    #    so the score head also serves as a clustering anchor).
+    # - new per-slot origin regression head predicts a 3D offset from the
+    #   fragment centroid.
+    score_target_key="trunk_start_coord",
+    enable_origin_regression=True,
+    origin_regression_loss_weight=0.5,
+
     # Loss weights
     score_loss_weight=1.0,
-    distance_loss_weight=0.1,
     classification_loss_weight=0.5,
 
-    # Gaussian sigma for soft labels (normalized units: 4cm / 179.55 ≈ 0.022)
-    gaussian_sigma=0.022,
+    # Gaussian sigma for soft labels (normalized units: 2cm / 179.55 ≈ 0.011)
+    # Tightened from 0.022 since the peak now sits on a real spacepoint
+    # (the trunk fragment startpt) rather than potentially in empty space.
+    gaussian_sigma=0.011,
 
     # Origin classification: 3 base classes (INSIDE, OUTSIDE, ON_TRACK)
     # + 2 reco classes (GHOST, TRUE_TRACK) = 5 total via reco head
@@ -203,6 +214,7 @@ _collect_keys = (
     "origin_type",
     "origin_distance",
     "start_coord",
+    "trunk_start_coord",
 )
 
 # Common dataset kwargs
@@ -221,7 +233,7 @@ _dataset_common = dict(
 # Dataset configuration
 # =============================================================================
 dataset_type = "ShowerOriginDataset"
-data_root = "data/lartpc"
+data_root = "./"
 
 data = dict(
     num_classes=1,
@@ -256,7 +268,7 @@ data = dict(
                 type="NormalizeShowerCoords",
                 center=coord_center,
                 scale=coord_scale,
-                extra_keys=("origin_coord", "start_coord"),
+                extra_keys=("origin_coord", "start_coord", "trunk_start_coord"),
             ),
             # 4. Log-transform pixel values (strength)
             dict(
@@ -329,7 +341,7 @@ data = dict(
                 type="NormalizeShowerCoords",
                 center=coord_center,
                 scale=coord_scale,
-                extra_keys=("origin_coord", "start_coord"),
+                extra_keys=("origin_coord", "start_coord", "trunk_start_coord"),
             ),
             dict(
                 type="LogTransform",
