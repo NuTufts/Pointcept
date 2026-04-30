@@ -736,10 +736,21 @@ class OriginRegressionHead(nn.Module):
 
     def __init__(self, dim: int, hidden_dim: int = 128):
         super().__init__()
+        # LayerNorm after each Linear (except the last) — matches the stable
+        # pattern in OriginScoreHead.shared. Without these, intermediate
+        # activation magnitudes are unbounded across three stacked Linears,
+        # and the saved-intermediate that AddmmBackward computes
+        # `grad_weight = grad_output @ input` against can drift to extreme
+        # values, producing NaN gradients in backward (anomaly mode pinned
+        # this to AddmmBackward0 in this MLP, 2026-04-30). The cross-attn
+        # query_norm only normalizes the FIRST Linear's input; subsequent
+        # GELU outputs are not normalized.
         self.mlp = nn.Sequential(
             nn.Linear(dim, hidden_dim),
+            nn.LayerNorm(hidden_dim),
             nn.GELU(),
             nn.Linear(hidden_dim, hidden_dim),
+            nn.LayerNorm(hidden_dim),
             nn.GELU(),
             nn.Linear(hidden_dim, 3),
         )
