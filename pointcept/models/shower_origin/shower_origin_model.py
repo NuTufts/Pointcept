@@ -1204,8 +1204,25 @@ class ShowerOriginPredictorV3(nn.Module):
             else:
                 shower_features = sample_features
 
+            # Track empty-mask samples so we can both (a) survive forward
+            # without producing NaN and (b) skip all real losses for these
+            # samples (the score / regression / classification supervision
+            # is meaningless when there's no shower in the input). The
+            # keep-alive in _single_fragment_loss still runs, keeping DDP
+            # gradient reduction happy.
+            empty_mask_sample = (shower_features.size(0) == 0)
+
             if shower_features.size(0) < self.num_slots:
-                mean_feat = shower_features.mean(dim=0, keepdim=True)
+                if empty_mask_sample:
+                    # Degenerate input: shower mask had 0 True points after
+                    # transforms (typically GridSample's random-rep voxel
+                    # selection drops a small fragment's points when each
+                    # voxel also contains non-shower points). `empty.mean()`
+                    # returns NaN; fall back to the event-level mean so
+                    # forward stays finite.
+                    mean_feat = sample_features.mean(dim=0, keepdim=True)
+                else:
+                    mean_feat = shower_features.mean(dim=0, keepdim=True)
                 padding = mean_feat.expand(
                     self.num_slots - shower_features.size(0), -1
                 )
@@ -1224,6 +1241,15 @@ class ShowerOriginPredictorV3(nn.Module):
             # Per-sample shared state for backward hooks. Mutable so the
             # closure can flip it after the first hook logs.
             _grad_state = [False]
+            if empty_mask_sample:
+                # Log every occurrence so the user can grep + count to
+                # decide if a more invasive upstream fix (e.g. shower-
+                # priority GridSample) is needed.
+                _dbg.warning(
+                    f"[EMPTY-MASK] sample {b} ({_sn!r}) shower mask had 0 "
+                    f"points after transforms; using event-level mean and "
+                    f"forcing origin_type=-1 (skips all real losses)."
+                )
             _first = self._nan_check(
                 sample_features, "backbone_feats", b, _sn, _first, _dbg
             )
@@ -1368,6 +1394,15 @@ class ShowerOriginPredictorV3(nn.Module):
                         sample_input["origin_type"] = origin_type_all[b]
                 if score_target_all is not None:
                     sample_input["score_target_coord"] = score_target_all[b]
+                if empty_mask_sample:
+                    # Override origin_type to -1: tells _single_fragment_loss
+                    # to skip score, regression, AND classification losses.
+                    # Only the keep-alive (zero-coefficient touch on every
+                    # head's output) runs, keeping DDP gradient reduction
+                    # consistent without learning from a degenerate sample.
+                    sample_input["origin_type"] = torch.tensor(
+                        -1, device=origin_coord_all.device, dtype=torch.long,
+                    )
                 loss = self._single_fragment_loss(
                     per_slot_scores[0],
                     per_slot_logits[0],

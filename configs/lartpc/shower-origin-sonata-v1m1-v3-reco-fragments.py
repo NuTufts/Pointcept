@@ -156,6 +156,14 @@ model = dict(
     enable_origin_regression=True,
     origin_regression_loss_weight=0.5,
 
+    # Defensive clamp on the frozen backbone's per-point output magnitude.
+    # The backbone is frozen so its output range is uncontrolled and is the
+    # dominant magnitude source feeding the score head + combiner. Clamping
+    # bounds every downstream head input identically and removes the
+    # NaN-correlation we saw with abs_max > ~10. No effect on classification
+    # (which only sees query slots, not event_features).
+    event_features_clamp=10.0,
+
     # Loss weights
     score_loss_weight=1.0,
     classification_loss_weight=0.5,
@@ -224,7 +232,14 @@ _dataset_common = dict(
     log_transform_edep=False,  # LogTransform handles this in pipeline
     coord_scale=1.0,
     wire_scale=1.0/3456.0,
-    min_shower_points=20,
+    min_shower_points=20,           # legacy knob, unused by V3 dataset filter
+    # Raise to 50 (from default 20) so fragments have enough points to
+    # survive GridSample's mode="train" random-rep voxelization without
+    # collapsing the shower mask to zero. With 20 raw points, a small
+    # fragment embedded in dense surrounding activity has a non-trivial
+    # probability that all shower-point voxels lose their rep to a
+    # non-shower neighbor — producing the empty-mask NaN cascade.
+    min_fragment_points=50,
     include_ghosts=False,  # Match v6 backbone pretraining (no ghosts)
     max_showers_per_event=200,
 )
