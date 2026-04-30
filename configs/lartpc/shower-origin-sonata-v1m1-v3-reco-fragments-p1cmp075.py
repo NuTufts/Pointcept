@@ -27,21 +27,21 @@ _base_ = ["../_base_/default_runtime.py"]
 # =============================================================================
 # Training settings
 # =============================================================================
-batch_size = 120  # Smaller batch due to per-slot memory
+batch_size = 128  # Smaller batch due to per-slot memory
 batch_size_val = 96
-num_worker = 20
+num_worker = 22
 mix_prob = 0.0
 empty_cache = True  # Free CUDA cache between forward/backward to reduce peak memory
 enable_amp = False
 enable_wandb = True
 wandb_project = "pointcept-shower-origin"
-save_path = "shower_origin/sonata_v1m1_v3_v6backbone_pax_pi0filter_recofragments"
+save_path = "shower_origin/sonata_v1m1_v3_v6logfixbackbone_newtargets"
 clip_grad = 1.0
 
 epoch = 300
 eval_epoch = 300  # Evaluate every 10 epochs
 evaluate = True
-base_lr = 1.0e-4  # Lower LR since only training head
+base_lr = 1.0e-5  # Lower LR since only training head
 
 # Backend settings (must match v6 pretrained model)
 #flash_backend = 'flash_attn'
@@ -55,7 +55,7 @@ grid_size = 0.25  # cm (applied before NormalizeShowerCoords)
 # Point limits (reduced from 10240 to reduce GPU memory usage)
 max_points_spherecrop = 10240
 min_points_spherecrop = 512
-biased_spherecrop_radius = 0.005  # cm (applied before NormalizeShowerCoords)
+biased_spherecrop_radius = 0.005  # cm (applied before NormalizeShowerCoords around fragment centroid)
 
 # Coordinate normalization (must match v6 pretraining)
 coord_center = [125.0, 0.0, 518.0]
@@ -67,12 +67,17 @@ coord_scale = 1036.0 * 3**0.5 / 2.0 / 5.0  # ~179.55
 TRAIN_FILE_LIST = "/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept/lartpc_data_prep/shower_origin_reco_scripts/h5list_showeroriginreco_ncpi0filter_validated_train.txt"
 VAL_FILE_LIST = "/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept/lartpc_data_prep/shower_origin_reco_scripts/h5list_showeroriginreco_ncpi0filter_validated_val.txt"
 
+#TRAIN_FILE_LIST="/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept/h5list_showeroriginreco_smallsampletest.txt"
+#VAL_FILE_LIST="/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept/h5list_showeroriginreco_smallsampletest.txt"
+
+#TRAIN_FILE_LIST="/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept/h5list_showeroriginreco_singlesampletest.txt"
+#VAL_FILE_LIST="/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept/h5list_showeroriginreco_singlesampletest.txt"
 
 # ============================================================================
 # Pretraining weights
 # ============================================================================
-weight = "/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept/sonata/lartpc_v6_h200_noghosts_pretrain/lartpc_v6_h200_noghosts_pretrain_epoch50.pth"
-
+#weight = "/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept/sonata/lartpc_v6_h200_noghosts_pretrain/lartpc_v6_h200_noghosts_pretrain_epoch50.pth"
+weight = "/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept/sonata/lartpc_v6_h200_noghosts_pretrain_logspace_resume/model/epoch_42.pth"
 
 # =============================================================================
 # Model configuration
@@ -134,13 +139,19 @@ model = dict(
     ),
     backbone_out_channels=backbone_out_channels,
 
+    # Score Target: origin or start pt
+    score_target_key="trunk_start_coord",
+
+    # Regress origin pt
+    enable_origin_regression=True,
+
     # Slot Attention config
     num_slots=1,
     slot_iterations=3,
 
     # Cross-attention config
     num_cross_attn_layers=5,
-    num_heads=16,
+    num_heads=32,
 
     # Score head config
     hidden_channels=256,
