@@ -29,7 +29,7 @@ _base_ = ["../_base_/default_runtime.py"]
 # =============================================================================
 batch_size = 128  # Smaller batch due to per-slot memory
 batch_size_val = 96
-num_worker = 22
+num_worker = 20
 mix_prob = 0.0
 empty_cache = True  # Free CUDA cache between forward/backward to reduce peak memory
 enable_amp = False
@@ -72,6 +72,9 @@ VAL_FILE_LIST = "/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept/
 
 #TRAIN_FILE_LIST="/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept/h5list_showeroriginreco_singlesampletest.txt"
 #VAL_FILE_LIST="/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept/h5list_showeroriginreco_singlesampletest.txt"
+
+#TRAIN_FILE_LIST="/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept/h5list_showerfragment_1ktest.txt"
+#VAL_FILE_LIST="/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept/h5list_showerfragment_1ktest.txt"
 
 # ============================================================================
 # Pretraining weights
@@ -151,7 +154,7 @@ model = dict(
 
     # Cross-attention config
     num_cross_attn_layers=5,
-    num_heads=32,
+    num_heads=16,
 
     # Score head config
     hidden_channels=256,
@@ -161,6 +164,14 @@ model = dict(
     score_loss_weight=1.0,
     distance_loss_weight=0.1,
     classification_loss_weight=0.5,
+
+    # Defensive clamp on the frozen backbone's per-point output magnitude.
+    # The backbone is frozen so its output range is uncontrolled and is the
+    # dominant magnitude source feeding the score head + combiner. Clamping
+    # bounds every downstream head input identically and removes the
+    # NaN-correlation we saw with abs_max > ~10. No effect on classification
+    # (which only sees query slots, not event_features).
+    event_features_clamp=10.0,
 
     # Gaussian sigma for soft labels (normalized units: 4cm / 179.55 ≈ 0.022)
     gaussian_sigma=0.022,
@@ -214,6 +225,7 @@ _collect_keys = (
     "origin_type",
     "origin_distance",
     "start_coord",
+    "trunk_start_coord",
 )
 
 # Common dataset kwargs
@@ -224,6 +236,7 @@ _dataset_common = dict(
     coord_scale=1.0,
     wire_scale=1.0/3456.0,
     min_shower_points=20,
+    min_fragment_points=50,
     include_ghosts=False,  # Match v6 backbone pretraining (no ghosts)
     max_showers_per_event=200,
 )
@@ -267,7 +280,7 @@ data = dict(
                 type="NormalizeShowerCoords",
                 center=coord_center,
                 scale=coord_scale,
-                extra_keys=("origin_coord", "start_coord"),
+                extra_keys=("origin_coord", "start_coord","trunk_start_coord"),
             ),
             # 4. Log-transform pixel values (strength)
             dict(
@@ -340,7 +353,7 @@ data = dict(
                 type="NormalizeShowerCoords",
                 center=coord_center,
                 scale=coord_scale,
-                extra_keys=("origin_coord", "start_coord"),
+                extra_keys=("origin_coord", "start_coord","trunk_start_coord"),
             ),
             dict(
                 type="LogTransform",
@@ -377,6 +390,7 @@ data = dict(
                     type="NormalizeShowerCoords",
                     center=coord_center,
                     scale=coord_scale,
+                    extra_keys=("origin_coord", "start_coord","trunk_start_coord"),
                 ),
                 dict(
                     type="LogTransform",

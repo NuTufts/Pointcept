@@ -1,13 +1,13 @@
 #!/bin/bash
 
 #SBATCH --job-name=showerfragment
-#SBATCH --output=showerfragment.p1cmp075.%j.%N.log
+#SBATCH --output=showerfragment.newtargets.p1cmp075.%j.%N.log
 #SBATCH --mem-per-cpu=2000
 #SBATCH --cpus-per-task=24
-#SBATCH --time=2-00:00:00
+#SBATCH --time=6-00:00:00
 #SBATCH --partition=wongjiradlab
 #SBATCH --gres=gpu:p100:4
-#SBATCH --error=showerfragment.p1cmp075.%j.%N.err
+#SBATCH --error=showerfragment.newtargets.p1cmp075.%j.%N.err
 
 # set the location of your copy of the repo here
 WORKDIR=/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept/
