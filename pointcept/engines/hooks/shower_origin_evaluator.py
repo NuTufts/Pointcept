@@ -120,6 +120,36 @@ class ShowerOriginEvaluator(HookBase):
                 if isinstance(input_dict[key], torch.Tensor):
                     input_dict[key] = input_dict[key].cuda(non_blocking=True)
 
+            # One-time eval-pipeline diagnostic on first batch: confirm
+            # the score-target key is actually arriving in input_dict, and
+            # that origin_coord differs from it for at least some samples
+            # (otherwise the anchor-bound vs vertex-target split is bogus).
+            if i == 0:
+                _has_st = score_target_key in input_dict
+                _types_present = "n/a"
+                if "origin_type" in input_dict:
+                    ot = input_dict["origin_type"]
+                    _types_present = sorted(set(
+                        ot.flatten().tolist()
+                        if isinstance(ot, torch.Tensor) else list(ot)
+                    ))
+                _diff_summary = "n/a"
+                if _has_st:
+                    oc = input_dict["origin_coord"]
+                    st = input_dict[score_target_key]
+                    if oc.shape == st.shape:
+                        diff = (oc - st).abs().max().item()
+                        _diff_summary = f"max|origin-score_target|={diff:.4f}"
+                self.trainer.logger.info(
+                    f"[EVAL-DIAG] input_dict keys: {sorted(input_dict.keys())}"
+                )
+                self.trainer.logger.info(
+                    f"[EVAL-DIAG] score_target_key='{score_target_key}' "
+                    f"in input_dict: {_has_st}; "
+                    f"origin_types in batch 0: {_types_present}; "
+                    f"{_diff_summary}"
+                )
+
             with torch.no_grad():
                 output_dict = self.trainer.model(input_dict)
 
