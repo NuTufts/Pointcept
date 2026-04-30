@@ -958,6 +958,53 @@ class ShowerOriginPredictorV3(nn.Module):
         # Optional: custom criteria if provided
         self.criteria = build_criteria(criteria) if criteria else None
 
+    @staticmethod
+    def _nan_check(tensor, where, sample_idx, sample_name, first_seen, logger):
+        """Detect NaN/Inf in `tensor`. Logs once per sample on first occurrence.
+
+        Returns the location string of the first NaN/Inf seen for this sample
+        (passed back in via `first_seen`), or None if still clean. Cheap:
+        a single isfinite+any reduction per call.
+
+        Args:
+            tensor: tensor to scan (any shape)
+            where: short string identifying the call site (e.g. "backbone_feats")
+            sample_idx: int, position in the batch
+            sample_name: str or None, dataset's name field for this sample
+            first_seen: None or str — first stage at which this sample went bad
+            logger: logging.Logger
+        """
+        if first_seen is not None:
+            return first_seen  # already flagged, don't re-log
+        bad = (~torch.isfinite(tensor)).any().item()
+        if not bad:
+            return None
+        n_nan = torch.isnan(tensor).sum().item()
+        n_inf = torch.isinf(tensor).sum().item()
+        finite = tensor[torch.isfinite(tensor)]
+        abs_max = float(finite.abs().max().item()) if finite.numel() else float("nan")
+        logger.warning(
+            f"[NaN-DIAG] sample {sample_idx} ({sample_name!r}) first non-finite "
+            f"at '{where}': shape={tuple(tensor.shape)}, "
+            f"nan={n_nan}, inf={n_inf}, "
+            f"finite_abs_max={abs_max:.4f}"
+        )
+        return where
+
+    @staticmethod
+    def _get_sample_name(input_dict, sample_idx):
+        """Extract the dataset's `name` field for a given sample index.
+
+        Pointcept's collate keeps string-valued keys as a list of strings
+        when batched, but a single sample may pass through as a bare string.
+        """
+        name = input_dict.get("name", None)
+        if name is None:
+            return None
+        if isinstance(name, (list, tuple)):
+            return name[sample_idx] if sample_idx < len(name) else str(name)
+        return str(name)
+
     def forward(self, input_dict):
         """
         Forward pass for multi-shower origin prediction.
@@ -1108,6 +1155,18 @@ class ShowerOriginPredictorV3(nn.Module):
                 )
                 shower_features = torch.cat([shower_features, padding], dim=0)
 
+            # --- NaN diagnostics (per-sample, only logs on first detection) ---
+            import logging as _logging
+            _dbg = _logging.getLogger("pointcept")
+            _sn = self._get_sample_name(input_dict, b)
+            _first = None
+            _first = self._nan_check(
+                sample_features, "backbone_feats", b, _sn, _first, _dbg
+            )
+            _first = self._nan_check(
+                shower_features, "shower_feats", b, _sn, _first, _dbg
+            )
+
             # --- Slot Attention (float32) ---
             with torch.amp.autocast('cuda', enabled=False):
                 shower_slots, _ = self.slot_attention(
@@ -1115,17 +1174,9 @@ class ShowerOriginPredictorV3(nn.Module):
                 )
                 shower_slots = shower_slots.squeeze(0)  # (K, D)
 
-            # Debug: log tensor stats at key points
-            # if self.training:
-            #     import logging as _logging
-            #     _dbg = _logging.getLogger("pointcept")
-            #     _dbg.info(
-            #         f"[sample {b}] backbone_feats: "
-            #         f"abs_max={sample_features.abs().max().item():.4f}, "
-            #         f"shower_feats({shower_features.shape[0]} pts): "
-            #         f"abs_max={shower_features.abs().max().item():.4f}, "
-            #         f"slots: abs_max={shower_slots.abs().max().item():.4f}"
-            #     )
+            _first = self._nan_check(
+                shower_slots, "slot_attention", b, _sn, _first, _dbg
+            )
 
             # --- Virtual grid (optional) ---
             if self.virtual_grid is not None:
@@ -1153,24 +1204,37 @@ class ShowerOriginPredictorV3(nn.Module):
             with torch.amp.autocast('cuda', enabled=False):
                 queries = shower_slots.float()
                 all_features_f32 = all_features.float()
+                _first = self._nan_check(
+                    all_features_f32, "cross_attn_kv_input",
+                    b, _sn, _first, _dbg,
+                )
                 for _layer_idx, layer in enumerate(self.cross_attn_layers):
                     queries = layer(
                         queries=queries,
                         keys=all_features_f32,
                         values=all_features_f32,
                     )
-                    if self.training:
-                        _dbg.info(
-                            f"[sample {b}] cross_attn[{_layer_idx}]: "
-                            f"queries abs_max={queries.abs().max().item():.4f}, "
-                            f"has_nan={torch.isnan(queries).any().item()}, "
-                            f"has_inf={torch.isinf(queries).any().item()}"
-                        )
+                    _first = self._nan_check(
+                        queries, f"cross_attn[{_layer_idx}]",
+                        b, _sn, _first, _dbg,
+                    )
                 queries = self.query_norm(queries)
+                _first = self._nan_check(
+                    queries, "query_norm", b, _sn, _first, _dbg,
+                )
 
             # --- Per-slot predictions ---
             per_slot_scores, per_slot_distances, per_slot_cls, per_slot_logits = (
                 self._compute_per_slot_predictions(all_features, queries)
+            )
+
+            _first = self._nan_check(
+                per_slot_logits[0], "score_head_logits",
+                b, _sn, _first, _dbg,
+            )
+            _first = self._nan_check(
+                per_slot_cls[0], "classification_head_logits",
+                b, _sn, _first, _dbg,
             )
 
             # --- Per-slot 3D origin regression (slot 0 only when K=1) ---
@@ -1187,7 +1251,15 @@ class ShowerOriginPredictorV3(nn.Module):
                             if shower_mask_all is not None else None,
                         fallback_coords=sample_coords,
                     )
+                    _first = self._nan_check(
+                        centroid, "fragment_centroid",
+                        b, _sn, _first, _dbg,
+                    )
                     offset = self.origin_regression_head(queries[0].float())
+                    _first = self._nan_check(
+                        offset, "regression_head_offset",
+                        b, _sn, _first, _dbg,
+                    )
                     pred_origin = centroid + offset
 
             # --- Loss ---
