@@ -825,6 +825,14 @@ class ShowerOriginPredictorV3(nn.Module):
         score_target_key: str = "origin_coord",
         enable_origin_regression: bool = False,
         origin_regression_loss_weight: float = 0.5,
+        # Defensive clamp on the frozen backbone's per-point output magnitude.
+        # The backbone is frozen so its output range is uncontrolled; certain
+        # event topologies produce activations with abs_max well above 10,
+        # which propagates into the combiner and head MLPs and occasionally
+        # produces NaN downstream. Clamping bounds every downstream path
+        # identically without adding parameters. Default None (off) for
+        # backwards compat; new training runs should set ~10.0.
+        event_features_clamp: float | None = None,
         # Origin classification
         num_origin_classes: int = 3,
         # Reco-fragment classification (5 classes: +ghost, +true_track)
@@ -855,6 +863,7 @@ class ShowerOriginPredictorV3(nn.Module):
         self.score_target_key = score_target_key
         self.enable_origin_regression = enable_origin_regression
         self.origin_regression_loss_weight = origin_regression_loss_weight
+        self.event_features_clamp = event_features_clamp
 
         # Build backbone (Sonata model)
         self.backbone = build_model(backbone)
@@ -996,6 +1005,15 @@ class ShowerOriginPredictorV3(nn.Module):
         event_features = point.feat  # (N_total_out, D) — concatenated across batch
         real_coords = point.coord  # (N_total_out, 3)
 
+        # Defensive clamp on the frozen backbone's per-point output. Bounds
+        # every downstream path (slot attention input, cross-attention K/V,
+        # and the combiner's concat input) identically — so a numerically
+        # extreme backbone activation can no longer cascade into NaN through
+        # the head MLPs. No-op when event_features_clamp is None (legacy).
+        if self.event_features_clamp is not None:
+            x = float(self.event_features_clamp)
+            event_features = event_features.clamp(-x, x)
+
         # ==================================================================
         # 2. Determine batch size and per-sample boundaries
         # ==================================================================
@@ -1098,16 +1116,16 @@ class ShowerOriginPredictorV3(nn.Module):
                 shower_slots = shower_slots.squeeze(0)  # (K, D)
 
             # Debug: log tensor stats at key points
-            if self.training:
-                import logging as _logging
-                _dbg = _logging.getLogger("pointcept")
-                _dbg.info(
-                    f"[sample {b}] backbone_feats: "
-                    f"abs_max={sample_features.abs().max().item():.4f}, "
-                    f"shower_feats({shower_features.shape[0]} pts): "
-                    f"abs_max={shower_features.abs().max().item():.4f}, "
-                    f"slots: abs_max={shower_slots.abs().max().item():.4f}"
-                )
+            # if self.training:
+            #     import logging as _logging
+            #     _dbg = _logging.getLogger("pointcept")
+            #     _dbg.info(
+            #         f"[sample {b}] backbone_feats: "
+            #         f"abs_max={sample_features.abs().max().item():.4f}, "
+            #         f"shower_feats({shower_features.shape[0]} pts): "
+            #         f"abs_max={shower_features.abs().max().item():.4f}, "
+            #         f"slots: abs_max={shower_slots.abs().max().item():.4f}"
+            #     )
 
             # --- Virtual grid (optional) ---
             if self.virtual_grid is not None:

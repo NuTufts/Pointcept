@@ -104,9 +104,15 @@ class ShowerOriginEvaluator(HookBase):
         gaussian_sigma = model.gaussian_sigma
         score_target_key = getattr(model, "score_target_key", "origin_coord")
         all_peak_distances = []  # peak vs score_target
-        all_origin_errors = []   # pred_origin vs origin_coord
+        all_origin_errors = []   # pred_origin vs origin_coord (finite only)
         all_origin_errors_anchor = []   # subset where origin == score_target
         all_origin_errors_vertex = []   # subset where origin != score_target
+        # Count of samples where the regression head produced NaN/Inf — so a
+        # numerically-unstable head is visible as a non-zero count rather than
+        # silently poisoning the average. (A single NaN in the list above
+        # would otherwise contaminate np.mean → NaN.)
+        n_origin_pred_seen = 0
+        n_origin_pred_nonfinite = 0
 
         for i, input_dict in enumerate(self.trainer.val_loader):
             # Move tensors to GPU
@@ -258,11 +264,21 @@ class ShowerOriginEvaluator(HookBase):
                     self.trainer.storage.put_scalar("val_fn", fn)
                     all_peak_distances.append(peak_distance)
                     if origin_error is not None:
-                        all_origin_errors.append(origin_error)
-                        if anchor_bound:
-                            all_origin_errors_anchor.append(origin_error)
+                        n_origin_pred_seen += 1
+                        # Filter NaN/Inf at append time. A single non-finite
+                        # value in the list would otherwise turn np.mean and
+                        # np.median into NaN, hiding the actual error of the
+                        # well-behaved samples. The skip count is logged
+                        # separately so a misbehaving regression head is
+                        # visible as a non-zero rate.
+                        if np.isfinite(origin_error):
+                            all_origin_errors.append(origin_error)
+                            if anchor_bound:
+                                all_origin_errors_anchor.append(origin_error)
+                            else:
+                                all_origin_errors_vertex.append(origin_error)
                         else:
-                            all_origin_errors_vertex.append(origin_error)
+                            n_origin_pred_nonfinite += 1
                 self.trainer.storage.put_scalar("val_cls_correct", cls_correct)
                 self.trainer.storage.put_scalar("val_cls_total", cls_total)
 
@@ -299,11 +315,16 @@ class ShowerOriginEvaluator(HookBase):
         def _mean_med(arr):
             if not arr:
                 return 0.0, 0.0
-            return float(np.mean(arr)), float(np.median(arr))
+            # nanmean/nanmedian as a fallback in case any non-finite value
+            # slipped past the append-time filter above.
+            return float(np.nanmean(arr)), float(np.nanmedian(arr))
 
         mean_orig_err, median_orig_err = _mean_med(all_origin_errors)
         mean_orig_err_anchor, median_orig_err_anchor = _mean_med(all_origin_errors_anchor)
         mean_orig_err_vertex, median_orig_err_vertex = _mean_med(all_origin_errors_vertex)
+        origin_pred_nonfinite_frac = (
+            n_origin_pred_nonfinite / max(n_origin_pred_seen, 1)
+        )
 
         # Classification accuracy
         total_cls_correct = self.trainer.storage.history("val_cls_correct").total
@@ -338,14 +359,18 @@ class ShowerOriginEvaluator(HookBase):
                 cls=cls_accuracy,
             )
         )
-        if all_origin_errors:
+        if n_origin_pred_seen > 0:
             self.trainer.logger.info(
                 "  OriginPredErr: mean={oe:.4f} median={moe:.4f} "
                 "(anchor-bound: mean={aem:.4f}/n={an}, "
-                "vertex-target: mean={vem:.4f}/n={vn})".format(
+                "vertex-target: mean={vem:.4f}/n={vn}) "
+                "non-finite preds: {nfn}/{tot} ({frac:.1%})".format(
                     oe=mean_orig_err, moe=median_orig_err,
                     aem=mean_orig_err_anchor, an=len(all_origin_errors_anchor),
                     vem=mean_orig_err_vertex, vn=len(all_origin_errors_vertex),
+                    nfn=n_origin_pred_nonfinite,
+                    tot=n_origin_pred_seen,
+                    frac=origin_pred_nonfinite_frac,
                 )
             )
         for name, acc in per_class_acc.items():
@@ -393,6 +418,11 @@ class ShowerOriginEvaluator(HookBase):
                         "val/origin_pred_error_vertex_target_mean",
                         mean_orig_err_vertex, current_epoch,
                     )
+            if n_origin_pred_seen > 0:
+                self.trainer.writer.add_scalar(
+                    "val/origin_pred_nonfinite_frac",
+                    origin_pred_nonfinite_frac, current_epoch,
+                )
             for name, acc in per_class_acc.items():
                 if not np.isnan(acc):
                     self.trainer.writer.add_scalar(
@@ -419,6 +449,10 @@ class ShowerOriginEvaluator(HookBase):
                 if all_origin_errors_vertex:
                     log_dict["val/origin_pred_error_vertex_target_mean"] = (
                         mean_orig_err_vertex
+                    )
+                if n_origin_pred_seen > 0:
+                    log_dict["val/origin_pred_nonfinite_frac"] = (
+                        origin_pred_nonfinite_frac
                     )
                 for name, acc in per_class_acc.items():
                     if not np.isnan(acc):
