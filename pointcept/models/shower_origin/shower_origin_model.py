@@ -1005,6 +1005,51 @@ class ShowerOriginPredictorV3(nn.Module):
             return name[sample_idx] if sample_idx < len(name) else str(name)
         return str(name)
 
+    @staticmethod
+    def _install_grad_check(tensor, where, sample_idx, sample_name, state, logger):
+        """Install a backward hook that logs the first non-finite gradient.
+
+        Hooks fire in backward order (reverse of forward call order). The
+        FIRST hook in backward time to see NaN/Inf in its incoming gradient
+        identifies the operation that introduced the bad gradient — i.e.,
+        the op whose backward computation is numerically unstable for this
+        sample's saved forward intermediates. Subsequent hooks downstream
+        are suppressed via the shared `state` flag, so we get exactly one
+        clean line per affected sample per backward pass.
+
+        Args:
+            tensor: a tensor produced during forward (must have grad)
+            where: short string identifying the call site
+            sample_idx: int, position in the batch
+            sample_name: str or None
+            state: 1-element list `[False]`. The hook flips it to True after
+                logging so subsequent (more-upstream) hooks for the same
+                sample stay quiet. Caller creates a fresh state per sample.
+            logger: logging.Logger
+        """
+        if not tensor.requires_grad:
+            return  # frozen-input tensor; nothing to hook
+
+        def _hook(grad):
+            if state[0] or grad is None:
+                return
+            # Single host sync to detect non-finite values.
+            if torch.isfinite(grad).all().item():
+                return
+            n_nan = torch.isnan(grad).sum().item()
+            n_inf = torch.isinf(grad).sum().item()
+            finite = grad[torch.isfinite(grad)]
+            abs_max = float(finite.abs().max().item()) if finite.numel() else float("nan")
+            logger.warning(
+                f"[GRAD-NaN-DIAG] sample {sample_idx} ({sample_name!r}) "
+                f"first non-finite GRADIENT at '{where}' (backward order): "
+                f"shape={tuple(grad.shape)}, nan={n_nan}, inf={n_inf}, "
+                f"finite_abs_max={abs_max:.4f}"
+            )
+            state[0] = True
+
+        tensor.register_hook(_hook)
+
     def forward(self, input_dict):
         """
         Forward pass for multi-shower origin prediction.
@@ -1156,10 +1201,18 @@ class ShowerOriginPredictorV3(nn.Module):
                 shower_features = torch.cat([shower_features, padding], dim=0)
 
             # --- NaN diagnostics (per-sample, only logs on first detection) ---
+            # Forward checks log when a tensor itself contains NaN/Inf.
+            # Backward grad-checks (installed below) log when the first
+            # gradient flowing back through a tensor is NaN/Inf — useful
+            # because backward NaN can arise even when forward is clean
+            # (e.g., 0/0 in a Jacobian saved from forward).
             import logging as _logging
             _dbg = _logging.getLogger("pointcept")
             _sn = self._get_sample_name(input_dict, b)
             _first = None
+            # Per-sample shared state for backward hooks. Mutable so the
+            # closure can flip it after the first hook logs.
+            _grad_state = [False]
             _first = self._nan_check(
                 sample_features, "backbone_feats", b, _sn, _first, _dbg
             )
@@ -1176,6 +1229,9 @@ class ShowerOriginPredictorV3(nn.Module):
 
             _first = self._nan_check(
                 shower_slots, "slot_attention", b, _sn, _first, _dbg
+            )
+            self._install_grad_check(
+                shower_slots, "shower_slots", b, _sn, _grad_state, _dbg,
             )
 
             # --- Virtual grid (optional) ---
@@ -1218,9 +1274,17 @@ class ShowerOriginPredictorV3(nn.Module):
                         queries, f"cross_attn[{_layer_idx}]",
                         b, _sn, _first, _dbg,
                     )
+                    self._install_grad_check(
+                        queries, f"queries_after_cross_attn[{_layer_idx}]",
+                        b, _sn, _grad_state, _dbg,
+                    )
                 queries = self.query_norm(queries)
                 _first = self._nan_check(
                     queries, "query_norm", b, _sn, _first, _dbg,
+                )
+                self._install_grad_check(
+                    queries, "queries_after_query_norm",
+                    b, _sn, _grad_state, _dbg,
                 )
 
             # --- Per-slot predictions ---
@@ -1235,6 +1299,19 @@ class ShowerOriginPredictorV3(nn.Module):
             _first = self._nan_check(
                 per_slot_cls[0], "classification_head_logits",
                 b, _sn, _first, _dbg,
+            )
+            # Backward grad checkpoints on the head outputs. These fire
+            # FIRST in backward order — if any of them sees a NaN gradient,
+            # the corresponding loss-function backward (BCE / CE / smooth_l1)
+            # is the source. If they're clean, the NaN is introduced by a
+            # head-internal op or further upstream.
+            self._install_grad_check(
+                per_slot_logits[0], "score_logits",
+                b, _sn, _grad_state, _dbg,
+            )
+            self._install_grad_check(
+                per_slot_cls[0], "cls_logits",
+                b, _sn, _grad_state, _dbg,
             )
 
             # --- Per-slot 3D origin regression (slot 0 only when K=1) ---
@@ -1261,6 +1338,14 @@ class ShowerOriginPredictorV3(nn.Module):
                         b, _sn, _first, _dbg,
                     )
                     pred_origin = centroid + offset
+                    self._install_grad_check(
+                        offset, "regression_offset",
+                        b, _sn, _grad_state, _dbg,
+                    )
+                    self._install_grad_check(
+                        pred_origin, "pred_origin",
+                        b, _sn, _grad_state, _dbg,
+                    )
 
             # --- Loss ---
             if self.training or origin_coord_all is not None:
