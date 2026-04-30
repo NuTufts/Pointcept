@@ -1466,10 +1466,21 @@ class ShowerOriginPredictorV3(nn.Module):
         # this, DDP raises "Expected to have finished reduction" on ranks
         # whose batch happens to draw such a fragment, because the combiner,
         # score head, and regression head receive no gradients.
+        #
+        # Critically, this must be NaN/Inf-safe: 0.0 * NaN = NaN in IEEE 754,
+        # so any internal numerical instability in a head (e.g. LayerNorm
+        # division-by-zero on a degenerate input) would otherwise poison the
+        # entire batch loss even though the real loss components below all
+        # use nan_to_num and are individually finite. We sanitize first,
+        # then multiply by zero — autograd still records the tensor as
+        # "used" so DDP's reducer is happy.
         with torch.amp.autocast('cuda', enabled=False):
-            keep_alive = 0.0 * logits.float().sum() + 0.0 * cls_logits.float().sum()
+            def _ka(x):
+                safe = torch.nan_to_num(x.float(), nan=0.0, posinf=0.0, neginf=0.0)
+                return 0.0 * safe.sum()
+            keep_alive = _ka(logits) + _ka(cls_logits)
             if pred_origin is not None:
-                keep_alive = keep_alive + 0.0 * pred_origin.float().sum()
+                keep_alive = keep_alive + _ka(pred_origin)
         total_loss = total_loss + keep_alive
 
         return total_loss
