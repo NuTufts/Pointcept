@@ -146,13 +146,32 @@ model = dict(
     hidden_channels=256,
     predict_distance=False,
 
+    # New target routing:
+    # - score head Gaussian peak target = trunk-fragment startpt
+    #   (always at a real spacepoint; shared across same-shower fragments
+    #    so the score head also serves as a clustering anchor).
+    # - new per-slot origin regression head predicts a 3D offset from the
+    #   fragment centroid.
+    score_target_key="trunk_start_coord",
+    enable_origin_regression=True,
+    origin_regression_loss_weight=0.5,
+
+    # Defensive clamp on the frozen backbone's per-point output magnitude.
+    # The backbone is frozen so its output range is uncontrolled and is the
+    # dominant magnitude source feeding the score head + combiner. Clamping
+    # bounds every downstream head input identically and removes the
+    # NaN-correlation we saw with abs_max > ~10. No effect on classification
+    # (which only sees query slots, not event_features).
+    event_features_clamp=10.0,
+
     # Loss weights
     score_loss_weight=1.0,
-    distance_loss_weight=0.1,
     classification_loss_weight=0.5,
 
-    # Gaussian sigma for soft labels (normalized units: 4cm / 179.55 ≈ 0.022)
-    gaussian_sigma=0.022,
+    # Gaussian sigma for soft labels (normalized units: 2cm / 179.55 ≈ 0.011)
+    # Tightened from 0.022 since the peak now sits on a real spacepoint
+    # (the trunk fragment startpt) rather than potentially in empty space.
+    gaussian_sigma=0.011,
 
     # Origin classification: 3 base classes (INSIDE, OUTSIDE, ON_TRACK)
     # + 2 reco classes (GHOST, TRUE_TRACK) = 5 total via reco head
@@ -203,6 +222,7 @@ _collect_keys = (
     "origin_type",
     "origin_distance",
     "start_coord",
+    "trunk_start_coord",
 )
 
 # Common dataset kwargs
@@ -212,7 +232,14 @@ _dataset_common = dict(
     log_transform_edep=False,  # LogTransform handles this in pipeline
     coord_scale=1.0,
     wire_scale=1.0/3456.0,
-    min_shower_points=20,
+    min_shower_points=20,           # legacy knob, unused by V3 dataset filter
+    # Raise to 50 (from default 20) so fragments have enough points to
+    # survive GridSample's mode="train" random-rep voxelization without
+    # collapsing the shower mask to zero. With 20 raw points, a small
+    # fragment embedded in dense surrounding activity has a non-trivial
+    # probability that all shower-point voxels lose their rep to a
+    # non-shower neighbor — producing the empty-mask NaN cascade.
+    min_fragment_points=50,
     include_ghosts=False,  # Match v6 backbone pretraining (no ghosts)
     max_showers_per_event=200,
 )
@@ -221,7 +248,7 @@ _dataset_common = dict(
 # Dataset configuration
 # =============================================================================
 dataset_type = "ShowerOriginDataset"
-data_root = "data/lartpc"
+data_root = "./"
 
 data = dict(
     num_classes=1,
@@ -256,7 +283,7 @@ data = dict(
                 type="NormalizeShowerCoords",
                 center=coord_center,
                 scale=coord_scale,
-                extra_keys=("origin_coord", "start_coord"),
+                extra_keys=("origin_coord", "start_coord", "trunk_start_coord"),
             ),
             # 4. Log-transform pixel values (strength)
             dict(
@@ -329,7 +356,7 @@ data = dict(
                 type="NormalizeShowerCoords",
                 center=coord_center,
                 scale=coord_scale,
-                extra_keys=("origin_coord", "start_coord"),
+                extra_keys=("origin_coord", "start_coord", "trunk_start_coord"),
             ),
             dict(
                 type="LogTransform",

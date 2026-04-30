@@ -3,7 +3,15 @@ Shower Origin Evaluator Hook
 
 Validation metrics for the K=1 shower origin prediction model:
 - Origin Recall / Non-origin Specificity (score threshold metrics)
-- Peak Distance (localization accuracy)
+- Peak Distance from score-head argmax to score target (= trunk_start_coord
+  under the new scheme, or origin_coord under the legacy one).
+- Origin Pred Error: 3D distance from the new regression head's predicted
+  origin to the ground-truth origin_coord, split by routing scenario:
+    * anchor-bound: origin_coord == score_target (e.g. type=1 outside-TPC,
+      or type=0 with unobservable vertex). Regression head is expected to
+      reproduce the score-target / trunk-start.
+    * vertex-target: origin_coord != score_target (e.g. type=0 with visible
+      pi0 vertex). Regression head must learn the displacement.
 - Origin Type Classification Accuracy (per-class and overall)
 
 Follows SemSegEvaluator patterns for logging and CheckpointSaver integration.
@@ -94,13 +102,53 @@ class ShowerOriginEvaluator(HookBase):
 
         model = getattr(self.trainer.model, "module", self.trainer.model)
         gaussian_sigma = model.gaussian_sigma
-        all_peak_distances = []  # track individually for median
+        score_target_key = getattr(model, "score_target_key", "origin_coord")
+        all_peak_distances = []  # peak vs score_target
+        all_origin_errors = []   # pred_origin vs origin_coord (finite only)
+        all_origin_errors_anchor = []   # subset where origin == score_target
+        all_origin_errors_vertex = []   # subset where origin != score_target
+        # Count of samples where the regression head produced NaN/Inf — so a
+        # numerically-unstable head is visible as a non-zero count rather than
+        # silently poisoning the average. (A single NaN in the list above
+        # would otherwise contaminate np.mean → NaN.)
+        n_origin_pred_seen = 0
+        n_origin_pred_nonfinite = 0
 
         for i, input_dict in enumerate(self.trainer.val_loader):
             # Move tensors to GPU
             for key in input_dict.keys():
                 if isinstance(input_dict[key], torch.Tensor):
                     input_dict[key] = input_dict[key].cuda(non_blocking=True)
+
+            # One-time eval-pipeline diagnostic on first batch: confirm
+            # the score-target key is actually arriving in input_dict, and
+            # that origin_coord differs from it for at least some samples
+            # (otherwise the anchor-bound vs vertex-target split is bogus).
+            if i == 0:
+                _has_st = score_target_key in input_dict
+                _types_present = "n/a"
+                if "origin_type" in input_dict:
+                    ot = input_dict["origin_type"]
+                    _types_present = sorted(set(
+                        ot.flatten().tolist()
+                        if isinstance(ot, torch.Tensor) else list(ot)
+                    ))
+                _diff_summary = "n/a"
+                if _has_st:
+                    oc = input_dict["origin_coord"]
+                    st = input_dict[score_target_key]
+                    if oc.shape == st.shape:
+                        diff = (oc - st).abs().max().item()
+                        _diff_summary = f"max|origin-score_target|={diff:.4f}"
+                self.trainer.logger.info(
+                    f"[EVAL-DIAG] input_dict keys: {sorted(input_dict.keys())}"
+                )
+                self.trainer.logger.info(
+                    f"[EVAL-DIAG] score_target_key='{score_target_key}' "
+                    f"in input_dict: {_has_st}; "
+                    f"origin_types in batch 0: {_types_present}; "
+                    f"{_diff_summary}"
+                )
 
             with torch.no_grad():
                 output_dict = self.trainer.model(input_dict)
@@ -119,22 +167,38 @@ class ShowerOriginEvaluator(HookBase):
             else:
                 cls_out = [cls_out[j] for j in range(cls_out.shape[0])]
 
-            # Parse batched origin_coord and origin_type
+            # Parse batched origin_coord, score_target_coord, origin_type,
+            # and (when present) origin_pred_coord.
             origin_coord_raw = input_dict["origin_coord"]
             origin_type_raw = input_dict.get("origin_type", None)
+            score_target_raw = input_dict.get(score_target_key, None)
+            if score_target_raw is None:
+                # Fallback: score target == origin_coord (legacy V3 behavior)
+                score_target_raw = origin_coord_raw
+
+            origin_pred_raw = output_dict.get("origin_pred_coord", None)
+
             B_sample = len(scores_list)
 
-            if origin_coord_raw.dim() == 1 and B_sample > 1:
-                origin_coords = origin_coord_raw.view(B_sample, 3)
-            elif origin_coord_raw.dim() == 1:
-                origin_coords = origin_coord_raw.unsqueeze(0)
-            else:
-                origin_coords = origin_coord_raw
+            def _to_b3(t):
+                if t is None:
+                    return None
+                if t.dim() == 1 and B_sample > 1:
+                    return t.view(B_sample, 3)
+                if t.dim() == 1:
+                    return t.unsqueeze(0)
+                return t
+
+            origin_coords = _to_b3(origin_coord_raw)
+            score_targets = _to_b3(score_target_raw)
+            origin_preds = _to_b3(origin_pred_raw)
 
             for j in range(B_sample):
                 pred_scores = scores_list[j]
                 coords = coords_list[j]
                 origin_coord = origin_coords[j]
+                score_target = score_targets[j]
+                origin_pred = origin_preds[j] if origin_preds is not None else None
 
                 # Determine origin type for this sample
                 gt_cls = None
@@ -156,10 +220,14 @@ class ShowerOriginEvaluator(HookBase):
 
                 tp = fp = tn = fn = 0
                 peak_distance = None
+                origin_error = None
+                anchor_bound = None  # True when origin == score_target
                 if has_valid_origin:
-                    # Recompute GT Gaussian at output resolution
+                    # Recompute GT Gaussian at output resolution. The peak now
+                    # sits at score_target (= trunk_start_coord under the new
+                    # scheme), not at origin_coord.
                     gt_dist = torch.norm(
-                        coords - origin_coord.unsqueeze(0), dim=-1
+                        coords - score_target.unsqueeze(0), dim=-1
                     )
                     gt_scores = torch.exp(
                         -0.5 * (gt_dist / gaussian_sigma) ** 2
@@ -175,12 +243,25 @@ class ShowerOriginEvaluator(HookBase):
                     tn = (pred_neg & gt_neg).sum().item()
                     fn = (pred_neg & gt_pos).sum().item()
 
-                    # Peak localization
+                    # Peak localization vs score target
                     peak_idx = pred_scores.argmax()
                     peak_coord = coords[peak_idx]
                     peak_distance = torch.norm(
-                        peak_coord - origin_coord
+                        peak_coord - score_target
                     ).item()
+
+                    # Origin regression error vs ground-truth origin_coord
+                    if origin_pred is not None:
+                        origin_error = torch.norm(
+                            origin_pred - origin_coord
+                        ).item()
+                        # "anchor-bound" when origin_coord == score_target,
+                        # i.e. regression target degenerates to the trunk start
+                        # (type=1 outside, or type=0 unobservable vertex).
+                        anchor_bound = bool(
+                            torch.allclose(origin_coord, score_target,
+                                            atol=1e-5, rtol=0.0)
+                        )
 
                 # --- Classification ---
                 cls_correct = 0
@@ -212,6 +293,22 @@ class ShowerOriginEvaluator(HookBase):
                     self.trainer.storage.put_scalar("val_tn", tn)
                     self.trainer.storage.put_scalar("val_fn", fn)
                     all_peak_distances.append(peak_distance)
+                    if origin_error is not None:
+                        n_origin_pred_seen += 1
+                        # Filter NaN/Inf at append time. A single non-finite
+                        # value in the list would otherwise turn np.mean and
+                        # np.median into NaN, hiding the actual error of the
+                        # well-behaved samples. The skip count is logged
+                        # separately so a misbehaving regression head is
+                        # visible as a non-zero rate.
+                        if np.isfinite(origin_error):
+                            all_origin_errors.append(origin_error)
+                            if anchor_bound:
+                                all_origin_errors_anchor.append(origin_error)
+                            else:
+                                all_origin_errors_vertex.append(origin_error)
+                        else:
+                            n_origin_pred_nonfinite += 1
                 self.trainer.storage.put_scalar("val_cls_correct", cls_correct)
                 self.trainer.storage.put_scalar("val_cls_total", cls_total)
 
@@ -243,6 +340,20 @@ class ShowerOriginEvaluator(HookBase):
         )
         median_peak_distance = (
             float(np.median(all_peak_distances)) if all_peak_distances else 0.0
+        )
+
+        def _mean_med(arr):
+            if not arr:
+                return 0.0, 0.0
+            # nanmean/nanmedian as a fallback in case any non-finite value
+            # slipped past the append-time filter above.
+            return float(np.nanmean(arr)), float(np.nanmedian(arr))
+
+        mean_orig_err, median_orig_err = _mean_med(all_origin_errors)
+        mean_orig_err_anchor, median_orig_err_anchor = _mean_med(all_origin_errors_anchor)
+        mean_orig_err_vertex, median_orig_err_vertex = _mean_med(all_origin_errors_vertex)
+        origin_pred_nonfinite_frac = (
+            n_origin_pred_nonfinite / max(n_origin_pred_seen, 1)
         )
 
         # Classification accuracy
@@ -278,6 +389,20 @@ class ShowerOriginEvaluator(HookBase):
                 cls=cls_accuracy,
             )
         )
+        if n_origin_pred_seen > 0:
+            self.trainer.logger.info(
+                "  OriginPredErr: mean={oe:.4f} median={moe:.4f} "
+                "(anchor-bound: mean={aem:.4f}/n={an}, "
+                "vertex-target: mean={vem:.4f}/n={vn}) "
+                "non-finite preds: {nfn}/{tot} ({frac:.1%})".format(
+                    oe=mean_orig_err, moe=median_orig_err,
+                    aem=mean_orig_err_anchor, an=len(all_origin_errors_anchor),
+                    vem=mean_orig_err_vertex, vn=len(all_origin_errors_vertex),
+                    nfn=n_origin_pred_nonfinite,
+                    tot=n_origin_pred_seen,
+                    frac=origin_pred_nonfinite_frac,
+                )
+            )
         for name, acc in per_class_acc.items():
             if not np.isnan(acc):
                 self.trainer.logger.info(
@@ -306,6 +431,28 @@ class ShowerOriginEvaluator(HookBase):
             self.trainer.writer.add_scalar(
                 "val/cls_accuracy", cls_accuracy, current_epoch
             )
+            if all_origin_errors:
+                self.trainer.writer.add_scalar(
+                    "val/origin_pred_error_mean", mean_orig_err, current_epoch
+                )
+                self.trainer.writer.add_scalar(
+                    "val/origin_pred_error_median", median_orig_err, current_epoch
+                )
+                if all_origin_errors_anchor:
+                    self.trainer.writer.add_scalar(
+                        "val/origin_pred_error_anchor_bound_mean",
+                        mean_orig_err_anchor, current_epoch,
+                    )
+                if all_origin_errors_vertex:
+                    self.trainer.writer.add_scalar(
+                        "val/origin_pred_error_vertex_target_mean",
+                        mean_orig_err_vertex, current_epoch,
+                    )
+            if n_origin_pred_seen > 0:
+                self.trainer.writer.add_scalar(
+                    "val/origin_pred_nonfinite_frac",
+                    origin_pred_nonfinite_frac, current_epoch,
+                )
             for name, acc in per_class_acc.items():
                 if not np.isnan(acc):
                     self.trainer.writer.add_scalar(
@@ -322,6 +469,21 @@ class ShowerOriginEvaluator(HookBase):
                     "val/median_peak_distance": median_peak_distance,
                     "val/cls_accuracy": cls_accuracy,
                 }
+                if all_origin_errors:
+                    log_dict["val/origin_pred_error_mean"] = mean_orig_err
+                    log_dict["val/origin_pred_error_median"] = median_orig_err
+                if all_origin_errors_anchor:
+                    log_dict["val/origin_pred_error_anchor_bound_mean"] = (
+                        mean_orig_err_anchor
+                    )
+                if all_origin_errors_vertex:
+                    log_dict["val/origin_pred_error_vertex_target_mean"] = (
+                        mean_orig_err_vertex
+                    )
+                if n_origin_pred_seen > 0:
+                    log_dict["val/origin_pred_nonfinite_frac"] = (
+                        origin_pred_nonfinite_frac
+                    )
                 for name, acc in per_class_acc.items():
                     if not np.isnan(acc):
                         log_dict[f"val/cls_{name}_acc"] = acc

@@ -12,20 +12,35 @@ HDF5 format (from C++ ShowerFragmentOriginMaker):
    - shower_fragments/istrunk: (F,) int
    - shower_fragments/type: (F,) int — 0=nu-inside, 1=outside, 2=cosmic-inside
    - shower_fragments/startpt: (F, 3) float
-   - shower_fragments/originpt: (F, 3) float — prediction target (moved to startpt for outside showers)
-   - shower_fragments/pret0shiftedoriginpt: (F, 4) float — true MC origin (x,y,z,t), no t0 shift
+   - shower_fragments/originpt: (F, 3) float — particle creation point (apparent;
+     for outside-TPC showers in C++, set to that fragment's own startpt)
+   - shower_fragments/pret0shiftedoriginpt: (F, 4) float — true MC origin (x,y,z,t),
+     no t0 shift (NOT used as a learning target — the drift time required to map
+     it to apparent coordinates is not inferrable from spacepoints alone).
    - shower_fragments/pointindices_flat: (T,) long
    - shower_fragments/pointindices_counts: (F,) int
+   - shower_fragments/nu_vertex_is_visible: int (scalar) — 1 if a neutrino vertex
+     keypoint (kNuVertex) exists in the event, 0 otherwise.
 
-   Origin type is determined in C++ using pret0shiftedoriginpt to check
-   if the true origin is inside/outside the TPC.
-   - shower_fragments/nu_vertex_is_visible: int (scalar) — 1 if a neutrino
-     vertex keypoint (kNuVertex) exists, 0 otherwise.
+Targets emitted by this dataset (in coord_scale-applied units):
 
-   For type-0 (nu-inside) fragments, the origin is overridden to the trunk
-   startpt when BOTH: (a) nu_vertex_is_visible==0, and (b) there is only
-   one visible neutrino-origin shower. In this case the vertex cannot be
-   inferred from the available information.
+   - trunk_start_coord: per-fragment, equals the startpt of the trunk fragment
+     (istrunk==1) of the same shower (same trackid). Used as the score-head
+     Gaussian-peak target so trunk and secondary fragments share the same
+     anchor — this gives the score head a clusterable per-shower signal and
+     guarantees the peak target is always at a real spacepoint.
+
+   - origin_coord: per-fragment regression target for the new origin head.
+     Routing:
+       * type=0, vertex observable     -> stored originpt (e.g. pi0 vertex)
+       * type=0, vertex unobservable   -> trunk_start_coord
+       * type=1 (outside-TPC)          -> trunk_start_coord
+       * type=2 (cosmic-inside)        -> stored originpt
+     "Vertex observable" means nu_vertex_is_visible==1 OR there are >=2
+     visible nu-origin (type=0) showers in the event.
+
+   - start_coord: per-fragment startpt (NOT used in loss; kept for downstream
+     reference and visualization).
 """
 
 import os
@@ -85,6 +100,7 @@ class ShowerOriginDataset(DefaultDataset):
         "origin_type",
         "origin_distance",
         "start_coord",
+        "trunk_start_coord",
     ]
 
     ORIGIN_TYPES = ["inside", "outside", "on_track"]
@@ -276,12 +292,10 @@ class ShowerOriginDataset(DefaultDataset):
             shower_masks_list = []
             origin_coords_list = []
             start_coords_list = []
+            trunk_start_coords_list = []
             origin_types_list = []
-            is_vertex_list = []
             particle_pids_list = []
             fragment_trackids_list = []
-
-            n_inside = 0
 
             if 'shower_fragments' in entry:
                 sf = entry['shower_fragments']
@@ -296,7 +310,6 @@ class ShowerOriginDataset(DefaultDataset):
                     index_remap = None
 
                 num_frags = int(sf.attrs.get('num_fragments', 0))
-                #print("num fragments: ",num_frags)
                 if num_frags > 0:
                     trackids = sf['trackid'][:]
                     pids = sf['pid'][:]
@@ -308,14 +321,27 @@ class ShowerOriginDataset(DefaultDataset):
                     index_counts = sf['pointindices_counts'][:]
 
                     # Load nu_vertex_is_visible flag (single scalar).
-                    # 1 = a neutrino vertex keypoint (kNuVertex) exists,
-                    # meaning the vertex is visible from other particles.
+                    # 1 = a neutrino vertex keypoint (kNuVertex) exists.
                     if 'nu_vertex_is_visible' in sf:
                         nu_vtx_visible = int(sf['nu_vertex_is_visible'][()])
                     else:
                         nu_vtx_visible = 1  # default: assume visible for old data
 
-                    # First pass: count unique visible nu-origin (type-0) trackids
+                    # Build trunk_startpt[trackid] for ALL trackids that have a
+                    # trunk fragment, regardless of visibility. Used as the
+                    # score-head peak target for every fragment of that shower
+                    # and as the regression target in the unobservable cases.
+                    trunk_startpt = {}
+                    for i in range(num_frags):
+                        if int(istrunk[i]) == 1:
+                            tid = int(trackids[i])
+                            trunk_startpt[tid] = startpts[i].astype(np.float32)
+
+                    # Count visible (kept) nu-origin (type=0) showers to decide
+                    # whether the nu vertex is observable. The vertex is
+                    # "observable" if either nu_vertex_is_visible==1 (sibling
+                    # particle activity at the vertex) or >=2 type-0 showers
+                    # are visible (vertex inferable from intersection).
                     visible_nu_trackids = set()
                     offset = 0
                     for i in range(num_frags):
@@ -323,28 +349,11 @@ class ShowerOriginDataset(DefaultDataset):
                         if count >= self.min_fragment_points and int(frag_types[i]) == 0:
                             visible_nu_trackids.add(int(trackids[i]))
                         offset += count
-                    n_visible_nu_showers = len(visible_nu_trackids)
-
-                    # Determine if type-0 origins should be moved to startpt:
-                    # When the nu vertex is NOT visible AND there is only
-                    # one visible nu-origin shower, the vertex cannot be
-                    # inferred — override origin to trunk startpt.
-                    override_nu_origin = (nu_vtx_visible == 0
-                                          and n_visible_nu_showers <= 1)
-
-                    # Find trunk startpt per trackid for origin override
-                    trunk_startpt = {}
-                    if override_nu_origin:
-                        for i in range(num_frags):
-                            tid = int(trackids[i])
-                            if tid in visible_nu_trackids and int(istrunk[i]) == 1:
-                                trunk_startpt[tid] = startpts[i].astype(np.float32)
+                    nu_vertex_observable = (nu_vtx_visible == 1
+                                            or len(visible_nu_trackids) >= 2)
 
                     offset = 0
                     for i in range(num_frags):
-                        #if len(shower_masks_list) >= self.max_showers_per_event:
-                        #    break
-
                         count = int(index_counts[i])
                         indices = flat_indices[offset:offset+count]
                         offset += count
@@ -371,50 +380,57 @@ class ShowerOriginDataset(DefaultDataset):
                         if not self.include_cosmic_showers and frag_origin_type == 2:
                             continue
 
-                        if frag_origin_type==0:
-                            n_inside += 1
-
-                        frag_origin = originpts[i].astype(np.float32) * self.coord_scale
                         frag_start = startpts[i].astype(np.float32) * self.coord_scale
                         frag_tid = int(trackids[i])
 
-                        # Override origin for type-0 fragments when the nu
-                        # vertex is not visible and there's only one visible
-                        # nu-origin shower (vertex cannot be inferred).
-                        if override_nu_origin and frag_origin_type == 0:
-                            if frag_tid in trunk_startpt:
-                                frag_origin = trunk_startpt[frag_tid] * self.coord_scale
-                            else:
-                                frag_origin = frag_start
+                        # Trunk-startpt anchor for this fragment's shower.
+                        # Falls back to this fragment's own startpt if the
+                        # trunk fragment was not present (shouldn't normally
+                        # happen — every shower has exactly one istrunk==1).
+                        if frag_tid in trunk_startpt:
+                            frag_trunk_start = (trunk_startpt[frag_tid].astype(np.float32)
+                                                * self.coord_scale)
+                        else:
+                            frag_trunk_start = frag_start
 
-                        frag_is_vertex = (frag_origin_type == 0
-                                          and not override_nu_origin)
+                        # Origin regression target (per matrix in module docstring):
+                        #   type=0, observable vtx -> stored originpt
+                        #   type=0, unobservable    -> trunk_start_coord
+                        #   type=1                  -> trunk_start_coord
+                        #   type=2                  -> stored originpt
+                        if frag_origin_type == 1:
+                            frag_origin = frag_trunk_start
+                        elif frag_origin_type == 0 and not nu_vertex_observable:
+                            frag_origin = frag_trunk_start
+                        else:
+                            frag_origin = (originpts[i].astype(np.float32)
+                                           * self.coord_scale)
 
                         shower_masks_list.append(fmask)
                         origin_coords_list.append(frag_origin)
                         start_coords_list.append(frag_start)
+                        trunk_start_coords_list.append(frag_trunk_start)
                         origin_types_list.append(frag_origin_type)
-                        is_vertex_list.append(frag_is_vertex)
                         particle_pids_list.append(int(pids[i]))
                         fragment_trackids_list.append(frag_tid)
 
         num_showers = len(shower_masks_list)
-        #print("num inside fragments:  ",n_inside)
 
         # Randomly select 1 fragment for this training example
         if num_showers > 0:
             idx = np.random.randint(num_showers)
-            #print("selected fragment idx=",idx," of ",num_showers)
             selected_mask = shower_masks_list[idx]
             selected_origin = origin_coords_list[idx]
             selected_type = origin_types_list[idx]
             selected_start = start_coords_list[idx]
+            selected_trunk_start = trunk_start_coords_list[idx]
         else:
             # No valid fragments: use a dummy zero mask and centroid fallback
             selected_mask = np.zeros(n_points, dtype=bool)
             selected_origin = coord.mean(axis=0)
             selected_type = -1
             selected_start = coord.mean(axis=0)
+            selected_trunk_start = coord.mean(axis=0)
 
         # Compute fragment centroid for BiasedSphereCrop anchor
         if selected_mask.any():
@@ -432,6 +448,7 @@ class ShowerOriginDataset(DefaultDataset):
             "coord": coord, "strength": strength,
             "selected_origin": selected_origin,
             "selected_start": selected_start,
+            "selected_trunk_start": selected_trunk_start,
             "origin_distance": origin_distance,
             "fragment_centroid": fragment_centroid,
         }
@@ -461,6 +478,7 @@ class ShowerOriginDataset(DefaultDataset):
             "origin_coord": selected_origin.astype(np.float32),
             "origin_type": np.int64(selected_type),
             "start_coord": selected_start.astype(np.float32),
+            "trunk_start_coord": selected_trunk_start.astype(np.float32),
             "origin_distance": origin_distance,
             "name": sample_id,
             # Register per-point keys for index_operator (used by
@@ -535,12 +553,12 @@ class ShowerOriginDataset(DefaultDataset):
             else:
                 color = np.zeros((n_points, 3), dtype=np.float32)
 
-            # Collect all valid shower fragments
+            # Collect all valid shower fragments (same logic as get_data())
             shower_masks_list = []
             origin_coords_list = []
             start_coords_list = []
+            trunk_start_coords_list = []
             origin_types_list = []
-            is_vertex_list = []
             particle_pids_list = []
             fragment_trackids_list = []
 
@@ -569,6 +587,12 @@ class ShowerOriginDataset(DefaultDataset):
                     else:
                         nu_vtx_visible = 1
 
+                    trunk_startpt = {}
+                    for i in range(num_frags):
+                        if int(istrunk[i]) == 1:
+                            tid = int(trackids[i])
+                            trunk_startpt[tid] = startpts[i].astype(np.float32)
+
                     visible_nu_trackids = set()
                     offset = 0
                     for i in range(num_frags):
@@ -576,17 +600,8 @@ class ShowerOriginDataset(DefaultDataset):
                         if count >= self.min_fragment_points and int(frag_types[i]) == 0:
                             visible_nu_trackids.add(int(trackids[i]))
                         offset += count
-                    n_visible_nu_showers = len(visible_nu_trackids)
-
-                    override_nu_origin = (nu_vtx_visible == 0
-                                          and n_visible_nu_showers <= 1)
-
-                    trunk_startpt = {}
-                    if override_nu_origin:
-                        for i in range(num_frags):
-                            tid = int(trackids[i])
-                            if tid in visible_nu_trackids and int(istrunk[i]) == 1:
-                                trunk_startpt[tid] = startpts[i].astype(np.float32)
+                    nu_vertex_observable = (nu_vtx_visible == 1
+                                            or len(visible_nu_trackids) >= 2)
 
                     offset = 0
                     for i in range(num_frags):
@@ -612,19 +627,27 @@ class ShowerOriginDataset(DefaultDataset):
                         if not self.include_cosmic_showers and frag_origin_type == 2:
                             continue
 
-                        frag_origin = originpts[i].astype(np.float32) * self.coord_scale
                         frag_start = startpts[i].astype(np.float32) * self.coord_scale
                         frag_tid = int(trackids[i])
 
-                        if override_nu_origin and frag_origin_type == 0:
-                            if frag_tid in trunk_startpt:
-                                frag_origin = trunk_startpt[frag_tid] * self.coord_scale
-                            else:
-                                frag_origin = frag_start
+                        if frag_tid in trunk_startpt:
+                            frag_trunk_start = (trunk_startpt[frag_tid].astype(np.float32)
+                                                * self.coord_scale)
+                        else:
+                            frag_trunk_start = frag_start
+
+                        if frag_origin_type == 1:
+                            frag_origin = frag_trunk_start
+                        elif frag_origin_type == 0 and not nu_vertex_observable:
+                            frag_origin = frag_trunk_start
+                        else:
+                            frag_origin = (originpts[i].astype(np.float32)
+                                           * self.coord_scale)
 
                         shower_masks_list.append(fmask)
                         origin_coords_list.append(frag_origin)
                         start_coords_list.append(frag_start)
+                        trunk_start_coords_list.append(frag_trunk_start)
                         origin_types_list.append(frag_origin_type)
                         particle_pids_list.append(int(pids[i]))
                         fragment_trackids_list.append(frag_tid)
@@ -636,6 +659,7 @@ class ShowerOriginDataset(DefaultDataset):
             selected_origin = origin_coords_list[fi]
             selected_type = origin_types_list[fi]
             selected_start = start_coords_list[fi]
+            selected_trunk_start = trunk_start_coords_list[fi]
 
             if selected_mask.any():
                 fragment_centroid = coord[selected_mask].mean(axis=0).reshape(1, 3)
@@ -660,6 +684,7 @@ class ShowerOriginDataset(DefaultDataset):
                 "origin_coord": selected_origin.astype(np.float32),
                 "origin_type": np.int64(selected_type),
                 "start_coord": selected_start.astype(np.float32),
+                "trunk_start_coord": selected_trunk_start.astype(np.float32),
                 "origin_distance": origin_distance,
                 "trackid": fragment_trackids_list[fi],
                 "pid": particle_pids_list[fi],
