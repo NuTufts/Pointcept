@@ -27,6 +27,7 @@ ADCNAME=${2:-wire}
 TBFLAG=${3:-""}
 MAX_EVENTS=${4:--1}
 KEEP_INTERMEDIATES=${5:-0}
+XLM_MIN_SCORE=${LM_MIN_SCORE:-0.15} # copy from config, else use default
 
 if [ -z "${WORKDIR_PATH}" ]; then
     echo "ERROR: workdir path not provided"
@@ -135,7 +136,7 @@ if [ "${KEEP_INTERMEDIATES}" = "1" ] && [ -f "${baselm}" ]; then
 else
     echo "----------------------------------------------"
     echo "Running LArMatch deploy"
-    CMD="python3 ${LARMATCH_DIR}/deploy_larmatchme.py --config-file ${CONFIG_FILE} --supera ${baseinput} --weights ${LARMATCH_DIR}/${WEIGHT_FILE} --output ${lm_outfile} --min-score 0.5 --adc-name ${ADCNAME} --chstatus-name ${ADCNAME} --device-name cpu --use-skip-limit --save-larmatch-feats ${TBFLAG} ${LMFLAG_N}"
+    CMD="python3 ${LARMATCH_DIR}/deploy_larmatchme.py --config-file ${CONFIG_FILE} --supera ${baseinput} --weights ${LARMATCH_DIR}/${WEIGHT_FILE} --output ${lm_outfile} --min-score ${XLM_MIN_SCORE} --adc-name ${ADCNAME} --chstatus-name ${ADCNAME} --device-name cpu --use-skip-limit --save-larmatch-feats ${TBFLAG} ${LMFLAG_N}"
     echo ${CMD}
     ${CMD}
     if [ $? -ne 0 ]; then
