@@ -477,6 +477,17 @@ def write_merged_h5(reco_f, truth_f, output_path, match_idx, per_point_truth,
             reco_ssnet[matched] = truth_ssnet[match_idx[matched]]
             _cd(td, "ssnet_label", reco_ssnet)
 
+        # Remap per-point truth edep (energy deposition per plane) onto reco
+        # points. Zero-fill for unmatched points (no truth deposit known).
+        if "edep" in truth_td:
+            truth_edep = truth_td["edep"][:]
+            reco_edep = np.zeros(
+                (len(match_idx),) + truth_edep.shape[1:],
+                dtype=truth_edep.dtype,
+            )
+            reco_edep[matched] = truth_edep[match_idx[matched]]
+            _cd(td, "edep", reco_edep)
+
         # Copy truth-only groups that are not per-spacepoint (mckeypoints,
         # mc_particle_tree). These are event-level so no remap is needed.
         for grp_name in ("mckeypoints", "mc_particle_tree"):
