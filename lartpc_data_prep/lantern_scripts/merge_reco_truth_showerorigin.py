@@ -440,9 +440,14 @@ def write_merged_h5(reco_f, truth_f, output_path, match_idx, per_point_truth,
 
         td = entry.create_group("triplet_data")
 
-        # Copy all existing reco triplet_data datasets
+        # Copy all existing reco triplet_data datasets. Skip `hasmatch` here:
+        # the reco H5 uses a placeholder (all 1s) because the truth-ghost
+        # label is not known until the truth match is computed. We rewrite
+        # `hasmatch` below from the truth file's authoritative version.
         reco_td = reco_f["entry_0"]["triplet_data"]
         for key in reco_td.keys():
+            if key == "hasmatch":
+                continue
             _cd(td, key, reco_td[key][:])
 
         # Add truth per-point arrays
@@ -451,12 +456,23 @@ def write_merged_h5(reco_f, truth_f, output_path, match_idx, per_point_truth,
         _cd(td, "origin", per_point_truth["origin"])
         _cd(td, "truth_match", match_idx)
 
-        # Remap per-point truth ssnet_label onto reco points (if present).
+        # Truth-derived hasmatch: 1 if the reco point matched a truth point
+        # whose hasmatch==1 (real MC deposit), 0 if unmatched or matched to
+        # a truth-ghost. Falls back to (trackid>0) when truth lacks hasmatch.
         truth_entry = truth_f["entry_0"]
         truth_td = truth_entry["triplet_data"]
+        matched = match_idx >= 0
+        if "hasmatch" in truth_td:
+            truth_hm = truth_td["hasmatch"][:]
+            reco_hm = np.zeros(len(match_idx), dtype=truth_hm.dtype)
+            reco_hm[matched] = truth_hm[match_idx[matched]]
+        else:
+            reco_hm = (per_point_truth["trackid"] > 0).astype(np.int64)
+        _cd(td, "hasmatch", reco_hm)
+
+        # Remap per-point truth ssnet_label onto reco points (if present).
         if "ssnet_label" in truth_td:
             truth_ssnet = truth_td["ssnet_label"][:]
-            matched = match_idx >= 0
             reco_ssnet = np.full(len(match_idx), -1, dtype=truth_ssnet.dtype)
             reco_ssnet[matched] = truth_ssnet[match_idx[matched]]
             _cd(td, "ssnet_label", reco_ssnet)
@@ -466,6 +482,30 @@ def write_merged_h5(reco_f, truth_f, output_path, match_idx, per_point_truth,
         for grp_name in ("mckeypoints", "mc_particle_tree"):
             if grp_name in truth_entry:
                 _copy_truth_group(truth_entry[grp_name], entry, grp_name)
+
+        # Copy image_data (sparse wire-plane pixels). The plane subgroups are
+        # event-level — copy directly. `triplet_imgpix_index` is indexed by
+        # truth triplet and must be remapped to reco indexing via match_idx.
+        if "image_data" in truth_entry:
+            src_img = truth_entry["image_data"]
+            dst_img = entry.create_group("image_data")
+            for ak, av in src_img.attrs.items():
+                dst_img.attrs[ak] = av
+            for key in src_img.keys():
+                item = src_img[key]
+                if isinstance(item, h5py.Group):
+                    _copy_truth_group(item, dst_img, key)
+                elif key == "triplet_imgpix_index":
+                    truth_tpi = item[:]
+                    n_reco = len(match_idx)
+                    reco_tpi = np.full(
+                        (n_reco, truth_tpi.shape[1]), -1,
+                        dtype=truth_tpi.dtype,
+                    )
+                    reco_tpi[matched] = truth_tpi[match_idx[matched]]
+                    _cd(dst_img, key, reco_tpi)
+                else:
+                    _cd(dst_img, key, item[:])
 
         # Write shower_fragments group
         sf = entry.create_group("shower_fragments")

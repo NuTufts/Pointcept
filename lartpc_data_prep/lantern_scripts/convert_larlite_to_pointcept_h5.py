@@ -166,10 +166,11 @@ def extract_hits(io, ientry, producer, min_score=None):
                 larmatch_feats[ihit, ii-29] = hit[ii]
             has_larmatch_feats = True
 
-    if has_larmatch_feats:
-        print("hit has larmatch feat data!")
-        print(larmatch_feats[:3,:])
-        print(" num nonzero: ", np.sum(larmatch_feats!=0.0))
+    # if has_larmatch_feats:
+    #     #For debug
+    #     print("hit has larmatch feat data!")
+    #     print(larmatch_feats[:3,:])
+    #     print(" num nonzero: ", np.sum(larmatch_feats!=0.0))
 
     # Optional stricter score filtering
     if min_score is not None:

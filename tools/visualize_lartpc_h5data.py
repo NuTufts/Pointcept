@@ -165,24 +165,28 @@ def load_event_data(h5file, entry_key):
     else:
         data['edep'] = np.zeros((n_points, 3), dtype=np.float32)
 
-    # Load wire plane images (sparse format)
-    image_data = entry_grp['image_data']
+    # Load wire plane images (sparse format). Some merged files (e.g. the
+    # reco+truth merge product) intentionally omit image_data — handle that
+    # gracefully by leaving wire_images empty so the 2D-plot helpers fall
+    # through to their "plane not available" path.
     data['wire_images'] = {}
-    for plane_idx in range(3):
-        plane_key = f'plane{plane_idx}'
-        if plane_key in image_data:
-            plane_grp = image_data[plane_key]
-            data['wire_images'][plane_idx] = {
-                'coord': plane_grp['coord'][:],
-                'feat': plane_grp['feat'][:],
-                'dims': plane_grp['dims'][:],
-                'origin': plane_grp['origin'][:],
-                'pixsize': plane_grp['pixsize'][:]
-            }
+    if 'image_data' in entry_grp:
+        image_data = entry_grp['image_data']
+        for plane_idx in range(3):
+            plane_key = f'plane{plane_idx}'
+            if plane_key in image_data:
+                plane_grp = image_data[plane_key]
+                data['wire_images'][plane_idx] = {
+                    'coord': plane_grp['coord'][:],
+                    'feat': plane_grp['feat'][:],
+                    'dims': plane_grp['dims'][:],
+                    'origin': plane_grp['origin'][:],
+                    'pixsize': plane_grp['pixsize'][:]
+                }
 
-    # Load triplet to image pixel index mapping
-    if 'triplet_imgpix_index' in image_data:
-        data['triplet_imgpix_index'] = image_data['triplet_imgpix_index'][:]
+        # Load triplet to image pixel index mapping
+        if 'triplet_imgpix_index' in image_data:
+            data['triplet_imgpix_index'] = image_data['triplet_imgpix_index'][:]
 
     # Load keypoints if available
     if 'mckeypoints' in entry_grp:
