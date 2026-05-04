@@ -14,9 +14,10 @@
 set -euo pipefail
 
 module load apptainer/1.2.4-suid
-cvmfs_config probe uboone.opensciencegrid.org
+#cvmfs_config probe uboone.opensciencegrid.org
 
-: "${CONDLDM_CONTAINER:=/cvmfs/uboone.opensciencegrid.org/containers/lantern_v2_me_06_03_prod}"
+#: "${CONDLDM_CONTAINER:=/cvmfs/uboone.opensciencegrid.org/containers/lantern_v2_me_06_03_prod}"
+: "${CONDLDM_CONTAINER:=/cluster/tufts/wongjiradlab/larbys/cvmfs_containers/lantern_v2_me_06_03_prod}"
 
 if [[ ! -e "${CONDLDM_CONTAINER}" ]]; then
     echo "Container not found at ${CONDLDM_CONTAINER}" >&2

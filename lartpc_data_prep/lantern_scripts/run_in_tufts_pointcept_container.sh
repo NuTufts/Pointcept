@@ -13,8 +13,8 @@
 
 set -euo pipefail
 
-#module load apptainer/1.2.4-suid
-module load apptainer
+module load apptainer/1.2.4-suid
+#module load apptainer
 
 : "${CONDLDM_CONTAINER:=/cluster/tufts/wongjiradlabnu/larbys/containers/pointcept_cuml.sif}"
 

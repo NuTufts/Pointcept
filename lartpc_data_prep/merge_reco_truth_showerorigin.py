@@ -402,12 +402,32 @@ def _apply_nu_vertex_override(frag_results, truth_sf):
 
 # ── HDF5 Output ──────────────────────────────────────────────────────────────
 
-def write_merged_h5(reco_f, output_path, match_idx, per_point_truth,
+def write_merged_h5(reco_f, truth_f, output_path, match_idx, per_point_truth,
                     frag_results, truth_sf):
     """
     Write the merged HDF5 file with same schema as reco but truth fields filled.
     """
     num_frags = len(frag_results)
+
+    def _cd(group, name, data):
+        # gzip+shuffle requires a chunked (non-scalar, non-empty) dataset
+        arr = np.asarray(data)
+        if arr.ndim == 0 or arr.size == 0:
+            return group.create_dataset(name, data=arr)
+        return group.create_dataset(
+            name, data=arr,
+            compression="gzip", compression_opts=4,
+            shuffle=True, chunks=True,
+        )
+
+    def _copy_truth_group(src_group, dst_entry, name):
+        dst = dst_entry.create_group(name)
+        for ak, av in src_group.attrs.items():
+            dst.attrs[ak] = av
+        for key in src_group.keys():
+            item = src_group[key]
+            if isinstance(item, h5py.Dataset):
+                _cd(dst, key, item[:])
 
     with h5py.File(output_path, "w") as out:
         entry = out.create_group("entry_0")
@@ -420,16 +440,83 @@ def write_merged_h5(reco_f, output_path, match_idx, per_point_truth,
 
         td = entry.create_group("triplet_data")
 
-        # Copy all existing reco triplet_data datasets
+        # Copy all existing reco triplet_data datasets. Skip `hasmatch` here:
+        # the reco H5 uses a placeholder (all 1s) because the truth-ghost
+        # label is not known until the truth match is computed. We rewrite
+        # `hasmatch` below from the truth file's authoritative version.
         reco_td = reco_f["entry_0"]["triplet_data"]
         for key in reco_td.keys():
-            td.create_dataset(key, data=reco_td[key][:])
+            if key == "hasmatch":
+                continue
+            _cd(td, key, reco_td[key][:])
 
         # Add truth per-point arrays
-        td.create_dataset("trackid", data=per_point_truth["trackid"])
-        td.create_dataset("pid", data=per_point_truth["pid"])
-        td.create_dataset("origin", data=per_point_truth["origin"])
-        td.create_dataset("truth_match", data=match_idx)
+        _cd(td, "trackid", per_point_truth["trackid"])
+        _cd(td, "pid", per_point_truth["pid"])
+        _cd(td, "origin", per_point_truth["origin"])
+        _cd(td, "truth_match", match_idx)
+
+        # Truth-derived hasmatch: 1 if the reco point matched a truth point
+        # whose hasmatch==1 (real MC deposit), 0 if unmatched or matched to
+        # a truth-ghost. Falls back to (trackid>0) when truth lacks hasmatch.
+        truth_entry = truth_f["entry_0"]
+        truth_td = truth_entry["triplet_data"]
+        matched = match_idx >= 0
+        if "hasmatch" in truth_td:
+            truth_hm = truth_td["hasmatch"][:]
+            reco_hm = np.zeros(len(match_idx), dtype=truth_hm.dtype)
+            reco_hm[matched] = truth_hm[match_idx[matched]]
+        else:
+            reco_hm = (per_point_truth["trackid"] > 0).astype(np.int64)
+        _cd(td, "hasmatch", reco_hm)
+
+        # Remap per-point truth ssnet_label onto reco points (if present).
+        if "ssnet_label" in truth_td:
+            truth_ssnet = truth_td["ssnet_label"][:]
+            reco_ssnet = np.full(len(match_idx), -1, dtype=truth_ssnet.dtype)
+            reco_ssnet[matched] = truth_ssnet[match_idx[matched]]
+            _cd(td, "ssnet_label", reco_ssnet)
+
+        # Remap per-point truth edep (energy deposition per plane) onto reco
+        # points. Zero-fill for unmatched points (no truth deposit known).
+        if "edep" in truth_td:
+            truth_edep = truth_td["edep"][:]
+            reco_edep = np.zeros(
+                (len(match_idx),) + truth_edep.shape[1:],
+                dtype=truth_edep.dtype,
+            )
+            reco_edep[matched] = truth_edep[match_idx[matched]]
+            _cd(td, "edep", reco_edep)
+
+        # Copy truth-only groups that are not per-spacepoint (mckeypoints,
+        # mc_particle_tree). These are event-level so no remap is needed.
+        for grp_name in ("mckeypoints", "mc_particle_tree"):
+            if grp_name in truth_entry:
+                _copy_truth_group(truth_entry[grp_name], entry, grp_name)
+
+        # Copy image_data (sparse wire-plane pixels). The plane subgroups are
+        # event-level — copy directly. `triplet_imgpix_index` is indexed by
+        # truth triplet and must be remapped to reco indexing via match_idx.
+        if "image_data" in truth_entry:
+            src_img = truth_entry["image_data"]
+            dst_img = entry.create_group("image_data")
+            for ak, av in src_img.attrs.items():
+                dst_img.attrs[ak] = av
+            for key in src_img.keys():
+                item = src_img[key]
+                if isinstance(item, h5py.Group):
+                    _copy_truth_group(item, dst_img, key)
+                elif key == "triplet_imgpix_index":
+                    truth_tpi = item[:]
+                    n_reco = len(match_idx)
+                    reco_tpi = np.full(
+                        (n_reco, truth_tpi.shape[1]), -1,
+                        dtype=truth_tpi.dtype,
+                    )
+                    reco_tpi[matched] = truth_tpi[match_idx[matched]]
+                    _cd(dst_img, key, reco_tpi)
+                else:
+                    _cd(dst_img, key, item[:])
 
         # Write shower_fragments group
         sf = entry.create_group("shower_fragments")
@@ -439,58 +526,35 @@ def write_merged_h5(reco_f, output_path, match_idx, per_point_truth,
             reco_sf = reco_f["entry_0"]["shower_fragments"]
 
             # Copy unchanged fields
-            sf.create_dataset(
-                "pointindices_flat",
-                data=reco_sf["pointindices_flat"][:]
-            )
-            sf.create_dataset(
-                "pointindices_counts",
-                data=reco_sf["pointindices_counts"][:]
-            )
+            _cd(sf, "pointindices_flat", reco_sf["pointindices_flat"][:])
+            _cd(sf, "pointindices_counts", reco_sf["pointindices_counts"][:])
             # Start points: use recomputed (closest to origin) when available,
             # otherwise keep the reco PCA start point.
             reco_startpts = reco_sf["startpt"][:].astype(np.float32)
             for fi, r in enumerate(frag_results):
                 if r.get("startpt") is not None:
                     reco_startpts[fi] = r["startpt"]
-            sf.create_dataset("startpt", data=reco_startpts)
-            sf.create_dataset(
-                "istrunk",
-                data=np.ones(num_frags, dtype=np.int64)
-            )
+            _cd(sf, "startpt", reco_startpts)
+            _cd(sf, "istrunk", np.ones(num_frags, dtype=np.int64))
 
             # Write labeled fields from frag_results
-            sf.create_dataset(
-                "trackid",
-                data=np.array([r["trackid"] for r in frag_results],
-                              dtype=np.int64)
-            )
-            sf.create_dataset(
-                "pid",
-                data=np.array([r["pid"] for r in frag_results],
-                              dtype=np.int64)
-            )
-            sf.create_dataset(
-                "type",
-                data=np.array([r["type"] for r in frag_results],
-                              dtype=np.int64)
-            )
-            sf.create_dataset(
-                "originpt",
-                data=np.array([r["originpt"] for r in frag_results],
-                              dtype=np.float32)
-            )
-            sf.create_dataset(
-                "pret0shiftedoriginpt",
-                data=np.array([r["pret0shiftedoriginpt"]
-                               for r in frag_results], dtype=np.float32)
-            )
+            _cd(sf, "trackid",
+                np.array([r["trackid"] for r in frag_results], dtype=np.int64))
+            _cd(sf, "pid",
+                np.array([r["pid"] for r in frag_results], dtype=np.int64))
+            _cd(sf, "type",
+                np.array([r["type"] for r in frag_results], dtype=np.int64))
+            _cd(sf, "originpt",
+                np.array([r["originpt"] for r in frag_results], dtype=np.float32))
+            _cd(sf, "pret0shiftedoriginpt",
+                np.array([r["pret0shiftedoriginpt"] for r in frag_results],
+                         dtype=np.float32))
 
-            # nu_vertex_is_visible from truth
+            # nu_vertex_is_visible from truth (scalar)
             nu_vis = 0
             if truth_sf is not None:
                 nu_vis = truth_sf.get("nu_vertex_is_visible", 0)
-            sf.create_dataset("nu_vertex_is_visible", data=np.int64(nu_vis))
+            _cd(sf, "nu_vertex_is_visible", np.int64(nu_vis))
 
 
 # ── Statistics ────────────────────────────────────────────────────────────────
@@ -613,7 +677,7 @@ def main():
             # Write output
             print(f"Writing merged file: {args.output}")
             write_merged_h5(
-                reco_f, args.output, match_idx, per_point_truth,
+                reco_f, truth_f, args.output, match_idx, per_point_truth,
                 frag_results, truth_sf,
             )
 

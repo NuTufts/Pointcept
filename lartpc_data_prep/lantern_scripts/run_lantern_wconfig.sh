@@ -82,6 +82,8 @@ startline=$(( OFFSET + stride * jobid ))
 jobworkdir=$(printf "%s/workdir/${TAG}_jobid_%04d" "${REPO_ROOT}" "${jobid}")
 mkdir -p "${jobworkdir}"
 mkdir -p "${OUTPUT_DIR}"
+mkdir -p "${MERGEFILE_OUTPUT_DIR}"
+
 
 local_logfile=${jobworkdir}/log_${TAG}_jobid${jobid}.txt
 {
@@ -209,7 +211,7 @@ for (( i=1; i<=stride; i++ )); do
     nsubdir2=$(( lineno / 100 ))
     zsubdir2=$(printf "%03d" ${nsubdir2})
 
-    outfolder=${OUTPUT_DIR}/${zsubdir1}/${zsubdir2}/
+    outfolder=${MERGEFILE_OUTPUT_DIR}/${zsubdir1}/${zsubdir2}/
     mkdir -p "${outfolder}"
     nmerged=$(ls "${local_jobdir}"/merged_*.h5 2>/dev/null | wc -l)
     echo "Number of merged H5 files: ${nmerged}" >> "${local_logfile}"

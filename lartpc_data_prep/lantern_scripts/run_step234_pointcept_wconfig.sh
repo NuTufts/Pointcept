@@ -80,6 +80,7 @@ RECO_DIR=${WORKDIR_PATH}/reco_h5
 TRUTH_DIR=${WORKDIR_PATH}/truth_h5
 MERGED_DIR=${WORKDIR_PATH}
 mkdir -p "${RECO_DIR}" "${TRUTH_DIR}"
+mkdir -p "${MERGEFILE_OUTPUT_DIR}"
 
 NENTFLAG=""
 if [ "${MAX_EVENTS:-0}" -gt 0 ] 2>/dev/null; then
