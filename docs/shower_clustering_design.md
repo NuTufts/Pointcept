@@ -230,27 +230,21 @@ Goal: Quantify the fragment quality, build per-event GT instances from `trackid`
 - [x] **Validation on 3 test events** done, see §4d table.
 - [ ] **Re-merge all training data** with the fixed merge step before Phase 4 begins.
 
-### Phase 2 — Dataset class *(revised: no feature cache for first cut)*
+### Phase 2 — Dataset class *(COMPLETE 2026-05-04)*
 
-**Storage reality check (2026-05-04)**: Caching per-spacepoint backbone features at full precision is infeasible. 254k spacepoints/event × 1088 dim × 2 bytes (fp16) = 540 MB/event; × 52k events = 28 TB. A voxel-level-only cache would be ~22 MB/event × 52k ≈ 1 TB and feasible, but isn't needed until profiling shows the backbone is the bottleneck. **Defer caching entirely; run the frozen backbone on-the-fly each training step**, inside the Mask2Former model's forward pass.
+**Storage reality check**: Caching per-spacepoint backbone features at full precision is infeasible (254k SPs × 1088 dim × 2 bytes × 52k events = 28 TB at fp16, 56 TB at fp32). Voxel-level-only cache is ~1 TB and feasible but isn't needed until profiling demands it. Caching deferred entirely; the frozen backbone runs on-the-fly inside the model's forward pass.
 
-Phase 2 reduces to: build the dataset class that loads the merged H5 and emits everything the Mask2Former model needs.
+- [x] **`pointcept/datasets/shower_clustering.py`** — `ShowerClusteringDataset` + `shower_clustering_collate`. Returns per-event dict with `coord`, `coord_norm`, `feat`, `lm_score`, `wire`, `trackid`, `pid`, `origin_label`, `hasmatch`, `ssnet_label`, `voxel_id`, `voxel_keys`, `fragment_indices`, `fragment_trackid/pid/type`, `gt_instances`, scalar counts, identity (`run`/`subrun`/`event`).
+- [x] **lm_score augmentation hook**: train samples τ ~ U(0.15, 0.40) per event; val/test fixed at 0.15. Drops spacepoints below τ, drops fragments below 20 surviving pts, recomputes voxel ids on surviving spacepoints.
+- [x] **GT-instance precomputation**: `mc_particle_tree.parent_trackid` walked at load time. Cheap (microseconds per event).
+- [x] **Smoke test on 3 test events** + **collate function on 2-event batch**. Numbers in §4d.
+- [x] **Registered with Pointcept's DATASETS builder** in `pointcept/datasets/__init__.py`.
+- [x] **Draft config** at `pointcept/configs/lartpc/shower-cluster-sonata-v1.py` (dataset params + Sonata backbone stub + Mask2Former model placeholder).
+- [x] **Visualizer** at `pointcept/tools/visualize_shower_clustering.py` — 4-panel Dash app (GT instances / fragments / SSNet / lm_score) with detector outline, MicroBooNE-style figure layout matching `tools/visualize_larmatch_h5data.py`. Reads the same config so what's shown is exactly what the model will see.
 
-- [ ] **`pointcept/datasets/shower_clustering.py`** — `ShowerClusteringDataset` class. Per `__getitem__(idx)` return:
-  - `coord` (N, 3) detector cm; `coord_norm` (N, 3) normalized for backbone input
-  - `feat` (N, 6) coord(3) + strength(3) for backbone input
-  - `lm_score` (N,) — used for threshold augmentation
-  - `hasmatch`, `trackid`, `pid`, `origin`, `ssnet_label` — per-spacepoint truth
-  - `voxel_id` (N,) — voxel index per spacepoint at fixed 5 cm grid
-  - `fragment_indices` — list of arrays, one per DBSCAN fragment (post-threshold filter)
-  - `fragment_trackid` (F,) — per-fragment plurality trackid
-  - `gt_instances` — list of dicts: `{trunk_trackid, descendants, n_truth_points, dom_pid}`
-  - `n_spacepoints`, `n_voxels`, `n_fragments`, `n_gt_instances` — scalars
-  - `name`, `run`, `subrun`, `event` — identity
-- [ ] **lm_score augmentation hook**: at `__getitem__` time, sample τ ~ U(0.15, 0.40) on train, fixed 0.15 on val (per §4e). Apply mask: drop spacepoints below τ, drop fragments < 20 surviving pts, recompute voxel ids on surviving spacepoints.
-- [ ] **GT-instance precomputation** in dataset: walk `mc_particle_tree.parent_trackid` to gather descendants for each unique non-(-1) `shower_fragments/trackid`. Cache the per-event descendants in memory after first load (small).
-- [ ] **Smoke test on 3 test events**: confirm shapes, check that filtering at τ=0.15 returns identical results to no-filter (since H5 floor is 0.15), check τ=0.30 reduces spacepoint count and drops some fragments, check GT instance count matches `len(unique trunk_trackid)`.
-- [ ] **Integration test**: register dataset with Pointcept's `DATASETS` builder, verify it builds from a config dict, verify `point_collate_fn` collates a batch correctly.
+### Phase 2b — Optional voxel-level feature cache *(deferred until profiling)*
+
+If, during Phase 4 training, backbone inference becomes a measurable per-step bottleneck, add voxel-pool-only cache (~22 MB/event × 52k = ~1 TB, feasible). This is an optimization, not a correctness requirement.
 
 ### Phase 2b — Optional voxel-level feature cache *(deferred until profiling)*
 
@@ -261,22 +255,36 @@ If, during Phase 4 training, backbone inference time becomes a measurable bottle
 
 This is an optimization, not a correctness requirement.
 
-### Phase 3 — Tokenizer module
+### Phase 3 — Tokenizer module *(COMPLETE 2026-05-04)*
 
-Goal: Trainable spacepoint→fragment pool. (Voxel pool is deterministic mean and lives in the cache.)
+Trainable spacepoint→fragment pool + per-fragment / per-voxel positional encoders + voxel mean-pool. Voxel mean-pool is deterministic (no learnable params for the pool itself).
 
-- [ ] **`pointcept/models/shower_clustering/tokenizer.py`**:
-  - `FragmentPool` — mini set-transformer (2–3 self-attn layers over spacepoints in a fragment + learnable pool query)
-  - Positional encoders: per-fragment (centroid, PCA axis, length, point count, mean energy) and per-voxel (centroid)
-- [ ] Unit test on a single event: shapes, NaN-free output, gradient flows
+- [x] **`pointcept/models/shower_clustering/tokenizer.py`**:
+  - `FragmentPool` — mini set-transformer (default 2 self-attn layers, 8 heads, MLP ratio 4) over each fragment's spacepoints. Learnable pool query is the per-fragment output token.
+  - `VoxelPool` — `index_add_`-based mean pool + linear projection (no learnable pool query).
+  - `FragmentPositionalEncoder` — 13-dim per-fragment geometric features (centroid + PCA axis + bbox extent + log point count + mean strength) → MLP → token_dim.
+  - `VoxelPositionalEncoder` — 4-dim per-voxel features (voxel center + log point count) → MLP → token_dim.
+  - `ShowerClusteringTokenizer` — top-level wrapper; emits `spacepoint_tokens (N, D)`, `fragment_tokens (F, D)`, `voxel_tokens (V, D)`.
+- [x] **Memory cap**: `frag_pool_max_points` (default 512) randomly subsamples oversize fragments before pooling. Bounded MultiheadAttention's O(M²) memory; without it, events with thousand-point fragments would OOM. The pool token represents fragment identity, not exhaustive coverage, so subsampling preserves correctness.
+- [x] **Smoke test on 3 fixed-merge events** (CPU, synthetic 128-dim per-spacepoint features). Shapes correct for all three token sets, no NaN, all 43 trainable params receive non-zero gradients on a dummy loss. Empty-fragment edge case handled. Total trainable params 1.8 M at token_dim=256, hidden=256, 2 fragment-pool layers.
 
-### Phase 4 — Mask2Former decoder
+### Phase 4 — Mask2Former decoder *(COMPLETE 2026-05-04)*
 
-- [ ] **`pointcept/models/shower_clustering/decoder.py`**:
-  - `MultiScaleMaskedDecoderLayer` — masked cross-attn (rotating scale) + query self-attn + FFN
-  - `Mask2FormerDecoder` — N learnable queries + L stacked layers + per-layer aux outputs (for deep supervision)
-- [ ] Position encoding: learnable query embedding + MLP on per-layer predicted origin coord
-- [ ] Unit test: forward pass on a synthetic event; check attention masks are applied correctly
+- [x] **`pointcept/models/shower_clustering/decoder.py`** with:
+  - `_MaskedDecoderLayer` — pre-norm masked cross-attn → query self-attn → FFN.
+  - `Mask2FormerDecoder` — N=64 learnable queries, L=6 stacked layers, init-layer predictions to gate the first cross-attn (Mask2Former-style), per-layer predictions for deep supervision (loss applied at init + every layer in Phase 6).
+  - `QueryPositionalEncoder` — static learnable per-query + MLP on per-layer predicted origin coord (origin head feeds back as PE for next layer).
+  - `_PerLayerHeads` — class logits, origin coord, and shared mask-embed; mask logits per scale = `mask_embed(q) @ key.T`.
+- [x] **Scale rotation pattern**: `[voxel, fragment, voxel, fragment, spacepoint, spacepoint]` (default). Rationale: spacepoint-scale cross-attention has K up to 250k; the first cross-attn at any scale is unmasked (no prior mask to gate by), so unmasked spacepoint cross-attn would dominate memory. Putting both spacepoint layers at the end means they can always gate by a previously-computed spacepoint mask. Configurable via `scale_pattern` arg.
+- [x] **Safety net for all-masked queries**: standard Mask2Former trick — if a query's attention mask covers all keys, drop the mask for that query (else softmax NaNs).
+- [x] **Smoke test on 3 fixed-merge events** (CPU, synthetic 128-dim per-spacepoint features): all per-layer output shapes correct ((Q, V), (Q, F), (Q, N) for masks; (Q, C) for class; (Q, 3) for origin); no NaN/Inf in any output; all 239 params (tokenizer + decoder) receive non-zero gradients on a deep-supervision-style dummy loss; |Δclass| from init→final ≈ 0.45–0.54 confirms the decoder is actually updating predictions (not a no-op). Edge case (empty fragment list) handled.
+- [x] **Param counts**: tokenizer 1.8 M + decoder 7.8 M = **9.6 M trainable params** at default sizes (token_dim=256, num_queries=64, 6 decoder layers, 8 heads). Backbone (Sonata, frozen) is separate.
+
+**Open optimization (Phase 6/7 concern)**: spacepoint mask logits are computed at every layer ((Q, N) per layer × 7 layers). At N=250k, this is ~640 MB per forward pass at fp32. Acceptable on H200 (120 GB) but tight on P100 (16 GB) once backbone activations + gradients are added. If profiling during training shows memory pressure, two cheap optimizations:
+1. Compute spacepoint mask logits **only at layers that do spacepoint cross-attn next** + final (i.e. at the 2 spacepoint layers and the final layer = 3 of 7 layers).
+2. Use chunked computation for spacepoint mask logits.
+
+Both preserve the deep-supervision signal at the cheap scales (voxel + fragment).
 
 ### Phase 5 — Heads
 
@@ -285,23 +293,94 @@ Goal: Trainable spacepoint→fragment pool. (Voxel pool is deterministic mean an
   - `MaskHead` — produces fragment mask logits + spacepoint refinement logits (gated by predicted fragment mask)
   - `OriginHead` — 3D coord per query (auxiliary, also feeds next-layer query PE)
 
-### Phase 6 — Loss and matcher
+### Phase 6 — Loss and matcher *(COMPLETE 2026-05-04)*
 
-- [ ] **`pointcept/models/shower_clustering/matcher.py`** — Hungarian matcher (`scipy.optimize.linear_sum_assignment`); cost = λ_cls·CE + λ_mask·BCE + λ_dice·Dice
-- [ ] **`pointcept/models/shower_clustering/losses.py`** — set-prediction loss with deep supervision (loss applied at every decoder layer)
-- [ ] Unit test: matcher returns sensible assignments on toy 2-instance / 3-query case
+- [x] **`pointcept/models/shower_clustering/matcher.py`** — `HungarianMatcher` using `scipy.optimize.linear_sum_assignment`. Cost = λ_cls·(-p[gt_class]) + λ_mask·BCE + λ_dice·Dice + λ_origin·L1, all evaluated on a sampled spacepoint subset (Mask2Former-style point sampling at S=4096).
+- [x] **`pointcept/models/shower_clustering/losses.py`** — `ShowerClusteringLoss` with:
+  - **Single Hungarian solve** on the model's final-layer prediction (Mask2Former-style — same matching reused for all layers' losses).
+  - **Deep supervision**: loss summed across init layer + every decoder layer (7 supervision points at default 6-layer config).
+  - **Per matched pair**: CE class loss, BCE + Dice on sampled-S spacepoint mask, L1 on origin coord, BCE aux losses on voxel + fragment scale masks.
+  - **Per unmatched pair**: CE with target = no_object class, weighted at 0.1 (Mask2Former default) so unmatched queries don't dominate the gradient.
+  - **GT instances** include `origin_type`, `origin_coord_norm`, `truth_indices`, `trunk_trackid` — the dataset was extended in Phase 6 to populate the first three (origin_type and originpt taken from the first surviving fragment with this trunk trackid).
+- [x] **Toy matcher test** (3 queries, 2 GTs, planted class costs): assignment is `[(q=0, k=1), (q=1, k=0)]` as expected. Hungarian solve correct.
+- [x] **End-to-end smoke on 3 fixed-merge events**: all 3 events (28, 20, 21 GT instances) match every GT (n_matched == n_gt since K << Q=64). Initial total loss ~125 across 7 supervised layers (cls ~14, mask ~7, dice ~7, origin ~17, aux_voxel ~7, aux_frag ~5). All 239 trainable params receive non-zero gradients on backward.
 
-### Phase 7 — Model assembly
+The five trainable modules now wire together end-to-end on the test events: ShowerClusteringDataset → ShowerClusteringTokenizer → Mask2FormerDecoder → ShowerClusteringLoss. Phase 7 (model assembly + training loop integration) is the next milestone.
 
-- [ ] **`pointcept/models/shower_clustering/shower_clustering_model.py`** — top-level model class registered to Pointcept's MODELS registry. Inputs: cached features + fragment indices. Outputs: per-query class, mask, origin.
-- [ ] Add to `pointcept/models/__init__.py`
+### Phase 7 — Model assembly *(COMPLETE 2026-05-04)*
 
-### Phase 8 — Configs and training
+- [x] **`pointcept/models/shower_clustering/model.py`** — `ShowerClusteringMask2Former` registered with the Pointcept `MODELS` registry. Wires:
+  - frozen Sonata backbone (built via Pointcept's MODELS registry from the config's `backbone` dict)
+  - `ShowerClusteringTokenizer`
+  - `Mask2FormerDecoder`
+  - `ShowerClusteringLoss`
+- [x] Per-event iteration: backbone runs once on the flat-batched (sum N_b, 6) input dict, then tokenizer/decoder/loss run per-event in a loop because Hungarian matching is per-event. Loss aggregated as mean across events.
+- [x] **`pointcept/models/__init__.py`** updated to import `from .shower_clustering import *` so the `@MODELS.register_module()` decorator runs at package load.
+- [x] **Dataset extended** to emit `grid_coord` (PT-v3 expects integer voxel indices for serialization) AND **deduplicate** spacepoints to one entry per 0.25 cm cell. Both are required by PT-v3's serialized attention; without dedup the encoder's stride pooling produces out-of-bounds indices on the GPU. Matches V3's `GridSample(grid_size=0.25)` transform.
+- [x] **Backbone `up_cast_level=4`** (vs V3's default `up_cast_level=2`). The encoder has 4 GridPooling stages, so up-casting only twice leaves features at ~1/64 of the input resolution — fine for V3's tiny cropped-fragment inference, but our full-event Mask2Former needs per-spacepoint masks. Setting `up_cast_level=4` un-pools all the way back to the input level. Feature dim becomes 48+96+192+384+512 = **1232** (vs 1088 with up_cast_level=2). The pretrained checkpoint loads cleanly because up_cast is gather+concat with no learnable params.
+- [x] **Config** `pointcept/configs/lartpc/shower-cluster-sonata-v1.py` updated from a model-stub to a full buildable config. `flash_backend` defaults to `xformers` (works on P100 and H200; the V3 default `flash_attn` only works on Hopper / newer).
+- [x] **CPU smoke test with mock backbone** at `pointcept/tools/test_shower_clustering_assembly.py`. Verified:
+  - The model builds from the config end-to-end via `MODELS.build(cfg.model)`.
+  - On a 2-event batch (479k spacepoints, 4 169 voxels, 162 fragments, 48 GT instances), forward returns finite loss and backward propagates gradients to all 239 trainable params.
+  - Total trainable params at production config (in_dim=1088): **10.4 M**.
+- [x] **GPU run with real Sonata** (P100, 2026-05-04). Random-init backbone forward + backward succeeded after the dedup + up_cast_level=4 fixes. Loss = 158.14.
+- [x] **GPU run with pretrained Sonata weights**. Added `--load-weights` flag to the assembly test. Pretrained checkpoint `lartpc_v6_h200_noghosts_pretrain_logspace_resume/model/epoch_42.pth` loaded 196.7 M / 196.7 M backbone params (100%). Two unexpected keys (`*.embedding.mask_token`) ignored (correct — our config has `mask_token=False`). Loss dropped to 120.49, confirming pretrained features are flowing through.
 
-- [ ] **`pointcept/configs/lartpc/shower-clustering-v1-baseline.py`** — frozen backbone, fragment-only mask first (Option A), to verify training converges
-- [ ] **`pointcept/configs/lartpc/shower-clustering-v1-multiscale.py`** — full design (Option D)
-- [ ] Training on 6×P100 DDP, batch=1 event/GPU. Monitor matcher stability, class loss, mask AP.
-- [ ] **Decision point:** does mask AP on val set exceed V3's effective downstream merge quality?
+### Phase 8 — Training entrypoint smoke test *(COMPLETE 2026-05-04)*
+
+- [x] **`pointcept/models/shower_clustering/trainer.py`** — `ShowerClusteringTrainer` subclasses Pointcept's `Trainer` (registered as `DefaultTrainer`) and overrides `build_train_loader` / `build_val_loader` to use `shower_clustering_collate`. Pointcept's hard-coded `point_collate_fn` doesn't know how to batch our nested per-event lists.
+- [x] **`pointcept/configs/lartpc/shower-cluster-sonata-v1.py`** — extended from a model-only config to a full training config: `_base_ = ["../_base_/default_runtime.py"]`, smoke-test knobs (`epoch=1`, `batch_size=1`, `num_worker=0`, `evaluate=False`, `enable_wandb=False`), `SonataCheckpointLoader` hook, and `train = dict(type="ShowerClusteringTrainer")`.
+- [x] **Side-effect import** in the config: `import pointcept.models.shower_clustering.trainer as _trainer_module; del _trainer_module`. Done in the config (not the package `__init__.py`) to avoid a circular import — `pointcept.engines.train` imports `pointcept.models` *before* defining `TRAINERS`. Underscore-aliased + del'd so `Config.dump`'s yapf round-trip doesn't see a `<class …>` repr.
+- [x] **Model output contract**: `forward()` returns flat-scalar values only (`loss`, `loss_cls`, `loss_mask`, …) when training, because Pointcept's `InformationWriter.after_step` calls `.item()` on every value in the model output dict. Predictions are returned only on eval.
+- [x] **GPU smoke test on 3 fixed-merge events** (1 epoch, batch=1, P100): loss decreased monotonically across iterations (116.7 → 92.4 → 91.1), checkpoint saved cleanly. SONATA weights load correctly (100% backbone match; the long "Missing keys" log is just our untrained tokenizer / decoder / loss params — strict=False handles it).
+
+### Phase 8.b — Validation evaluator *(implemented 2026-05-04, untested at scale)*
+
+- [x] **`pointcept/engines/hooks/shower_clustering_evaluator.py`** — `ShowerClusteringEvaluator` hook. Per epoch (or every N steps via `eval_freq`):
+  - Runs val_loader through model in eval mode + the loss_fn with `return_matching=True` to recover the Hungarian assignment.
+  - Computes per-matched-pair metrics:
+    - **Class accuracy** (overall + per-class)
+    - **Mask IoU** at the spacepoint scale, computed on the *full* spacepoint mask (binarized at logit > 0), not the loss's sampled subset — gives an unbiased per-shower IoU estimate. Also reported per class.
+    - **Origin error in cm** (denormalized via `cfg.coord_scale`)
+  - Set-prediction sanity: `matched_fraction = n_matched / n_gt_total`, `n_active_queries_mean` (queries whose argmax class isn't no_object).
+  - Per-component val loss averages.
+  - Writes to TensorBoard always; to wandb when `cfg.enable_wandb=True`.
+  - Sets `current_metric_value` from `mask_iou_mean` for `CheckpointSaver`.
+- [x] **`ShowerClusteringLoss.forward(return_matching=True)`** — extended the loss module to optionally return Hungarian assignment + GT tensors so the evaluator doesn't redo the matching.
+- [x] **Hook registered** in `pointcept/engines/hooks/__init__.py` (matches the `ShowerOriginEvaluator` registration pattern).
+- [x] **Wired into the config** (commented out for the smoke test). Real training: uncomment, set `evaluate=True`, set `enable_wandb=True`.
+- [ ] **Field-test on a few-event val set with `evaluate=True`** — verify the evaluator runs cleanly end-to-end. To be done by the user on the P100 once they want eval metrics.
+
+### Phase 8.c — Loss-formulation tuning on 3-event memorize set *(2026-05-04)*
+
+Iterative debugging of the mask + origin losses on a 3-event overfit test. Each row is a 100-epoch run on the same 3 fixed-merge events; metrics are at peak `mask_iou_mean`.
+
+| Run | Sampling | Origin loss | mask_iou_mean | mask_iou_p25 | origin_err_cm | cls_acc |
+|---|---|---|---|---|---|---|
+| v1 | uniform random S=4096 | sum-axes, w=1 | **0.003** | 0 | 100 | 0.80 |
+| v2 | union-balanced 50% pos | sum-axes, w=1 | 0.032 | 0.013 | 240 | 0.97 |
+| v3 | per-pair exact 50/50 | mean-axes, w=3 | 0.014 | 0.004 | 154 | 0.985 |
+| v4 | per-pair pos-biased 50% (no equalize) | mean-axes, w=3 | 0.043 | 0.022 | 140 | 0.98 |
+| **v5** | **+ importance-sampled negatives** | mean-axes, w=3 | **0.059** | 0.008 | 144 | **1.000** |
+
+Lessons learned:
+
+- **Uniform random S=4096 is unworkable for sparse-mask training**: only ~3 of 4096 sampled points are positive for a typical 110-pt instance, and the model trivially minimizes BCE by predicting all zeros (v1 → mask IoU ≈ 0).
+- **Balanced sampling (union- or per-pair) bootstraps the masks** but must keep wide negative coverage. Equalizing pos:neg per pair (v3) starves the model of negative supervision and the over-prediction halo grows back. Pos-biased without equalize (v4) recovers.
+- **Origin loss should be per-axis-mean** to make it batch-size and matched-pair-count invariant. Compensate with `weight_origin = 3.0` to keep the same effective magnitude (v3, v4, v5).
+- **Importance sampling for negatives** (PointRend-style — pick top-k uncertain points where `|sigmoid - 0.5|` is small, plus random for diversity) lifts mean IoU 4× over v3 and is essentially free at run-time. Caveat: tail (p25) regresses slightly because small/scattered instances don't have a coherent halo to focus on.
+- **Per-class IoU at v5 peak**: inside 0.156, outside 0.087, on_track 0.042 — the easier classes (pi0 EM showers — `inside`/`outside`) gain most; cosmic-derived `on_track` instances drag the tail.
+
+Default config has `use_importance_sampling=False` to preserve the v4 baseline; flip to `True` for the v5 recipe.
+
+### Phase 8.d — Real training run *(next)*
+
+- [ ] Switch the config's data lists to the production training set (re-merged pi0filter once that finishes).
+- [ ] Bump knobs to real values: `epoch=N`, `batch_size_per_gpu>1` if memory permits, `num_worker=K`, `evaluate=True`, `enable_wandb=True`.
+- [ ] DDP on 6×P100 with `--num-gpus 6`. Monitor: matcher stability (`val/matched_fraction` ≈ 1.0), per-component loss curves, per-class accuracy / mask IoU, origin-error distribution.
+- [ ] Ablation: `importance_ratio = 0.5` vs `0.75` — the lower value preserves more uniform negative coverage and may recover the v4 p25 while keeping most of the v5 mean gain.
+- [ ] LR schedule revisit — the OneCycleLR decays to zero by epoch 100 and the model plateaus at ~60. A constant or step schedule should give more headroom on real training.
+- [ ] **Decision point:** does mask IoU on val exceed V3's effective downstream merge quality?
 
 ### Phase 9 — Inference and pipeline integration
 

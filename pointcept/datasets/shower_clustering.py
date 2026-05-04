@@ -75,6 +75,7 @@ class ShowerClusteringDataset(DefaultDataset):
         coord_center=DEFAULT_COORD_CENTER,
         coord_scale=DEFAULT_COORD_SCALE,
         voxel_size_cm=DEFAULT_VOXEL_SIZE_CM,
+        backbone_grid_size_cm=0.25,
         lm_score_aug_low=0.15,
         lm_score_aug_high=0.40,
         lm_score_val_threshold=0.15,
@@ -91,6 +92,7 @@ class ShowerClusteringDataset(DefaultDataset):
         self.coord_center = np.asarray(coord_center, dtype=np.float32)
         self.coord_scale = float(coord_scale)
         self.voxel_size_norm = float(voxel_size_cm) / self.coord_scale
+        self.backbone_grid_size_cm = float(backbone_grid_size_cm)
         self.lm_score_aug_low = float(lm_score_aug_low)
         self.lm_score_aug_high = float(lm_score_aug_high)
         self.lm_score_val_threshold = float(lm_score_val_threshold)
@@ -255,14 +257,53 @@ class ShowerClusteringDataset(DefaultDataset):
         sp_hasmatch_k = sp_hasmatch[keep]
         sp_ssnet_k = sp_ssnet[keep]
 
-        # ---- 2. Normalize coords + build backbone input feat ----
+        # ---- 2. Backbone grid_coord + dedup at 0.25 cm ---------------------
+        # PT-v3's serialized attention assumes one entry per grid cell (V3's
+        # pipeline runs GridSample before feeding the backbone). Without
+        # dedup, duplicate grid_coord values cause out-of-bounds indexing in
+        # the encoder's stride pooling. We replicate V3's behavior here.
+        grid_coord_full = np.floor(
+            pos_k / self.backbone_grid_size_cm
+        ).astype(np.int64)
+        grid_coord_full -= grid_coord_full.min(axis=0)
+        # First-occurrence dedup, preserving original order.
+        _, first_idx = np.unique(grid_coord_full, axis=0, return_index=True)
+        keep_dedup = np.sort(first_idx)
+
+        # Apply dedup to the post-lm-filter arrays
+        pos_k = pos_k[keep_dedup]
+        lm_score_k = lm_score_k[keep_dedup]
+        pixval_k = pixval_k[keep_dedup]
+        wire_k = wire_k[keep_dedup]
+        sp_trackid_k = sp_trackid_k[keep_dedup]
+        sp_pid_k = sp_pid_k[keep_dedup]
+        sp_origin_k = sp_origin_k[keep_dedup]
+        sp_hasmatch_k = sp_hasmatch_k[keep_dedup]
+        sp_ssnet_k = sp_ssnet_k[keep_dedup]
+        grid_coord = grid_coord_full[keep_dedup]
+
+        # Compose the lm-filter and dedup-filter into a single
+        # original_index -> final_index remap. `remap` was previously the
+        # lm-filter remap (orig -> post-lm); we extend it through dedup so
+        # that downstream fragment / GT bookkeeping uses final-array indices.
+        n_post_lm = n_keep
+        n_dedup = len(keep_dedup)
+        post_lm_to_dedup = np.full(n_post_lm, -1, dtype=np.int64)
+        post_lm_to_dedup[keep_dedup] = np.arange(n_dedup)
+        valid_mask = remap >= 0
+        final_remap = np.full(n_sp, -1, dtype=np.int64)
+        final_remap[valid_mask] = post_lm_to_dedup[remap[valid_mask]]
+        remap = final_remap
+        n_keep = n_dedup
+
+        # ---- 3. Normalize coords + build backbone input feat ---------------
         coord_norm = (pos_k - self.coord_center) / self.coord_scale
         feat = np.concatenate([coord_norm, pixval_k], axis=-1).astype(np.float32)
 
-        # ---- 3. Voxel ids on surviving spacepoints ----
+        # ---- 4. Voxel ids on surviving spacepoints (5 cm) ------------------
         voxel_id, voxel_keys = self._build_voxel_ids(coord_norm)
 
-        # ---- 4. Fragment membership (filter & remap) ----
+        # ---- 5. Fragment membership (filter & remap) ----
         num_frags_orig = int(sf.attrs.get("num_fragments", 0))
         if num_frags_orig > 0:
             flat = sf["pointindices_flat"][:].astype(np.int64)
@@ -302,14 +343,33 @@ class ShowerClusteringDataset(DefaultDataset):
             fragment_pid.append(int(frag_pid_orig[fi]))
             fragment_type.append(int(frag_type_orig[fi]))
 
-        # ---- 5. GT instances from mc_particle_tree descendants ----
+        # ---- 6. GT instances from mc_particle_tree descendants ----
+        # Per GT instance we need: descendant truth-spacepoint indices (for
+        # mask losses), the origin class (for the CE loss), and the
+        # normalized origin coordinate (for the auxiliary L1 loss).
+        # Origin type and origin point come from the first surviving fragment
+        # with this trunk trackid — multiple fragments with the same trackid
+        # share the same shower so should agree.
         gt_instances = []
-        if mpt is not None:
+        if mpt is not None and len(fragment_trackid) > 0:
             children_map, tid_to_pid = self._build_children_map(mpt)
+            # Map from trackid -> originpt and origin_type taken from the
+            # first matching fragment in the original (pre-filter) shower
+            # fragments table. originpt is in detector cm, normalize before
+            # storing.
+            orig_originpt = sf["originpt"][:].astype(np.float32) \
+                if "originpt" in sf else np.zeros((num_frags_orig, 3),
+                                                  dtype=np.float32)
+            tid_to_origin: dict = {}
+            tid_to_type: dict = {}
+            for fi in range(num_frags_orig):
+                tid = int(frag_trackid_orig[fi])
+                if tid <= 0:
+                    continue
+                tid_to_origin.setdefault(tid, orig_originpt[fi].copy())
+                tid_to_type.setdefault(tid, int(frag_type_orig[fi]))
+
             seen_trunks = set()
-            # Trunks come from unique non-(-1) fragment_trackid (post-filter set).
-            # Only consider trunks that survived the fragment filter — otherwise
-            # we'd have GT instances the model can't possibly predict.
             for tid in fragment_trackid:
                 if tid <= 0 or tid in seen_trunks:
                     continue
@@ -323,14 +383,19 @@ class ShowerClusteringDataset(DefaultDataset):
                 truth_idx_new = truth_idx_new[truth_idx_new >= 0]
                 if len(truth_idx_new) == 0:
                     continue
+                origin_cm = tid_to_origin.get(
+                    tid, np.zeros(3, dtype=np.float32))
+                origin_norm = (origin_cm - self.coord_center) / self.coord_scale
                 gt_instances.append({
                     "trunk_trackid": int(tid),
                     "pid": int(tid_to_pid.get(int(tid), -1)),
+                    "origin_type": int(tid_to_type.get(tid, -1)),
+                    "origin_coord_norm": origin_norm.astype(np.float32),
                     "truth_indices": truth_idx_new.astype(np.int64),
                     "n_truth_points": int(len(truth_idx_new)),
                 })
 
-        # ---- 6. Identity ----
+        # ---- 7. Identity ----
         run = int(entry.attrs.get("run", -1))
         subrun = int(entry.attrs.get("subrun", -1))
         event = int(entry.attrs.get("event", -1))
@@ -338,6 +403,7 @@ class ShowerClusteringDataset(DefaultDataset):
         return {
             "coord": pos_k,
             "coord_norm": coord_norm.astype(np.float32),
+            "grid_coord": grid_coord,
             "feat": feat,
             "lm_score": lm_score_k,
             "wire": wire_k,
@@ -390,9 +456,9 @@ def shower_clustering_collate(batch):
         n_spacepoints, n_voxels, n_fragments,
         n_gt_instances, lm_score_threshold          — per-event scalars
     """
-    keys_flat = ("coord", "coord_norm", "feat", "lm_score", "wire",
-                 "trackid", "pid", "origin_label", "hasmatch", "ssnet_label",
-                 "voxel_id")
+    keys_flat = ("coord", "coord_norm", "grid_coord", "feat", "lm_score",
+                 "wire", "trackid", "pid", "origin_label", "hasmatch",
+                 "ssnet_label", "voxel_id")
     out = {}
     # Per-spacepoint flat concatenation
     for k in keys_flat:
