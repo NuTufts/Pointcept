@@ -88,6 +88,16 @@ if [ "${MAX_EVENTS:-0}" -gt 0 ] 2>/dev/null; then
     echo "Limiting Steps 2-3 to ${MAX_EVENTS} entries"
 fi
 
+# Resume support: if START_ENTRY is set in the environment (e.g. from
+# run_lantern_wconfig.sh's per-line resume scan), skip already-processed
+# entries by passing --start-entry to Steps 2 and 3.
+ENTRYFLAG=""
+START_ENTRY=${START_ENTRY:-0}
+if [ "${START_ENTRY}" -gt 0 ] 2>/dev/null; then
+    ENTRYFLAG="--start-entry ${START_ENTRY}"
+    echo "Resuming Steps 2-3 from entry ${START_ENTRY}"
+fi
+
 # ---- STEP 2 ----
 has_reco=$(ls "${RECO_DIR}"/showerorigin_*.h5 2>/dev/null | head -1)
 if [ "${KEEP_INTERMEDIATES}" = "1" ] && [ -n "${has_reco}" ]; then
@@ -98,7 +108,7 @@ else
     CMD="python3 ${PY_DIR}/convert_larlite_to_pointcept_h5.py \
         -i ${LARLITE_FILE} \
         --input-larcv ${DLMERGED_FILE} \
-        -o ${RECO_DIR} --adc ${ADCNAME} ${TBFLAG} ${NENTFLAG} \
+        -o ${RECO_DIR} --adc ${ADCNAME} ${TBFLAG} ${NENTFLAG} ${ENTRYFLAG} \
         --fileno-tag fileno${ZFILENO}"
     echo ${CMD}
     ${CMD}
@@ -120,7 +130,7 @@ else
     echo "----------------------------------------------"
     echo "STEP 3: process_dlmerged_to_hdf5_event_files.py"
     CMD="python3 ${PY_DIR}/process_dlmerged_to_hdf5_event_files.py \
-        -i ${DLMERGED_FILE} --adc ${ADCNAME} ${TBFLAG} ${MCC9FLAG} ${NENTFLAG} \
+        -i ${DLMERGED_FILE} --adc ${ADCNAME} ${TBFLAG} ${MCC9FLAG} ${NENTFLAG} ${ENTRYFLAG} \
         --fileno-tag fileno${ZFILENO}"
     echo ${CMD}
     ${CMD}

@@ -49,6 +49,7 @@ MCC9FLAG=${MCC9FLAG:-""}
 DEVICE=${DEVICE:-cuda}
 SAVE_INFERENCE_H5=${SAVE_INFERENCE_H5:-0}
 INFERENCE_H5_OUTPUT_DIR=${INFERENCE_H5_OUTPUT_DIR:-${OUTPUT_DIR}}
+MERGEFILE_OUTPUT_DIR=${MERGEFILE_OUTPUT_DIR:-${OUTPUT_DIR}}
 SLURM_ARRAY_TASK_ID=${SLURM_ARRAY_TASK_ID:-0}
 
 for v in INPUTLIST TAG OUTPUT_DIR LANTERN_CONTAINER POINTCEPT_CONTAINER SHOWER_ORIGIN_CONFIG SHOWER_ORIGIN_CKPT; do
@@ -58,7 +59,7 @@ for v in INPUTLIST TAG OUTPUT_DIR LANTERN_CONTAINER POINTCEPT_CONTAINER SHOWER_O
     fi
 done
 
-export TAG INPUTLIST OUTPUT_DIR ROOT_OUTPUT_DIR ADCNAME TBFLAG MCC9FLAG DEVICE
+export TAG INPUTLIST OUTPUT_DIR MERGEFILE_OUTPUT_DIR ROOT_OUTPUT_DIR ADCNAME TBFLAG MCC9FLAG DEVICE
 export LANTERN_CONTAINER POINTCEPT_CONTAINER
 export SHOWER_ORIGIN_CONFIG SHOWER_ORIGIN_CKPT
 export WORKDIR_BASE KEEP_INTERMEDIATES MAX_EVENTS
@@ -113,11 +114,53 @@ for (( i=1; i<=stride; i++ )); do
     fi
 
     inputbasename=$(basename "${inputfile}")
+
+    # ---- Resume support ----
+    # Compute output folder and per-file completion sentinel up front so we
+    # can (a) skip the whole line if the previous run wrote the sentinel,
+    # or (b) start Steps 2-3 at the first entry index that isn't already in
+    # MERGEFILE_OUTPUT_DIR. The hashed dir layout matches the cp at the
+    # end of the loop.
+    nsubdir1=$(( lineno / 1000 ))
+    zsubdir1=$(printf "%03d" ${nsubdir1})
+    nsubdir2=$(( lineno / 100 ))
+    zsubdir2=$(printf "%03d" ${nsubdir2})
+    ZFILENO=$(printf "%05d" ${lineno})
+    outfolder="${MERGEFILE_OUTPUT_DIR}/${zsubdir1}/${zsubdir2}"
+    sentinel="${outfolder}/${TAG}_fileno${ZFILENO}.complete"
+
+    if [ -f "${sentinel}" ]; then
+        echo "LINE ${lineno}: completion sentinel present, skipping (${sentinel})" >> "${local_logfile}"
+        continue
+    fi
+
+    # Find the first missing entry index from existing merged_*.h5 outputs.
+    # If we have a contiguous run 0..K-1, the next index is K. If there's a
+    # gap (e.g. missing entry 3 with 0,1,2,4,5 present), restart at the gap.
+    START_ENTRY=0
+    if [ -d "${outfolder}" ]; then
+        existing_entries=$(ls "${outfolder}/merged_${TAG}_fileno${ZFILENO}_entry"*.h5 2>/dev/null \
+                            | sed -E 's|.*entry([0-9]+)\.h5$|\1|' \
+                            | sort -n -u)
+        expected=0
+        for n in ${existing_entries}; do
+            n10=$((10#$n))
+            if [ ${n10} -ne ${expected} ]; then
+                break
+            fi
+            expected=$(( expected + 1 ))
+        done
+        START_ENTRY=${expected}
+    fi
+    export START_ENTRY
+
     {
         echo ""
         echo "============================================"
         echo "Processing line ${lineno}: ${inputbasename}"
         echo "Start time: $(date)"
+        echo "Output folder: ${outfolder}"
+        echo "START_ENTRY:   ${START_ENTRY} (existing entries inform Steps 2-3 to skip)"
         echo "============================================"
     } >> "${local_logfile}"
 
@@ -206,12 +249,6 @@ for (( i=1; i<=stride; i++ )); do
     #     fi
     # fi
 
-    nsubdir1=$(( lineno / 1000 ))
-    zsubdir1=$(printf "%03d" ${nsubdir1})
-    nsubdir2=$(( lineno / 100 ))
-    zsubdir2=$(printf "%03d" ${nsubdir2})
-
-    outfolder=${MERGEFILE_OUTPUT_DIR}/${zsubdir1}/${zsubdir2}/
     mkdir -p "${outfolder}"
     nmerged=$(ls "${local_jobdir}"/merged_*.h5 2>/dev/null | wc -l)
     echo "Number of merged H5 files: ${nmerged}" >> "${local_logfile}"
@@ -220,6 +257,15 @@ for (( i=1; i<=stride; i++ )); do
         ls -lh "${outfolder}"/merged_*.h5 >> "${local_logfile}" 2>/dev/null
     else
         echo "WARNING: No merged H5 files produced for line ${lineno}" >> "${local_logfile}"
+    fi
+
+    # Mark the line complete so future jobs can skip it cheaply. We write
+    # the sentinel both when the run produced new merged files and when a
+    # resume run produced none (Step 2 hit input EOF immediately, meaning
+    # OUTPUT_DIR already had every entry the input file contains).
+    if [ "${nmerged}" -gt 0 ] || [ "${START_ENTRY}" -gt 0 ]; then
+        touch "${sentinel}"
+        echo "Wrote completion sentinel: ${sentinel}" >> "${local_logfile}"
     fi
 
     # nroot=$(ls "${local_jobdir}"/showerreco_*.root 2>/dev/null | wc -l)

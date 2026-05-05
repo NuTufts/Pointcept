@@ -6,6 +6,7 @@ parser = argparse.ArgumentParser(description='Process larcv/larlite into HDF5 en
 parser.add_argument("-i","--input-dlmerged",required=True,type=str,help="Input dlmerged file")
 parser.add_argument("-v","--verbosity",type=int,default=2,help="Verbosity level from normal=2 to debug=0")
 parser.add_argument("-n","--nentries",type=int,default=-1,help="Number of entries to run. (default is -1, which will run all entries in the file.)")
+parser.add_argument("-e","--start-entry",type=int,default=0,help="First entry index to process (default: 0).")
 parser.add_argument('-d','--is-data',default=False,action='store_true',help='if provided, set to run in data mode (no simulation information processed.)')
 parser.add_argument('-tb','--tick-backward',default=False,action='store_true',help='if flag provided, assume larcv data is stored in tick-backward format and reverse upon loading.')
 parser.add_argument('--mcc9',default=False,action='store_true',help='if provided, set to run in mcc9 mode (use mcc9 truth information).')
@@ -21,8 +22,8 @@ from larflow import larflow
 
 dlmerged_input = args.input_dlmerged
 
-start_entry = 0
-end_entry = args.nentries
+start_entry = max(0, args.start_entry)
+nentries_request = args.nentries
 
 # Setup algorithm
 simchmaker = larflow.prep.SimChTripletLabelMaker()
@@ -82,10 +83,10 @@ iolcv.set_verbosity(0)
 iolcv.initialize()
 
 nentries = ioll.get_entries()
-if end_entry<0 or end_entry>=nentries:
+if nentries_request < 0:
   end_entry = nentries
 else:
-  end_entry = end_entry
+  end_entry = min(start_entry + nentries_request, nentries)
 
 # process input file name. we will use it to name the invididual event files
 basefilename = os.path.basename( args.input_dlmerged )

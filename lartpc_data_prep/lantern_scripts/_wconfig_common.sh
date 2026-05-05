@@ -72,6 +72,7 @@ wconfig_bootstrap() {
     TBFLAG=${TBFLAG:-""}
     MCC9FLAG=${MCC9FLAG:-""}
     DEVICE=${DEVICE:-cuda}
+    MERGEFILE_OUTPUT_DIR=${MERGEFILE_OUTPUT_DIR:-${OUTPUT_DIR:-}}
     SLURM_ARRAY_TASK_ID=${SLURM_ARRAY_TASK_ID:-0}
 
     local jobid=${SLURM_ARRAY_TASK_ID}
