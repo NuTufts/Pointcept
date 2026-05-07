@@ -76,6 +76,7 @@ class ShowerClusteringDataset(DefaultDataset):
         coord_scale=DEFAULT_COORD_SCALE,
         voxel_size_cm=DEFAULT_VOXEL_SIZE_CM,
         backbone_grid_size_cm=0.25,
+        max_spacepoints=None,
         lm_score_aug_low=0.15,
         lm_score_aug_high=0.40,
         lm_score_val_threshold=0.15,
@@ -93,6 +94,8 @@ class ShowerClusteringDataset(DefaultDataset):
         self.coord_scale = float(coord_scale)
         self.voxel_size_norm = float(voxel_size_cm) / self.coord_scale
         self.backbone_grid_size_cm = float(backbone_grid_size_cm)
+        self.max_spacepoints = (int(max_spacepoints)
+                                if max_spacepoints is not None else None)
         self.lm_score_aug_low = float(lm_score_aug_low)
         self.lm_score_aug_high = float(lm_score_aug_high)
         self.lm_score_val_threshold = float(lm_score_val_threshold)
@@ -295,6 +298,38 @@ class ShowerClusteringDataset(DefaultDataset):
         final_remap[valid_mask] = post_lm_to_dedup[remap[valid_mask]]
         remap = final_remap
         n_keep = n_dedup
+
+        # ---- 2c. Optional spacepoint cap (memory bound) --------------------
+        # When `max_spacepoints` is set and the post-dedup count exceeds it,
+        # randomly subsample down. Mainly used to bound per-event VRAM during
+        # training; if you want the cap on training only, override the
+        # train-split kwargs in the config.
+        # We compose this filter into `remap` so all downstream
+        # fragment / gt-instance bookkeeping uses the final indexing.
+        if (self.max_spacepoints is not None
+                and n_keep > self.max_spacepoints):
+            cap_perm = np.random.permutation(n_keep)[:self.max_spacepoints]
+            cap_perm.sort()  # preserve original ordering
+            pos_k = pos_k[cap_perm]
+            lm_score_k = lm_score_k[cap_perm]
+            pixval_k = pixval_k[cap_perm]
+            wire_k = wire_k[cap_perm]
+            sp_trackid_k = sp_trackid_k[cap_perm]
+            sp_pid_k = sp_pid_k[cap_perm]
+            sp_origin_k = sp_origin_k[cap_perm]
+            sp_hasmatch_k = sp_hasmatch_k[cap_perm]
+            sp_ssnet_k = sp_ssnet_k[cap_perm]
+            grid_coord = grid_coord[cap_perm]
+
+            n_post_dedup = n_keep
+            n_after_cap = self.max_spacepoints
+            dedup_to_cap = np.full(n_post_dedup, -1, dtype=np.int64)
+            dedup_to_cap[cap_perm] = np.arange(n_after_cap)
+            valid_mask = remap >= 0
+            new_remap = np.full(n_sp, -1, dtype=np.int64)
+            new_remap[valid_mask] = dedup_to_cap[remap[valid_mask]]
+            remap = new_remap
+            n_keep = n_after_cap
 
         # ---- 3. Normalize coords + build backbone input feat ---------------
         coord_norm = (pos_k - self.coord_center) / self.coord_scale

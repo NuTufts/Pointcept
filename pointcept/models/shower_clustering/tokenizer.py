@@ -282,9 +282,13 @@ class FragmentPositionalEncoder(nn.Module):
             if m >= 2:
                 c_centered = c - centroid
                 cov = (c_centered.transpose(0, 1) @ c_centered) / float(m - 1)
+                # eigh on CUDA isn't implemented for Half; cast the
+                # symmetric 3x3 cov to float32 just for this op so the
+                # tokenizer is AMP-compatible. PCA on a 3x3 matrix in
+                # fp32 is essentially free.
+                eigvals, eigvecs = torch.linalg.eigh(cov.float())
                 # eigh returns ascending; take last eigenvector as principal axis
-                eigvals, eigvecs = torch.linalg.eigh(cov)
-                axis = eigvecs[:, -1]
+                axis = eigvecs[:, -1].to(c.dtype)
                 # Sign-disambiguate: project mean strength onto axis
                 if (axis @ centroid) < 0:
                     axis = -axis
