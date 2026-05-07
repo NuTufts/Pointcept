@@ -37,9 +37,27 @@ Each `gt_instances[i]` dict has:
     n_truth_points   int
 
 GT instances are built by walking `mc_particle_tree.parent_trackid` from each
-unique non-(-1) `shower_fragments/trackid` (the trunk set), collecting all
-descendants, then collecting per-spacepoint truth indices. See §4d of the
-design doc for context.
+unique non-(-1) `shower_fragments/trackid` (the trunk set) and collecting all
+descendants. The per-instance `truth_indices` field then comes from one of
+two sources, controlled by `gt_label_source`:
+
+    "truth"    (default) — spacepoints whose true trackid is in the
+                            descendant set. Excludes ghosts. Includes shower
+                            points DBSCAN missed.
+    "fragment"            — union of surviving reco fragments whose plurality
+                            trackid is in the descendant set. Includes ghosts
+                            DBSCAN clustered with shower points; excludes
+                            shower points DBSCAN missed. Matches the reco
+                            system's clustering output, so the model isn't
+                            forced to do de-ghosting jointly with clustering.
+    "union"               — set union of "truth" and "fragment". Includes
+                            both reco-clustered ghosts (so the model can
+                            mimic DBSCAN's clustering) and diffuse true
+                            shower points DBSCAN missed (so the model
+                            isn't trained to drop them). Most permissive;
+                            best for clustering-only objectives.
+
+See §4d of the design doc for context.
 
 Augmentation: per-event lm_score threshold τ. Sampled from
 Uniform(`lm_score_aug_low`, `lm_score_aug_high`) on training; fixed at
@@ -83,6 +101,7 @@ class ShowerClusteringDataset(DefaultDataset):
         min_fragment_points_post_filter=20,
         log_transform_strength=True,
         wire_scale=1.0 / 3456.0,
+        gt_label_source="truth",
         transform=None,
         loop=1,
         test_mode=False,
@@ -90,6 +109,11 @@ class ShowerClusteringDataset(DefaultDataset):
         cache=False,
         ignore_index=-1,
     ):
+        if gt_label_source not in ("truth", "fragment", "union"):
+            raise ValueError(
+                f"gt_label_source must be 'truth', 'fragment', or 'union'; "
+                f"got {gt_label_source!r}"
+            )
         self.coord_center = np.asarray(coord_center, dtype=np.float32)
         self.coord_scale = float(coord_scale)
         self.voxel_size_norm = float(voxel_size_cm) / self.coord_scale
@@ -102,6 +126,7 @@ class ShowerClusteringDataset(DefaultDataset):
         self.min_fragment_points_post_filter = int(min_fragment_points_post_filter)
         self.log_transform_strength = bool(log_transform_strength)
         self.wire_scale = float(wire_scale)
+        self.gt_label_source = gt_label_source
         self.data_list_file = data_list_file
         super().__init__(
             split=split,
@@ -413,9 +438,41 @@ class ShowerClusteringDataset(DefaultDataset):
                 if not desc:
                     continue
                 desc_arr = np.fromiter(desc, dtype=np.int64, count=len(desc))
+                # Truth-side: surviving spacepoints whose true trackid is in
+                # the descendant set. Real points only.
                 truth_idx_orig = np.where(np.isin(sp_trackid, desc_arr))[0]
-                truth_idx_new = remap[truth_idx_orig]
-                truth_idx_new = truth_idx_new[truth_idx_new >= 0]
+                truth_part = remap[truth_idx_orig]
+                truth_part = truth_part[truth_part >= 0].astype(np.int64)
+                # Fragment-side: union of surviving reco fragments whose
+                # plurality trackid is in the descendant set. May include
+                # ghosts DBSCAN grouped with shower points.
+                desc_set = set(int(x) for x in desc_arr.tolist())
+                frag_chunks = [
+                    idx for idx, ft in zip(fragment_indices, fragment_trackid)
+                    if int(ft) in desc_set
+                ]
+                if frag_chunks:
+                    fragment_part = np.unique(
+                        np.concatenate(frag_chunks)
+                    ).astype(np.int64)
+                else:
+                    fragment_part = np.zeros(0, dtype=np.int64)
+                if self.gt_label_source == "truth":
+                    truth_idx_new = truth_part
+                elif self.gt_label_source == "fragment":
+                    truth_idx_new = fragment_part
+                else:  # "union"
+                    # Best of both: reco-clustered ghosts (so the model can
+                    # mimic DBSCAN) AND true diffuse shower points DBSCAN
+                    # missed (so the model isn't taught to drop them).
+                    if truth_part.size and fragment_part.size:
+                        truth_idx_new = np.unique(
+                            np.concatenate([truth_part, fragment_part])
+                        ).astype(np.int64)
+                    elif truth_part.size:
+                        truth_idx_new = truth_part
+                    else:
+                        truth_idx_new = fragment_part
                 if len(truth_idx_new) == 0:
                     continue
                 origin_cm = tid_to_origin.get(

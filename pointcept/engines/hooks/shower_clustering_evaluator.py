@@ -299,8 +299,11 @@ class ShowerClusteringEvaluator(HookBase):
                     )
                     decoder_out = model.decoder(
                         voxel_tokens=tokens["voxel_tokens"],
+                        voxel_coords=tokens["voxel_coords"],
                         fragment_tokens=tokens["fragment_tokens"],
+                        fragment_coords=tokens["fragment_coords"],
                         spacepoint_tokens=tokens["spacepoint_tokens"],
+                        spacepoint_coords=tokens["spacepoint_coords"],
                     )
 
                     # Use loss_fn's matcher to get the assignment for this

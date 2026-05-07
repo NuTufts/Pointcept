@@ -172,6 +172,17 @@ def parse_args():
         help="Override data_list_file in the config"
     )
     parser.add_argument(
+        "--gt-label-source", type=str, default=None,
+        choices=["truth", "fragment", "union"],
+        help=("Override the dataset's gt_label_source. "
+              "'truth' = descendants of trunk trackid (ghost-free, "
+              "includes shower points DBSCAN missed). "
+              "'fragment' = union of reco fragments whose plurality "
+              "trackid descends from trunk (includes ghosts DBSCAN "
+              "clustered with shower points; excludes missed points). "
+              "'union' = set union of both. Default: use config.")
+    )
+    parser.add_argument(
         "--max-points", type=int, default=120000,
         help=("Cap rendered point count per panel for browser responsiveness "
               "(default: 120000). Subsampling preserves all GT-instance and "
@@ -185,10 +196,13 @@ def parse_args():
 
 # ── Build dataset directly from config ──────────────────────────────────────
 
-def build_dataset(cfg, split, data_list_override=None):
+def build_dataset(cfg, split, data_list_override=None,
+                  gt_label_source_override=None):
     dataset_cfg = getattr(cfg.data, split).copy()
     if data_list_override is not None:
         dataset_cfg["data_list_file"] = os.path.abspath(data_list_override)
+    if gt_label_source_override is not None:
+        dataset_cfg["gt_label_source"] = gt_label_source_override
     # The visualizer wants augmentation behavior on train (samples τ) but no
     # other transforms. The dataset class is self-contained — no Compose.
     dataset_cfg["transform"] = None
@@ -403,7 +417,11 @@ def build_lm_score_figure(data, mask_render):
 args = parse_args()
 cfg = Config.fromfile(args.config)
 
-dataset = build_dataset(cfg, args.split, data_list_override=args.data_list)
+dataset = build_dataset(
+    cfg, args.split,
+    data_list_override=args.data_list,
+    gt_label_source_override=args.gt_label_source,
+)
 n_entries = len(dataset)
 
 print(f"[viz] config: {args.config}")

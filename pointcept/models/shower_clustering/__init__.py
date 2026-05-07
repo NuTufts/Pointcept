@@ -1,21 +1,15 @@
 """Shower-clustering Mask2Former model components.
 
 See pointcept/docs/shower_clustering_design.md.
-
-Phase 3 (this file): tokenizer — turns per-spacepoint backbone features into
-fragment, voxel, and spacepoint token sets that the Mask2Former decoder
-will cross-attend over.
 """
 
 from .tokenizer import (
     FragmentPool,
     VoxelPool,
-    FragmentPositionalEncoder,
-    VoxelPositionalEncoder,
+    FragmentContentEnricher,
     ShowerClusteringTokenizer,
 )
 from .decoder import (
-    QueryPositionalEncoder,
     Mask2FormerDecoder,
     DEFAULT_SCALE_PATTERN,
 )
@@ -32,10 +26,8 @@ from .model import ShowerClusteringMask2Former
 __all__ = [
     "FragmentPool",
     "VoxelPool",
-    "FragmentPositionalEncoder",
-    "VoxelPositionalEncoder",
+    "FragmentContentEnricher",
     "ShowerClusteringTokenizer",
-    "QueryPositionalEncoder",
     "Mask2FormerDecoder",
     "DEFAULT_SCALE_PATTERN",
     "HungarianMatcher",

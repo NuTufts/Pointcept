@@ -36,11 +36,16 @@ del _trainer_module
 # completes (~1 day per pi0 sample, in flight as of 2026-05-04).
 _DEFAULT_TRAIN_LIST = (
     "/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept/"
-    "lartpc_data_prep/lantern_scripts/tmp_workdir/"
-    "lantern_bnb_nu_pi0filter_corsika_jobid0000_line00001/"
-    "shower_clustering_filelist.txt"
+    #"lartpc_data_prep/lantern_scripts/h5lists/"
+    #"h5list_bnbnu_pi0filter_validated_train.txt"
+    "h5list_showercluster_testsample.txt"
 )
-_DEFAULT_VAL_LIST = _DEFAULT_TRAIN_LIST  # same for now; smoke-test only
+_DEFAULT_VAL_LIST = (
+    "/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept/"
+    #"lartpc_data_prep/lantern_scripts/h5lists/"
+    #"h5list_bnbnu_pi0filter_validated_val.txt"
+    "h5list_showercluster_testsample.txt"
+)
 
 # Backbone pretrain (frozen Sonata-v1m1 / PT-v3m2). Reused as-is from V3.
 weight = (
@@ -64,14 +69,14 @@ coord_scale = 179.55
 # Voxel / fragment parameters (see design doc §3, §4)
 # =============================================================================
 voxel_size_cm = 5.0
-min_fragment_points_post_filter = 20  # matches DBSCAN's min_fragment_points
+min_fragment_points_post_filter = 50  # matches DBSCAN's min_fragment_points
 
 # =============================================================================
 # lm_score threshold augmentation (design doc §4e)
 # =============================================================================
-lm_score_aug_low = 0.15        # production deghoster floor
-lm_score_aug_high = 0.40       # cap to avoid emptying events
-lm_score_val_threshold = 0.15  # fixed on val for run-to-run comparability
+lm_score_aug_low = 0.40        # production deghoster floor
+lm_score_aug_high = 0.80       # cap to avoid emptying events
+lm_score_val_threshold = 0.60  # fixed on val for run-to-run comparability
 
 # =============================================================================
 # Common dataset kwargs
@@ -87,7 +92,26 @@ _dataset_common = dict(
     min_fragment_points_post_filter=min_fragment_points_post_filter,
     log_transform_strength=True,
     wire_scale=1.0 / 3456.0,
+    # GT spacepoint labeling source:
+    #   "truth"    — true descendants of trunk trackid (ghosts excluded;
+    #                forces the spacepoint mask head to learn de-ghosting
+    #                jointly with clustering).
+    #   "fragment" — union of surviving reco fragments whose plurality
+    #                trackid descends from trunk. Ghosts that DBSCAN
+    #                grouped with shower points are INCLUDED; shower
+    #                points DBSCAN missed are excluded. Matches the
+    #                reco-system clustering output and removes the
+    #                de-ghosting burden from the spacepoint mask head.
+    #   "union"    — set-union of the above. Includes reco-clustered
+    #                ghosts AND diffuse true shower points DBSCAN missed.
+    #                Most permissive: model isn't penalized for following
+    #                DBSCAN's ghost grouping OR for picking up missed
+    #                shower points.
+    gt_label_source="truth",
     transform=None,  # augmentation is handled inside the dataset itself
+    # `max_spacepoints` is set per-split below (NOT here) so each split can
+    # use a different cap. Conflict with **_dataset_common would raise a
+    # duplicate-keyword TypeError otherwise.
 )
 
 dataset_type = "ShowerClusteringDataset"
@@ -102,6 +126,11 @@ data = dict(
         data_root=data_root,
         data_list_file=_DEFAULT_TRAIN_LIST,
         loop=1,
+        # Cap train events at 100k spacepoints — bounds the per-event
+        # backward-pass memory on P100. Drops a few small GT instances
+        # on the largest events but most signal stays. Bump higher (or
+        # to None) if you have an H200 budget.
+        max_spacepoints=100_000,
         **_dataset_common,
     ),
     val=dict(
@@ -109,6 +138,10 @@ data = dict(
         data_root=data_root,
         data_list_file=_DEFAULT_VAL_LIST,
         loop=1,
+        # Val is forward-only — needs ~half the memory of training. Cap
+        # higher so reported val metrics aren't biased by the cap on small
+        # GT instances. Set to None for full events if memory permits.
+        max_spacepoints=150_000,
         **_dataset_common,
     ),
     test=dict(
@@ -116,6 +149,8 @@ data = dict(
         data_root=data_root,
         data_list_file=_DEFAULT_VAL_LIST,
         loop=1,
+        # Test split: full events for production-quality inference.
+        max_spacepoints=None,
         **_dataset_common,
     ),
 )
@@ -184,6 +219,8 @@ model = dict(
     frag_pool_layers=2,
     frag_pool_heads=8,
     frag_pool_max_points=512,
+    # Shared (3) → (D) pos-embedding MLP hidden width. None = token_dim (256).
+    pos_emb_hidden_dim=None,
     loss_kwargs=dict(
         weight_class=2.0,
         weight_mask=5.0,
@@ -229,17 +266,21 @@ scheduler = dict(
 # =============================================================================
 # Training loop knobs (one-event smoke-test defaults; bump for real runs)
 # =============================================================================
-save_path = "exp/shower_clustering/v1_smoketest"
-epoch = 100
+save_path = "exp/shower_clustering/run2_4eventtest"
+epoch = 1000
 eval_epoch = 100
-batch_size = 1
-batch_size_val = 1
-num_worker = 0           # 0 to keep stack traces sane during smoke test
-num_worker_val = 0
+batch_size = 4
+batch_size_val  = 4
+batch_size_test = 4
+num_worker = 8           # 0 to keep stack traces sane during smoke test
+num_worker_val = 8
 evaluate = True          # flip to True (and uncomment evaluator hook below)
                          # for real training runs with val metrics
 clip_grad = 5.0          # mild gradient clipping
-enable_amp = False       # P100 doesn't have flash_attn; xformers + fp32 first
+enable_amp = True       # AMP roughly halves memory on P100 (xformers fp16).
+                         # Watch for instability — see GradScalerMonitor hook
+                         # below + the comment block at the end of this file.
+amp_dtype = "float16"    # P100 has no bf16 hardware; bf16 falls back to fp32.
 enable_wandb = True     # turn on for real runs (ShowerClusteringEvaluator
                          # will then push val/* metrics to wandb)
 wandb_project = "pointcept-shower-clustering"
@@ -263,6 +304,15 @@ empty_cache = True       # 16 GB P100 — free CUDA cache between fwd / bwd
 hooks = [
     dict(type="SonataCheckpointLoader"),
     dict(type="IterationTimer", warmup_iter=2),
+    # GradScalerMonitor logs the AMP loss-scale + overflow events. Active
+    # only when enable_amp=True. Look at val/wandb for:
+    #   grad_scaler/scale         — should stabilize after a few iters; if it
+    #                                drops to 1.0 and stays there, AMP is
+    #                                fighting overflows constantly.
+    #   grad_scaler/overflow_event — 1 on overflow, 0 otherwise. A few in
+    #                                the first ~50 iters is normal (warmup).
+    #                                Sustained > 1% of steps means trouble.
+    dict(type="GradScalerMonitor", log_frequency=10, warn_on_low_scale=4.0),
     dict(type="InformationWriter"),
     dict(type="ShowerClusteringEvaluator",
          eval_freq=0,
@@ -271,6 +321,40 @@ hooks = [
          log_per_event=False),
     dict(type="CheckpointSaver", save_freq=10),
 ]
+
+
+# =============================================================================
+# AMP-instability watch list
+# =============================================================================
+# When `enable_amp = True`, watch these signals (in stdout / wandb) — any one
+# of them means fall back to fp32:
+#
+#   1. NaN / Inf in `train/loss` or any component (`train/loss_*`).
+#      InformationWriter prints them; PyTorch's GradScaler will SKIP the
+#      optimizer step when it detects non-finite gradients, but if the
+#      forward itself produces NaN, the step won't be skipped — you'll see
+#      the loss go NaN and stay there.
+#
+#   2. `grad_scaler/scale` collapsing to 1.0 (or warn_on_low_scale) and
+#      staying there. Means GradScaler keeps detecting overflows; AMP isn't
+#      adding value. Could indicate fp16 saturation in mask_embed @ keys.T
+#      or in the dice denominator.
+#
+#   3. `grad_scaler/overflow_event` firing more than ~1% of steps after
+#      warmup. Same diagnosis as (2).
+#
+#   4. Train loss diverges (rising) while LR is still positive. Could be
+#      AMP-induced instability OR genuine optimization issue — disable AMP
+#      to disambiguate.
+#
+#   5. `val/loss_dice` plateauing at a much higher value than fp32 baseline
+#      runs. Dice has a +1 epsilon and is mostly fp16-safe, but a sustained
+#      gap is a signal something's off.
+#
+# If you hit any of (1)-(4), set `enable_amp = False`, drop `max_spacepoints`
+# to ~80_000 instead, and re-launch — gives you ~the same memory headroom
+# without the precision risk.
+# =============================================================================
 
 # =============================================================================
 # Trainer

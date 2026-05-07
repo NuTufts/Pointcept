@@ -6,17 +6,24 @@ token sets the decoder will cross-attend to (see design doc §3):
 
     spacepoint_tokens (N, D) — projected backbone features (mask-refinement)
     fragment_tokens   (F, D) — pooled features per DBSCAN fragment + per-frag
-                                geometric positional encoding
-    voxel_tokens      (V, D) — mean-pooled features per 5 cm voxel + per-vox
-                                geometric positional encoding
+                                geometric content enrichment
+    voxel_tokens      (V, D) — mean-pooled features per 5 cm voxel
+
+For each scale we ALSO return a (•, 3) coord tensor so the decoder can apply
+its shared positional-embedding MLP. The PE is NOT added inside the tokenizer
+anymore — the decoder owns position embedding so the same (3)→(D) function is
+applied at every attention call (DETR / Mask2Former canonical pattern).
+
+Returned dict keys (per event, no batch dim):
+
+    spacepoint_tokens (N, D)        spacepoint_coords (N, 3)  normalized
+    voxel_tokens      (V, D)        voxel_coords      (V, 3)  normalized
+    fragment_tokens   (F, D)        fragment_coords   (F, 3)  normalized
 
 Fragment pool is a mini set-transformer: a learnable pool query plus K
 self-attention layers over the fragment's spacepoints. Voxel pool is a
 deterministic mean (we don't have enough per-voxel structure to justify a
 learnable pool, and voxel scale is supposed to give cheap global context).
-
-All modules are device-agnostic and work on CPU for unit tests; production
-runs put them on the same device as the backbone.
 
 NOTE on memory: FragmentPool pads fragments in a batch to max-fragment-size,
 and MultiheadAttention is O(M²) in memory. To bound peak memory, fragments
@@ -31,7 +38,6 @@ from typing import List, Optional, Sequence
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 
 
 # ---------------------------------------------------------------------------
@@ -225,23 +231,26 @@ class VoxelPool(nn.Module):
 
 
 # ---------------------------------------------------------------------------
-# Positional encoders
+# Per-fragment content enricher
 # ---------------------------------------------------------------------------
 
-class FragmentPositionalEncoder(nn.Module):
+class FragmentContentEnricher(nn.Module):
     """
-    Geometric PE for fragment tokens. Per-fragment features:
+    Adds per-fragment geometric / strength features into the fragment tokens
+    as CONTENT (not position — the decoder's shared pos_emb provides position).
 
-        centroid (3) — mean of normalized spacepoint coords
+    Per-fragment features (centroid is intentionally left out since the
+    decoder's pos_emb on `fragment_coords` already encodes it):
+
         pca_axis (3) — first principal-axis direction (unit length)
         bbox_extent (3) — max - min of normalized spacepoint coords
         log_count (1) — log(1 + n_points_in_fragment)
-        mean_strength (3) — mean of strength features (e.g. log pixval / plane)
+        mean_strength (3) — mean of strength features
 
-        total = 13 dim → MLP → out_dim
+        total = 10 dim → MLP → out_dim, then ADDED to the fragment_tokens.
     """
 
-    INPUT_DIM = 3 + 3 + 3 + 1 + 3
+    INPUT_DIM = 3 + 3 + 1 + 3
 
     def __init__(self, out_dim: int, hidden_dim: int = 128):
         super().__init__()
@@ -260,12 +269,12 @@ class FragmentPositionalEncoder(nn.Module):
         strength: torch.Tensor,
         fragment_indices: Sequence,
     ) -> torch.Tensor:
-        """Compute the 13-dim feature vector per fragment."""
+        """Compute the 10-dim feature vector per fragment + return centroids."""
         device = coord_norm.device
         n_frags = len(fragment_indices)
-        out = coord_norm.new_zeros(n_frags, FragmentPositionalEncoder.INPUT_DIM)
+        feats = coord_norm.new_zeros(n_frags, FragmentContentEnricher.INPUT_DIM)
         if n_frags == 0:
-            return out
+            return feats
         for fi, idx in enumerate(fragment_indices):
             if not isinstance(idx, torch.Tensor):
                 idx = torch.as_tensor(idx, dtype=torch.long, device=device)
@@ -284,22 +293,18 @@ class FragmentPositionalEncoder(nn.Module):
                 cov = (c_centered.transpose(0, 1) @ c_centered) / float(m - 1)
                 # eigh on CUDA isn't implemented for Half; cast the
                 # symmetric 3x3 cov to float32 just for this op so the
-                # tokenizer is AMP-compatible. PCA on a 3x3 matrix in
-                # fp32 is essentially free.
+                # tokenizer is AMP-compatible.
                 eigvals, eigvecs = torch.linalg.eigh(cov.float())
-                # eigh returns ascending; take last eigenvector as principal axis
                 axis = eigvecs[:, -1].to(c.dtype)
-                # Sign-disambiguate: project mean strength onto axis
                 if (axis @ centroid) < 0:
                     axis = -axis
             else:
                 axis = c.new_zeros(3)
-            out[fi, 0:3] = centroid
-            out[fi, 3:6] = axis
-            out[fi, 6:9] = extent
-            out[fi, 9] = log_count
-            out[fi, 10:13] = mean_str
-        return out
+            feats[fi, 0:3] = axis
+            feats[fi, 3:6] = extent
+            feats[fi, 6] = log_count
+            feats[fi, 7:10] = mean_str
+        return feats
 
     def forward(
         self,
@@ -311,51 +316,32 @@ class FragmentPositionalEncoder(nn.Module):
         return self.mlp(feats)
 
 
-class VoxelPositionalEncoder(nn.Module):
-    """
-    Geometric PE for voxel tokens. Per-voxel features:
+# ---------------------------------------------------------------------------
+# Per-scale coord builders
+# ---------------------------------------------------------------------------
 
-        center (3) — voxel center in normalized coords
-        log_count (1) — log(1 + spacepoint count in voxel)
+def _voxel_centers(voxel_keys: torch.Tensor, voxel_size_norm: float) -> torch.Tensor:
+    """Voxel-grid integer coords → voxel center in normalized coords (V, 3)."""
+    if voxel_keys.shape[0] == 0:
+        return voxel_keys.new_zeros(0, 3, dtype=torch.float32)
+    return (voxel_keys.float() + 0.5) * float(voxel_size_norm)
 
-        total = 4 dim → MLP → out_dim
-    """
 
-    INPUT_DIM = 3 + 1
-
-    def __init__(self, out_dim: int, voxel_size_norm: float, hidden_dim: int = 64):
-        super().__init__()
-        self.out_dim = out_dim
-        self.voxel_size_norm = float(voxel_size_norm)
-        self.mlp = nn.Sequential(
-            nn.Linear(self.INPUT_DIM, hidden_dim),
-            nn.GELU(),
-            nn.Linear(hidden_dim, out_dim),
-        )
-
-    def forward(
-        self,
-        voxel_keys: torch.Tensor,
-        voxel_id: torch.Tensor,
-        n_voxels: int,
-    ) -> torch.Tensor:
-        """
-        Args:
-            voxel_keys: (V, 3) long — integer voxel-grid coordinates
-            voxel_id:   (N,) long — voxel index per spacepoint
-            n_voxels:   V (int)
-        Returns:
-            (V, out_dim)
-        """
-        if n_voxels == 0:
-            return voxel_keys.new_zeros(0, self.out_dim, dtype=torch.float32)
-        center_n = (voxel_keys.float() + 0.5) * self.voxel_size_norm
-        ones = voxel_id.new_ones(voxel_id.shape[0], dtype=torch.float32)
-        counts = voxel_id.new_zeros(n_voxels, dtype=torch.float32)
-        counts.index_add_(0, voxel_id, ones)
-        log_count = torch.log1p(counts).unsqueeze(-1)
-        feats = torch.cat([center_n, log_count], dim=-1)
-        return self.mlp(feats)
+def _fragment_centroids(
+    coord_norm: torch.Tensor,
+    fragment_indices: Sequence,
+) -> torch.Tensor:
+    """Per-fragment mean of normalized spacepoint coords (F, 3)."""
+    device = coord_norm.device
+    n_frags = len(fragment_indices)
+    out = coord_norm.new_zeros(n_frags, 3)
+    for fi, idx in enumerate(fragment_indices):
+        if not isinstance(idx, torch.Tensor):
+            idx = torch.as_tensor(idx, dtype=torch.long, device=device)
+        else:
+            idx = idx.to(device=device, dtype=torch.long)
+        out[fi] = coord_norm[idx].mean(dim=0)
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -370,9 +356,13 @@ class ShowerClusteringTokenizer(nn.Module):
     bookkeeping tensors emitted by `ShowerClusteringDataset`.
 
     Forward output dict:
-        spacepoint_tokens (N, token_dim) — backbone features projected
-        fragment_tokens   (F, token_dim) — pool + PE
-        voxel_tokens      (V, token_dim) — mean pool + PE
+        spacepoint_tokens (N, token_dim)   spacepoint_coords (N, 3)
+        fragment_tokens   (F, token_dim)   fragment_coords   (F, 3)
+        voxel_tokens      (V, token_dim)   voxel_coords      (V, 3)
+
+    Coords are in the same normalized frame as `coord_norm` so the decoder
+    can apply one shared (3)→(D) position-embedding MLP across all scales
+    and across queries.
 
     Per-event semantics. Multi-event batches are processed by calling forward
     once per event (see Phase 4 of the design doc); the decoder ties the
@@ -394,6 +384,7 @@ class ShowerClusteringTokenizer(nn.Module):
         super().__init__()
         self.in_dim = in_dim
         self.token_dim = token_dim
+        self.voxel_size_norm = float(voxel_size_norm)
 
         if frag_pool_hidden_dim is None:
             frag_pool_hidden_dim = token_dim
@@ -408,12 +399,10 @@ class ShowerClusteringTokenizer(nn.Module):
             dropout=frag_pool_dropout,
             max_pool_points=frag_pool_max_points,
         )
-        self.fragment_pe = FragmentPositionalEncoder(out_dim=token_dim)
+        # Geometric / strength features are content (not position) now.
+        self.fragment_content = FragmentContentEnricher(out_dim=token_dim)
 
         self.voxel_pool = VoxelPool(in_dim=in_dim, out_dim=token_dim)
-        self.voxel_pe = VoxelPositionalEncoder(
-            out_dim=token_dim, voxel_size_norm=voxel_size_norm,
-        )
 
         self.spacepoint_proj = nn.Linear(in_dim, token_dim)
 
@@ -437,26 +426,38 @@ class ShowerClusteringTokenizer(nn.Module):
             n_voxels: V
             fragment_indices: length-F list of per-fragment index arrays
         Returns:
-            dict with `spacepoint_tokens`, `fragment_tokens`, `voxel_tokens`
+            dict with `*_tokens` and `*_coords` for spacepoint / voxel / fragment.
         """
         sp_tokens = self.spacepoint_proj(sp_feat)
+        sp_coords = coord_norm
 
         if len(fragment_indices) > 0:
             frag_pooled = self.fragment_pool(sp_feat, fragment_indices)
-            frag_pe = self.fragment_pe(coord_norm, strength, fragment_indices)
-            fragment_tokens = frag_pooled + frag_pe
+            frag_content = self.fragment_content(
+                coord_norm, strength, fragment_indices,
+            )
+            fragment_tokens = frag_pooled + frag_content
+            fragment_coords = _fragment_centroids(coord_norm, fragment_indices)
         else:
             fragment_tokens = sp_feat.new_zeros(0, self.token_dim)
+            fragment_coords = sp_feat.new_zeros(0, 3)
 
         if n_voxels > 0:
-            v_pooled = self.voxel_pool(sp_feat, voxel_id, n_voxels)
-            v_pe = self.voxel_pe(voxel_keys, voxel_id, n_voxels)
-            voxel_tokens = v_pooled + v_pe
+            voxel_tokens = self.voxel_pool(sp_feat, voxel_id, n_voxels)
+            voxel_coords = _voxel_centers(voxel_keys, self.voxel_size_norm)
+            # voxel_coords inherits voxel_keys' device but should match
+            # tokens dtype for downstream additions.
+            voxel_coords = voxel_coords.to(dtype=voxel_tokens.dtype,
+                                           device=voxel_tokens.device)
         else:
             voxel_tokens = sp_feat.new_zeros(0, self.token_dim)
+            voxel_coords = sp_feat.new_zeros(0, 3)
 
         return {
             "spacepoint_tokens": sp_tokens,
+            "spacepoint_coords": sp_coords,
             "fragment_tokens": fragment_tokens,
+            "fragment_coords": fragment_coords,
             "voxel_tokens": voxel_tokens,
+            "voxel_coords": voxel_coords,
         }

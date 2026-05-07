@@ -79,6 +79,7 @@ class ShowerClusteringMask2Former(nn.Module):
         frag_pool_layers: int = 2,
         frag_pool_heads: int = 8,
         frag_pool_max_points: int = 512,
+        pos_emb_hidden_dim: Optional[int] = None,
         loss_kwargs: Optional[dict] = None,
     ):
         super().__init__()
@@ -110,6 +111,7 @@ class ShowerClusteringMask2Former(nn.Module):
             scale_pattern=scale_pattern,
             num_heads=num_heads,
             mlp_ratio=mlp_ratio,
+            pos_emb_hidden_dim=pos_emb_hidden_dim,
         )
 
         loss_kwargs = dict(loss_kwargs or {})
@@ -206,8 +208,11 @@ class ShowerClusteringMask2Former(nn.Module):
             )
             decoder_out = self.decoder(
                 voxel_tokens=tokens["voxel_tokens"],
+                voxel_coords=tokens["voxel_coords"],
                 fragment_tokens=tokens["fragment_tokens"],
+                fragment_coords=tokens["fragment_coords"],
                 spacepoint_tokens=tokens["spacepoint_tokens"],
+                spacepoint_coords=tokens["spacepoint_coords"],
             )
             per_event_pred.append(decoder_out)
 

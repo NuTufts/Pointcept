@@ -97,6 +97,16 @@ def parse_args():
                         "dataset (cfg.data.test.lm_score_val_threshold). "
                         "Default 0.15 lets noisy points through. Try 0.30 "
                         "or 0.50 for stricter ghost rejection at inference.")
+    p.add_argument("--gt-label-source", default=None,
+                   choices=["truth", "fragment", "union"],
+                   help="Override cfg.data.test.gt_label_source. "
+                        "'truth' = descendants of trunk trackid "
+                        "(ghost-free, includes shower points DBSCAN "
+                        "missed). 'fragment' = union of reco fragments "
+                        "whose plurality trackid descends from trunk "
+                        "(includes ghosts DBSCAN clustered with shower "
+                        "points; excludes missed points). 'union' = set "
+                        "union of both. Default: use config value.")
     return p.parse_args()
 
 
@@ -140,6 +150,8 @@ def build_test_dataset(cfg, args):
         dataset_cfg["max_spacepoints"] = None
     elif args.cap_spacepoints > 0:
         dataset_cfg["max_spacepoints"] = args.cap_spacepoints
+    if args.gt_label_source is not None:
+        dataset_cfg["gt_label_source"] = args.gt_label_source
     if args.lm_score_threshold is not None:
         dataset_cfg["lm_score_val_threshold"] = float(args.lm_score_threshold)
         # Also bump aug_low so that if someone runs this on the train split
