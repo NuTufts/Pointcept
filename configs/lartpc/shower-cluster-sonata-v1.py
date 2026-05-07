@@ -36,15 +36,15 @@ del _trainer_module
 # completes (~1 day per pi0 sample, in flight as of 2026-05-04).
 _DEFAULT_TRAIN_LIST = (
     "/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept/"
-    #"lartpc_data_prep/lantern_scripts/h5lists/"
-    #"h5list_bnbnu_pi0filter_validated_train.txt"
-    "h5list_showercluster_testsample.txt"
+    "lartpc_data_prep/lantern_scripts/h5lists/"
+    "h5list_bnbnu_pi0filter_validated_train.txt"
+    #"h5list_showercluster_testsample.txt"
 )
 _DEFAULT_VAL_LIST = (
     "/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept/"
-    #"lartpc_data_prep/lantern_scripts/h5lists/"
-    #"h5list_bnbnu_pi0filter_validated_val.txt"
-    "h5list_showercluster_testsample.txt"
+    "lartpc_data_prep/lantern_scripts/h5lists/"
+    "h5list_bnbnu_pi0filter_validated_val.txt"
+    #"h5list_showercluster_testsample.txt"
 )
 
 # Backbone pretrain (frozen Sonata-v1m1 / PT-v3m2). Reused as-is from V3.
@@ -107,7 +107,7 @@ _dataset_common = dict(
     #                Most permissive: model isn't penalized for following
     #                DBSCAN's ghost grouping OR for picking up missed
     #                shower points.
-    gt_label_source="truth",
+    gt_label_source="union",
     transform=None,  # augmentation is handled inside the dataset itself
     # `max_spacepoints` is set per-split below (NOT here) so each split can
     # use a different cap. Conflict with **_dataset_common would raise a
@@ -252,7 +252,7 @@ model = dict(
 # =============================================================================
 # Optimizer / scheduler
 # =============================================================================
-base_lr = 1e-4
+base_lr = 1e-3
 optimizer = dict(type="AdamW", lr=base_lr, weight_decay=0.01)
 scheduler = dict(
     type="OneCycleLR",
@@ -266,13 +266,13 @@ scheduler = dict(
 # =============================================================================
 # Training loop knobs (one-event smoke-test defaults; bump for real runs)
 # =============================================================================
-save_path = "exp/shower_clustering/run2_4eventtest"
+save_path = "exp/shower_clustering/run2"
 epoch = 1000
 eval_epoch = 100
-batch_size = 4
-batch_size_val  = 4
-batch_size_test = 4
-num_worker = 8           # 0 to keep stack traces sane during smoke test
+batch_size = 16
+batch_size_val  = 8
+batch_size_test = 8
+num_worker = 16          # 0 to keep stack traces sane during smoke test
 num_worker_val = 8
 evaluate = True          # flip to True (and uncomment evaluator hook below)
                          # for real training runs with val metrics
