@@ -3,11 +3,11 @@
 #SBATCH --job-name=pointcept_lantern
 #SBATCH --output=logs/pointcept_lantern/gridlog_bnbnu_coriska_pointcept_lantern.%j.%A_%a.%N.log
 #SBATCH --error=logs/pointcept_lantern/griderr_bnbnu_coriska_pointcept_lantern.%j.%A_%a.%N.err
-#SBATCH --mem-per-cpu=16000
-#SBATCH --cpus-per-task=1
+#SBATCH --mem-per-cpu=8000
+#SBATCH --cpus-per-task=2
 #SBATCH --time=6-00:00:00
 #SBATCH --partition=batch
-#SBATCH --array=1-49
+#SBATCH --array=50-99
 
 WORKDIR=/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept/lartpc_data_prep/lantern_scripts
 
