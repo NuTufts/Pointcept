@@ -13,6 +13,15 @@ from pointcept.engines.defaults import (
 from pointcept.engines.train import TRAINERS
 from pointcept.engines.launch import launch
 
+# Side-effect imports for custom trainers that don't auto-register via
+# pointcept.models. The config file does the same import as a side effect,
+# but DDP spawn workers receive the already-parsed cfg dict over the
+# multiprocessing pipe and never re-import the config — so registration
+# must happen at this top level (which runs in every spawn worker).
+# Each module's @TRAINERS.register_module() decorator runs exactly once
+# (modules are cached in sys.modules).
+import pointcept.models.shower_clustering.trainer  # noqa: F401
+
 
 def main_worker(cfg):
     #import torch
