@@ -11,6 +11,7 @@ parser.add_argument('-d','--is-data',default=False,action='store_true',help='if 
 parser.add_argument('-tb','--tick-backward',default=False,action='store_true',help='if flag provided, assume larcv data is stored in tick-backward format and reverse upon loading.')
 parser.add_argument('--mcc9',default=False,action='store_true',help='if provided, set to run in mcc9 mode (use mcc9 truth information).')
 parser.add_argument('--adc',default="wiremc",type=str,help="ADC image name to use for the input images.")
+parser.add_argument('--fileno-tag',default="",type=str,help="Optional tag (e.g. 'fileno00001') inserted into output filenames between the 'pointceptdata_' prefix and the input basename, to disambiguate intermediates produced from different input files.")
 
 args = parser.parse_args(sys.argv[1:])
 
@@ -99,7 +100,8 @@ for ientry in range(start_entry,end_entry):
   iolcv.read_entry(ientry)
 
   # we save one entry per file for use in Pointcept
-  entryfile_name = f"pointceptdata_{basefilename}_entry{ientry:06d}.h5"
+  tag_part = f"{args.fileno_tag}_" if args.fileno_tag else ""
+  entryfile_name = f"pointceptdata_{tag_part}{basefilename}_entry{ientry:06d}.h5"
   print(f"[{ientry}] output filename: ",entryfile_name)
   
   simchmaker.process( ioll, iolcv )

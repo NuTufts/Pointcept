@@ -61,9 +61,15 @@ def load_event_data(h5file, entry_key):
     else:
         data['tick'] = np.zeros(n_points, dtype=np.int32)
 
-    # LArMatch score
+    # LArMatch score. Different producers spell this field differently:
+    # extbnb_larmatch writes `larmatch_score`; the showerorigin pipeline
+    # (convert_larlite_to_showerorigin_h5 / merge_reco_truth_showerorigin)
+    # writes `lm_score`. Accept either.
     if 'larmatch_score' in triplet_data:
         data['larmatch_score'] = triplet_data['larmatch_score'][:]
+        data['has_larmatch'] = True
+    elif 'lm_score' in triplet_data:
+        data['larmatch_score'] = triplet_data['lm_score'][:]
         data['has_larmatch'] = True
     else:
         data['larmatch_score'] = np.ones(n_points, dtype=np.float32)
@@ -419,7 +425,7 @@ def main():
     fpath0, ek0 = file_entries[0]
     with h5py.File(fpath0, 'r') as f:
         td = f[ek0]['triplet_data']
-        has_larmatch = 'larmatch_score' in td
+        has_larmatch = 'larmatch_score' in td or 'lm_score' in td
         has_truth = 'hasmatch' in td
 
     # Color mode options

@@ -1562,12 +1562,12 @@ class ShowerOriginPredictorV3(nn.Module):
             slot_query = queries[k:k + 1]  # (1, D)
             broadcast = slot_query.expand(N, -1)  # (N, D)
 
-            if self.training:
-                _dbg.info(
-                    f"[slot {k}] query abs_max={slot_query.abs().max().item():.4f}, "
-                    f"event_feats abs_max={event_features.abs().max().item():.4f}, "
-                    f"N={N}"
-                )
+            # if self.training:
+            #     _dbg.info(
+            #         f"[slot {k}] query abs_max={slot_query.abs().max().item():.4f}, "
+            #         f"event_feats abs_max={event_features.abs().max().item():.4f}, "
+            #         f"N={N}"
+            #     )
 
             # Combine with point features — run in float32 to avoid
             # bfloat16 overflow with large input dim (2*D=2176)

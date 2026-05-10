@@ -94,6 +94,35 @@ SSNET_TO_EXTENDED_CLASS = {
 # Origin values: 0=unknown, 1=neutrino, 2=cosmic
 
 
+# Fallback PDG -> SSNet label mapping, used when an H5 file lacks a precomputed
+# `ssnet_label` dataset. SSNet codes: 0=bg, 1=electron, 2=photon, 3=muon, 4=proton,
+# 5=pion, 6=michel, 7=delta, 8=led, 9=other. Michel/delta/led can't be inferred from
+# PDG alone (they need decay/topology context), so PDG-derived labels never produce them.
+PDG_ABS_TO_SSNET = {
+    0:    0,  # untracked / bg
+    11:   1,  # e+/e-
+    22:   2,  # gamma
+    13:   3,  # mu+/mu-
+    2212: 4,  # proton
+    211:  5,  # pi+/pi-
+    111:  2,  # pi0 -> photons (rarely deposits directly)
+    321:  5,  # K+/K- -> treat like pion (charged hadron)
+    130:  9,  # K0L -> other
+    310:  9,  # K0S -> other
+    2112: 9,  # neutron -> other
+}
+
+
+def pid_to_ssnet_label(pid):
+    """Vectorized PDG -> SSNet label, with fallback to 'other' (=9) for unknown codes."""
+    pid_arr = np.asarray(pid, dtype=np.int64)
+    abs_pid = np.abs(pid_arr)
+    out = np.full(pid_arr.shape, 9, dtype=np.int32)  # default = other
+    for code, ssnet in PDG_ABS_TO_SSNET.items():
+        out[abs_pid == code] = ssnet
+    return out
+
+
 def parse_args():
     parser = argparse.ArgumentParser(
         description="t-SNE visualization with particle-based sampling"
@@ -234,7 +263,28 @@ def parse_args():
         "--normalize-features",
         action='store_true',
         default=False,
-        help="L2-normalize feature vectors before running t-SNE",
+        help="L2-normalize feature vectors before running t-SNE. "
+             "When --append-larmatch-feat is also set, the Sonata block and "
+             "the larmatch block are normalized independently before concatenation.",
+    )
+    parser.add_argument(
+        "--append-larmatch-feat",
+        action='store_true',
+        default=False,
+        help="Append per-point larmatch_feats (from H5 /entry_0/triplet_data/larmatch_feats) "
+             "to the Sonata embedding before t-SNE.",
+    )
+    parser.add_argument(
+        "--sonata-feat-dim",
+        type=int,
+        default=1088,
+        help="Number of trailing Sonata feature dims to keep for t-SNE.",
+    )
+    parser.add_argument(
+        "--larmatch-feat-dim",
+        type=int,
+        default=48,
+        help="Width of the larmatch_feats vector (matches the H5 dataset's last dim).",
     )
     return parser.parse_args()
 
@@ -270,31 +320,59 @@ def get_extended_class_label(ssnet_label, origin):
     return SSNET_TO_EXTENDED_CLASS.get(ssnet_label, 10)
 
 
-def load_raw_event_data(h5_path):
+def load_raw_event_data(h5_path, load_larmatch_feats=False):
     """
     Load raw data from HDF5 file including trackid and origin.
 
     Returns:
-        dict with pos, ssnet_label, origin, trackid, pixval, wire coordinates
+        dict with pos, ssnet_label, origin, trackid, pixval, wire coordinates,
+        and (optionally) larmatch_feats.
     """
     with h5py.File(h5_path, 'r') as f:
+        triplet = f['/entry_0/triplet_data']
+
+        # ssnet_label may be missing on newer "withlarmatch" H5 files; fall back
+        # to deriving it from PDG `pid`.
+        if 'ssnet_label' in triplet:
+            ssnet_label = np.array(triplet['ssnet_label'], dtype=np.int32)
+        elif 'pid' in triplet:
+            ssnet_label = pid_to_ssnet_label(np.array(triplet['pid']))
+        else:
+            raise KeyError(
+                f"{h5_path}: triplet_data has neither 'ssnet_label' nor 'pid'"
+            )
+
         data = {
-            'pos': np.array(f['/entry_0/triplet_data/pos'], dtype=np.float32),
-            'ssnet_label': np.array(f['/entry_0/triplet_data/ssnet_label'], dtype=np.int32),
-            'origin': np.array(f['/entry_0/triplet_data/origin'], dtype=np.int32),
-            'trackid': np.array(f['/entry_0/triplet_data/trackid'], dtype=np.int32),
-            'hasmatch': np.array(f['/entry_0/triplet_data/hasmatch'], dtype=np.int32),
-            'pixval': np.array(f['/entry_0/triplet_data/pixval'], dtype=np.float32),
-            'uwire': np.array(f['/entry_0/triplet_data/uwire'], dtype=np.int32),
-            'vwire': np.array(f['/entry_0/triplet_data/vwire'], dtype=np.int32),
-            'ywire': np.array(f['/entry_0/triplet_data/ywire'], dtype=np.int32),
+            'pos': np.array(triplet['pos'], dtype=np.float32),
+            'ssnet_label': ssnet_label,
+            'origin': np.array(triplet['origin'], dtype=np.int32),
+            'trackid': np.array(triplet['trackid'], dtype=np.int32),
+            'hasmatch': np.array(triplet['hasmatch'], dtype=np.int32),
+            'pixval': np.array(triplet['pixval'], dtype=np.float32),
+            'uwire': np.array(triplet['uwire'], dtype=np.int32),
+            'vwire': np.array(triplet['vwire'], dtype=np.int32),
+            'ywire': np.array(triplet['ywire'], dtype=np.int32),
         }
 
-        # Load neutrino vertices for biased sampling
-        keypoint_pos = np.array(f['/entry_0/mckeypoints/pos'], dtype=np.float32)
-        keypoint_type = np.array(f['/entry_0/mckeypoints/kptype'], dtype=np.int64)
-        nu_mask = keypoint_type == 0
-        data['nu_vertices'] = keypoint_pos[nu_mask]
+        if load_larmatch_feats:
+            if 'larmatch_feats' not in triplet:
+                raise KeyError(
+                    f"{h5_path}: --append-larmatch-feat set but "
+                    f"'/entry_0/triplet_data/larmatch_feats' is missing"
+                )
+            data['larmatch_feats'] = np.array(triplet['larmatch_feats'], dtype=np.float32)
+
+        # Load neutrino vertices for biased sampling. Older H5 schemas (e.g. the
+        # `*_withlarmatch` files) don't carry an `mckeypoints` group — in that
+        # case we hand BiasedSphereCrop an empty anchor array and let its
+        # fallback_to_random path produce uniform-random crops.
+        if 'mckeypoints' in f['/entry_0']:
+            keypoint_pos = np.array(f['/entry_0/mckeypoints/pos'], dtype=np.float32)
+            keypoint_type = np.array(f['/entry_0/mckeypoints/kptype'], dtype=np.int64)
+            nu_mask = keypoint_type == 0
+            data['nu_vertices'] = keypoint_pos[nu_mask]
+        else:
+            data['nu_vertices'] = np.zeros((0, 3), dtype=np.float32)
 
     return data
 
@@ -372,6 +450,9 @@ def prepare_data_dict(raw_data, coord_scale=1.0, wire_scale=1.0/3456.0):
         'nu_vertices': raw_data['nu_vertices'],
         'name': 'event',
     }
+
+    if 'larmatch_feats' in raw_data:
+        data_dict['larmatch_feats'] = raw_data['larmatch_feats']
 
     return data_dict
 
@@ -539,6 +620,48 @@ def assign_metadata_to_output_points(
     return labels, trackids, origins
 
 
+def propagate_per_point_array(
+    output_coords,
+    src_coords,
+    src_array,
+    use_gpu=True,
+):
+    """
+    Propagate a per-point array (e.g. larmatch_feats) from `src` points to
+    `output` points via 1-NN. Unlike `assign_metadata_to_output_points`, this
+    does NOT mask out ghost points and applies no distance threshold — every
+    output point receives its nearest source row.
+
+    Args:
+        output_coords: (N_out, 3) query coordinates
+        src_coords:    (N_src, 3) source coordinates (raw spacepoints)
+        src_array:     (N_src, F) per-point feature array
+
+    Returns:
+        out_array: (N_out, F)
+    """
+    if len(src_coords) == 0:
+        return np.zeros((len(output_coords), src_array.shape[1]), dtype=src_array.dtype)
+
+    if use_gpu:
+        try:
+            from cuml.neighbors import NearestNeighbors
+            nn = NearestNeighbors(n_neighbors=1, metric="euclidean")
+            nn.fit(src_coords.astype(np.float32))
+            _, indices = nn.kneighbors(output_coords.astype(np.float32))
+            indices = np.asarray(indices).flatten()
+        except Exception as e:
+            print(f"    cuML NearestNeighbors failed, falling back to scipy: {e}")
+            use_gpu = False
+
+    if not use_gpu:
+        from scipy.spatial import cKDTree
+        tree = cKDTree(src_coords)
+        _, indices = tree.query(output_coords, k=1, workers=-1)
+
+    return src_array[indices]
+
+
 def get_tsne_reducer(perplexity=30.0, learning_rate=200.0, n_iter=1000,
                      early_exaggeration=12.0, metric="euclidean",
                      random_state=42, init_method='pca'):
@@ -597,7 +720,17 @@ def main():
         all_features = data["features"]
         all_labels = data["labels"]
         all_coords = data.get("coords", None)
-        print(f"Loaded {len(all_features)} points with {all_features.shape[1]} feature dimensions")
+        # If the .npz was written with sonata/larmatch dim metadata, trust it
+        # over the CLI defaults so slicing/normalization stays consistent.
+        if "sonata_dim" in data.files:
+            args.sonata_feat_dim = int(data["sonata_dim"])
+        if "larmatch_dim" in data.files:
+            ld = int(data["larmatch_dim"])
+            args.larmatch_feat_dim = ld if ld > 0 else args.larmatch_feat_dim
+            args.append_larmatch_feat = ld > 0
+        print(f"Loaded {len(all_features)} points with {all_features.shape[1]} feature dimensions "
+              f"(sonata_dim={args.sonata_feat_dim}, "
+              f"larmatch_dim={args.larmatch_feat_dim if args.append_larmatch_feat else 0})")
     else:
         # Load config
         print(f"Loading config: {args.config}")
@@ -666,7 +799,9 @@ def main():
             # --- File loading ---
             t0 = time.time()
             try:
-                raw_data = load_raw_event_data(h5_path)
+                raw_data = load_raw_event_data(
+                    h5_path, load_larmatch_feats=args.append_larmatch_feat
+                )
             except Exception as e:
                 print(f"    Error loading file: {e}")
                 continue
@@ -680,7 +815,7 @@ def main():
             if args.true_points_only:
                 true_mask = raw_data['hasmatch'] == 1
                 for k in ['coord', 'strength', 'color', 'segment', 'instance',
-                         'origin', 'trackid', 'hasmatch']:
+                         'origin', 'trackid', 'hasmatch', 'larmatch_feats']:
                     if k in data_dict:
                         data_dict[k] = data_dict[k][true_mask]
 
@@ -693,6 +828,10 @@ def main():
             raw_labels = data_dict['segment'].copy()
             raw_trackids = data_dict['trackid'].copy()
             raw_origins = data_dict['origin'].copy()
+            raw_larmatch_feats = (
+                data_dict['larmatch_feats'].copy()
+                if args.append_larmatch_feat else None
+            )
             t_data_prep = time.time() - t0
 
             # --- Transform pipeline ---
@@ -770,6 +909,20 @@ def main():
                 output_origins = input_origins.copy()
             t_nn_output = time.time() - t0
 
+            # --- larmatch_feats propagation: raw -> output points ---
+            # Use 1-NN over ALL raw points (no ghost mask, no threshold) since
+            # larmatch_feats are defined for every spacepoint and the GridSample
+            # voxel center is always within ~grid_size of some raw point.
+            if args.append_larmatch_feat:
+                output_larmatch_feats = propagate_per_point_array(
+                    output_coords, raw_coords, raw_larmatch_feats, use_gpu=True,
+                )
+                # Concatenate larmatch_feats AFTER the Sonata feature vector so
+                # downstream slicing can isolate either block.
+                features = np.concatenate(
+                    [features, output_larmatch_feats.astype(features.dtype)], axis=1
+                )
+
             # --- Particle grouping ---
             t0 = time.time()
             particle_points = defaultdict(list)
@@ -823,6 +976,8 @@ def main():
             del transformed_data, batch_data, point, features, output_coords
             del input_coords, input_labels, input_trackids, input_origins
             del output_labels, output_trackids, output_origins, particle_points
+            if args.append_larmatch_feat:
+                del raw_larmatch_feats, output_larmatch_feats
 
             # Periodically clean up seen_particles for already-processed files
             # and run garbage collection
@@ -902,12 +1057,15 @@ def main():
         # Save features if requested
         if args.save_features is not None:
             print(f"Saving features to {args.save_features}")
+            larmatch_dim = args.larmatch_feat_dim if args.append_larmatch_feat else 0
             np.savez(
                 args.save_features,
                 features=all_features,
                 labels=all_labels,
                 coords=all_coords,
                 class_names=EXTENDED_CLASS_NAMES,
+                sonata_dim=args.sonata_feat_dim,
+                larmatch_dim=larmatch_dim,
             )
 
     # Print class distribution
@@ -933,12 +1091,41 @@ def main():
     )
 
     features_f32 = all_features.astype(np.float32)
-    features_f32 = features_f32[:,-1088:] # truncate
+
+    # Layout in `features_f32` after collection:
+    #   [..., sonata_block (sonata_dim), larmatch_block (larmatch_dim or 0)]
+    # Slice the trailing `sonata_dim` Sonata features and (optionally) the trailing
+    # `larmatch_dim` larmatch features. When --normalize-features is set, the two
+    # blocks are L2-normalized INDEPENDENTLY before concatenation, since their
+    # native scales differ.
+    sonata_dim = args.sonata_feat_dim
+    larmatch_dim = args.larmatch_feat_dim if args.append_larmatch_feat else 0
+
+    if larmatch_dim > 0:
+        sonata_part = features_f32[:, -(sonata_dim + larmatch_dim):-larmatch_dim]
+        larmatch_part = features_f32[:, -larmatch_dim:]
+    else:
+        sonata_part = features_f32[:, -sonata_dim:]
+        larmatch_part = None
+
     if args.normalize_features:
-        norms = np.linalg.norm(features_f32, axis=1, keepdims=True)
-        norms = np.maximum(norms, 1e-12)  # avoid division by zero
-        features_f32 = features_f32 / norms
-        print("Applied L2 normalization to feature vectors")
+        def _l2_normalize(x):
+            n = np.linalg.norm(x, axis=1, keepdims=True)
+            return x / np.maximum(n, 1e-12)
+        sonata_part = _l2_normalize(sonata_part)
+        if larmatch_part is not None:
+            larmatch_part = _l2_normalize(larmatch_part)
+        print("Applied per-block L2 normalization (Sonata"
+              + (" + larmatch" if larmatch_part is not None else "") + ")")
+
+    if larmatch_part is not None:
+        features_f32 = np.concatenate([sonata_part, larmatch_part], axis=1)
+        print(f"Using Sonata({sonata_dim}D) + larmatch({larmatch_dim}D) "
+              f"= {features_f32.shape[1]}D for t-SNE")
+    else:
+        features_f32 = sonata_part
+        print(f"Using Sonata({sonata_dim}D) for t-SNE")
+
     print("Fit t-SNE to features=",features_f32.shape)
     embedding = reducer.fit_transform(features_f32)
     print(f"t-SNE complete: {embedding.shape}")
