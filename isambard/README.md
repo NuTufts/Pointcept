@@ -144,6 +144,14 @@ ssh u6jo.aip2.isambard
 The SSH config / cert dance is handled by the vendor `clifton` binary in
 this folder. The cert is good for ~12 hours.
 
+For instructions on ssh and clifton for the Isambard cluster go [here](https://docs.isambard.ac.uk/user-documentation/guides/login/).
+
+```
+./clifton auth --identity /path/to/ssh_key
+```
+
+It's the public key ending in `.pub`.
+
 ### 1. Build the shards on Tufts (no Isambard cert required)
 
 ```bash
