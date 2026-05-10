@@ -35,6 +35,16 @@ def parse_args():
                          "count from the input ROOT file. Use when input "
                          "files are unavailable but you know which lines "
                          "ran cleanly to completion.")
+    ap.add_argument("--write-rerun-list", default=None, metavar="PATH",
+                    help="Write the original line numbers of incomplete "
+                         "lines (partial + no-entries) to PATH, one per "
+                         "line. The driver consumes this via the "
+                         "RERUN_LINES_FILE config knob to process only "
+                         "those original line numbers.")
+    ap.add_argument("--include-missing-input-in-rerun", action="store_true",
+                    help="Also include lines whose input ROOT file is "
+                         "missing in the rerun list (default: skip them, "
+                         "since the driver will fail on them anyway).")
     return ap.parse_args()
 
 
@@ -83,6 +93,8 @@ def main():
     n_missing_input = 0
     n_errors = 0
 
+    rerun_linenos = []
+
     for lineno in range(lo, min(hi, len(lines)) + 1):
         inputfile = lines[lineno - 1].strip()
         if not inputfile:
@@ -103,6 +115,7 @@ def main():
         existing = existing_entry_set(outfolder, args.tag, zfileno)
         if not existing:
             n_no_entries += 1
+            rerun_linenos.append(lineno)
             print(f"[{lineno:5d}] (no entries)        {os.path.basename(inputfile)}")
             continue
 
@@ -115,6 +128,8 @@ def main():
         else:
             if not os.path.isfile(inputfile):
                 n_missing_input += 1
+                if args.include_missing_input_in_rerun:
+                    rerun_linenos.append(lineno)
                 print(f"[{lineno:5d}] (input missing)     {inputfile}")
                 continue
             try:
@@ -139,6 +154,15 @@ def main():
             n_written += 1
         else:
             n_partial += 1
+            rerun_linenos.append(lineno)
+
+    if args.write_rerun_list:
+        with open(args.write_rerun_list, "w") as f:
+            for ln in rerun_linenos:
+                f.write(f"{ln}\n")
+        print()
+        print(f"Wrote {len(rerun_linenos)} line numbers to "
+              f"{args.write_rerun_list}")
 
     print()
     print("Summary:")
@@ -149,6 +173,8 @@ def main():
     print(f"  Lines with 0 entries:      {n_no_entries}")
     print(f"  Input files missing:       {n_missing_input}")
     print(f"  Entry-count errors:        {n_errors}")
+    if args.write_rerun_list:
+        print(f"  Rerun list size:           {len(rerun_linenos)}")
 
 
 if __name__ == "__main__":

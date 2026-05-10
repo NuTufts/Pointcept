@@ -80,6 +80,7 @@ class ShowerClusteringMask2Former(nn.Module):
         frag_pool_heads: int = 8,
         frag_pool_max_points: int = 512,
         pos_emb_hidden_dim: Optional[int] = None,
+        enable_origin_head: bool = True,
         loss_kwargs: Optional[dict] = None,
     ):
         super().__init__()
@@ -103,6 +104,7 @@ class ShowerClusteringMask2Former(nn.Module):
             frag_pool_max_points=frag_pool_max_points,
         )
 
+        self.enable_origin_head = bool(enable_origin_head)
         self.decoder = Mask2FormerDecoder(
             dim=token_dim,
             num_queries=num_queries,
@@ -112,12 +114,19 @@ class ShowerClusteringMask2Former(nn.Module):
             num_heads=num_heads,
             mlp_ratio=mlp_ratio,
             pos_emb_hidden_dim=pos_emb_hidden_dim,
+            enable_origin_head=self.enable_origin_head,
         )
 
         loss_kwargs = dict(loss_kwargs or {})
         loss_kwargs.setdefault("num_classes", num_classes)
         if no_object_class_id is not None:
             loss_kwargs.setdefault("no_object_class_id", no_object_class_id)
+        if not self.enable_origin_head:
+            # Origin head disabled → outputs are identically zero. Force the
+            # loss/matcher weight to 0 regardless of what the user passed,
+            # otherwise the matcher pays a constant origin cost on every
+            # candidate pair (and wandb's loss_origin metric is meaningless).
+            loss_kwargs["weight_origin"] = 0.0
         self.loss_fn = ShowerClusteringLoss(**loss_kwargs)
 
     # ------------------------------------------------------------------

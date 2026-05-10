@@ -138,16 +138,23 @@ class _PerLayerHeads(nn.Module):
 
     Per-scale mask logits are computed externally as
     mask_embed(q) @ (key + key_pos).T; this module returns the embedding only.
+
+    When `enable_origin_head=False`, the origin-regression MLP is not
+    instantiated; forward returns a zero-filled (Q, 3) tensor in its place
+    so downstream code keeps its dict shape.
     """
 
-    def __init__(self, dim: int, num_classes: int):
+    def __init__(self, dim: int, num_classes: int,
+                 enable_origin_head: bool = True):
         super().__init__()
         self.class_head = nn.Linear(dim, num_classes)
-        self.origin_head = nn.Sequential(
-            nn.Linear(dim, dim),
-            nn.GELU(),
-            nn.Linear(dim, 3),
-        )
+        self.enable_origin_head = bool(enable_origin_head)
+        if self.enable_origin_head:
+            self.origin_head = nn.Sequential(
+                nn.Linear(dim, dim),
+                nn.GELU(),
+                nn.Linear(dim, 3),
+            )
         self.mask_embed = nn.Sequential(
             nn.Linear(dim, dim),
             nn.GELU(),
@@ -156,9 +163,13 @@ class _PerLayerHeads(nn.Module):
 
     def forward(self, queries: torch.Tensor) -> dict:
         """queries: (Q, D)."""
+        if self.enable_origin_head:
+            origin = self.origin_head(queries)               # (Q, 3)
+        else:
+            origin = queries.new_zeros(queries.shape[0], 3)
         return {
             "class_logits": self.class_head(queries),    # (Q, C)
-            "origin": self.origin_head(queries),         # (Q, 3)
+            "origin": origin,                            # (Q, 3)
             "mask_embed": self.mask_embed(queries),      # (Q, D)
         }
 
@@ -208,6 +219,7 @@ class Mask2FormerDecoder(nn.Module):
         dropout: float = 0.0,
         mask_threshold: float = 0.0,
         pos_emb_hidden_dim: Optional[int] = None,
+        enable_origin_head: bool = True,
     ):
         super().__init__()
         scale_pattern = tuple(scale_pattern)
@@ -229,6 +241,7 @@ class Mask2FormerDecoder(nn.Module):
         self.num_layers = num_layers
         self.scale_pattern = scale_pattern
         self.mask_threshold = float(mask_threshold)
+        self.enable_origin_head = bool(enable_origin_head)
 
         # Initial query content (refined through the decoder layers).
         self.query_content = nn.Parameter(torch.empty(num_queries, dim))
@@ -254,7 +267,9 @@ class Mask2FormerDecoder(nn.Module):
         # Initial-layer prediction heads (compute mask logits BEFORE the
         # first masked cross-attention — Mask2Former does this so layer 0
         # has a sensible mask to gate by).
-        self.init_heads = _PerLayerHeads(dim, num_classes)
+        self.init_heads = _PerLayerHeads(
+            dim, num_classes, enable_origin_head=self.enable_origin_head,
+        )
 
         self.layers = nn.ModuleList([
             _MaskedDecoderLayer(dim, num_heads, mlp_ratio=mlp_ratio,
@@ -262,7 +277,10 @@ class Mask2FormerDecoder(nn.Module):
             for _ in range(num_layers)
         ])
         self.layer_heads = nn.ModuleList([
-            _PerLayerHeads(dim, num_classes) for _ in range(num_layers)
+            _PerLayerHeads(
+                dim, num_classes, enable_origin_head=self.enable_origin_head,
+            )
+            for _ in range(num_layers)
         ])
 
     # -- Helpers --------------------------------------------------------
@@ -396,10 +414,16 @@ class Mask2FormerDecoder(nn.Module):
 
             # Dynamic query_pos = static slot identity + pos_emb(prev origin).
             # This feeds the previous layer's predicted origin coord back as
-            # a positional cue for the next round of cross-attention.
-            query_pos_dyn = self.query_pos + self.pos_emb(
-                last_predictions["origin"]
-            )
+            # a positional cue for the next round of cross-attention. With
+            # the origin head disabled, the prev-origin tensor is identically
+            # zero, so the dynamic term is just pos_emb(0) — wasted compute
+            # plus a constant bias on every query. Skip it.
+            if self.enable_origin_head:
+                query_pos_dyn = self.query_pos + self.pos_emb(
+                    last_predictions["origin"]
+                )
+            else:
+                query_pos_dyn = self.query_pos
 
             queries = self.layers[li](
                 queries, query_pos_dyn, keys_b, key_pos, attn_mask=attn_mask,

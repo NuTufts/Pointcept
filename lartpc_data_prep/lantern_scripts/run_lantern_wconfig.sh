@@ -80,6 +80,21 @@ esac
 jobid=${SLURM_ARRAY_TASK_ID}
 startline=$(( OFFSET + stride * jobid ))
 
+# RERUN_LINES_FILE: optional rerun mode. When set, each array task pulls
+# `stride` original line numbers from this file at positions
+# stride*jobid+1 .. stride*jobid+stride (1-indexed), instead of computing
+# lineno = OFFSET + stride*jobid + i. The line numbers are the original
+# 1-indexed lines of INPUTLIST, so the hashed output dir, sentinel path,
+# and START_ENTRY logic all resolve identically to the first run.
+# Generate the file with:
+#   bash write_completion_sentinels.sh <config> --report-only --write-rerun-list <path>
+RERUN_LINES_FILE=${RERUN_LINES_FILE:-}
+if [ -n "${RERUN_LINES_FILE}" ] && [ ! -f "${RERUN_LINES_FILE}" ]; then
+    echo "ERROR: RERUN_LINES_FILE set but not found: ${RERUN_LINES_FILE}" >&2
+    return 1 2>/dev/null || exit 1
+fi
+export RERUN_LINES_FILE
+
 jobworkdir=$(printf "%s/workdir/${TAG}_jobid_%04d" "${REPO_ROOT}" "${jobid}")
 mkdir -p "${jobworkdir}"
 mkdir -p "${OUTPUT_DIR}"
@@ -97,11 +112,27 @@ local_logfile=${jobworkdir}/log_${TAG}_jobid${jobid}.txt
     echo "WORKDIR_BASE:       ${WORKDIR_BASE}"
     echo "KEEP_INTERMEDIATES: ${KEEP_INTERMEDIATES}"
     echo "MAX_EVENTS:         ${MAX_EVENTS}"
+    echo "RERUN_LINES_FILE:   ${RERUN_LINES_FILE:-(unset, normal sequential mode)}"
     echo "======================================"
 } > "${local_logfile}"
 
 for (( i=1; i<=stride; i++ )); do
-    lineno=$(( startline + i ))
+    if [ -n "${RERUN_LINES_FILE}" ]; then
+        # Rerun mode: pull the original lineno from RERUN_LINES_FILE at
+        # position stride*jobid + i (1-indexed). Past end of file ⇒ skip.
+        rerun_idx=$(( stride * jobid + i ))
+        lineno=$(sed -n "${rerun_idx}p" "${RERUN_LINES_FILE}")
+        if [ -z "${lineno}" ]; then
+            echo "RERUN idx ${rerun_idx}: past end of ${RERUN_LINES_FILE}, stopping" >> "${local_logfile}"
+            break
+        fi
+        if ! [[ "${lineno}" =~ ^[0-9]+$ ]]; then
+            echo "RERUN idx ${rerun_idx}: not a line number ('${lineno}'), skipping" >> "${local_logfile}"
+            continue
+        fi
+    else
+        lineno=$(( startline + i ))
+    fi
     inputfile=$(sed -n "${lineno}p" "${INPUTLIST}")
 
     if [ -z "${inputfile}" ]; then

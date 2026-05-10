@@ -23,6 +23,13 @@
 #   # existing entries as complete):
 #   bash write_completion_sentinels.sh lantern_configs/bnbnu_coriska.conf --force
 #
+#   # Also write a rerun list of original line numbers for incomplete lines.
+#   # Feed this back into the driver via RERUN_LINES_FILE in a rerun config to
+#   # resubmit only the lines that still need work (no scanning of complete
+#   # lines from inside SLURM jobs):
+#   bash write_completion_sentinels.sh lantern_configs/bnbnu_coriska.conf \
+#       --report-only --write-rerun-list /path/to/rerun_lines.txt
+#
 # Runs the Python helper inside the pointcept container so larlite is
 # available for counting entries in dlmerged ROOT files.
 #
