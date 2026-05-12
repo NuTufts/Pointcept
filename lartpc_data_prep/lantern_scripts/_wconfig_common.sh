@@ -66,6 +66,12 @@ wconfig_bootstrap() {
     WORKDIR_BASE=${WORKDIR_BASE:-/tmp}
     KEEP_INTERMEDIATES=${KEEP_INTERMEDIATES:-0}
     MAX_EVENTS=${MAX_EVENTS:--1}
+    # Cap on larmatch hits per event in Step 2 (convert_larlite_to_pointcept_h5).
+    # Events above this count get written as same-schema empty placeholders
+    # with entry_0.attrs.oversized=1, so resume/sentinel logic still sees a
+    # complete entry but the validation step drops them before training.
+    # Set <=0 to disable.
+    MAX_HITS=${MAX_HITS:-1000000}
     stride=${stride:-1}
     OFFSET=${OFFSET:-0}
     ADCNAME=${ADCNAME:-wire}

@@ -41,6 +41,9 @@ cvmfs_config probe uboone.opensciencegrid.org
 WORKDIR_BASE=${WORKDIR_BASE:-/tmp}
 KEEP_INTERMEDIATES=${KEEP_INTERMEDIATES:-0}
 MAX_EVENTS=${MAX_EVENTS:--1}
+# Cap on larmatch hits per event passed to Step 2; oversized events become
+# empty placeholders. Configs may override; <=0 disables the cap.
+MAX_HITS=${MAX_HITS:-1000000}
 stride=${stride:-1}
 OFFSET=${OFFSET:-0}
 ADCNAME=${ADCNAME:-wiremc}
@@ -62,7 +65,7 @@ done
 export TAG INPUTLIST OUTPUT_DIR MERGEFILE_OUTPUT_DIR ROOT_OUTPUT_DIR ADCNAME TBFLAG MCC9FLAG DEVICE
 export LANTERN_CONTAINER POINTCEPT_CONTAINER
 export SHOWER_ORIGIN_CONFIG SHOWER_ORIGIN_CKPT
-export WORKDIR_BASE KEEP_INTERMEDIATES MAX_EVENTS
+export WORKDIR_BASE KEEP_INTERMEDIATES MAX_EVENTS MAX_HITS
 export SAVE_INFERENCE_H5 INFERENCE_H5_OUTPUT_DIR
 
 # Apptainer bind lists — add WORKDIR_BASE if outside the default tree

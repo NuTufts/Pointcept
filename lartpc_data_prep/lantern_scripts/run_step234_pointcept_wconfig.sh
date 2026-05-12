@@ -98,6 +98,20 @@ if [ "${START_ENTRY}" -gt 0 ] 2>/dev/null; then
     echo "Resuming Steps 2-3 from entry ${START_ENTRY}"
 fi
 
+# Step 2 per-event spacepoint cap. Events with more larmatch hits than
+# MAX_HITS get written as oversized placeholders (entry_0.attrs.oversized=1)
+# instead of triggering an OOM in the convert step. Always forward the
+# value so MAX_HITS<=0 in a config explicitly disables the cap (the Python
+# entrypoint reads <=0 as "no cap"); leaving the flag unset would let the
+# Python default of 1M take over instead.
+MAX_HITS=${MAX_HITS:-1000000}
+MAXHITSFLAG="--max-hits ${MAX_HITS}"
+if [ "${MAX_HITS}" -gt 0 ] 2>/dev/null; then
+    echo "Step 2 hit cap: ${MAX_HITS} per event"
+else
+    echo "Step 2 hit cap: disabled (MAX_HITS=${MAX_HITS})"
+fi
+
 # ---- STEP 2 ----
 has_reco=$(ls "${RECO_DIR}"/showerorigin_*.h5 2>/dev/null | head -1)
 if [ "${KEEP_INTERMEDIATES}" = "1" ] && [ -n "${has_reco}" ]; then
@@ -108,7 +122,7 @@ else
     CMD="python3 ${PY_DIR}/convert_larlite_to_pointcept_h5.py \
         -i ${LARLITE_FILE} \
         --input-larcv ${DLMERGED_FILE} \
-        -o ${RECO_DIR} --adc ${ADCNAME} ${TBFLAG} ${NENTFLAG} ${ENTRYFLAG} \
+        -o ${RECO_DIR} --adc ${ADCNAME} ${TBFLAG} ${NENTFLAG} ${ENTRYFLAG} ${MAXHITSFLAG} \
         --fileno-tag fileno${ZFILENO}"
     echo ${CMD}
     ${CMD}

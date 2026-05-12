@@ -112,6 +112,14 @@ def parse_args():
              "between the 'showerorigin_' prefix and the input basename, to "
              "disambiguate intermediates produced from different input files."
     )
+    parser.add_argument(
+        "--max-hits", type=int, default=1_000_000,
+        help="Skip processing of events with more than this many larmatch "
+             "hits (default: 1_000_000). Oversized events are written as "
+             "empty placeholder H5 files with entry_0.attrs.oversized=1 so "
+             "the resume logic still sees a complete entry but the "
+             "validation step can drop them. Set <= 0 to disable."
+    )
     return parser.parse_args()
 
 
@@ -566,6 +574,62 @@ def write_event_h5(output_path, hit_data, fragments, run=-1, subrun=-1, event=-1
             )
 
 
+def write_oversized_placeholder(output_path, n_hits, max_hits,
+                                run=-1, subrun=-1, event=-1):
+    """
+    Write a same-schema placeholder H5 for an event whose larmatch-hit count
+    exceeds the `--max-hits` cap.
+
+    Downstream consumers that just look at array shapes see an empty event
+    (zero spacepoints, zero fragments). The `entry_0.attrs.oversized=1`
+    marker (plus n_hits_seen / max_hits_cap) tells the merger and the
+    validation script that this is an intentional skip, not a corruption.
+    """
+    with h5py.File(output_path, "w") as f:
+        entry = f.create_group("entry_0")
+        entry.attrs["run"] = int(run)
+        entry.attrs["subrun"] = int(subrun)
+        entry.attrs["event"] = int(event)
+        entry.attrs["oversized"] = 1
+        entry.attrs["n_hits_seen"] = int(n_hits)
+        entry.attrs["max_hits_cap"] = int(max_hits)
+
+        td = entry.create_group("triplet_data")
+        td.create_dataset("pos", data=np.zeros((0, 3), dtype=np.float32))
+        td.create_dataset("pixval", data=np.zeros((0, 3), dtype=np.float32))
+        td.create_dataset("uwire", data=np.zeros(0, dtype=np.float32))
+        td.create_dataset("vwire", data=np.zeros(0, dtype=np.float32))
+        td.create_dataset("ywire", data=np.zeros(0, dtype=np.float32))
+        td.create_dataset("tick", data=np.zeros(0, dtype=np.int32))
+        td.create_dataset("hasmatch", data=np.zeros(0, dtype=np.int64))
+        td.create_dataset("shower_score", data=np.zeros(0, dtype=np.float32))
+        td.create_dataset("lm_score", data=np.zeros(0, dtype=np.float32))
+        td.create_dataset(
+            "larmatch_feats", data=np.zeros((0, 48), dtype=np.float32)
+        )
+
+        sf = entry.create_group("shower_fragments")
+        sf.attrs["num_fragments"] = 0
+        sf.create_dataset(
+            "pointindices_flat", data=np.array([], dtype=np.int64)
+        )
+        sf.create_dataset(
+            "pointindices_counts", data=np.array([], dtype=np.int64)
+        )
+        sf.create_dataset("startpt", data=np.zeros((0, 3), dtype=np.float32))
+        sf.create_dataset("trackid", data=np.array([], dtype=np.int64))
+        sf.create_dataset("pid", data=np.array([], dtype=np.int64))
+        sf.create_dataset("istrunk", data=np.array([], dtype=np.int64))
+        sf.create_dataset("type", data=np.array([], dtype=np.int64))
+        sf.create_dataset(
+            "originpt", data=np.zeros((0, 3), dtype=np.float32)
+        )
+        sf.create_dataset(
+            "pret0shiftedoriginpt", data=np.zeros((0, 4), dtype=np.float32)
+        )
+        sf.create_dataset("nu_vertex_is_visible", data=np.int64(0))
+
+
 def main():
     args = parse_args()
 
@@ -608,8 +672,41 @@ def main():
 
     total_fragments = 0
     events_with_fragments = 0
+    events_oversized = 0
+    max_hits_cap = args.max_hits if args.max_hits and args.max_hits > 0 else None
 
     for ientry in range(start, end):
+        # Peek at the hit count before allocating any per-hit arrays. The
+        # giant events (>~1M hits) blow out memory inside extract_hits if
+        # we let them allocate the parallel float arrays (especially the
+        # 48-dim larmatch_feats) — but the larflow3dhit vector itself is
+        # cheap to size-check.
+        if max_hits_cap is not None:
+            io.go_to(ientry)
+            event_hits = io.get_data(larlite.data.kLArFlow3DHit,
+                                     args.hit_producer)
+            nhits_pre = event_hits.size()
+            if nhits_pre > max_hits_cap:
+                rse_run = io.run_id()
+                rse_subrun = io.subrun_id()
+                rse_event = io.event_id()
+                tag_part = f"{args.fileno_tag}_" if args.fileno_tag else ""
+                outname = (
+                    f"showerorigin_{tag_part}{base}_entry{ientry:06d}.h5"
+                )
+                outpath = os.path.join(args.output_dir, outname)
+                write_oversized_placeholder(
+                    outpath, nhits_pre, max_hits_cap,
+                    run=rse_run, subrun=rse_subrun, event=rse_event,
+                )
+                events_oversized += 1
+                print(
+                    f"  [{ientry}] OVERSIZED: {nhits_pre} hits > "
+                    f"{max_hits_cap} cap, wrote empty placeholder "
+                    f"-> {outname}"
+                )
+                continue
+
         hit_data = extract_hits(
             io, ientry, args.hit_producer, min_score=args.min_score
         )
@@ -671,6 +768,9 @@ def main():
     print(f"\nDone. {end - start} events processed.")
     print(f"  {events_with_fragments} events with fragments")
     print(f"  {total_fragments} total fragments")
+    if max_hits_cap is not None:
+        print(f"  {events_oversized} oversized events (>{max_hits_cap} "
+              f"hits, written as placeholders)")
 
 
 if __name__ == "__main__":

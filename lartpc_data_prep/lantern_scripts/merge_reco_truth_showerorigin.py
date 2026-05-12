@@ -622,6 +622,92 @@ def print_stats(stats):
         print(f"  Shower fragment purity (avg): {stats['avg_shower_purity']:.1%}")
 
 
+# ── Oversized-event passthrough ──────────────────────────────────────────────
+
+
+def _is_oversized_reco(reco_h5_path):
+    """Return (oversized_bool, n_hits_seen, max_hits_cap, run, subrun, event)."""
+    with h5py.File(reco_h5_path, "r") as f:
+        if "entry_0" not in f:
+            return False, 0, 0, -1, -1, -1
+        e = f["entry_0"]
+        if int(e.attrs.get("oversized", 0)) != 1:
+            return False, 0, 0, -1, -1, -1
+        return (
+            True,
+            int(e.attrs.get("n_hits_seen", 0)),
+            int(e.attrs.get("max_hits_cap", 0)),
+            int(e.attrs.get("run", -1)),
+            int(e.attrs.get("subrun", -1)),
+            int(e.attrs.get("event", -1)),
+        )
+
+
+def _write_oversized_merged_placeholder(output_path, n_hits, max_hits,
+                                        run=-1, subrun=-1, event=-1):
+    """Mirror Step 2's oversized placeholder for the merged output.
+
+    Carries the same `oversized` markers so the validation step can
+    identify and drop these files. Stays schema-compatible with the
+    non-oversized merged output (all expected datasets present, just at
+    shape 0) so any reader that doesn't check the attribute degrades to
+    an empty event rather than crashing.
+    """
+    with h5py.File(output_path, "w") as out:
+        entry = out.create_group("entry_0")
+        entry.attrs["run"] = int(run)
+        entry.attrs["subrun"] = int(subrun)
+        entry.attrs["event"] = int(event)
+        entry.attrs["oversized"] = 1
+        entry.attrs["n_hits_seen"] = int(n_hits)
+        entry.attrs["max_hits_cap"] = int(max_hits)
+
+        td = entry.create_group("triplet_data")
+        # Mirror the schema the merged file would normally have. All
+        # arrays are length 0; downstream consumers that pre-check the
+        # `oversized` flag will skip; readers that just look at shapes
+        # see an empty event.
+        td.create_dataset("pos", data=np.zeros((0, 3), dtype=np.float32))
+        td.create_dataset("pixval", data=np.zeros((0, 3), dtype=np.float32))
+        td.create_dataset("uwire", data=np.zeros(0, dtype=np.float32))
+        td.create_dataset("vwire", data=np.zeros(0, dtype=np.float32))
+        td.create_dataset("ywire", data=np.zeros(0, dtype=np.float32))
+        td.create_dataset("tick", data=np.zeros(0, dtype=np.int32))
+        td.create_dataset("hasmatch", data=np.zeros(0, dtype=np.int64))
+        td.create_dataset("shower_score", data=np.zeros(0, dtype=np.float32))
+        td.create_dataset("lm_score", data=np.zeros(0, dtype=np.float32))
+        td.create_dataset(
+            "larmatch_feats", data=np.zeros((0, 48), dtype=np.float32)
+        )
+        td.create_dataset("trackid", data=np.zeros(0, dtype=np.int64))
+        td.create_dataset("pid", data=np.zeros(0, dtype=np.int64))
+        td.create_dataset("origin", data=np.zeros(0, dtype=np.int64))
+        td.create_dataset("truth_match", data=np.zeros(0, dtype=np.int64))
+        td.create_dataset("ssnet_label", data=np.zeros(0, dtype=np.int32))
+        td.create_dataset("edep", data=np.zeros((0, 3), dtype=np.float32))
+
+        sf = entry.create_group("shower_fragments")
+        sf.attrs["num_fragments"] = 0
+        sf.create_dataset(
+            "pointindices_flat", data=np.array([], dtype=np.int64)
+        )
+        sf.create_dataset(
+            "pointindices_counts", data=np.array([], dtype=np.int64)
+        )
+        sf.create_dataset("startpt", data=np.zeros((0, 3), dtype=np.float32))
+        sf.create_dataset("istrunk", data=np.array([], dtype=np.int64))
+        sf.create_dataset("trackid", data=np.array([], dtype=np.int64))
+        sf.create_dataset("pid", data=np.array([], dtype=np.int64))
+        sf.create_dataset("type", data=np.array([], dtype=np.int64))
+        sf.create_dataset(
+            "originpt", data=np.zeros((0, 3), dtype=np.float32)
+        )
+        sf.create_dataset(
+            "pret0shiftedoriginpt", data=np.zeros((0, 4), dtype=np.float32)
+        )
+        sf.create_dataset("nu_vertex_is_visible", data=np.int64(0))
+
+
 # ── Main ─────────────────────────────────────────────────────────────────────
 
 def main():
@@ -637,6 +723,38 @@ def main():
     print(f"Reco:   {args.reco_h5}")
     print(f"Truth:  {args.truth_h5}")
     print(f"Output: {args.output}")
+
+    # Short-circuit: if Step 2 wrote an oversized placeholder for this
+    # entry (event had too many larmatch hits to fit in memory), don't
+    # bother touching the truth file — just propagate an oversized
+    # placeholder into the merged output. The validation step picks these
+    # up via entry_0.attrs.oversized and drops them.
+    is_over, n_hits, max_cap, ros_r, ros_s, ros_e = _is_oversized_reco(
+        args.reco_h5)
+    if is_over:
+        print(f"Reco is oversized placeholder "
+              f"(n_hits_seen={n_hits}, max_hits_cap={max_cap}); "
+              f"writing oversized merged placeholder.")
+        _write_oversized_merged_placeholder(
+            args.output, n_hits, max_cap,
+            run=ros_r, subrun=ros_s, event=ros_e,
+        )
+        # Empty stats sidecar so the surrounding script still has the
+        # expected file shape.
+        stats_path = args.stats_json or (args.output + ".stats.json")
+        with open(stats_path, "w") as f:
+            json.dump({
+                "reco_file": os.path.basename(args.reco_h5),
+                "output_file": os.path.basename(args.output),
+                "oversized": True,
+                "n_hits_seen": n_hits,
+                "max_hits_cap": max_cap,
+                "n_reco_points": 0,
+                "n_fragments": 0,
+                "type_counts": {},
+                "per_fragment": [],
+            }, f, indent=2)
+        return
 
     # Open both files
     with h5py.File(args.truth_h5, "r") as truth_f:
