@@ -481,6 +481,12 @@ class ShowerClusteringEvaluator(HookBase):
                 except ImportError:
                     pass
 
+        # Park val/loss in comm_info so epoch-level hooks (e.g.
+        # LREpochScheduler driving FlatWithDecayLR's plateau trigger) can
+        # read it after this evaluator runs. NaN-safe: pass through as-is
+        # so the consumer can decide whether to skip the update.
+        self.trainer.comm_info["val_loss"] = float(loss_avg.get("loss", float("nan")))
+
         # ---- best-checkpoint metric --------------------------------------
         best_value = scalars.get(f"val/{self.best_metric}", None)
         if best_value is None:

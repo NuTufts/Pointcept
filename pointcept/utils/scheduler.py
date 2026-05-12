@@ -117,6 +117,225 @@ class CosineAnnealingLR(lr_scheduler.CosineAnnealingLR):
 
 
 @SCHEDULERS.register_module()
+class FlatWithDecayLR(lr_scheduler._LRScheduler):
+    """
+    Flat learning rate with explicit, epoch-driven decays.
+
+    Per-iteration ``step()`` is a no-op — the LR stays at whatever
+    ``param_groups[i]['lr']`` was last set to. Decays happen only when
+    ``step_epoch(val_loss)`` is called once per epoch (by the
+    ``LREpochScheduler`` hook).
+
+    Two decay triggers, selected by ``mode``:
+      - ``"epoch"``   : multiply LR by ``gamma`` every ``step_period_epochs``.
+      - ``"plateau"`` : multiply LR by ``gamma`` after ``patience_epochs``
+                        epochs with no val-loss improvement greater than
+                        ``min_delta``. After each plateau decay, a
+                        ``cooldown_epochs`` window suppresses further
+                        plateau triggers.
+      - ``"both"``    : either trigger fires (whichever comes first); each
+                        keeps its own counter.
+
+    LR floor is ``min_lr``; further decays are skipped once the floor is
+    hit (also resets the relevant counters so we don't keep flapping).
+
+    Constructor accepts (and ignores) ``total_steps`` because Pointcept's
+    ``Trainer.build_scheduler`` injects it for the OneCycle/Cosine families.
+
+    Resume note: the OneCycleLR-aware ``extend_scheduler=True`` path in
+    ``CheckpointLoader`` rewrites ``initial_lr`` / ``max_lr`` and is NOT
+    appropriate here. When resuming a FlatWithDecayLR run, leave
+    ``extend_scheduler=False`` so ``scheduler.load_state_dict`` restores
+    counters and ``best_val_loss`` exactly.
+    """
+
+    def __init__(
+        self,
+        optimizer,
+        mode="both",
+        gamma=0.5,
+        min_lr=1e-7,
+        step_period_epochs=20,
+        patience_epochs=8,
+        min_delta=1e-4,
+        cooldown_epochs=2,
+        reset_lr=None,
+        reset_counters=False,
+        total_steps=None,  # accepted for trainer compatibility, unused
+        last_epoch=-1,
+    ):
+        if mode not in ("epoch", "plateau", "both"):
+            raise ValueError(
+                f"FlatWithDecayLR: mode must be one of "
+                f"'epoch'|'plateau'|'both', got {mode!r}"
+            )
+        self.mode = mode
+        self.gamma = float(gamma)
+        self.min_lr = float(min_lr)
+        self.step_period_epochs = int(step_period_epochs)
+        self.patience_epochs = int(patience_epochs)
+        self.min_delta = float(min_delta)
+        self.cooldown_epochs = int(cooldown_epochs)
+        # On resume, `load_state_dict` will override every param_group's
+        # `lr` with this value (if not None). Use this to manually drop
+        # the LR below whatever was saved when continuing a run. The
+        # override is applied every time `load_state_dict` is called, so
+        # remove it from the config (or set to None) after the resume run
+        # has produced its first checkpoint, otherwise subsequent resumes
+        # will keep stomping the LR back to this value.
+        self._reset_lr = None if reset_lr is None else float(reset_lr)
+        # If True, also wipe plateau/period counters and best_val_loss on
+        # load — useful when reset_lr changes the loss landscape enough
+        # that the old "best" is no longer comparable.
+        self._reset_counters = bool(reset_counters)
+
+        self.best_val_loss = float("inf")
+        self.epochs_since_decay = 0
+        self.epochs_since_improvement = 0
+        self.cooldown_remaining = 0
+        self.num_decays = 0
+
+        super().__init__(optimizer, last_epoch=last_epoch)
+
+    def get_lr(self):
+        # No iteration-driven schedule: hold whatever's currently set on
+        # each param group. Returning the live values makes
+        # `get_last_lr()` consistent with what the optimizer is using.
+        return [group["lr"] for group in self.optimizer.param_groups]
+
+    def _apply_decay(self, reason):
+        new_lrs = []
+        any_above_floor = False
+        for group in self.optimizer.param_groups:
+            new_lr = max(group["lr"] * self.gamma, self.min_lr)
+            if new_lr < group["lr"]:
+                any_above_floor = True
+            group["lr"] = new_lr
+            new_lrs.append(new_lr)
+        if any_above_floor:
+            self.num_decays += 1
+        return new_lrs, any_above_floor, reason
+
+    def step_epoch(self, val_loss=None):
+        """
+        Call once at the end of each epoch. Returns a dict describing
+        whether a decay happened and the new LRs (handy for logging).
+        """
+        decayed = False
+        reason = None
+
+        # plateau bookkeeping (only meaningful when val_loss provided)
+        if val_loss is not None and val_loss == val_loss:  # not NaN
+            improved = val_loss < (self.best_val_loss - self.min_delta)
+            if improved:
+                self.best_val_loss = float(val_loss)
+                self.epochs_since_improvement = 0
+            else:
+                self.epochs_since_improvement += 1
+        # epoch-period bookkeeping always advances
+        self.epochs_since_decay += 1
+        if self.cooldown_remaining > 0:
+            self.cooldown_remaining -= 1
+
+        # epoch-period trigger
+        if (
+            self.mode in ("epoch", "both")
+            and self.step_period_epochs > 0
+            and self.epochs_since_decay >= self.step_period_epochs
+        ):
+            _, did, _ = self._apply_decay("epoch_period")
+            self.epochs_since_decay = 0
+            if did:
+                decayed = True
+                reason = "epoch_period"
+
+        # plateau trigger (independent counter; can fire same epoch as
+        # the period trigger but we only count it as one decay event)
+        if (
+            not decayed
+            and self.mode in ("plateau", "both")
+            and self.cooldown_remaining == 0
+            and val_loss is not None
+            and val_loss == val_loss
+            and self.patience_epochs > 0
+            and self.epochs_since_improvement >= self.patience_epochs
+        ):
+            _, did, _ = self._apply_decay("plateau")
+            self.epochs_since_improvement = 0
+            self.cooldown_remaining = self.cooldown_epochs
+            if did:
+                decayed = True
+                reason = "plateau"
+
+        return dict(
+            decayed=decayed,
+            reason=reason,
+            lrs=[g["lr"] for g in self.optimizer.param_groups],
+            best_val_loss=self.best_val_loss,
+            epochs_since_decay=self.epochs_since_decay,
+            epochs_since_improvement=self.epochs_since_improvement,
+            cooldown_remaining=self.cooldown_remaining,
+            num_decays=self.num_decays,
+        )
+
+    def state_dict(self):
+        state = super().state_dict()
+        state.update(
+            dict(
+                mode=self.mode,
+                gamma=self.gamma,
+                min_lr=self.min_lr,
+                step_period_epochs=self.step_period_epochs,
+                patience_epochs=self.patience_epochs,
+                min_delta=self.min_delta,
+                cooldown_epochs=self.cooldown_epochs,
+                best_val_loss=self.best_val_loss,
+                epochs_since_decay=self.epochs_since_decay,
+                epochs_since_improvement=self.epochs_since_improvement,
+                cooldown_remaining=self.cooldown_remaining,
+                num_decays=self.num_decays,
+            )
+        )
+        return state
+
+    def load_state_dict(self, state_dict):
+        state_dict = dict(state_dict)
+        for key in (
+            "mode",
+            "gamma",
+            "min_lr",
+            "step_period_epochs",
+            "patience_epochs",
+            "min_delta",
+            "cooldown_epochs",
+            "best_val_loss",
+            "epochs_since_decay",
+            "epochs_since_improvement",
+            "cooldown_remaining",
+            "num_decays",
+        ):
+            if key in state_dict:
+                setattr(self, key, state_dict.pop(key))
+        super().load_state_dict(state_dict)
+
+        # Apply manual reset_lr override from current config. Runs AFTER
+        # the parent restores last_epoch/_step_count, and AFTER the
+        # caller has already done optimizer.load_state_dict(), so this is
+        # the final word on what the optimizer's param_groups carry.
+        if self._reset_lr is not None:
+            for group in self.optimizer.param_groups:
+                group["lr"] = self._reset_lr
+            # Keep get_last_lr() / future state_dicts consistent.
+            self._last_lr = [self._reset_lr for _ in self.optimizer.param_groups]
+        if self._reset_counters:
+            self.best_val_loss = float("inf")
+            self.epochs_since_decay = 0
+            self.epochs_since_improvement = 0
+            self.cooldown_remaining = 0
+            self.num_decays = 0
+
+
+@SCHEDULERS.register_module()
 class OneCycleLR(lr_scheduler.OneCycleLR):
     r"""
     torch.optim.lr_scheduler.OneCycleLR, Block total_steps

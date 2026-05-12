@@ -166,6 +166,96 @@ class InformationWriter(HookBase):
 
 
 @HOOKS.register_module()
+class LREpochScheduler(HookBase):
+    """
+    Drives an epoch-level LR scheduler (e.g. FlatWithDecayLR) once per
+    epoch from inside ``after_epoch``. The trainer's iteration-level
+    ``self.scheduler.step()`` still runs every iter; for FlatWithDecayLR
+    that's a no-op.
+
+    Reads ``val_loss`` out of ``trainer.comm_info`` (set by the
+    evaluator). Quietly does nothing if the configured scheduler doesn't
+    expose a ``step_epoch`` method, so it's safe to leave in place even
+    when the scheduler config is swapped back to OneCycleLR.
+
+    Register this hook AFTER the evaluator (so val_loss is available)
+    and BEFORE CheckpointSaver (so the saved scheduler state reflects
+    this epoch's decay).
+    """
+
+    def __init__(self, log_to_writer=True):
+        self.log_to_writer = log_to_writer
+
+    def before_train(self):
+        # Log the actual starting LR (post-resume override, if any) so
+        # there's a single line in the train log confirming what the
+        # optimizer is using before iter 0.
+        scheduler = getattr(self.trainer, "scheduler", None)
+        if scheduler is None:
+            return
+        if not is_main_process():
+            return
+        lrs = [g["lr"] for g in self.trainer.optimizer.param_groups]
+        reset_lr = getattr(scheduler, "_reset_lr", None)
+        if reset_lr is not None:
+            self.trainer.logger.info(
+                f"LREpochScheduler: reset_lr={reset_lr:.3e} active — "
+                f"optimizer param_groups now at lr={lrs}"
+            )
+        else:
+            self.trainer.logger.info(
+                f"LREpochScheduler: starting lr={lrs}"
+            )
+
+    def after_epoch(self):
+        scheduler = getattr(self.trainer, "scheduler", None)
+        if scheduler is None or not hasattr(scheduler, "step_epoch"):
+            return
+        val_loss = self.trainer.comm_info.get("val_loss", None)
+        info = scheduler.step_epoch(val_loss)
+        if not is_main_process():
+            return
+
+        lr0 = info["lrs"][0] if info["lrs"] else float("nan")
+        if info.get("decayed"):
+            self.trainer.logger.info(
+                f"LREpochScheduler: decay triggered "
+                f"(reason={info.get('reason')}); "
+                f"new lr={lr0:.3e} num_decays={info.get('num_decays')}"
+            )
+        if self.log_to_writer:
+            current_epoch = self.trainer.epoch + 1
+            writer = getattr(self.trainer, "writer", None)
+            if writer is not None:
+                writer.add_scalar("train/lr_epoch", lr0, current_epoch)
+                writer.add_scalar(
+                    "train/epochs_since_improvement",
+                    info.get("epochs_since_improvement", 0),
+                    current_epoch,
+                )
+                writer.add_scalar(
+                    "train/epochs_since_decay",
+                    info.get("epochs_since_decay", 0),
+                    current_epoch,
+                )
+            if getattr(self.trainer.cfg, "enable_wandb", False):
+                try:
+                    wandb.log(
+                        {
+                            "Epoch": current_epoch,
+                            "train/lr_epoch": lr0,
+                            "train/epochs_since_improvement":
+                                info.get("epochs_since_improvement", 0),
+                            "train/epochs_since_decay":
+                                info.get("epochs_since_decay", 0),
+                        },
+                        step=wandb.run.step,
+                    )
+                except Exception:
+                    pass
+
+
+@HOOKS.register_module()
 class CheckpointSaver(HookBase):
     def __init__(self, save_freq=None):
         self.save_freq = save_freq  # None or int, None indicate only save model last
@@ -359,18 +449,40 @@ class SonataCheckpointLoader(HookBase):
                 map_location=lambda storage, loc: storage.cuda(),
                 weights_only=False,
             )
-            self.trainer.logger.info("Remapping SONATA checkpoint keys (prepending 'backbone.')")
+            # Detect whether the checkpoint's keys already match the model
+            # layout. SONATA *pretrain* checkpoints have top-level keys
+            # like 'student.backbone.embedding...' and need 'backbone.'
+            # prepended. Resume checkpoints saved by CheckpointSaver during
+            # this training have already been remapped, so prepending again
+            # would produce 'backbone.backbone.student....' (the bug we hit).
+            sample_key = next(iter(checkpoint["state_dict"].keys()), "")
+            sample_stripped = (
+                sample_key[7:] if sample_key.startswith("module.") else sample_key
+            )
+            already_remapped = sample_stripped.startswith("backbone.")
+
             weight = OrderedDict()
-            for key, value in checkpoint["state_dict"].items():
-                # Remove module. prefix if present (from DDP)
-                if key.startswith("module."):
-                    key = key[7:]
-                # Prepend backbone. for SonataSegmentor
-                new_key = "backbone." + key
-                # Add module. back if using DDP
-                if comm.get_world_size() > 1:
-                    new_key = "module." + new_key
-                weight[new_key] = value
+            if already_remapped:
+                self.trainer.logger.info(
+                    "Checkpoint keys already prefixed with 'backbone.' "
+                    "(resume checkpoint) — skipping SONATA prepend remap"
+                )
+                for key, value in checkpoint["state_dict"].items():
+                    if key.startswith("module."):
+                        key = key[7:]
+                    new_key = "module." + key if comm.get_world_size() > 1 else key
+                    weight[new_key] = value
+            else:
+                self.trainer.logger.info(
+                    "Remapping SONATA checkpoint keys (prepending 'backbone.')"
+                )
+                for key, value in checkpoint["state_dict"].items():
+                    if key.startswith("module."):
+                        key = key[7:]
+                    new_key = "backbone." + key
+                    if comm.get_world_size() > 1:
+                        new_key = "module." + new_key
+                    weight[new_key] = value
             load_state_info = self.trainer.model.load_state_dict(
                 weight, strict=self.strict
             )
