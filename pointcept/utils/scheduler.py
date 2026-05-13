@@ -278,42 +278,54 @@ class FlatWithDecayLR(lr_scheduler._LRScheduler):
             num_decays=self.num_decays,
         )
 
+    # Two sets of attributes:
+    #   _CONFIG_ONLY_KEYS  — tuning knobs that always come from the
+    #     CURRENT config. They're constructor args, not runtime state.
+    #     If we persisted these in the checkpoint, _LRScheduler's
+    #     `self.__dict__.update(state_dict)` would clobber the freshly-
+    #     constructed value on resume — making it impossible to change
+    #     e.g. step_period_epochs from one resume to the next.
+    #   _STATEFUL_KEYS — true runtime state that MUST survive resumes
+    #     (counters, best-so-far, etc).
+    _CONFIG_ONLY_KEYS = (
+        "mode",
+        "gamma",
+        "min_lr",
+        "step_period_epochs",
+        "patience_epochs",
+        "min_delta",
+        "cooldown_epochs",
+        "_reset_lr",
+        "_reset_counters",
+    )
+    _STATEFUL_KEYS = (
+        "best_val_loss",
+        "epochs_since_decay",
+        "epochs_since_improvement",
+        "cooldown_remaining",
+        "num_decays",
+    )
+
     def state_dict(self):
         state = super().state_dict()
-        state.update(
-            dict(
-                mode=self.mode,
-                gamma=self.gamma,
-                min_lr=self.min_lr,
-                step_period_epochs=self.step_period_epochs,
-                patience_epochs=self.patience_epochs,
-                min_delta=self.min_delta,
-                cooldown_epochs=self.cooldown_epochs,
-                best_val_loss=self.best_val_loss,
-                epochs_since_decay=self.epochs_since_decay,
-                epochs_since_improvement=self.epochs_since_improvement,
-                cooldown_remaining=self.cooldown_remaining,
-                num_decays=self.num_decays,
-            )
-        )
+        # Strip config-only keys so they don't ride in the checkpoint
+        # and override what the user puts in the config on a later resume.
+        for key in self._CONFIG_ONLY_KEYS:
+            state.pop(key, None)
+        for key in self._STATEFUL_KEYS:
+            state[key] = getattr(self, key)
         return state
 
     def load_state_dict(self, state_dict):
         state_dict = dict(state_dict)
-        for key in (
-            "mode",
-            "gamma",
-            "min_lr",
-            "step_period_epochs",
-            "patience_epochs",
-            "min_delta",
-            "cooldown_epochs",
-            "best_val_loss",
-            "epochs_since_decay",
-            "epochs_since_improvement",
-            "cooldown_remaining",
-            "num_decays",
-        ):
+        # Drop config-only keys from incoming state_dict before super
+        # restores. Critical for OLDER checkpoints written before this
+        # filter existed — they still carry baked-in values for
+        # step_period_epochs / patience_epochs / etc. that would
+        # otherwise overwrite the current config.
+        for key in self._CONFIG_ONLY_KEYS:
+            state_dict.pop(key, None)
+        for key in self._STATEFUL_KEYS:
             if key in state_dict:
                 setattr(self, key, state_dict.pop(key))
         super().load_state_dict(state_dict)

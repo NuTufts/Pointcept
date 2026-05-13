@@ -5,7 +5,7 @@
 #SBATCH --mem-per-cpu=8000
 #SBATCH --cpus-per-task=1
 #SBATCH --time=2-00:00:00
-#SBATCH --partition=batch
+#SBATCH --partition=wongjiradlab
 #SBATCH --error=logs/bnbnue_corsika/griderr_dl2h5.%j.%A_%a.%N.err
 #SBATCH --array=0-99
 

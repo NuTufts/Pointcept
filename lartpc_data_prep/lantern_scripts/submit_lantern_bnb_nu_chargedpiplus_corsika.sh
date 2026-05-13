@@ -4,10 +4,10 @@
 #SBATCH --output=logs/pointcept_lantern/gridlog_bnbnu_chargedpiplus_pointcept_lantern.%j.%A_%a.%N.log
 #SBATCH --error=logs/pointcept_lantern/griderr_bnbnu_chargedpiplus_pointcept_lantern.%j.%A_%a.%N.err
 #SBATCH --mem-per-cpu=8000
-#SBATCH --cpus-per-task=2
+#SBATCH --cpus-per-task=3
 #SBATCH --time=2-00:00:00
 #SBATCH --partition=batch
-#SBATCH --array=0-80
+#SBATCH --array=0-31
 
 WORKDIR=/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept/lartpc_data_prep/lantern_scripts
 

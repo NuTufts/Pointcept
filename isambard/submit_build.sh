@@ -30,8 +30,8 @@
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=8G
 #SBATCH --job-name=sqsh_build
-#SBATCH --output=logs/sqsh_build-%j.out
-#SBATCH --error=logs/sqsh_build-%j.err
+#SBATCH --output=logs/sqsh_build_bnb_nue_corsika-%j.out
+#SBATCH --error=logs/sqsh_build_bnb_nue_corsika-%j.err
 
 set -uo pipefail
 
