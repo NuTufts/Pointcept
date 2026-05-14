@@ -22,6 +22,7 @@ Usage:
 
 import argparse
 import colorsys
+import math
 import os
 import sys
 
@@ -335,19 +336,40 @@ def get_observed_pe_and_title(d, slice_id):
 PRODUCER_NAMES = ('simpleFlashBeam', 'simpleFlashCosmic')  # index = producer_id
 
 
-def predict_slice_flash(d, slice_id, pl, gamma_by_producer, v_drift):
+def compute_readout_factor(fast_fraction, tau_slow_us, window_us):
+    """Fraction of scintillation PE collected within a fixed readout window.
+
+    Splits scintillation light into a fast component (decay ~10s of ns,
+    treated as fully collected) and a slow component with decay constant
+    ``tau_slow_us`` (default 1.6 us). The slow component contributes only
+    its CDF up to ``window_us`` of an exponential:
+        slow_collected = 1 - exp(-window_us / tau_slow_us)
+    so the total fraction of detected PE captured in the window is:
+        readout_factor = fast_fraction + (1 - fast_fraction) * slow_collected
+    The beam-readout window is much longer than the late-light decay, so
+    this returns ~1.0 for any plausible beam-window choice.
+    """
+    slow_fraction = 1.0 - fast_fraction
+    slow_collected = 1.0 - math.exp(-window_us / tau_slow_us)
+    return fast_fraction + slow_fraction * slow_collected
+
+
+def predict_slice_flash(d, slice_id, pl, gamma_by_producer, v_drift,
+                        readout_factor_by_producer=(1.0, 1.0)):
     """Run PhotonLibLookup for the selected slice with drift correction to
     the matched flash's t0 (when present), then scale by the producer-
-    specific γ.
+    specific γ AND the producer-specific readout-window factor.
 
     Args:
-        gamma_by_producer: tuple/list (γ_beam, γ_cosmic). The matched flash's
-            producer_id selects which scalar is applied. For unmatched slices
-            (no flash within tolerance) we fall back to γ_beam (arbitrary —
-            the panel just shows what the predictor would produce with no
-            t0 correction).
+        gamma_by_producer: tuple (γ_beam, γ_cosmic). Photons-per-charge.
+        readout_factor_by_producer: tuple (factor_beam, factor_cosmic). The
+            fraction of the LAr scintillation pulse that falls within the
+            producer's readout window. ~1.0 for beam (long window); <1.0
+            for cosmic (short window that truncates the late component).
+            Compute the cosmic value with compute_readout_factor(...).
     Returns:
-        (pe (32,) float32, t0_us, producer_id_used, gamma_used)
+        (pe (32,) float32, t0_us, producer_id_used,
+         gamma_used, readout_factor_used)
     """
     import torch
     from pointcept.models.event_slicer.photonlib import (
@@ -362,11 +384,13 @@ def predict_slice_flash(d, slice_id, pl, gamma_by_producer, v_drift):
         flash_t0_us = 0.0
         producer_id = 0   # fall back to beam γ; no time shift
     gamma = float(gamma_by_producer[producer_id])
+    readout_factor = float(readout_factor_by_producer[producer_id])
+    eff_scale = gamma * readout_factor
 
     mask = d['slice_id_per_pt'] == int(slice_id)
     if not mask.any():
         return (np.zeros(d['pmt_positions'].shape[0], dtype=np.float32),
-                flash_t0_us, producer_id, gamma)
+                flash_t0_us, producer_id, gamma, readout_factor)
     device = pl.vis_table.device
     pos = torch.from_numpy(d['pos'][mask]).to(device)
     q = select_charge_y_with_uv_fallback(
@@ -375,8 +399,8 @@ def predict_slice_flash(d, slice_id, pl, gamma_by_producer, v_drift):
     pos[:, 0] = pos[:, 0] - v_drift * flash_t0_us
     cid = torch.zeros(int(mask.sum()), dtype=torch.int64, device=device)
     pe = pl.predict_flash(pos, q, cid, n_clusters=1)[0]
-    pe = (pe * gamma).cpu().numpy().astype(np.float32)
-    return pe, flash_t0_us, producer_id, gamma
+    pe = (pe * eff_scale).cpu().numpy().astype(np.float32)
+    return pe, flash_t0_us, producer_id, gamma, readout_factor
 
 
 def cosine_sim(a, b):
@@ -392,17 +416,21 @@ def make_observed_pmt_figure(d, slice_id, shared_cmax_log=None):
 
 
 def make_predicted_pmt_figure(d, slice_id, pl, gamma_by_producer, v_drift,
+                              readout_factor_by_producer=(1.0, 1.0),
                               shared_cmax_log=None):
-    pe, flash_t0_us, producer_id, gamma_used = predict_slice_flash(
+    pe, flash_t0_us, producer_id, gamma_used, readout_used = predict_slice_flash(
         d, slice_id, pl, gamma_by_producer, v_drift,
+        readout_factor_by_producer=readout_factor_by_producer,
     )
     obs, _, has_match = get_observed_pe_and_title(d, slice_id)
     cos = cosine_sim(pe, obs) if has_match else float('nan')
     prod_name = (PRODUCER_NAMES[producer_id]
                  if 0 <= producer_id < len(PRODUCER_NAMES) else f'prod{producer_id}')
+    label = prod_name.replace('simpleFlash', '').lower()
     title_lines = [
         f"Predicted: photonlib + drift (t0={flash_t0_us:.2f} us)",
-        f"γ_{prod_name.replace('simpleFlash', '').lower()}={gamma_used:.3g}  "
+        f"γ_{label}={gamma_used:.3g} × readout={readout_used:.3f} "
+        f"= eff {gamma_used * readout_used:.3g}",
         f"ΣPE_pred={float(pe.sum()):.1f}  cosine(obs)={cos:.3f}",
     ]
     return make_pmt_panel(d, slice_id, pe, title_lines,
@@ -439,6 +467,24 @@ def main():
                          "γ_beam because the cosmic stream's triggered, "
                          "fixed-window readout truncates the long-component "
                          "scintillation tail.")
+    # Cosmic-readout truncation model. See compute_readout_factor() above.
+    # Default values: scintillation late component decay tau ≈ 1.6 us;
+    # cosmic readout window = 0.015625 us/sample * 20 samples = 0.3125 us;
+    # split early/late ≈ 30/70 with the fast (~10s of ns) decay treated as
+    # fully collected. -> readout_factor_cosmic ≈ 0.424.
+    ap.add_argument('--readout-fast-fraction', type=float, default=0.3,
+                    help="Fraction of scintillation light in the fast "
+                         "(~10s of ns) decay component, treated as fully "
+                         "collected within any reasonable readout window.")
+    ap.add_argument('--readout-tau-slow-us', type=float, default=1.6,
+                    help="Decay constant of the late (slow) scintillation "
+                         "component, in us. MicroBooNE Ar-39 LAr ≈ 1.6 us.")
+    ap.add_argument('--readout-window-cosmic-us', type=float, default=0.3125,
+                    help="Length of the cosmic-stream readout window in us. "
+                         "Default 0.3125 = 20 samples * 0.015625 us/sample.")
+    ap.add_argument('--readout-factor-beam', type=float, default=1.0,
+                    help="Beam-stream readout factor. Default 1.0 (window "
+                         "much longer than the slow component).")
     ap.add_argument('--v-drift-cm-per-us', type=float, default=0.1098,
                     help="MicroBooNE drift velocity used for the predicted "
                          "side's t0 correction.")
@@ -454,6 +500,15 @@ def main():
         args.gamma_beam if args.gamma_beam is not None else args.gamma,
         args.gamma_cosmic if args.gamma_cosmic is not None else args.gamma,
     )
+    readout_cosmic = compute_readout_factor(
+        args.readout_fast_fraction,
+        args.readout_tau_slow_us,
+        args.readout_window_cosmic_us,
+    )
+    readout_factor_by_producer = (
+        float(args.readout_factor_beam),
+        float(readout_cosmic),
+    )
 
     pl = None
     if args.photonlib_cache:
@@ -466,6 +521,11 @@ def main():
         print(f"  vis_table {tuple(pl.vis_table.shape)} on {pl.vis_table.device}")
         print(f"  γ_beam={gamma_by_producer[0]:.4g}  "
               f"γ_cosmic={gamma_by_producer[1]:.4g}")
+        print(f"  readout_factor: beam={readout_factor_by_producer[0]:.4f}  "
+              f"cosmic={readout_factor_by_producer[1]:.4f} "
+              f"(fast={args.readout_fast_fraction}, "
+              f"tau_slow={args.readout_tau_slow_us}us, "
+              f"window={args.readout_window_cosmic_us}us)")
     slice_options = build_slice_options(d)
     if not slice_options:
         print('No slices found.')
@@ -547,17 +607,21 @@ def main():
         def update(slice_id, show_ghosts):
             sid = int(slice_id)
             obs_pe, _, _ = get_observed_pe_and_title(d, sid)
-            pred_pe, _, _, _ = predict_slice_flash(
+            pred_pe, _, _, _, _ = predict_slice_flash(
                 d, sid, pl, gamma_by_producer, args.v_drift_cm_per_us,
+                readout_factor_by_producer=readout_factor_by_producer,
             )
             shared = shared_log_cmax(obs_pe, pred_pe)
             return (
                 make_3d_figure(d, sid,
                                show_ghosts='show' in (show_ghosts or [])),
                 make_observed_pmt_figure(d, sid, shared_cmax_log=shared),
-                make_predicted_pmt_figure(d, sid, pl, gamma_by_producer,
-                                          args.v_drift_cm_per_us,
-                                          shared_cmax_log=shared),
+                make_predicted_pmt_figure(
+                    d, sid, pl, gamma_by_producer,
+                    args.v_drift_cm_per_us,
+                    readout_factor_by_producer=readout_factor_by_producer,
+                    shared_cmax_log=shared,
+                ),
             )
 
     print(f"Open http://localhost:{args.port} in your browser")

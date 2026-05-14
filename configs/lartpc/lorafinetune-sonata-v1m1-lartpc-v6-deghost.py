@@ -5,21 +5,33 @@ LoRA Fine-Tuning for SONATA on LArTPC -- De-ghosting Task (binary ghost/real)
 Fine-tunes the SONATA pretrained backbone (v6) using LoRA for the de-ghosting
 task: binary classification of each point as real (0) or ghost (1).
 
-Loss
-----
-FocalLoss + LovaszLoss for stable training with imbalanced classes (80% ghost, 20% real)
+Corrections applied (after overfit-test debugging on a single dev event):
+
+  - drop_cosmics=False on both train and val. The previous drop_cosmics=True/0.9
+    left a Swiss-cheese ghost cloud in cosmic regions (cosmic real points were
+    masked out but cosmic-region ghosts survived). Unphysical training target.
+  - HasmatchAsGhost transform reads the producer's per-spacepoint hasmatch
+    field directly: real (hasmatch=1) -> 0, ghost (hasmatch=0) -> 1.
+    Replaces RemapGhostLabel + the dataset's SSNETLABEL_TO_CLASS chain, which
+    was correct in principle but fragile (transform not in committed code).
+  - FocalLoss alpha=0.5 (neutral). The previous alpha=0.2 was reweighting
+    classes in the wrong direction given how Pointcept's FocalLoss applies
+    alpha in the multi-class one-hot form; LovaszLoss handles class balance.
+  - Model now defaults strip_student=True (in SonataLoRADeghostSegmentor) so
+    the unused student subtree is removed before optimizer build, halving
+    the backbone's GPU memory and parameter count.
+
+The training-pipeline differences vs the single-event overfit config:
+
+  - Batched: batch_size=96 events; BiasedSphereCrop crops each event to
+    point_max=10240 points so they fit in a batch.
+  - Augmentations restored: RandomRotate (x/y/z), RandomFlip, RandomJitter,
+    MultiplicativeRandomJitter on strength.
+  - OneCycleLR scheduler (anneals over the full training run).
 
 Model head
 ----------
 deghost_head: nn.Linear(backbone_out_channels, 2) -- outputs (N, 2) logits.
-
-Relationship to SSNet LoRA config
-
-Structurally identical to lorafinetune-sonata-v1m1-lartpc-v6-seg.py with:
-  1. Model type : SonataLoRADeghostSegmentor (2-class head, ghost_class_index=1)
-  2. Dataset    : include_ghosts=True, true_points_only=False
-  3. Labels     : RemapGhostLabel maps ghost(8)->1, real(0-7)->0
-  4. Loss       : FocalLoss(alpha=0.2) + LovaszLoss
 """
 
 wire_projections = None
@@ -39,7 +51,7 @@ empty_cache      = False
 enable_amp       = False
 enable_wandb     = True
 wandb_project    = "pointcept"
-save_path        = "sonata/lora_deghost_v6_fixed_10"
+save_path        = "sonata/lora_deghost_v6_hasmatch_10"
 epoch            = 10
 eval_epoch       = 1
 base_lr          = 5e-4
@@ -67,6 +79,8 @@ biased_spherecrop_radius = 20.0
 
 TRAIN_FILE_LIST = "/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept/lartpc_data_prep/hdflist_combined_prod4_validated_shuffled_trainsplit.txt"
 VAL_FILE_LIST   = "/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept/lartpc_data_prep/hdflist_combined_prod4_validated_shuffled_valsplit.txt"
+
+pretrain_model_path = "sonata/lartpc_v6_h200_noghosts_pretrain_logspace_resume/model/epoch_42.pth"
 
 # ============================================================================
 # Model
@@ -121,7 +135,7 @@ model = dict(
         dict(
             type="FocalLoss",
             gamma=2.0,
-            alpha=0.2,          # ~= fraction of real points (minority class)
+            alpha=0.5,          # neutral: LovaszLoss does the class-balance work
             loss_weight=1.0,
             ignore_index=-1,
             reduction='mean',
@@ -178,8 +192,8 @@ data = dict(
         include_ghosts=True,
         true_points_only=False,
         exclude_other=True,
-        drop_cosmics=True,
-        drop_cosmics_prob=0.9,
+        drop_cosmics=False,
+        drop_cosmics_prob=0.0,
         transform=[
             dict(
                 type="BiasedSphereCrop",
@@ -188,7 +202,11 @@ data = dict(
                 radius=biased_spherecrop_radius,
                 point_max=max_points_spherecrop,
                 point_min=min_points_spherecrop,
-                prob_random=0.25,
+                # Half the train crops are uniform-random (anywhere in the
+                # TPC), half are nu-anchored. Gives the deghoster meaningful
+                # exposure to cosmic-dominated regions of the TPC, not just
+                # the dense nu-interaction region. Bumped from 0.25.
+                prob_random=0.5,
                 max_retries=100,
                 fallback_to_random=True,
             ),
@@ -223,10 +241,9 @@ data = dict(
                 log_space=True,
             ),
             dict(
-                type="RemapGhostLabel",
-                ghost_source_index=8,
-                ghost_target_index=1,
+                type="HasmatchAsGhost",
                 real_target_index=0,
+                ghost_target_index=1,
                 ignore_index=-1,
             ),
             dict(
@@ -286,8 +303,8 @@ data = dict(
         true_points_only=False,
         coord_scale=1.0,
         exclude_other=True,
-        drop_cosmics=True,
-        drop_cosmics_prob=0.9,
+        drop_cosmics=False,
+        drop_cosmics_prob=0.0,
         transform=[
             dict(
                 type="BiasedSphereCrop",
@@ -296,7 +313,12 @@ data = dict(
                 radius=biased_spherecrop_radius,
                 point_max=max_points_spherecrop,
                 point_min=min_points_spherecrop,
-                prob_random=0.25,
+                # Val uses uniform-random crops (NOT nu-anchored) so the
+                # reported val mIoU reflects deghoster performance on the
+                # full TPC distribution, not just the easy nu-vertex region.
+                # The previous 0.25 (75% nu-anchored) overstated val mIoU
+                # by scoring only the densest part of every event.
+                prob_random=1.0,
                 max_retries=100,
                 fallback_to_random=True,
             ),
@@ -321,10 +343,9 @@ data = dict(
                 keys=("strength",),
             ),
             dict(
-                type="RemapGhostLabel",
-                ghost_source_index=8,
-                ghost_target_index=1,
+                type="HasmatchAsGhost",
                 real_target_index=0,
+                ghost_target_index=1,
                 ignore_index=-1,
             ),
             dict(type="ToTensor"),
@@ -346,8 +367,8 @@ data = dict(
         true_points_only=False,
         coord_scale=1.0,
         exclude_other=True,
-        drop_cosmics=True,
-        drop_cosmics_prob=0.9,
+        drop_cosmics=False,
+        drop_cosmics_prob=0.0,
         transform=[],
         test_mode=True,
         test_cfg=dict(
@@ -374,10 +395,9 @@ data = dict(
                     keys=("strength",),
                 ),
                 dict(
-                    type="RemapGhostLabel",
-                    ghost_source_index=8,
-                    ghost_target_index=1,
+                    type="HasmatchAsGhost",
                     real_target_index=0,
+                    ghost_target_index=1,
                     ignore_index=-1,
                 ),
                 dict(type="ToTensor"),
@@ -398,7 +418,7 @@ data = dict(
 hooks = [
     dict(
         type="LoRASonataCheckpointLoader",
-        pretrained_path="/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept/sonata/lartpc_v6_h200_noghosts_pretrain/model/model_last.pth",
+        pretrained_path=pretrain_model_path,
     ),
     dict(type="IterationTimer", warmup_iter=2),
     dict(type="InformationWriter"),
