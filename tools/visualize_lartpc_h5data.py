@@ -15,6 +15,9 @@ Example:
 """
 
 import argparse
+import os
+import sys
+import colorsys
 import h5py
 import numpy as np
 from dash import Dash, html, dcc, callback, Output, Input, State
@@ -22,6 +25,9 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
 from detectoroutline import DetectorOutline
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+from lartpc_data_prep.slice_labels import compute_slice_labels, GHOST_SLICE_ID
 
 
 # PDG code to particle name mapping
@@ -80,6 +86,22 @@ ORIGIN_COLORS = {
     1: 'rgba(255,0,0,1)',        # neutrino - red
     2: 'rgba(0,0,255,1)',        # cosmic - blue
 }
+
+def _hsv_palette(n, sat=0.85, val=0.95):
+    """Return n distinct RGBA strings spaced evenly in hue."""
+    if n <= 0:
+        return []
+    out = []
+    for i in range(n):
+        h = (i + 0.1) / max(n, 1)
+        r, g, b = colorsys.hsv_to_rgb(h, sat, val)
+        out.append(f"rgba({int(r*255)},{int(g*255)},{int(b*255)},1)")
+    return out
+
+
+NU_SLICE_COLOR = 'rgba(255, 60, 60, 1)'      # bright red, reserved for nu slice
+NOSLICE_COLOR = 'rgba(110, 110, 110, 0.55)'  # gray, ghosts / orphans
+
 
 # Keypoint type definitions
 KPTYPE_NAMES = {
@@ -188,6 +210,21 @@ def load_event_data(h5file, entry_key):
         if 'triplet_imgpix_index' in image_data:
             data['triplet_imgpix_index'] = image_data['triplet_imgpix_index'][:]
 
+    # Compute slice labels from mc_particle_tree, when available. Slices are
+    # the instance-segmentation target for the event-slicer model: one slice
+    # per cosmic primary, one merged slice for all charge from a nu vertex.
+    data['slice_info'] = None
+    if not data['is_data'] and 'mc_particle_tree' in entry_grp:
+        try:
+            data['slice_info'] = compute_slice_labels(
+                entry_grp['mc_particle_tree'],
+                data['trackid'],
+                data['hasmatch'],
+            )
+        except Exception as exc:
+            print(f"[warn] compute_slice_labels failed: {exc}")
+            data['slice_info'] = None
+
     # Load keypoints if available
     if 'mckeypoints' in entry_grp:
         kp_grp = entry_grp['mckeypoints']
@@ -217,6 +254,8 @@ def create_3d_scatter(event_data, color_mode='ssnet', show_keypoints=True, show_
     pos = event_data['pos']
     hasmatch = event_data['hasmatch']
 
+    slice_info = event_data.get('slice_info')
+
     # Filter out ghosts if show_ghosts is False
     if not show_ghosts:
         true_mask = hasmatch == 1
@@ -236,6 +275,8 @@ def create_3d_scatter(event_data, color_mode='ssnet', show_keypoints=True, show_
             'edep': event_data['edep'][true_mask],
             'is_data': event_data.get('is_data', False),
         }
+        if slice_info is not None:
+            filtered_event_data['slice_id'] = slice_info['slice_id'][true_mask]
         # Keep keypoints unchanged
         if 'keypoints' in event_data:
             filtered_event_data['keypoints'] = event_data['keypoints']
@@ -244,7 +285,9 @@ def create_3d_scatter(event_data, color_mode='ssnet', show_keypoints=True, show_
         n_displayed = len(display_data['pos'])
         ghost_info = f" (showing {n_displayed}/{n_total}, ghosts hidden)"
     else:
-        display_data = event_data
+        display_data = dict(event_data)
+        if slice_info is not None:
+            display_data['slice_id'] = slice_info['slice_id']
         ghost_info = ""
 
     pos = display_data['pos']
@@ -277,6 +320,10 @@ def create_3d_scatter(event_data, color_mode='ssnet', show_keypoints=True, show_
                     f"Origin: {ORIGIN_NAMES.get(display_data['origin'][i], 'unknown')}<br>"
                     f"TrackID: {display_data['trackid'][i]}"
                 )
+                if 'slice_id' in display_data:
+                    sid_i = int(display_data['slice_id'][i])
+                    slabel = 'no-slice' if sid_i == GHOST_SLICE_ID else str(sid_i)
+                    text += f"<br>Slice: {slabel}"
             hover_texts.append(text)
         return hover_texts
 
@@ -351,6 +398,118 @@ def create_3d_scatter(event_data, color_mode='ssnet', show_keypoints=True, show_
                 hovertext=make_hover_text(indices),
                 hoverinfo='text'
             ))
+
+    elif color_mode in ('slice', 'slice_pts'):
+        # Color by truth slice id (instance-segmentation target).
+        # 'slice'      = points only
+        # 'slice_pts'  = also overlay nu_vertex + per-cosmic-primary start_pos
+        # The origin points sit well above the detector volume in z and clutter
+        # the default view, so they're opt-in via the second dropdown entry.
+        show_origin_points = (color_mode == 'slice_pts')
+        if 'slice_id' not in display_data:
+            fig.update_layout(title="No slice info (mc_particle_tree missing)")
+            return fig
+
+        sid = np.asarray(display_data['slice_id'])
+        info = event_data.get('slice_info')
+        keys = info['primary_trackid'] if info is not None else np.unique(
+            sid[sid != GHOST_SLICE_ID])
+        origins = info['primary_origin'] if info is not None else None
+        pids = info['primary_pid'] if info is not None else None
+        n_pts = info['primary_n_spacepoints'] if info is not None else None
+
+        # Build color map: nu slices red; cosmic slices spread over HSV.
+        if origins is not None:
+            cosmic_idx = [k for k, o in enumerate(origins) if int(o) == 2]
+        else:
+            cosmic_idx = list(range(len(keys)))
+        cosmic_palette = _hsv_palette(len(cosmic_idx))
+        color_for_key = {}
+        cosmic_color_iter = iter(cosmic_palette)
+        for k, key in enumerate(keys):
+            if origins is not None and int(origins[k]) == 1:
+                color_for_key[int(key)] = NU_SLICE_COLOR
+            else:
+                color_for_key[int(key)] = next(cosmic_color_iter, 'rgba(200,200,200,1)')
+
+        # Ghosts / orphans first (drawn underneath in the legend ordering).
+        ghost_mask = (sid == GHOST_SLICE_ID)
+        if ghost_mask.any():
+            indices = np.where(ghost_mask)[0]
+            fig.add_trace(go.Scatter3d(
+                x=pos[ghost_mask, 0], y=pos[ghost_mask, 1], z=pos[ghost_mask, 2],
+                mode='markers',
+                marker=dict(size=max(1, marker_size - 1),
+                            color=NOSLICE_COLOR, opacity=opacity * 0.6),
+                name=f"no-slice / ghost ({int(ghost_mask.sum())})",
+                hovertext=make_hover_text(indices),
+                hoverinfo='text',
+            ))
+
+        for k, key in enumerate(keys):
+            mask = sid == int(key)
+            indices = np.where(mask)[0]
+            if len(indices) == 0:
+                continue
+            color = color_for_key[int(key)]
+            if origins is not None and int(origins[k]) == 1:
+                origin_lbl = 'nu'
+            elif origins is not None and int(origins[k]) == 2:
+                origin_lbl = 'cosmic'
+            else:
+                origin_lbl = '?'
+            pid_str = (get_pdg_name(int(pids[k]))
+                       if pids is not None and int(pids[k]) != 0 else origin_lbl)
+            name = f"slice {int(key)} [{origin_lbl}/{pid_str}] ({int(mask.sum())})"
+            fig.add_trace(go.Scatter3d(
+                x=pos[mask, 0], y=pos[mask, 1], z=pos[mask, 2],
+                mode='markers',
+                marker=dict(size=marker_size, color=color, opacity=opacity),
+                name=name,
+                hovertext=make_hover_text(indices),
+                hoverinfo='text',
+            ))
+
+        # Overlay markers for slice "origin" points: nu vertex (gold star) and
+        # each cosmic primary's start_pos (small marker matching its slice color).
+        if show_origin_points and info is not None and len(info.get('nu_vertices', [])) > 0:
+            nuv = info['nu_vertices']
+            fig.add_trace(go.Scatter3d(
+                x=nuv[:, 0], y=nuv[:, 1], z=nuv[:, 2],
+                mode='markers',
+                marker=dict(size=14, color='rgba(255,215,0,1)',
+                            symbol='diamond', line=dict(width=2, color='black')),
+                name='nu vertex',
+                hovertext=[f"nu vertex<br>({p[0]:.1f},{p[1]:.1f},{p[2]:.1f})"
+                           for p in nuv],
+                hoverinfo='text',
+            ))
+        if show_origin_points and info is not None:
+            cosmic_starts = []
+            cosmic_colors = []
+            cosmic_texts = []
+            for k, key in enumerate(info['primary_trackid']):
+                if int(info['primary_origin'][k]) != 2:
+                    continue
+                sp = info['primary_start_pos'][k]
+                cosmic_starts.append(sp)
+                cosmic_colors.append(color_for_key[int(key)])
+                cosmic_texts.append(
+                    f"cosmic primary tid={int(key)}<br>"
+                    f"pid={get_pdg_name(int(info['primary_pid'][k]))}<br>"
+                    f"start=({sp[0]:.1f},{sp[1]:.1f},{sp[2]:.1f})"
+                )
+            if cosmic_starts:
+                cosmic_starts = np.asarray(cosmic_starts)
+                fig.add_trace(go.Scatter3d(
+                    x=cosmic_starts[:, 0], y=cosmic_starts[:, 1], z=cosmic_starts[:, 2],
+                    mode='markers',
+                    marker=dict(size=6, color=cosmic_colors,
+                                symbol='circle', line=dict(width=1, color='black')),
+                    name=f"cosmic primaries ({len(cosmic_starts)})",
+                    hovertext=cosmic_texts,
+                    hoverinfo='text',
+                ))
 
     elif color_mode == 'hasmatch':
         # Color by has match (true vs ghost)
@@ -864,6 +1023,8 @@ def main():
         color_options = [
             {'label': 'SSNET Class', 'value': 'ssnet'},
             {'label': 'Origin (Nu/Cosmic)', 'value': 'origin'},
+            {'label': 'Slice (Truth Instance)', 'value': 'slice'},
+            {'label': 'Slice + Origin Points', 'value': 'slice_pts'},
             {'label': 'Track ID', 'value': 'trackid'},
             {'label': 'True/Ghost', 'value': 'hasmatch'},
             {'label': 'Pixel Value', 'value': 'pixval'},
@@ -1073,6 +1234,14 @@ def main():
                 f"Neutrino: {n_nu} ({100*n_nu/n_points:.1f}%) | "
                 f"Cosmic: {n_cosmic} ({100*n_cosmic/n_points:.1f}%)"
             )
+            sinfo = event_data.get('slice_info')
+            if sinfo is not None:
+                n_slices = len(sinfo['primary_trackid'])
+                n_nu_slices = int((sinfo['primary_origin'] == 1).sum())
+                n_cos_slices = int((sinfo['primary_origin'] == 2).sum())
+                stats_text += (
+                    f" | Slices: {n_slices} (nu={n_nu_slices}, cos={n_cos_slices})"
+                )
 
         # 3D scatter plot
         scatter_fig = create_3d_scatter(

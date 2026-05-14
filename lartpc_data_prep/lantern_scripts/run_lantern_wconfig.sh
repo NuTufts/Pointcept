@@ -53,6 +53,11 @@ DEVICE=${DEVICE:-cuda}
 SAVE_INFERENCE_H5=${SAVE_INFERENCE_H5:-0}
 INFERENCE_H5_OUTPUT_DIR=${INFERENCE_H5_OUTPUT_DIR:-${OUTPUT_DIR}}
 MERGEFILE_OUTPUT_DIR=${MERGEFILE_OUTPUT_DIR:-${OUTPUT_DIR}}
+# Step 5 (flashinfo) toggle and knobs. RUN_FLASHINFO=0 disables Step 5 in
+# the integrated pipeline; the standalone driver (run_flashinfo_wconfig.sh)
+# ignores this flag.
+RUN_FLASHINFO=${RUN_FLASHINFO:-1}
+DTICK_THRESHOLD=${DTICK_THRESHOLD:-3.0}
 SLURM_ARRAY_TASK_ID=${SLURM_ARRAY_TASK_ID:-0}
 
 for v in INPUTLIST TAG OUTPUT_DIR LANTERN_CONTAINER POINTCEPT_CONTAINER SHOWER_ORIGIN_CONFIG SHOWER_ORIGIN_CKPT; do
@@ -67,6 +72,7 @@ export LANTERN_CONTAINER POINTCEPT_CONTAINER
 export SHOWER_ORIGIN_CONFIG SHOWER_ORIGIN_CKPT
 export WORKDIR_BASE KEEP_INTERMEDIATES MAX_EVENTS MAX_HITS
 export SAVE_INFERENCE_H5 INFERENCE_H5_OUTPUT_DIR
+export RUN_FLASHINFO DTICK_THRESHOLD FLASHINFO_OUTPUT_DIR
 
 # Apptainer bind lists — add WORKDIR_BASE if outside the default tree
 LANTERN_BIND="/cluster/tufts:/cluster/tufts"
@@ -283,6 +289,30 @@ for (( i=1; i<=stride; i++ )); do
     #     fi
     # fi
 
+    # ---- STEP 5 (pointcept): flashinfo prep ----
+    step5_status=0
+    if [ "${RUN_FLASHINFO}" = "1" ]; then
+        if [ -z "${FLASHINFO_OUTPUT_DIR}" ]; then
+            echo "STEP 5: skipped (RUN_FLASHINFO=1 but FLASHINFO_OUTPUT_DIR is not set in config)" >> "${local_logfile}"
+        else
+            has_flash=$(ls "${local_jobdir}"/flashinfo_*.h5 2>/dev/null | head -1)
+            if [ "${KEEP_INTERMEDIATES}" = "1" ] && [ -n "${has_flash}" ]; then
+                echo "STEP 5: skipped (flashinfo H5 present, KEEP_INTERMEDIATES=1)" >> "${local_logfile}"
+            else
+                echo "--- STEP 5: flashinfo prep ---" >> "${local_logfile}"
+                apptainer exec --nv --bind "${POINTCEPT_BIND}" \
+                    "${POINTCEPT_CONTAINER}" \
+                    bash -c "source ${SCRIPT_DIR}/run_step5_flashinfo_pointcept_wconfig.sh ${CONFIG_FILE} ${lineno}" \
+                    >> "${local_logfile}" 2>&1
+                step5_status=$?
+                echo "Step 5 exit status: ${step5_status}" >> "${local_logfile}"
+                if [ ${step5_status} -ne 0 ]; then
+                    echo "Step 5 (flashinfo) FAILED for line ${lineno} — non-fatal; merged outputs are unaffected, can re-run via run_flashinfo_wconfig.sh" >> "${local_logfile}"
+                fi
+            fi
+        fi
+    fi
+
     mkdir -p "${outfolder}"
     nmerged=$(ls "${local_jobdir}"/merged_*.h5 2>/dev/null | wc -l)
     echo "Number of merged H5 files: ${nmerged}" >> "${local_logfile}"
@@ -300,6 +330,33 @@ for (( i=1; i<=stride; i++ )); do
     if [ "${nmerged}" -gt 0 ] || [ "${START_ENTRY}" -gt 0 ]; then
         touch "${sentinel}"
         echo "Wrote completion sentinel: ${sentinel}" >> "${local_logfile}"
+    fi
+
+    # ---- Step 5 outputs: copy flashinfo H5 to its parallel tree ----
+    # Independent of the merged sentinel — a Step 5 failure is non-fatal.
+    if [ "${RUN_FLASHINFO}" = "1" ] && [ -n "${FLASHINFO_OUTPUT_DIR}" ]; then
+        nflash=$(ls "${local_jobdir}"/flashinfo_*.h5 2>/dev/null | wc -l)
+        echo "Number of flashinfo H5 files: ${nflash}" >> "${local_logfile}"
+        if [ "${nflash}" -gt 0 ]; then
+            flash_outfolder="${FLASHINFO_OUTPUT_DIR}/${zsubdir1}/${zsubdir2}"
+            mkdir -p "${flash_outfolder}"
+            cp "${local_jobdir}"/flashinfo_*.h5 "${flash_outfolder}/"
+            ls -lh "${flash_outfolder}"/flashinfo_${TAG}_fileno${ZFILENO}_entry*.h5 \
+                >> "${local_logfile}" 2>/dev/null
+            # Compare counts: only stamp the flashinfo sentinel if we have at
+            # least as many flashinfo files as merged files in this line's tree.
+            n_merged_total=$(ls "${outfolder}"/merged_${TAG}_fileno${ZFILENO}_entry*.h5 2>/dev/null | wc -l)
+            n_flash_total=$(ls "${flash_outfolder}"/flashinfo_${TAG}_fileno${ZFILENO}_entry*.h5 2>/dev/null | wc -l)
+            flash_sentinel="${flash_outfolder}/${TAG}_fileno${ZFILENO}.flashinfo.complete"
+            if [ ${step5_status} -eq 0 ] && [ "${n_flash_total}" -ge "${n_merged_total}" ] && [ "${n_merged_total}" -gt 0 ]; then
+                touch "${flash_sentinel}"
+                echo "Wrote flashinfo sentinel: ${flash_sentinel}" >> "${local_logfile}"
+            else
+                echo "Flashinfo sentinel NOT written (step5_status=${step5_status} n_flash_total=${n_flash_total}/${n_merged_total})" >> "${local_logfile}"
+            fi
+        else
+            echo "WARNING: no flashinfo_*.h5 produced for line ${lineno}" >> "${local_logfile}"
+        fi
     fi
 
     # nroot=$(ls "${local_jobdir}"/showerreco_*.root 2>/dev/null | wc -l)
