@@ -2030,3 +2030,91 @@ class ApplyMaskJitter(object):
         data_dict[f"{self.prefix}_jittered_coord"] = jittered
         return data_dict
 
+
+@TRANSFORMS.register_module()
+class RemapGhostLabel(object):
+    """Binary remap of the dataset's ``segment`` field for the deghoster.
+
+    ``segment`` values equal to ``ghost_source_index`` map to
+    ``ghost_target_index`` (default 1). All other non-ignore values map to
+    ``real_target_index`` (default 0). Values equal to ``ignore_index`` are
+    preserved unchanged.
+
+    Note: this expects the dataset to have already mapped its raw labels
+    into the same index space as ``ghost_source_index``. For LArTPCDataset
+    with ``label_mode='ssnet'`` and ``include_ghosts=True``, the dataset's
+    SSNETLABEL_TO_CLASS sends ssnet=0 (background = hasmatch=0 ghost) to
+    class 8, so ``ghost_source_index=8`` is correct in that pipeline.
+
+    Prefer ``HasmatchAsGhost`` for a more direct binding to the ghost truth
+    that doesn't depend on the dataset's internal class table.
+    """
+
+    def __init__(
+        self,
+        ghost_source_index: int = 8,
+        ghost_target_index: int = 1,
+        real_target_index: int = 0,
+        ignore_index: int = -1,
+    ):
+        self.ghost_source_index = int(ghost_source_index)
+        self.ghost_target_index = int(ghost_target_index)
+        self.real_target_index = int(real_target_index)
+        self.ignore_index = int(ignore_index)
+
+    def __call__(self, data_dict):
+        if "segment" not in data_dict:
+            return data_dict
+        seg = np.asarray(data_dict["segment"]).astype(np.int64)
+        ignore = (seg == self.ignore_index)
+        ghost = (seg == self.ghost_source_index)
+        out = np.full_like(seg, self.real_target_index)
+        out[ghost] = self.ghost_target_index
+        out[ignore] = self.ignore_index
+        data_dict["segment"] = out.astype(np.int64)
+        return data_dict
+
+
+@TRANSFORMS.register_module()
+class HasmatchAsGhost(object):
+    """Set ``segment`` directly from the per-spacepoint ``hasmatch`` truth.
+
+    ``hasmatch == 1`` (real spacepoint with simch match) -> ``real_target_index``
+                                                          (default 0)
+    ``hasmatch == 0`` (ghost spacepoint)                 -> ``ghost_target_index``
+                                                          (default 1)
+    Missing ``hasmatch`` (data-only mode) falls back to ``ignore_index`` (-1).
+
+    This is the recommended deghoster target because it doesn't depend on the
+    dataset's SSNETLABEL_TO_CLASS chain — the ghost label comes straight
+    from the producer's hasmatch field.
+
+    Requires the dataset to put a ``hasmatch`` array into the data_dict
+    (LArTPCDataset already loads it; the field name follows the producer
+    convention).
+    """
+
+    def __init__(
+        self,
+        real_target_index: int = 0,
+        ghost_target_index: int = 1,
+        ignore_index: int = -1,
+        hasmatch_key: str = "hasmatch",
+    ):
+        self.real_target_index = int(real_target_index)
+        self.ghost_target_index = int(ghost_target_index)
+        self.ignore_index = int(ignore_index)
+        self.hasmatch_key = hasmatch_key
+
+    def __call__(self, data_dict):
+        if self.hasmatch_key not in data_dict:
+            # No hasmatch available (data-only mode): mark everything ignore.
+            n = data_dict["coord"].shape[0] if "coord" in data_dict else 0
+            data_dict["segment"] = np.full(n, self.ignore_index, dtype=np.int64)
+            return data_dict
+        hm = np.asarray(data_dict[self.hasmatch_key]).astype(np.int64)
+        seg = np.where(hm == 1, self.real_target_index, self.ghost_target_index)
+        seg = seg.astype(np.int64)
+        data_dict["segment"] = seg
+        return data_dict
+

@@ -428,7 +428,22 @@ class LArTPCDataset(DefaultDataset):
             "split": split,
             "segment_counts": classcounts,
             "nu_vertices": nu_vertices,
-            "origin": origin
+            "origin": origin,
+            # ``hasmatch`` is the producer's per-spacepoint deghost truth
+            # (1 = real with simch edep, 0 = ghost). The HasmatchAsGhost
+            # transform reads this field to write ``segment``. In data-only
+            # mode it's filled with ones above so the transform behaves like
+            # "everything is real".
+            "hasmatch": hasmatch,
+            # Register the LArTPC-specific per-point fields so transforms
+            # that filter (BiasedSphereCrop, SphereCrop, GridSample) keep
+            # them aligned with coord. The default index_valid_keys in
+            # transform.py doesn't know about ``hasmatch`` or ``origin``.
+            "index_valid_keys": [
+                "coord", "color", "normal", "superpoint",
+                "strength", "segment", "instance",
+                "hasmatch", "origin",
+            ],
         }
 
         filtered = False
@@ -436,7 +451,7 @@ class LArTPCDataset(DefaultDataset):
             # mask out ghost points
             ghost_mask = hasmatch == 1
             for k in data_dict:
-                if k in ['coord', 'strength', 'color', 'segment', 'instance', 'origin']:
+                if k in ['coord', 'strength', 'color', 'segment', 'instance', 'origin', 'hasmatch']:
                     data_dict[k] = data_dict[k][ghost_mask[:]]
             filtered = True
 
@@ -444,7 +459,7 @@ class LArTPCDataset(DefaultDataset):
             nu_mask = data_dict['origin'] == 1
             if nu_mask.sum() > self.min_points_required:
                 for k in data_dict:
-                    if k in ['coord', 'strength', 'color', 'segment', 'instance', 'origin']:
+                    if k in ['coord', 'strength', 'color', 'segment', 'instance', 'origin', 'hasmatch']:
                         data_dict[k] = data_dict[k][nu_mask[:]]
                 filtered = True
 
@@ -462,7 +477,7 @@ class LArTPCDataset(DefaultDataset):
                     lm_mask = lm_mask[nu_mask[:]]
             if lm_mask.sum() >= self.min_points_required:
                 for k in data_dict:
-                    if k in ['coord', 'strength', 'color', 'segment', 'instance', 'origin']:
+                    if k in ['coord', 'strength', 'color', 'segment', 'instance', 'origin', 'hasmatch']:
                         data_dict[k] = data_dict[k][lm_mask[:]]
                 filtered = True
 

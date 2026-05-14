@@ -46,13 +46,30 @@ class LoRASonataCheckpointLoader(HookBase):
             missing  = load_state_info[0]
             unexpected = load_state_info[1]
             lora_missing = [k for k in missing if "lora_" in k]
-            head_missing = [k for k in missing if "seg_head" in k]
-            other_missing = [k for k in missing if k not in lora_missing and k not in head_missing]
-            self.trainer.logger.info(f"LoRA adapter keys (new, expected missing): {len(lora_missing)}")
-            self.trainer.logger.info(f"seg_head keys (new, expected missing): {len(head_missing)}")
+            head_missing = [k for k in missing if "seg_head" in k or "deghost_head" in k]
+            other_missing = [k for k in missing
+                             if k not in lora_missing and k not in head_missing]
+            # If the deghost segmentor stripped its student subtree, the
+            # checkpoint's backbone.student.* keys land in 'unexpected'.
+            # That's intentional — split them out so the warning logs are
+            # actually about real surprises.
+            student_unexpected = [k for k in unexpected if ".student." in k]
+            other_unexpected   = [k for k in unexpected if ".student." not in k]
+            self.trainer.logger.info(
+                f"LoRA adapter keys (new, expected missing): {len(lora_missing)}")
+            self.trainer.logger.info(
+                f"deghost_head keys (new, expected missing): {len(head_missing)}")
             if other_missing:
-                self.trainer.logger.warning(f"Other missing keys: {other_missing[:10]}")
-            self.trainer.logger.info(f"Unexpected keys: {unexpected[:10] if unexpected else 'none'}")
+                self.trainer.logger.warning(
+                    f"Other missing keys ({len(other_missing)}): {other_missing[:10]}")
+            if student_unexpected:
+                self.trainer.logger.info(
+                    f"Student-subtree keys ignored (stripped by deghost model): "
+                    f"{len(student_unexpected)}")
+            if other_unexpected:
+                self.trainer.logger.warning(
+                    f"Other unexpected keys ({len(other_unexpected)}): "
+                    f"{other_unexpected[:10]}")
             if self.trainer.cfg.resume:
                 self.trainer.logger.info(
                     f"Resuming train at eval epoch: {checkpoint['epoch']}"

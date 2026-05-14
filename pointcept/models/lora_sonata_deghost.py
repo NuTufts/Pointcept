@@ -164,7 +164,29 @@ class SonataLoRADeghostSegmentor(nn.Module):
         lora_target_modules: Optional[List[str]] = None,
         ghost_class_index: int = 1,
         freeze_backbone_non_lora: bool = True,
+        strip_student: bool = True,
     ):
+        """
+        strip_student:
+            When True (default), delete ``self.backbone.student`` after the
+            backbone is built. The Sonata-v1m1 wrapper holds two copies of
+            the encoder for DINO-style self-distillation: ``self.teacher``
+            (the EMA copy, used in fine-tuning forward path via
+            ``return_point=True``) and ``self.student``. For downstream
+            fine-tuning the student is never called in forward and never
+            receives gradients — it's purely dead weight in GPU memory
+            (~half of the backbone parameters). Stripping it here, BEFORE
+            ``build_optimizer`` walks ``named_parameters()``, also keeps
+            those frozen parameters out of the optimizer's param_groups
+            (otherwise the optimizer would hold tensor references and the
+            memory wouldn't actually be freed). The accompanying student
+            keys in the pretraining checkpoint will then be reported as
+            "unexpected" by the checkpoint loader — harmless.
+
+            Set to False if you want to keep the student subtree around
+            for debugging or ablation (e.g., comparing teacher-vs-student
+            features at the same input).
+        """
         super().__init__()
         if lora_target_modules is None:
             lora_target_modules = ["qkv", "proj"]
@@ -175,6 +197,18 @@ class SonataLoRADeghostSegmentor(nn.Module):
         from pointcept.models import build_model
         from pointcept.utils.config import Config
         self.backbone = build_model(Config(backbone))
+
+        # ---- Strip the student subtree -------------------------------------
+        # Done BEFORE LoRA injection so we don't inject (and then leak) a
+        # bunch of student-side LoRA adapters that never see gradient flow.
+        if strip_student and hasattr(self.backbone, "student"):
+            n_student_params = sum(
+                p.numel() for p in self.backbone.student.parameters()
+            )
+            print(f"\n[DeghostSegmentor] Stripping student subtree "
+                  f"({n_student_params:,} params freed). Teacher subtree "
+                  f"is the one used in forward(return_point=True).")
+            del self.backbone.student
 
         # ---- Inject LoRA ---------------------------------------------------
         print(f"\n{'='*60}")
