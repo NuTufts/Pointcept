@@ -326,8 +326,6 @@ plus the matched flash's PE pattern on a 2D y-z PMT map.
   to add `mc_particle_tree/start_t_ns` next time the merged H5 is
   reprocessed. Once that lands, the flash-prep script will no longer need to
   open the ROOT file just to read the time.
-- The single-entry script needs a batch wrapper that iterates a dlmerged
-  ROOT and writes the parallel hashed-dirs tree.
 - `FlashMatcherV2` (C++) still uses `MCPixelPGraph`. Its logic is now
   ported into Python; the C++ class is not on the critical path for the
   event-slicer training and can be left as-is for now.
@@ -444,48 +442,49 @@ python tools/visualize_slice_flash_match.py \
 
 ### Per-event data production (offline)
 
+Five stages, driven by [`lantern_scripts/run_lantern_wconfig.sh`](../lartpc_data_prep/lantern_scripts/run_lantern_wconfig.sh)
+(see "Production workflow" below for details).
+
 ```
 dlmerged_*.root  (one ROOT file, many entries — wire images, simch,
                   SSNet, MCTrack/MCShower, optical flashes)
   │
-  ▼
-process_dlmerged_to_hdf5_event_files.py        (Pointcept container)
-  │   sets up larlite + larcv readers; iterates entries
+  ▼  Step 1 (lantern container)
+run_step1_lantern_wconfig.sh
+  │   SSNet inference + LArMatch deploy
   │
-  ▼
-larflow.prep.SimChTripletLabelMaker             (C++; ubdl/larflow)
-  │   build MCPixelPGraph from MCTrack/MCShower
-  │   form 3-plane triplets, propose 3D spacepoints
-  │   per spacepoint: trackid/pid/origin from simch + MCPixelPGraph
-  │   per spacepoint: lm_score / shower_score / larmatch_feats from LArMatch
-  │   per spacepoint: hasmatch from comparison to simch truth voxels
-  │   write entry_N/triplet_data, /mc_particle_tree, /mckeypoints,
-  │         /shower_fragments, /image_data
+  ▼  → larmatchme_larlite.root + merged_dlreco_with_ssnet.root  (workdir)
+Step 2-4 (pointcept container)
+run_step234_pointcept_wconfig.sh
   │
-  ▼
-one merged_*_entry*.h5 per (file, entry)
-```
-
-`merge_reco_truth_showerorigin.py` (only relevant for the shower-origin
-pipeline) re-merges reco fragments with these truth labels — it preserves
-`mc_particle_tree` so the slice walker works on its output too.
-
-Flash side (auxiliary, paired by entry):
-
-```
-dlmerged_*.root  +  merged_<basename>_entry<NNNN>.h5
-  │                                  │
-  ▼                                  │
-prepare_flashinfo_h5.py              │
-  │   read simpleFlashBeam + simpleFlashCosmic from larlite::event_opflash
-  │   read MCTrack/MCShower Start().T() for all trackids
-  │   pull mc_particle_tree + triplet_data from paired merged H5
-  │   compute_slice_labels → primary trackid per slice
-  │   greedy match slices ↔ flashes by |Δtick| ≤ dtick_threshold (3 ticks)
-  │   tag slices whose member trajectories leave the image tick window
+  │   Step 2 (convert_larlite_to_pointcept_h5.py):    reco-fragment H5
+  │   Step 3 (process_dlmerged_to_hdf5_event_files.py):
+  │       larflow.prep.SimChTripletLabelMaker (C++; ubdl/larflow)
+  │         build MCPixelPGraph from MCTrack/MCShower; form 3-plane
+  │         triplets, propose 3D spacepoints; tag trackid/pid/origin from
+  │         simch + MCPixelPGraph; lm_score / shower_score /
+  │         larmatch_feats from LArMatch; hasmatch from simch truth
+  │         voxels. Write triplet_data, mc_particle_tree, mckeypoints,
+  │         shower_fragments, image_data.
+  │   Step 4 (merge_reco_truth_showerorigin.py): match reco↔truth by entry,
+  │                                              preserve mc_particle_tree
   │
-  ▼
-flashinfo_<basename>_entry<NNNN>.h5  (parallel directory tree)
+  ▼  → merged_<TAG>_fileno<F>_entry<N>.h5  (workdir)
+Step 5 (pointcept container)
+run_step5_flashinfo_pointcept_wconfig.sh
+  │   prepare_flashinfo_h5.py --batch
+  │     read simpleFlashBeam + simpleFlashCosmic from larlite::event_opflash
+  │     read MCTrack/MCShower Start().T() for all trackids
+  │     pull mc_particle_tree + triplet_data from each merged H5
+  │     compute_slice_labels → primary trackid per slice
+  │     greedy match slices ↔ flashes by |Δtick| ≤ DTICK_THRESHOLD
+  │     tag slices whose member trajectories leave the image tick window
+  │
+  ▼  → flashinfo_<TAG>_fileno<F>_entry<N>.h5  (workdir)
+driver cp's both trees to their final hashed-dirs locations:
+    merged_*.h5     → ${MERGEFILE_OUTPUT_DIR}/<F/1000>/<F/100>/
+    flashinfo_*.h5  → ${FLASHINFO_OUTPUT_DIR}/<F/1000>/<F/100>/
+plus a per-stage completion sentinel in each tree.
 ```
 
 ### At training / visualization time
@@ -509,21 +508,134 @@ training batch with per-spacepoint slice_id + per-slice metadata
 The visualizer (`Pointcept/tools/visualize_lartpc_h5data.py`) follows the
 same path and exposes `Slice (Truth Instance)` as a 3D color mode.
 
+## Production workflow (`lartpc_data_prep/lantern_scripts/`)
+
+All per-line work — find input ROOT, run Steps 1-5 inside the right
+container, copy outputs to the final tree, write sentinels — is driven by
+config-sourced shell wrappers in
+[`lartpc_data_prep/lantern_scripts/`](../lartpc_data_prep/lantern_scripts/).
+
+### Scripts
+
+| Script | Role |
+|---|---|
+| [`run_lantern_wconfig.sh`](../lartpc_data_prep/lantern_scripts/run_lantern_wconfig.sh) | **Integrated** driver. Loops lines from `INPUTLIST` (or `RERUN_LINES_FILE`), creates a per-file workdir, runs Steps 1, 2-4, then 5 (each inside its target container via `apptainer exec`), `cp`s outputs to their final trees, writes sentinels. |
+| [`run_flashinfo_wconfig.sh`](../lartpc_data_prep/lantern_scripts/run_flashinfo_wconfig.sh) | **Standalone** driver for Step 5 only. Same line-loop / RERUN / SLURM-array structure, but reads merged H5s from the existing `MERGEFILE_OUTPUT_DIR` tree (not the workdir) and writes directly into `FLASHINFO_OUTPUT_DIR`. Use this to (re)process flashinfo for datasets whose Steps 1-4 are already done. |
+| [`run_step1_lantern_wconfig.sh`](../lartpc_data_prep/lantern_scripts/run_step1_lantern_wconfig.sh) | Step 1 subscript (runs inside lantern container). |
+| [`run_step234_pointcept_wconfig.sh`](../lartpc_data_prep/lantern_scripts/run_step234_pointcept_wconfig.sh) | Steps 2-4 subscript (runs inside pointcept container). |
+| [`run_step5_flashinfo_pointcept_wconfig.sh`](../lartpc_data_prep/lantern_scripts/run_step5_flashinfo_pointcept_wconfig.sh) | Step 5 subscript (runs inside pointcept container). Auto-detects integrated vs standalone mode. |
+| [`_wconfig_common.sh`](../lartpc_data_prep/lantern_scripts/_wconfig_common.sh) | Shared bootstrap for the per-stage subscripts (re-execs into the right container when invoked outside one, handles standalone-mode arg parsing). |
+
+### Step 5 modes (where it reads merged H5 / writes flashinfo)
+
+| Mode | Triggered by | Merged H5 read from | ROOT read from | flashinfo written to |
+|---|---|---|---|---|
+| **Integrated** | `run_lantern_wconfig.sh` after Steps 2-4 | `${WORKDIR_PATH}/merged_*.h5` | `${WORKDIR_PATH}/<basename>.root` | `${WORKDIR_PATH}/flashinfo_*.h5`, then driver `cp` to final tree |
+| **Standalone batch** | `run_flashinfo_wconfig.sh` looping lines | `${MERGEFILE_OUTPUT_DIR}/<F/1000>/<F/100>/` | original cluster path from `INPUTLIST` | directly to `${FLASHINFO_OUTPUT_DIR}/<F/1000>/<F/100>/` (`.tmp` + `mv` atomic) |
+| **Standalone one-off** | `source run_step5_flashinfo_pointcept_wconfig.sh <config> <lineno>` | same as batch | same | same |
+
+The Python script
+[`prepare_flashinfo_h5.py`](../lartpc_data_prep/prepare_flashinfo_h5.py) is
+the same in all three: it just takes `--input-dlmerged --merged-dir
+--output-dir --tag --fileno` and doesn't care where those paths live. In
+batch mode it opens larlite once, builds the channel→opdet map once, and
+iterates every `merged_<TAG>_fileno<F>_entry<N>.h5` it finds, writing each
+output as `<name>.tmp` and renaming on success — so a killed job never
+leaves a torn final file.
+
+### Sentinels (one per stage, per line)
+
+Written into the final output tree alongside the data files. Their presence
+tells future driver invocations to skip the line cheaply.
+
+| Sentinel path | Written by | Means |
+|---|---|---|
+| `${MERGEFILE_OUTPUT_DIR}/<F/1000>/<F/100>/${TAG}_fileno${F}.complete` | `run_lantern_wconfig.sh` after Steps 2-4 | Merged H5s for this line are all on disk. |
+| `${FLASHINFO_OUTPUT_DIR}/<F/1000>/<F/100>/${TAG}_fileno${F}.flashinfo.complete` | `run_lantern_wconfig.sh` *or* `run_flashinfo_wconfig.sh` after Step 5 succeeds AND `n_flash ≥ n_merged > 0` | All flashinfo files for this line are on disk. |
+
+The standalone driver additionally requires `${TAG}_fileno${F}.complete` to
+**already exist** before it will attempt Step 5 — if Steps 1-4 haven't
+completed, there's nothing to read.
+
+### Config knobs (relevant to Step 5)
+
+Defined in each `lantern_configs/*.conf`:
+
+```bash
+MERGEFILE_OUTPUT_DIR=${OUTPUT_DIR}/merged_h5      # consumed by Step 5 in standalone mode
+FLASHINFO_OUTPUT_DIR=${OUTPUT_DIR}/flashinfo_h5   # required for Step 5 to do anything
+RUN_FLASHINFO=1                                    # 0 disables Step 5 in the integrated driver
+DTICK_THRESHOLD=3.0                                # |Δtick| matching tolerance (1 tick = 500 ns)
+```
+
+`RUN_FLASHINFO` is honored only by the integrated driver. The standalone
+driver always runs Step 5 (that's its sole purpose). Step 5 is non-fatal in
+both drivers — a failure logs a warning and lets the rest of the line
+proceed; the merged sentinel still gets written.
+
+### Usage
+
+**Integrated pipeline** (Steps 1-5 in one go):
+
+```bash
+source lartpc_data_prep/lantern_scripts/run_lantern_wconfig.sh \
+       lartpc_data_prep/lantern_scripts/lantern_configs/<dataset>.conf
+```
+
+**Standalone Step 5** (reprocess flashinfo for a dataset that's already
+been through Steps 1-4):
+
+```bash
+source lartpc_data_prep/lantern_scripts/run_flashinfo_wconfig.sh \
+       lartpc_data_prep/lantern_scripts/lantern_configs/<dataset>.conf
+```
+
+**Single-entry interactive** (one-off testing on one ROOT entry):
+
+```bash
+python lartpc_data_prep/prepare_flashinfo_h5.py \
+    --input-dlmerged   /path/to/dlmerged_X.root \
+    --entry            N \
+    --merged-h5        /path/to/merged_..._entry<N>.h5 \
+    --output-h5        /path/to/flashinfo_..._entry<N>.h5 \
+    [--dtick-threshold 3.0]
+```
+
+### Skip / resume layering
+
+Three layers, evaluated in order from cheapest to most fine-grained:
+
+1. **Line-level**: if the per-line sentinel exists, the driver skips the
+   whole line (no work, no container exec).
+2. **Stage-level** (KEEP_INTERMEDIATES=1, integrated mode only): if a
+   stage's canonical outputs are already present in the workdir, the
+   stage's subscript short-circuits.
+3. **Entry-level** (inside Step 5's Python): `--start-entry` skips a
+   contiguous prefix of already-present flashinfo files; per-entry
+   `os.path.exists` checks the precise output file before each entry.
+
+The first run on a fresh dataset writes everything; subsequent runs on the
+same input list (after a partial failure, or a config tweak that only
+affects late stages) skip cheaply at whichever level applies.
+
 ## Plan for pre-implementation
 
 We want to establish the computation pipeline and input data formats for the event slicer.
 
 This will be important information needed for implementation of the data loader and the model pipeline.
 
-1. ~~Flash information data prep pipeline~~ **Resolved 2026-05-14 (v1).**
-   Separate auxiliary H5 files paired by entry, in a parallel directory tree:
+1. ~~Flash information data prep pipeline~~ **Resolved.** Separate
+   auxiliary H5 files paired by entry, in a parallel directory tree:
    `flashinfo_<basename>_entry<NNNN>.h5` ↔ `merged_<basename>_entry<NNNN>.h5`.
    Each aux file holds the per-entry flashes, MC particle start times (read
    from larlite MCTrack/MCShower since `mc_particle_tree` doesn't carry the
    time component), and a greedy slice↔flash match table. Producer:
-   [`Pointcept/lartpc_data_prep/prepare_flashinfo_h5.py`](../lartpc_data_prep/prepare_flashinfo_h5.py)
-   (single-entry interactive script; batch driver is a follow-up). See the
-   "Flash auxiliary H5 schema" section below.
+   [`prepare_flashinfo_h5.py`](../lartpc_data_prep/prepare_flashinfo_h5.py)
+   (single-entry and `--batch` modes). Integrated into the `lantern_scripts/`
+   pipeline as **Step 5**, with a standalone driver
+   [`run_flashinfo_wconfig.sh`](../lartpc_data_prep/lantern_scripts/run_flashinfo_wconfig.sh)
+   for reprocessing datasets that already have merged H5s. See the
+   "Flash auxiliary H5 schema" and "Production workflow" sections.
 2. ~~What is the status of the ground truth slice information for the spacepoints?~~ **Resolved
    2026-05-13.** A slice ID is *not* stored in the H5 directly, but the
    `mc_particle_tree` group lets us derive one cheaply: walk

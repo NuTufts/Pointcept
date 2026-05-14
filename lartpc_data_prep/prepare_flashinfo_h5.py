@@ -1,8 +1,7 @@
 """prepare_flashinfo_h5.py — build the auxiliary flash-info H5 paired with a
 merged training H5.
 
-For one dlmerged ROOT file and one corresponding merged H5 (for a single
-entry index), produce ``flashinfo_<basename>_entry<NNNN>.h5`` containing:
+For each entry, produces ``flashinfo_<basename>_entry<NNNN>.h5`` containing:
 
     entry_0/
         flashes/                          per-flash arrays from simpleFlashBeam
@@ -13,11 +12,29 @@ entry index), produce ``flashinfo_<basename>_entry<NNNN>.h5`` containing:
                                           match within dtick_threshold (3 ticks
                                           default)
 
-This is the **single-entry interactive script** intended for one ROOT entry +
-one merged H5 file. A batch driver that iterates over a dlmerged file's
-entries is a follow-up.
+Two modes:
 
-Usage:
+    --batch (recommended for production):
+        Iterates every merged_<TAG>_fileno<NNNNN>_entry<N>.h5 in --merged-dir,
+        seeks the same entry index in --input-dlmerged, and writes
+        flashinfo_<TAG>_fileno<NNNNN>_entry<N>.h5 to --output-dir.
+        Each output is written as <name>.tmp first and renamed at the end,
+        so a killed job leaves only .tmp orphans, never a torn final file.
+        Entries whose output already exists are skipped.
+
+    Single-entry (back-compat, useful for one-off testing):
+        Provide --entry, --merged-h5, --output-h5 explicitly.
+
+Usage (batch):
+    python prepare_flashinfo_h5.py --batch \\
+        --input-dlmerged   /path/to/dlmerged_X.root \\
+        --merged-dir       /path/to/merged_h5_dir \\
+        --output-dir       /path/to/flashinfo_h5_dir \\
+        --tag              <TAG> \\
+        --fileno           <NNNNN> \\
+        [--start-entry N] [--max-events M] [--dtick-threshold 3.0]
+
+Usage (single entry):
     python prepare_flashinfo_h5.py \\
         --input-dlmerged   /path/to/dlmerged_X.root \\
         --entry            N \\
@@ -28,6 +45,7 @@ Usage:
 
 import argparse
 import os
+import re
 import sys
 
 import h5py
@@ -378,49 +396,42 @@ def write_flashinfo_h5(
 
 
 # ----------------------------------------------------------------------------
-# Per-entry driver
+# Per-entry core (assumes larlite already open + channel/pmt maps pre-built)
 # ----------------------------------------------------------------------------
 
-def process_entry(input_dlmerged, ientry, merged_h5, output_h5,
-                  dtick_threshold, verbose=True):
-    if not os.path.exists(input_dlmerged):
-        raise FileNotFoundError(f"dlmerged ROOT not found: {input_dlmerged}")
+def _process_entry_loaded(
+    ioll, ientry,
+    merged_h5, output_h5,
+    channel_to_opdet, pmt_positions,
+    dtick_threshold, verbose=True,
+):
+    """Per-entry work. Caller owns the larlite storage_manager and the
+    channel_to_opdet / pmt_positions maps so a batch driver can build them
+    once and reuse across many entries.
+
+    Writes to ``output_h5 + '.tmp'`` first, then renames into place at the
+    end so a killed job never leaves a torn final file.
+    """
     if not os.path.exists(merged_h5):
         raise FileNotFoundError(f"merged H5 not found: {merged_h5}")
 
-    if verbose:
-        print(f"[entry {ientry}] reading {input_dlmerged}")
-        print(f"             paired merged H5 {merged_h5}")
-        print(f"             output           {output_h5}")
-        print(f"             dtick_threshold  {dtick_threshold} ticks "
-              f"({dtick_threshold * USEC_PER_TICK * 1000.0} ns)")
-
-    # 1. open larlite and seek
-    ioll = larlite.storage_manager(larlite.storage_manager.kREAD)
-    ioll.add_in_filename(input_dlmerged)
-    ioll.set_verbosity(2)
-    ioll.open()
-
     nentries = ioll.get_entries()
     if ientry < 0 or ientry >= nentries:
-        ioll.close()
         raise IndexError(f"entry {ientry} out of range (file has {nentries} entries)")
 
     ioll.go_to(ientry)
     run = int(ioll.run_id())
     subrun = int(ioll.subrun_id())
     event = int(ioll.event_id())
-    if verbose:
-        print(f"  larlite (run, subrun, event) = ({run}, {subrun}, {event})")
 
-    # 2. read mc_particle_tree + triplet_data from merged H5; compute slices
     with h5py.File(merged_h5, "r") as mh:
         e0 = mh["entry_0"]
         mh_run = int(e0.attrs.get("run", -1))
         mh_sr  = int(e0.attrs.get("subrun", -1))
         mh_ev  = int(e0.attrs.get("event", -1))
         if (mh_run, mh_sr, mh_ev) != (run, subrun, event):
-            print(f"  [warn] (run,subrun,event) mismatch: ROOT=({run},{subrun},{event}) "
+            print(f"  [warn] (run,subrun,event) mismatch entry {ientry}: "
+                  f"ROOT=({run},{subrun},{event}) "
                   f"merged_h5=({mh_run},{mh_sr},{mh_ev})")
         mpt = e0["mc_particle_tree"]
         td = e0["triplet_data"]
@@ -429,11 +440,9 @@ def process_entry(input_dlmerged, ientry, merged_h5, output_h5,
             mpt, td["trackid"][:], td["hasmatch"][:],
         )
 
-    # 3. trackid -> start time, and per-track trajectory tick bounds
     trackid_starts = build_trackid_start_map(ioll)
     traj_bounds = build_trackid_traj_reco_tick_bounds(ioll)
 
-    # 4. mc_particle_start_times parallel to mc_particle_tree/trackid
     n_mc = len(mc_tids)
     mc_starts = {
         "trackid": np.asarray(mc_tids, dtype=np.int32),
@@ -444,20 +453,17 @@ def process_entry(input_dlmerged, ientry, merged_h5, output_h5,
     for i, tid in enumerate(mc_tids):
         info = trackid_starts.get(int(tid))
         if info is None:
-            # Geant4 secondary — only known through the graph, not mctrack/mcshower
             continue
         t_ns, _, _, _, src = info
         mc_starts["start_t_ns"][i] = t_ns
         mc_starts["start_tpc_tick_nodrift"][i] = true_tick_from_ns(t_ns)
         mc_starts["source"][i] = src
 
-    # 5. lead-primary tick per slice
     S = len(slice_info["primary_trackid"])
     slice_tick = np.zeros(S, dtype=np.float32)
     for k in range(S):
         members = slice_info["slice_member_trackids"][k]
         slice_tick[k] = np.nan
-        # Try the slice_id key first, then any member
         candidates = [int(slice_info["primary_trackid"][k])] + [int(m) for m in members]
         for cand in candidates:
             info = trackid_starts.get(cand)
@@ -465,23 +471,24 @@ def process_entry(input_dlmerged, ientry, merged_h5, output_h5,
                 slice_tick[k] = true_tick_from_ns(info[0])
                 break
 
-    # 6. extract flashes (build channel->opdet map first so PE is OpDet-indexed)
-    channel_to_opdet, pmt_positions = build_channel_to_opdet_map()
-    flashes = extract_flashes(ioll, channel_to_opdet, verbose=verbose)
+    flashes = extract_flashes(ioll, channel_to_opdet, verbose=False)
 
-    # 7. match
     slice_matched_flash_idx, slice_match_dtick, flash_match_slice, flash_match_dtick = (
         match_slices_to_flashes(
             slice_info["primary_trackid"], slice_tick, flashes, dtick_threshold,
         )
     )
 
-    # 8. image-boundary crossing
     slice_crosses = check_image_boundary_crossing(slice_info, traj_bounds)
 
-    # 9. write (pmt_positions already built alongside channel->opdet map above)
+    tmp_path = output_h5 + ".tmp"
+    if os.path.exists(tmp_path):
+        try:
+            os.remove(tmp_path)
+        except OSError:
+            pass
     write_flashinfo_h5(
-        output_h5, run, subrun, event,
+        tmp_path, run, subrun, event,
         flashes, pmt_positions,
         mc_starts,
         slice_info, slice_tick,
@@ -490,36 +497,198 @@ def process_entry(input_dlmerged, ientry, merged_h5, output_h5,
         flash_match_slice, flash_match_dtick,
         dtick_threshold,
     )
+    os.replace(tmp_path, output_h5)
 
     if verbose:
         n_matched = int((slice_matched_flash_idx >= 0).sum())
         n_cross = int(slice_crosses.sum())
         n_nu = int((slice_info["primary_origin"] == 1).sum())
         n_cos = int((slice_info["primary_origin"] == 2).sum())
-        print(f"  flashes={len(flashes)}  slices={S} (nu={n_nu}, cos={n_cos})  "
-              f"matched={n_matched}/{S}  boundary_crossing={n_cross}")
-        print(f"  wrote {output_h5}")
-
-    ioll.close()
+        print(f"  entry {ientry} (run={run},subrun={subrun},event={event}): "
+              f"flashes={len(flashes)}  slices={S} (nu={n_nu}, cos={n_cos})  "
+              f"matched={n_matched}/{S}  boundary_crossing={n_cross}  "
+              f"-> {os.path.basename(output_h5)}")
     return True
 
+
+# ----------------------------------------------------------------------------
+# Single-entry mode (open larlite, build maps, process one entry, close)
+# ----------------------------------------------------------------------------
+
+def process_entry(input_dlmerged, ientry, merged_h5, output_h5,
+                  dtick_threshold, verbose=True):
+    if not os.path.exists(input_dlmerged):
+        raise FileNotFoundError(f"dlmerged ROOT not found: {input_dlmerged}")
+    if not os.path.exists(merged_h5):
+        raise FileNotFoundError(f"merged H5 not found: {merged_h5}")
+    if verbose:
+        print(f"[entry {ientry}] reading {input_dlmerged}")
+        print(f"             paired merged H5 {merged_h5}")
+        print(f"             output           {output_h5}")
+        print(f"             dtick_threshold  {dtick_threshold} ticks "
+              f"({dtick_threshold * USEC_PER_TICK * 1000.0} ns)")
+
+    ioll = larlite.storage_manager(larlite.storage_manager.kREAD)
+    ioll.add_in_filename(input_dlmerged)
+    ioll.set_verbosity(2)
+    ioll.open()
+    try:
+        channel_to_opdet, pmt_positions = build_channel_to_opdet_map()
+        os.makedirs(os.path.dirname(os.path.abspath(output_h5)), exist_ok=True)
+        _process_entry_loaded(
+            ioll, ientry,
+            merged_h5, output_h5,
+            channel_to_opdet, pmt_positions,
+            dtick_threshold, verbose=verbose,
+        )
+    finally:
+        ioll.close()
+    return True
+
+
+# ----------------------------------------------------------------------------
+# Batch mode (one larlite open, iterate merged_<TAG>_fileno<F>_entry<N>.h5)
+# ----------------------------------------------------------------------------
+
+_ENTRY_RE = re.compile(r"_entry(\d+)\.h5$")
+
+
+def _enumerate_merged_entries(merged_dir, tag, fileno):
+    """Yield (ientry, merged_path) for every merged_<TAG>_fileno<F>_entry<N>.h5
+    in merged_dir, sorted by entry index."""
+    zfileno = f"{int(fileno):05d}"
+    prefix = f"merged_{tag}_fileno{zfileno}_entry"
+    pairs = []
+    for name in os.listdir(merged_dir):
+        if not name.startswith(prefix) or not name.endswith(".h5"):
+            continue
+        m = _ENTRY_RE.search(name)
+        if not m:
+            continue
+        pairs.append((int(m.group(1)), os.path.join(merged_dir, name)))
+    pairs.sort()
+    return pairs
+
+
+def process_batch(input_dlmerged, merged_dir, output_dir, tag, fileno,
+                  start_entry=0, max_events=-1,
+                  dtick_threshold=3.0, verbose=True):
+    if not os.path.exists(input_dlmerged):
+        raise FileNotFoundError(f"dlmerged ROOT not found: {input_dlmerged}")
+    if not os.path.isdir(merged_dir):
+        raise FileNotFoundError(f"merged-dir not found: {merged_dir}")
+
+    pairs = _enumerate_merged_entries(merged_dir, tag, fileno)
+    if not pairs:
+        print(f"[batch] no merged_{tag}_fileno{int(fileno):05d}_entry*.h5 in "
+              f"{merged_dir}; nothing to do")
+        return 0, 0, 0
+
+    if start_entry > 0:
+        pairs = [(i, p) for i, p in pairs if i >= start_entry]
+    if max_events >= 0:
+        pairs = pairs[:max_events]
+    if not pairs:
+        print(f"[batch] all entries filtered out (start_entry={start_entry}, "
+              f"max_events={max_events})")
+        return 0, 0, 0
+
+    os.makedirs(output_dir, exist_ok=True)
+    zfileno = f"{int(fileno):05d}"
+    ioll = larlite.storage_manager(larlite.storage_manager.kREAD)
+    ioll.add_in_filename(input_dlmerged)
+    ioll.set_verbosity(2)
+    ioll.open()
+
+    n_processed = 0
+    n_skipped = 0
+    n_failed = 0
+    try:
+        channel_to_opdet, pmt_positions = build_channel_to_opdet_map()
+        if verbose:
+            print(f"[batch] {len(pairs)} entries to consider in "
+                  f"{os.path.basename(input_dlmerged)} -> {output_dir}")
+        for ientry, merged_path in pairs:
+            out_name = f"flashinfo_{tag}_fileno{zfileno}_entry{ientry:06d}.h5"
+            out_path = os.path.join(output_dir, out_name)
+            if os.path.exists(out_path):
+                if verbose:
+                    print(f"  entry {ientry}: skip (output exists)")
+                n_skipped += 1
+                continue
+            try:
+                _process_entry_loaded(
+                    ioll, ientry,
+                    merged_path, out_path,
+                    channel_to_opdet, pmt_positions,
+                    dtick_threshold, verbose=verbose,
+                )
+                n_processed += 1
+            except Exception as exc:
+                print(f"  entry {ientry}: FAILED — {exc}")
+                n_failed += 1
+    finally:
+        ioll.close()
+    if verbose:
+        print(f"[batch] done: processed={n_processed} "
+              f"skipped={n_skipped} failed={n_failed}")
+    return n_processed, n_skipped, n_failed
+
+
+# ----------------------------------------------------------------------------
+# CLI
+# ----------------------------------------------------------------------------
 
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--input-dlmerged", required=True)
-    p.add_argument("--entry", type=int, required=True)
-    p.add_argument("--merged-h5", required=True)
-    p.add_argument("--output-h5", required=True)
     p.add_argument("--dtick-threshold", type=float, default=3.0,
                    help="Max |Δtick| between slice primary and matched flash. "
                         "Default 3 ticks = 1500 ns.")
+    p.add_argument("--batch", action="store_true",
+                   help="Iterate every merged_<tag>_fileno<F>_entry*.h5 in "
+                        "--merged-dir; write paired flashinfo_*.h5 to "
+                        "--output-dir; skip outputs that already exist.")
+    # Batch-mode args
+    p.add_argument("--merged-dir", default=None,
+                   help="(batch) Directory of merged_<tag>_fileno<F>_entry*.h5")
+    p.add_argument("--output-dir", default=None,
+                   help="(batch) Directory for flashinfo_<tag>_fileno<F>_entry*.h5")
+    p.add_argument("--tag", default=None, help="(batch) Dataset TAG")
+    p.add_argument("--fileno", type=int, default=None,
+                   help="(batch) File number embedded in merged H5 names")
+    p.add_argument("--start-entry", type=int, default=0,
+                   help="(batch) First entry index to process (default 0)")
+    p.add_argument("--max-events", type=int, default=-1,
+                   help="(batch) Cap on entries processed per call (-1 = all)")
+    # Single-entry args
+    p.add_argument("--entry", type=int, default=None,
+                   help="(single) ROOT entry index")
+    p.add_argument("--merged-h5", default=None,
+                   help="(single) Path to one merged_<...>_entry<N>.h5")
+    p.add_argument("--output-h5", default=None,
+                   help="(single) Output flashinfo_<...>_entry<N>.h5")
     args = p.parse_args()
 
-    process_entry(
-        args.input_dlmerged, args.entry,
-        args.merged_h5, args.output_h5,
-        args.dtick_threshold,
-    )
+    if args.batch:
+        for need in ("merged_dir", "output_dir", "tag", "fileno"):
+            if getattr(args, need) is None:
+                p.error(f"--batch requires --{need.replace('_', '-')}")
+        process_batch(
+            args.input_dlmerged, args.merged_dir, args.output_dir,
+            args.tag, args.fileno,
+            start_entry=args.start_entry, max_events=args.max_events,
+            dtick_threshold=args.dtick_threshold,
+        )
+    else:
+        for need in ("entry", "merged_h5", "output_h5"):
+            if getattr(args, need) is None:
+                p.error(f"single-entry mode requires --{need.replace('_', '-')}")
+        process_entry(
+            args.input_dlmerged, args.entry,
+            args.merged_h5, args.output_h5,
+            args.dtick_threshold,
+        )
 
 
 if __name__ == "__main__":
