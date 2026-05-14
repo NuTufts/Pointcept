@@ -31,6 +31,7 @@ UBDL_DIR=${UBDL_DIR:-/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/ubdl}
 POINTCEPT_DIR=${POINTCEPT_DIR:-/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept}
 export SCRIPT_DIR REPO_ROOT UBDL_DIR POINTCEPT_DIR
 
+echo "Running 'run_lantern_wconfig.sh'"
 # shellcheck disable=SC1090
 echo "Sourcing config file: ${CONFIG_FILE}"
 source "${CONFIG_FILE}"

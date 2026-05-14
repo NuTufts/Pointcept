@@ -44,6 +44,7 @@ UBDL_DIR=${UBDL_DIR:-/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/ubdl}
 POINTCEPT_DIR=${POINTCEPT_DIR:-/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept}
 export SCRIPT_DIR REPO_ROOT UBDL_DIR POINTCEPT_DIR
 
+echo "Running 'run_flashinfo_wconfig.sh'"
 echo "Sourcing config file: ${CONFIG_FILE}"
 # shellcheck disable=SC1090
 source "${CONFIG_FILE}"
@@ -72,6 +73,7 @@ jobid=${SLURM_ARRAY_TASK_ID}
 startline=$(( OFFSET + stride * jobid ))
 
 RERUN_LINES_FILE=${RERUN_LINES_FILE:-}
+echo "RERUN_LINES_FILE: ${RERUN_LINES_FILE}"
 if [ -n "${RERUN_LINES_FILE}" ] && [ ! -f "${RERUN_LINES_FILE}" ]; then
     echo "ERROR: RERUN_LINES_FILE set but not found: ${RERUN_LINES_FILE}" >&2
     return 1 2>/dev/null || exit 1
@@ -82,7 +84,11 @@ jobworkdir=$(printf "%s/workdir/flashinfo_${TAG}_jobid_%04d" "${REPO_ROOT}" "${j
 mkdir -p "${jobworkdir}"
 mkdir -p "${FLASHINFO_OUTPUT_DIR}"
 
+echo "Made job workdir: ${jobworkdir}"
+
 local_logfile=${jobworkdir}/log_flashinfo_${TAG}_jobid${jobid}.txt
+echo "local logfile: ${local_logfile}"
+
 {
     echo "======================================"
     echo "Flashinfo standalone job started: $(date)"
@@ -94,8 +100,12 @@ local_logfile=${jobworkdir}/log_flashinfo_${TAG}_jobid${jobid}.txt
     echo "FLASHINFO_OUTPUT_DIR:  ${FLASHINFO_OUTPUT_DIR}"
     echo "DTICK_THRESHOLD:       ${DTICK_THRESHOLD}"
     echo "RERUN_LINES_FILE:      ${RERUN_LINES_FILE:-(unset, normal sequential mode)}"
+    echo "REPO_ROOT:             ${REPO_ROOT}"
     echo "======================================"
 } > "${local_logfile}"
+
+# for debug
+cat ${local_logfile}
 
 for (( i=1; i<=stride; i++ )); do
     if [ -n "${RERUN_LINES_FILE}" ]; then
@@ -157,6 +167,8 @@ for (( i=1; i<=stride; i++ )); do
         echo "output dir: ${flash_folder}"
         echo "============================================"
     } >> "${local_logfile}"
+    # for debug
+    cat ${local_logfile}
 
     mkdir -p "${flash_folder}"
 

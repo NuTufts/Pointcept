@@ -53,13 +53,14 @@ echo "  workdir:            ${WORKDIR_PATH}"
 echo "  tag:                ${FILETAG}"
 echo "  fileno (lineno):    ${FILENO}"
 echo "  dtick_threshold:    ${DTICK_THRESHOLD}"
+echo "  REPO_ROOT:          ${REPO_ROOT}"
 
 # Resolve REPO_ROOT (Pointcept/lartpc_data_prep dir, parent of lantern_scripts)
 if [ -z "${REPO_ROOT:-}" ]; then
     SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
     REPO_ROOT=$(cd "${SCRIPT_DIR}/.." && pwd)
 fi
-PY_SCRIPT="${REPO_ROOT}/prepare_flashinfo_h5.py"
+PY_SCRIPT="${REPO_ROOT}/../prepare_flashinfo_h5.py"
 if [ ! -f "${PY_SCRIPT}" ]; then
     echo "ERROR: prepare_flashinfo_h5.py not found at ${PY_SCRIPT}"
     return 1 2>/dev/null || exit 1
