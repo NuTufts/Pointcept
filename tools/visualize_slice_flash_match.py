@@ -29,13 +29,12 @@ import h5py
 import numpy as np
 from dash import Dash, Input, Output, callback, dcc, html
 import plotly.graph_objects as go
-from plotly.subplots import make_subplots
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from detectoroutline import DetectorOutline  # noqa: E402
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
-from lartpc_data_prep.slice_labels import compute_slice_labels, GHOST_SLICE_ID  # noqa: E402
+from lartpc_data_prep.slice_labels import compute_slice_labels  # noqa: E402
 
 
 PDG_NAMES = {
@@ -73,6 +72,9 @@ def load_data(merged_h5, flashinfo_h5):
         out['hasmatch'] = td['hasmatch'][:].astype(np.int32)
         out['trackid'] = td['trackid'][:].astype(np.int64)
         out['pixval'] = td['pixval'][:].astype(np.float32)
+        # Alias used by predict_slice_flash; same data, separate key so a
+        # future change (e.g. switching to edep) is localised.
+        out['pixval_for_predict'] = out['pixval']
         out['origin_per_pt'] = td['origin'][:].astype(np.int32)
         sinfo = compute_slice_labels(
             e['mc_particle_tree'], out['trackid'], out['hasmatch'],
@@ -238,30 +240,14 @@ def make_3d_figure(d, slice_id, marker_size=2, show_ghosts=False):
     return fig
 
 
-def make_pmt_figure(d, slice_id):
-    """2D y-z plot of PMTs colored by PE of the matched flash. Returns a fig."""
+def make_pmt_panel(d, slice_id, pe, title_lines, cmax_log=None):
+    """Generic 2D y-z PMT panel. ``pe`` is the (32,) vector to color by;
+    ``title_lines`` is a list of lines. ``cmax_log`` lets the caller force
+    a shared log10 color-scale max across two panels (observed vs predicted).
+    """
     pmts = d['pmt_positions']  # (32, 3)
-    sfm_row = int(np.where(d['sfm_slice_id'] == int(slice_id))[0][0])
-    matched_idx = int(d['sfm_matched_flash_idx'][sfm_row])
-
-    title_lines = [f"PMT view (32 OpDets), slice {slice_id}"]
-    if matched_idx < 0:
-        pe = np.zeros(pmts.shape[0], dtype=np.float32)
-        title_lines.append("no matched flash (null)")
-    else:
-        pe = d['flash_pe'][matched_idx]
-        prod = int(d['flash_producer_id'][matched_idx])
-        prod_name = 'simpleFlashBeam' if prod == 0 else 'simpleFlashCosmic'
-        title_lines.append(
-            f"flash[{matched_idx}] {prod_name}  t={float(d['flash_time_us'][matched_idx]):.2f} us  "
-            f"tick={float(d['flash_tpc_tick'][matched_idx]):.1f}  "
-            f"ΣPE={float(d['flash_total_pe'][matched_idx]):.1f}  "
-            f"Δtick={float(d['sfm_match_dtick'][sfm_row]):.2f}"
-        )
 
     fig = go.Figure()
-
-    # Detector y-z outline (TPC volume y ∈ [-116.5, 116.5], z ∈ [0, 1036.8])
     tpc_y = (-116.5, 116.5)
     tpc_z = (0.0, 1036.8)
     fig.add_shape(type='rect', x0=tpc_z[0], x1=tpc_z[1],
@@ -269,13 +255,13 @@ def make_pmt_figure(d, slice_id):
                   line=dict(color='rgb(180,180,180)', width=1),
                   fillcolor='rgba(0,0,0,0)')
 
-    # PMTs
     if pe.max() > 0:
         log_pe = np.log10(pe + 1.0)
-        cmax = float(log_pe.max())
+        local_max = float(log_pe.max())
     else:
         log_pe = pe
-        cmax = 1.0
+        local_max = 1.0
+    cmax = float(cmax_log) if cmax_log is not None else max(local_max, 0.1)
 
     text_lbls = [
         f"OpDet {i}<br>pos=(x={pmts[i,0]:.1f}, y={pmts[i,1]:.1f}, z={pmts[i,2]:.1f})<br>"
@@ -287,7 +273,7 @@ def make_pmt_figure(d, slice_id):
         mode='markers+text',
         marker=dict(
             size=22, color=log_pe, colorscale='Hot',
-            cmin=0.0, cmax=max(cmax, 0.1),
+            cmin=0.0, cmax=cmax,
             line=dict(color='rgba(80,80,80,1)', width=1),
             colorbar=dict(title='log10(PE+1)', tickfont=dict(color='white'),
                           title_font=dict(color='white')),
@@ -297,8 +283,6 @@ def make_pmt_figure(d, slice_id):
         hovertext=text_lbls, hoverinfo='text', showlegend=False,
     ))
 
-    # If this is a nu slice, overlay the nu vertex y-z position
-    sfm_row = int(np.where(d['sfm_slice_id'] == int(slice_id))[0][0])
     origin = None
     for k, key in enumerate(d['primary_trackid']):
         if int(key) == int(slice_id):
@@ -327,14 +311,161 @@ def make_pmt_figure(d, slice_id):
     return fig
 
 
+def get_observed_pe_and_title(d, slice_id):
+    """Returns (pe (32,), title_lines, has_match)."""
+    sfm_row = int(np.where(d['sfm_slice_id'] == int(slice_id))[0][0])
+    matched_idx = int(d['sfm_matched_flash_idx'][sfm_row])
+    if matched_idx < 0:
+        return (np.zeros(d['pmt_positions'].shape[0], dtype=np.float32),
+                [f"Observed PMTs, slice {slice_id}", "no matched flash (null)"],
+                False)
+    prod = int(d['flash_producer_id'][matched_idx])
+    prod_name = 'simpleFlashBeam' if prod == 0 else 'simpleFlashCosmic'
+    pe = d['flash_pe'][matched_idx]
+    title_lines = [
+        f"Observed: flash[{matched_idx}] {prod_name}  slice {slice_id}",
+        f"t={float(d['flash_time_us'][matched_idx]):.2f} us  "
+        f"tick={float(d['flash_tpc_tick'][matched_idx]):.1f}  "
+        f"ΣPE={float(d['flash_total_pe'][matched_idx]):.1f}  "
+        f"Δtick={float(d['sfm_match_dtick'][sfm_row]):.2f}",
+    ]
+    return pe, title_lines, True
+
+
+PRODUCER_NAMES = ('simpleFlashBeam', 'simpleFlashCosmic')  # index = producer_id
+
+
+def predict_slice_flash(d, slice_id, pl, gamma_by_producer, v_drift):
+    """Run PhotonLibLookup for the selected slice with drift correction to
+    the matched flash's t0 (when present), then scale by the producer-
+    specific γ.
+
+    Args:
+        gamma_by_producer: tuple/list (γ_beam, γ_cosmic). The matched flash's
+            producer_id selects which scalar is applied. For unmatched slices
+            (no flash within tolerance) we fall back to γ_beam (arbitrary —
+            the panel just shows what the predictor would produce with no
+            t0 correction).
+    Returns:
+        (pe (32,) float32, t0_us, producer_id_used, gamma_used)
+    """
+    import torch
+    from pointcept.models.event_slicer.photonlib import (
+        select_charge_y_with_uv_fallback,
+    )
+    sfm_row = int(np.where(d['sfm_slice_id'] == int(slice_id))[0][0])
+    matched_idx = int(d['sfm_matched_flash_idx'][sfm_row])
+    if matched_idx >= 0:
+        flash_t0_us = float(d['flash_time_us'][matched_idx])
+        producer_id = int(d['flash_producer_id'][matched_idx])
+    else:
+        flash_t0_us = 0.0
+        producer_id = 0   # fall back to beam γ; no time shift
+    gamma = float(gamma_by_producer[producer_id])
+
+    mask = d['slice_id_per_pt'] == int(slice_id)
+    if not mask.any():
+        return (np.zeros(d['pmt_positions'].shape[0], dtype=np.float32),
+                flash_t0_us, producer_id, gamma)
+    device = pl.vis_table.device
+    pos = torch.from_numpy(d['pos'][mask]).to(device)
+    q = select_charge_y_with_uv_fallback(
+        torch.from_numpy(d['pixval_for_predict'][mask])
+    ).to(device)
+    pos[:, 0] = pos[:, 0] - v_drift * flash_t0_us
+    cid = torch.zeros(int(mask.sum()), dtype=torch.int64, device=device)
+    pe = pl.predict_flash(pos, q, cid, n_clusters=1)[0]
+    pe = (pe * gamma).cpu().numpy().astype(np.float32)
+    return pe, flash_t0_us, producer_id, gamma
+
+
+def cosine_sim(a, b):
+    na = float(np.linalg.norm(a))
+    nb = float(np.linalg.norm(b))
+    return float((a * b).sum() / (na * nb + 1e-12))
+
+
+def make_observed_pmt_figure(d, slice_id, shared_cmax_log=None):
+    pe, title_lines, _ = get_observed_pe_and_title(d, slice_id)
+    return make_pmt_panel(d, slice_id, pe, title_lines,
+                          cmax_log=shared_cmax_log)
+
+
+def make_predicted_pmt_figure(d, slice_id, pl, gamma_by_producer, v_drift,
+                              shared_cmax_log=None):
+    pe, flash_t0_us, producer_id, gamma_used = predict_slice_flash(
+        d, slice_id, pl, gamma_by_producer, v_drift,
+    )
+    obs, _, has_match = get_observed_pe_and_title(d, slice_id)
+    cos = cosine_sim(pe, obs) if has_match else float('nan')
+    prod_name = (PRODUCER_NAMES[producer_id]
+                 if 0 <= producer_id < len(PRODUCER_NAMES) else f'prod{producer_id}')
+    title_lines = [
+        f"Predicted: photonlib + drift (t0={flash_t0_us:.2f} us)",
+        f"γ_{prod_name.replace('simpleFlash', '').lower()}={gamma_used:.3g}  "
+        f"ΣPE_pred={float(pe.sum()):.1f}  cosine(obs)={cos:.3f}",
+    ]
+    return make_pmt_panel(d, slice_id, pe, title_lines,
+                          cmax_log=shared_cmax_log)
+
+
+def shared_log_cmax(pe_a, pe_b):
+    """Color-scale max for two PE vectors so both panels share an axis."""
+    m = max(float(pe_a.max()) if pe_a.size else 0.0,
+            float(pe_b.max()) if pe_b.size else 0.0)
+    return max(np.log10(m + 1.0), 0.1)
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument('--merged-h5', required=True)
     ap.add_argument('--flashinfo-h5', required=True)
     ap.add_argument('--port', type=int, default=8051)
+    ap.add_argument('--photonlib-cache', default=None,
+                    help="Path to photonlib_v6_70kV.npz. When given, enables "
+                         "a 'predicted flash' panel next to the observed one.")
+    ap.add_argument('--gamma', type=float, default=1.0,
+                    help="Default photons-per-charge scalar; used for any "
+                         "producer whose specific γ flag is not set. "
+                         "Empirically ~1.6 on the canonical example's nu "
+                         "slice (beam readout).")
+    ap.add_argument('--gamma-beam', type=float, default=None,
+                    help="γ applied when the matched flash is simpleFlashBeam "
+                         "(producer_id=0). Defaults to --gamma if unset.")
+    ap.add_argument('--gamma-cosmic', type=float, default=None,
+                    help="γ applied when the matched flash is "
+                         "simpleFlashCosmic (producer_id=1). Defaults to "
+                         "--gamma if unset. Typically much smaller than "
+                         "γ_beam because the cosmic stream's triggered, "
+                         "fixed-window readout truncates the long-component "
+                         "scintillation tail.")
+    ap.add_argument('--v-drift-cm-per-us', type=float, default=0.1098,
+                    help="MicroBooNE drift velocity used for the predicted "
+                         "side's t0 correction.")
+    ap.add_argument('--device', default=None,
+                    help="torch device for the predictor (default: cuda if "
+                         "available else cpu). Ignored if --photonlib-cache "
+                         "is not given.")
     args = ap.parse_args()
 
     d = load_data(args.merged_h5, args.flashinfo_h5)
+
+    gamma_by_producer = (
+        args.gamma_beam if args.gamma_beam is not None else args.gamma,
+        args.gamma_cosmic if args.gamma_cosmic is not None else args.gamma,
+    )
+
+    pl = None
+    if args.photonlib_cache:
+        import torch
+        from pointcept.models.event_slicer.photonlib import PhotonLibLookup
+        device = args.device or ("cuda" if torch.cuda.is_available() else "cpu")
+        print(f"Loading PhotonLibLookup from {args.photonlib_cache} (device={device})")
+        pl = PhotonLibLookup(args.photonlib_cache,
+                             fp16=False, use_trilinear=True).to(device)
+        print(f"  vis_table {tuple(pl.vis_table.shape)} on {pl.vis_table.device}")
+        print(f"  γ_beam={gamma_by_producer[0]:.4g}  "
+              f"γ_cosmic={gamma_by_producer[1]:.4g}")
     slice_options = build_slice_options(d)
     if not slice_options:
         print('No slices found.')
@@ -350,8 +481,25 @@ def main():
     ]
 
     app = Dash(__name__)
+
+    panel_row = [
+        html.Div(dcc.Graph(id='fig-3d'),
+                 style={'width': '50%' if pl is not None else '60%',
+                        'display': 'inline-block', 'verticalAlign': 'top'}),
+        html.Div(dcc.Graph(id='fig-pmt-obs'),
+                 style={'width': '25%' if pl is not None else '40%',
+                        'display': 'inline-block', 'verticalAlign': 'top'}),
+    ]
+    if pl is not None:
+        panel_row.append(
+            html.Div(dcc.Graph(id='fig-pmt-pred'),
+                     style={'width': '25%', 'display': 'inline-block',
+                            'verticalAlign': 'top'})
+        )
+
     app.layout = html.Div([
-        html.H2("Slice / Flash Match Viewer",
+        html.H2("Slice / Flash Match Viewer"
+                + ("  (+ photonlib prediction)" if pl is not None else ""),
                 style={'color': 'white', 'textAlign': 'center'}),
         html.Div([html.Div(line, style={'color': '#bbb'}) for line in header_lines],
                  style={'textAlign': 'center', 'marginBottom': '12px'}),
@@ -371,29 +519,46 @@ def main():
                        'marginLeft': '20px'},
             ),
         ], style={'textAlign': 'center', 'marginBottom': '10px'}),
-        html.Div([
-            html.Div(dcc.Graph(id='fig-3d'),
-                     style={'width': '60%', 'display': 'inline-block',
-                            'verticalAlign': 'top'}),
-            html.Div(dcc.Graph(id='fig-pmt'),
-                     style={'width': '40%', 'display': 'inline-block',
-                            'verticalAlign': 'top'}),
-        ]),
+        html.Div(panel_row),
     ], style={'backgroundColor': '#0a0a0a', 'padding': '14px',
               'minHeight': '100vh'})
 
-    @callback(
-        Output('fig-3d', 'figure'),
-        Output('fig-pmt', 'figure'),
-        Input('slice-dd', 'value'),
-        Input('show-ghosts', 'value'),
-    )
-    def update(slice_id, show_ghosts):
-        return (
-            make_3d_figure(d, int(slice_id),
-                           show_ghosts='show' in (show_ghosts or [])),
-            make_pmt_figure(d, int(slice_id)),
+    if pl is None:
+        @callback(
+            Output('fig-3d', 'figure'),
+            Output('fig-pmt-obs', 'figure'),
+            Input('slice-dd', 'value'),
+            Input('show-ghosts', 'value'),
         )
+        def update(slice_id, show_ghosts):
+            return (
+                make_3d_figure(d, int(slice_id),
+                               show_ghosts='show' in (show_ghosts or [])),
+                make_observed_pmt_figure(d, int(slice_id)),
+            )
+    else:
+        @callback(
+            Output('fig-3d', 'figure'),
+            Output('fig-pmt-obs', 'figure'),
+            Output('fig-pmt-pred', 'figure'),
+            Input('slice-dd', 'value'),
+            Input('show-ghosts', 'value'),
+        )
+        def update(slice_id, show_ghosts):
+            sid = int(slice_id)
+            obs_pe, _, _ = get_observed_pe_and_title(d, sid)
+            pred_pe, _, _, _ = predict_slice_flash(
+                d, sid, pl, gamma_by_producer, args.v_drift_cm_per_us,
+            )
+            shared = shared_log_cmax(obs_pe, pred_pe)
+            return (
+                make_3d_figure(d, sid,
+                               show_ghosts='show' in (show_ghosts or [])),
+                make_observed_pmt_figure(d, sid, shared_cmax_log=shared),
+                make_predicted_pmt_figure(d, sid, pl, gamma_by_producer,
+                                          args.v_drift_cm_per_us,
+                                          shared_cmax_log=shared),
+            )
 
     print(f"Open http://localhost:{args.port} in your browser")
     app.run(debug=False, port=args.port, host='0.0.0.0')

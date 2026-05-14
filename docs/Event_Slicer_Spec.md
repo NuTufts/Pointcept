@@ -332,6 +332,114 @@ plus the matched flash's PE pattern on a 2D y-z PMT map.
   ported into Python; the C++ class is not on the critical path for the
   event-slicer training and can be left as-is for now.
 
+## Charge-to-flash predictor
+
+The MicroBooNE photon library is a Geant4-simulated lookup: for each of
+75×75×400 = 2.25M cryostat voxels, the fraction of isotropically-emitted
+photons reaching each of the 32 OpDets is tabulated. The source ROOT TTree
+has 33.6M (Voxel, OpChannel, Visibility) sparse entries; we densify once
+and consume it as a `(75, 75, 400, 32) float32` tensor on the GPU (288 MB).
+
+Forward pass for a single cluster of M spacepoints at TPC positions
+`r_i ∈ R^3` with per-spacepoint charge `q_i`:
+
+```
+n_emitted_i = γ · q_i                          # γ = photons / charge
+g_i         = (r_i - cryo_origin_tpc) / voxel_len_cm    # continuous voxel coords
+vis_i       = trilinear_interp(LUT, g_i)       # (32,) per spacepoint, fraction
+PE_j        = Σ_i  n_emitted_i · vis_i[j]      # (32,) predicted flash
+```
+
+Drift correction (per candidate flash with t0 = `t_flash` μs vs trigger):
+
+```
+x_true = x_apparent - v_drift · t_flash
+```
+
+For a `(cluster, flash)` cost matrix at training time, the same forward pass
+runs once per pair, each pair shifting that cluster's spacepoints by the
+flash-specific `dx`.
+
+**Inputs the caller is responsible for:**
+
+- **Charge selection** — `q_i` comes from `triplet_data/pixval`. Y plane
+  (`pixval[:, 2]`) is the most reliable calorimetric proxy; when Y is zero
+  (dead channel / non-readout pixel), fall back to `0.5 · (U + V)`.
+  Implemented as `select_charge_y_with_uv_fallback(pixval)` in the same
+  module.
+- **γ (photons-per-charge factor)** — a fixed scalar to be calibrated
+  empirically over a large set of (slice, matched flash) pairs by minimizing
+  ΣPE residuals. On the canonical example's nu slice, γ ≈ 1.6 photons/ADC
+  reproduces ΣPE; we'll redo this over a real sample.
+- **PMT quantum efficiency** — the LUT visibility is purely geometric /
+  scattering. QE is absorbed into γ (the predicted "PE" is really
+  γ · charge · vis, with γ tuned so that quantity matches observed PE).
+
+**Implementation files:**
+
+- [`Pointcept/lartpc_data_prep/build_photonlib_cache.py`](../lartpc_data_prep/build_photonlib_cache.py)
+  — one-time converter: reads the ROOT TTree via PyROOT's `RDataFrame`,
+  densifies, saves
+  `Pointcept/lartpc_data_prep/dat/photonlib_v6_70kV.npz` with grid metadata.
+- [`Pointcept/pointcept/models/event_slicer/photonlib.py`](../pointcept/models/event_slicer/photonlib.py)
+  — `PhotonLibLookup` torch module + the Y-with-UV-fallback helper.
+  Buffers (`vis_table`, `cryo_origin_tpc`, `voxel_len_cm`, `nvoxels_dim`) are
+  registered so `.to(device)` / `.half()` Just Work.
+- [`Pointcept/lartpc_data_prep/test_photonlib_torch.py`](../lartpc_data_prep/test_photonlib_torch.py)
+  — three sanity tests:
+  1. **Trilinear parity vs C++ UBPhotonLib**: 300 random TPC points × 32
+     OpDets = 9600 comparisons, **100% match** at machine precision
+     (max abs err 5.22 × 10⁻⁸).
+  2. **Nu slice prediction**: for the canonical entry-0 nu slice (3373
+     spacepoints), drift-corrected predicted PE has **cosine similarity
+     0.979** with the observed beam flash, top-OpDet ratios all 0.7–1.3.
+  3. **Throughput** (GPU): `predict_flash` ≈ 3.5 M points/sec; the
+     pair-wise variant `predict_flash_pairs` ≈ 2.8 ms/pair (Python-loop
+     bound, vectorizable if it becomes a bottleneck).
+
+**Module API summary:**
+
+```python
+pl = PhotonLibLookup("dat/photonlib_v6_70kV.npz",
+                     fp16=False, use_trilinear=True).cuda()
+# Single-cluster forward
+pe = pl.predict_flash(pos_xyz, q_emitted, cluster_id, n_clusters)
+# (cluster, flash) cost-matrix forward
+pe_pairs = pl.predict_flash_pairs(pos_xyz, q_emitted, cluster_id,
+                                  pair_cluster_idx, pair_flash_t0_us,
+                                  v_drift_cm_per_us=0.1098)
+```
+
+**Running the viewer with predictions:**
+[`tools/visualize_slice_flash_match.py`](../tools/visualize_slice_flash_match.py)
+accepts a `--photonlib-cache` flag which enables a third panel (right of
+the observed PMT view) showing the predicted PE pattern for the selected
+slice. Both panels share their `log10(PE+1)` color scale so the patterns
+are directly comparable, and the predicted panel's title shows the cosine
+similarity with the observed flash plus the γ that was applied. γ is
+per-producer: `--gamma-beam` is used when the matched flash is
+`simpleFlashBeam` (producer_id=0), `--gamma-cosmic` when it's
+`simpleFlashCosmic` (producer_id=1). `--gamma` is a default both fall back
+to. Drift correction uses the matched flash's `time_us`.
+
+```bash
+python tools/visualize_slice_flash_match.py \
+    --merged-h5    .../merged_..._entry000000.h5 \
+    --flashinfo-h5 .../flashinfo_..._entry000000.h5 \
+    --photonlib-cache lartpc_data_prep/dat/photonlib_v6_70kV.npz \
+    --gamma-beam 1.6 --gamma-cosmic 0.16
+```
+
+**Open follow-ups:**
+
+- See pre-implementation item #5 below for the γ + readout-window
+  calibration.
+- Vectorize `predict_flash_pairs` (process all pairs in one batched
+  voxelization + index_select) if the Python loop becomes a bottleneck.
+- The downstream loss objective (Sinkhorn / Hungarian assignment of slices
+  to flashes using the predicted PE vectors as the cost) is a separate
+  piece of work.
+
 ## Code flow
 
 ### Per-event data production (offline)
@@ -429,8 +537,49 @@ This will be important information needed for implementation of the data loader 
    first non-(-1)), and adding `start_t` to `MCPGNode` for slice↔flash
    matching.
 3. Compare the accuracy of the two deghoster options: LANTERN versus LoRA-adapted backbone.
-4. How do we efficiently calculate the flash match prediction from a cluster of voxels? 
-   The UB light model lookup table file is huge, but once on GPU memory can be decomposed into MatMul operations for fast calculation. Maybe we can get away with sampling look-up table sparsely, and interpolating -- again a fairly fast operation I think for a GPU. This is the hardest part of the problem.
+4. ~~How do we efficiently calculate the flash match prediction from a
+   cluster of voxels?~~ **v1 done 2026-05-14: GPU lookup-table predictor.**
+   The MicroBooNE photon library
+   (`ubdl/ublarcvapp/ublarcvapp/UBPhotonLib/dat/uboone_photon_library_v6_70kV_EnhancedExtraTPCVis.root`,
+   33.6M sparse entries) is densified once into a `(75, 75, 400, 32)` float32
+   tensor (288 MB on GPU) and queried via vectorized advanced indexing
+   (trilinear interpolation). See "Charge-to-flash predictor" section below.
+
+5. **Calibrate the predictor: per-producer γ + readout-window transfer
+   function.** The lookup-table predictor produces `PE_pred ∝ γ · Σ(q · vis)`
+   where γ is a free photons-per-ADC scalar. Two distinct effects mean γ is
+   not a single number across the dataset:
+   - **Per-producer γ.** The beam stream (`simpleFlashBeam`) and cosmic
+     stream (`simpleFlashCosmic`) use the same physical PMTs but different
+     electronics. The cosmic stream's readout is triggered (a waveform
+     sample is only kept once a pulse crosses threshold) and writes out a
+     fixed-length window that is shorter than the LAr scintillation late
+     component (τ ≈ 1 μs). So a fixed fraction of every cosmic flash's PE
+     is missing from the recording, and `γ_cosmic ≪ γ_beam`. Empirically
+     on the canonical example, `γ_beam ≈ 1.6` and `γ_cosmic ≈ 0.16` give
+     ΣPE matched to ~5% per slice (cosine ≈ 0.98). Need to fit both
+     constants over a real sample of (slice, matched flash) pairs.
+   - **Readout-window transfer function (cosmic only).** The fraction of
+     PE actually integrated by the cosmic-stream's fixed window probably
+     depends on the absolute pulse amplitude (saturation, threshold
+     timing, etc.). A scalar γ_cosmic captures the average but per-PMT
+     residuals will likely show an amplitude-dependent shape. Plan: fit
+     a per-OpDet (or pooled-across-OpDets) `PE_obs = f(PE_pred)` —
+     linear (`a + b·PE_pred`) first, polynomial / sigmoid-saturation if
+     residuals demand it — from a calibration sample of matched
+     (slice, cosmic-flash) pairs.
+
+   Calibration workflow (not yet implemented): scan a directory of paired
+   merged + flashinfo H5 files, run `predict_flash` for each non-null
+   matched slice, accumulate `(PE_pred[j], PE_obs[j])` separately for
+   beam and cosmic producers, then (a) least-squares fit a single γ per
+   producer, (b) least-squares fit `PE_obs = a + b·PE_pred` per OpDet for
+   the cosmic stream. Store the fitted constants alongside the photonlib
+   cache (e.g., `dat/photonlib_v6_70kV_calibration.npz`) so the predictor
+   module can load them automatically. Boundary-crossing slices
+   (`flashinfo/slice_flash_matches/crosses_image_boundary == 1`) should
+   be excluded from the fit — their predicted PE is missing the
+   out-of-image charge contribution.
 
 ## Example data
 
