@@ -220,6 +220,118 @@ primary_n_spacepoints (S,) int64
 slice_member_trackids list[list[int]]  the primaries collapsed into each slice
 ```
 
+## Flash auxiliary H5 schema
+
+Produced by
+[`prepare_flashinfo_h5.py`](../lartpc_data_prep/prepare_flashinfo_h5.py) from
+the source dlmerged ROOT file plus the paired merged H5. One file per entry,
+in a parallel hashed-dirs tree alongside the merged H5 (separate location so
+the flash side can be reprocessed without touching the merged data). All
+times in ns or μs as labeled; tick conversions use the same constants as
+`CrossingPointsAnaMethods::getTrueTick(...)`:
+
+```
+true_tpc_tick = TRIGGER_TICK + t_ns / NS_PER_TICK
+flash_tpc_tick = TRIGGER_TICK + time_us / USEC_PER_TICK
+```
+
+with `TRIGGER_TICK=3200`, `USEC_PER_TICK=0.5`. (Note: the C++ source passes
+`trig_time=4050.0` as a calibration knob, but for MicroBooNE that value zeros
+out the subtractive offset, so the effective formula is just the two lines
+above. Empirically verified on the canonical example: nu vertex → beam flash
+matches at `Δtick = 0.19`.)
+
+```
+entry_0/                                    attrs:
+                                              run, subrun, event,
+                                              dtick_threshold,
+                                              trigger_offset_ns (=4050, label only),
+                                              usec_per_tick, trigger_tick,
+                                              drift_velocity_cm_per_us,
+                                              image_tick_min, image_tick_max,
+                                              n_pmts (=32)
+├── flashes/                                 length F (beam + cosmic, sorted by stream)
+│   ├── pe                  (F, 32) float32   per-PMT photoelectrons (raw), remapped
+│   │                                          onto physical PMT index. See note below.
+│   ├── total_pe            (F,)    float32
+│   ├── time_us             (F,)    float32   relative to TPC trigger (tick 3200)
+│   ├── tpc_tick            (F,)    float32   = time_us/0.5 + 3200
+│   ├── producer_id         (F,)    int32     0=simpleFlashBeam, 1=simpleFlashCosmic
+│   ├── flash_index         (F,)    int32     index within producer stream
+│   ├── y_center, z_center  (F,)    float32   from larlite::opflash::YCenter/ZCenter
+│   ├── matched_slice_id    (F,)    int64     -1 if no slice within threshold
+│   └── match_dtick         (F,)    float32   |Δtick| for the recorded slice match
+├── pmt_positions           (32, 3) float32   from larutil::Geometry::GetOpDetPosition
+├── mc_particle_start_times/                  parallel to merged H5 mc_particle_tree/trackid
+│   ├── trackid             (M,)    int32     parallel-aligned to mc_particle_tree
+│   ├── start_t_ns          (M,)    float64   from MCTrack/MCShower Start().T()
+│   ├── start_tpc_tick_nodrift (M,) float32
+│   └── source              (M,)    int8      0=mctrack, 1=mcshower, -1=Geant4 secondary
+└── slice_flash_matches/                      one row per slice (S = n_slices)
+    ├── slice_id            (S,)    int64
+    ├── primary_origin      (S,)    int32     1=nu, 2=cosmic
+    ├── primary_tpc_tick    (S,)    float32   lead primary's true tick
+    ├── matched_flash_idx   (S,)    int32     -1 if no match within dtick_threshold
+    ├── match_dtick         (S,)    float32
+    ├── is_null_flash       (S,)    int8      1 = slice with charge but no matched flash
+    ├── crosses_image_boundary (S,) int8      1 = primary trajectory leaves
+    │                                          [image_tick_min, image_tick_max];
+    │                                          downstream loss should down-weight
+    │                                          (light is real but charge is incomplete)
+    └── total_pe_matched    (S,)    float32   convenience: flashes/total_pe[matched_flash_idx]
+```
+
+**PMT channel remap** — MicroBooNE has two readout electronics chains on the
+same 32 physical PMTs, with different trigger windows. larlite's
+`opflash::PE(k)` indexes into a 336-long channel array where the beam stream
+puts its 32 PMTs on OpChannels `[0, 31]` and the cosmic stream on OpChannels
+`[200, 231]`. **OpChannel != OpDet:** the channel↔opdet mapping is a
+non-trivial permutation (e.g., OpChannel 0 → OpDet 3, ch 4 → OpDet 0, …).
+`Geometry::GetOpDetPosition(i)` is indexed by **OpDet**. The script reads
+`OpDetFromOpChannel(ch)` once per entry, then assigns
+`pe[opdet] = opflash::PE(ch)` so that `flashes/pe[i]` and
+`pmt_positions[i]` always refer to the **same physical PMT (OpDet i)**.
+Verified on the canonical example: the brightest cosmic slice's spacepoints
+sit in y∈[35,100], z∈[63,136], and its matched flash's brightest PMT
+(OpDet 29) is at (y=55, z=88) — geometric proximity matches the brightness
+gradient. (Two earlier passes failed this check: first pass had
+`total_pe=0` for every cosmic flash because [0, 31] was empty for them;
+second pass had non-zero PE but wrong indexing because beam-channel-k and
+position-opdet-k are not the same physical PMT.)
+
+**Matching algorithm** (single-pass, greedy, mirrors FlashMatcherV2 logic):
+for each slice, find the flash with smallest `|tick_flash − tick_primary_lead|`.
+If `≤ dtick_threshold` (default 3 ticks = 1.5 μs, stored as an entry attr),
+record it. Slices with no matched flash get `matched_flash_idx=-1,
+is_null_flash=1`. A flash can be the best match for multiple slices; the
+reverse table `flashes/matched_slice_id` keeps the closest one.
+
+**Image-boundary tagging** (`crosses_image_boundary`): per slice, walk every
+member trackid's mctrack/mcshower trajectory. If any step's reco tick lies
+outside `[2400, 8448]`, flag the slice. Per user note: these slices have
+*light from real charge, but the charge is incomplete in the image*, so the
+loss should down-weight rather than drop them.
+
+**Visualization:**
+[`Pointcept/tools/visualize_slice_flash_match.py`](../tools/visualize_slice_flash_match.py)
+takes a paired merged H5 + flashinfo H5, exposes a dropdown of all slices
+(each labeled with origin, PID, point count, matched flash, ΣPE, and a
+boundary-crossing tag), and shows the selected slice's spacepoints in 3D
+plus the matched flash's PE pattern on a 2D y-z PMT map.
+
+**Open follow-ups:**
+- The `mc_particle_tree` group in the merged H5 still drops the t component
+  of `MCPGNode.start`. A TODO comment is in place at
+  [`SimChTripletLabelMaker.cxx:1081`](../../ubdl/larflow/larflow/PrepFlowMatchData/SimChTripletLabelMaker.cxx#L1081)
+  to add `mc_particle_tree/start_t_ns` next time the merged H5 is
+  reprocessed. Once that lands, the flash-prep script will no longer need to
+  open the ROOT file just to read the time.
+- The single-entry script needs a batch wrapper that iterates a dlmerged
+  ROOT and writes the parallel hashed-dirs tree.
+- `FlashMatcherV2` (C++) still uses `MCPixelPGraph`. Its logic is now
+  ported into Python; the C++ class is not on the critical path for the
+  event-slicer training and can be left as-is for now.
+
 ## Code flow
 
 ### Per-event data production (offline)
@@ -250,10 +362,23 @@ one merged_*_entry*.h5 per (file, entry)
 pipeline) re-merges reco fragments with these truth labels — it preserves
 `mc_particle_tree` so the slice walker works on its output too.
 
-Note that **flashes are not currently propagated into the H5**. They live in
-the source ROOT file's `opdigit_simpleFlashBeam` and friends (see
-[`Pointcept/tools/dump_flash_info.py`](../tools/dump_flash_info.py) for the
-access pattern) and need their own data-prep step — item #1 in the plan below.
+Flash side (auxiliary, paired by entry):
+
+```
+dlmerged_*.root  +  merged_<basename>_entry<NNNN>.h5
+  │                                  │
+  ▼                                  │
+prepare_flashinfo_h5.py              │
+  │   read simpleFlashBeam + simpleFlashCosmic from larlite::event_opflash
+  │   read MCTrack/MCShower Start().T() for all trackids
+  │   pull mc_particle_tree + triplet_data from paired merged H5
+  │   compute_slice_labels → primary trackid per slice
+  │   greedy match slices ↔ flashes by |Δtick| ≤ dtick_threshold (3 ticks)
+  │   tag slices whose member trajectories leave the image tick window
+  │
+  ▼
+flashinfo_<basename>_entry<NNNN>.h5  (parallel directory tree)
+```
 
 ### At training / visualization time
 
@@ -282,10 +407,15 @@ We want to establish the computation pipeline and input data formats for the eve
 
 This will be important information needed for implementation of the data loader and the model pipeline.
 
-1. Flash information data prep pipeline and integration of the data loader.
-   - Do we process the input files to make separate h5 files for the flash information 
-   and load it in the data loader during training?  
-   - Or do we make a special processing pipeline that appends the flash information to the training file h5 files?
+1. ~~Flash information data prep pipeline~~ **Resolved 2026-05-14 (v1).**
+   Separate auxiliary H5 files paired by entry, in a parallel directory tree:
+   `flashinfo_<basename>_entry<NNNN>.h5` ↔ `merged_<basename>_entry<NNNN>.h5`.
+   Each aux file holds the per-entry flashes, MC particle start times (read
+   from larlite MCTrack/MCShower since `mc_particle_tree` doesn't carry the
+   time component), and a greedy slice↔flash match table. Producer:
+   [`Pointcept/lartpc_data_prep/prepare_flashinfo_h5.py`](../lartpc_data_prep/prepare_flashinfo_h5.py)
+   (single-entry interactive script; batch driver is a follow-up). See the
+   "Flash auxiliary H5 schema" section below.
 2. ~~What is the status of the ground truth slice information for the spacepoints?~~ **Resolved
    2026-05-13.** A slice ID is *not* stored in the H5 directly, but the
    `mc_particle_tree` group lets us derive one cheaply: walk
