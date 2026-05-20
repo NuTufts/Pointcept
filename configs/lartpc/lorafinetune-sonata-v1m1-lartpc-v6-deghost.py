@@ -50,15 +50,16 @@ mix_prob         = 0.0
 empty_cache      = False
 enable_amp       = False
 enable_wandb     = True
-wandb_project    = "pointcept"
-save_path        = "sonata/lora_deghost_v6_hasmatch_10"
-epoch            = 10
-eval_epoch       = 1
+wandb_project    = "pointcept-lora-deghost"
+save_path        = "sonata/lora_deghost_v6_hasmatch"
+epoch            = 50
+eval_epoch       = 50
 base_lr          = 5e-4
 lora_lr          = 2e-4
 head_lr          = base_lr
 
-flash_backend = 'xformers'
+#flash_backend = 'xformers'
+flash_backend = 'flash_attn'
 amp_dtype     = "float16"
 
 # Grid size and coordinate normalization
@@ -80,7 +81,7 @@ biased_spherecrop_radius = 20.0
 TRAIN_FILE_LIST = "/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept/lartpc_data_prep/hdflist_combined_prod4_validated_shuffled_trainsplit.txt"
 VAL_FILE_LIST   = "/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept/lartpc_data_prep/hdflist_combined_prod4_validated_shuffled_valsplit.txt"
 
-pretrain_model_path = "sonata/lartpc_v6_h200_noghosts_pretrain_logspace_resume/model/epoch_42.pth"
+pretrain_model_path = "/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept/sonata/lartpc_v6_h200_noghosts_pretrain_logspace_resume/model/epoch_42.pth"
 
 # ============================================================================
 # Model
