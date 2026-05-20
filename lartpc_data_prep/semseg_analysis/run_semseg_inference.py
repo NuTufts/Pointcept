@@ -112,8 +112,11 @@ def read_event(h5_path: str, *, skip_ghosts: bool = True) -> dict:
         ssnet_label = td["ssnet_label"][:].astype(np.int32)
 
         pixval = td["pixval"][:].astype(np.float32)  # (N, 3)
-        strength = (np.clip(pixval, a_min=0, a_max=1000.0) / 1.0).astype(np.float32)
-        strength += 0.001  # add_min_pixval to avoid log(0)
+        # Match the training-era LArTPCDataset (vdasil01's lartpc.py with
+        # log_transform_edep=True): strength = pixval / 500. Without this
+        # rescaling the LogTransform downstream maps inputs to a different
+        # range than what the model was trained on, and predictions collapse.
+        strength = (pixval / 500.0).astype(np.float32)
 
         wire_feat = np.stack([
             td["uwire"][:], td["vwire"][:], td["ywire"][:],

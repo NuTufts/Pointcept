@@ -167,6 +167,7 @@ data = dict(
         true_points_only=True,
         drop_cosmics=True,
         drop_cosmics_prob=0.9,
+        adc_scale=500.0,
         transform=[
             dict(
                 type="BiasedSphereCrop",
@@ -271,6 +272,7 @@ data = dict(
         coord_scale=1.0,
         drop_cosmics=True,
         drop_cosmics_prob=0.9,
+        adc_scale=500.0,
         transform=[
             dict(
                 type="BiasedSphereCrop",
@@ -324,6 +326,7 @@ data = dict(
         coord_scale=1.0,
         drop_cosmics=True,
         drop_cosmics_prob=0.9,
+        adc_scale=500.0,
         transform=[],
         test_mode=True,
         test_cfg=dict(

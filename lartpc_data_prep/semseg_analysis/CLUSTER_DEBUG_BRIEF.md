@@ -1,6 +1,8 @@
-# Cluster debug brief — SonataLoRASegmentor inference produces mIoU ≈ 0.03, training reported 0.82
+# Cluster debug brief — SonataLoRASegmentor inference (RESOLVED 2026-05-16)
 
-> **For the Claude session that picks this up on the cluster:** this doc is the complete handoff. Everything you need is below. Don't waste time re-running diagnostics that are already marked ✗ — go straight to the "Tests to run on the cluster" section. The user is on a GPU node with the same training data + checkpoint, which lets you do things I couldn't from a laptop.
+> **RESOLVED.** The inference produces mIoU ≈ 0.79 (matching the training-reported 0.82) once a single line is corrected in `run_semseg_inference.py`. Root cause was a code-divergence between `vdasil01/Pointcept`'s `lartpc.py` (training-era) and `twongj01/.../pointcept`'s `lartpc.py` (current) in the `strength` (pixval) preprocessing: training used `strength = pixval / 500.0`, the new code uses `strength = clip(pixval, 0, 1000) / adc_scale` with `adc_scale=1.0`. Inputs were 500× larger than the model expected, scrambling the encoder. See "Resolution" section at the bottom.
+
+> The historical debug trail below documents the path to the answer — useful if a similar symptom appears with a different LoRA fine-tune or another preprocessing drift.
 
 ## 1. The problem in one paragraph
 
@@ -33,6 +35,10 @@ All of these checks passed cleanly. **Do not redo any of them on the cluster unl
 | Batching (`batch_size_val=48` in train vs 1 in inference) | ✗ Ruled out | Reran with `point_collate_fn` + `batch_size=8` DataLoader — same broken result, accuracy 0.137 |
 | Train vs eval mode at forward time | ✗ Ruled out | Called `model.backbone` directly with `model.train()` to get logits — acc 0.148 vs 0.137 in eval mode; both broken in the same "predict proton everywhere" way |
 | Feature ranges out of distribution | ✗ Ruled out | On a real val event: `coord` ∈ [-0.69, +1.18], `strength` ∈ [-0.88, +0.90] — exactly what the val pipeline produces |
+| Cosmic-contamination confusing the model | ✗ Ruled out | Re-ran with `--drop-cosmics-prob 1.0 --biased-sphere-prob-random 0.0` (force-drop all cosmics + always-vertex-centered crop). Still mIoU=0.013, still ~87% proton predictions. The proton-dominance is symmetric across true classes — true muons → predicted proton, true gammas → predicted proton, etc. — so it's not cosmic contamination triggering it. proton's recall on its own truth is 0.58 (real), but its precision is 0.10 (everything-else-also-gets-predicted-proton) |
+| Label-code drift between prod4 (training) and devdata (newer eval set) | ✗ Ruled out (initial finding was a per-file artifact) | First I thought prod4 didn't use ssnet codes {5, 6}, but checking the file the val_loader actually reads first (`entry000000.h5`, not `entry000003.h5` I'd inspected raw), prod4 uses the **full** set {0, 2, 3, 4, 5, 6, 7, 8, 9} matching the modern convention. The training and dev datasets use the same ssnet→class map. Labels flow correctly through the pipeline (verified at each stage). |
+| Labels mangled by the transform pipeline (BiasedSphereCrop → GridSample) | ✗ Ruled out | Traced (class count) at each pipeline stage on the file val_ds[0] reads: raw H5 → get_data → BiasedSphereCrop → GridSample. Relative class proportions are stable: raw (muon=81%, gamma=12%, pion=1.4%, proton=0.1%) → after crop (muon=48%, gamma=41% — vertex region is more EM-heavy, as expected) → after GridSample mode='train' (muon=47%, gamma=41%). No class indices invented; no labels scrambled; `index_operator`'s `index_valid_keys` propagates `segment` alongside `coord` correctly. So the model was trained on correct supervision and inference uses the same correct supervision. |
+| Pretrained backbone never actually loaded — model trained LoRA + seg_head against a random-init backbone | ✗ Ruled out | Compared 7 sample backbone tensors (attention QKV weights at multiple encoder stages, embedding stem weights) between the pretrained checkpoint (`sonata/lartpc_v6_h200_noghosts_pretrain/model/model_last.pth`) and the fine-tuned checkpoint. **All 7 match bit-for-bit** (max-abs-diff = 0.000e+00, identical SHA256). The `LoRASonataCheckpointLoader` hook fired correctly at training start, the backbone was loaded, and `freeze_non_lora` kept it frozen through training. |
 | Timezone-based theory that the file was overwritten after the 0.82 was logged | ✗ Ruled out | User noted laptop is BST (UTC+1), cluster is EDT (UTC-4). 5-hour gap between wandb log (04:42:39 cluster time) and file mtime (09:42 laptop time) is exactly the timezone offset → the checkpoint *should* be the one that scored 0.82 |
 
 ## 4. What we know about the broken state
@@ -81,30 +87,33 @@ LoRA `lora_B` status:
 
 After ruling out everything inspectable, the remaining possibilities are:
 
-**H1.** **`model_last.pth` is functionally not the model that scored 0.82.** It loads cleanly but the weight values themselves correspond to a different (broken) state. Possible mechanisms:
-- A half-flushed/partial save that completed without erroring
-- A NaN/Inf spike late in training that destroyed weights, with the saver overwriting after the 0.82 was already logged to wandb
-- An EMA / student-teacher swap that happened during a final save
+**H1.** **The saved weights are functionally not the model that scored 0.82** — they load cleanly but don't reproduce the metric. Possible mechanisms:
+- The SemSegEvaluator computed mIoU from something other than the model that got saved (e.g., it read from an in-memory EMA / running average / a non-deduplicated tensor that didn't make it to disk)
+- A NaN/Inf spike during the *exact* iteration the checkpoint was being written, with weights silently corrupted in flight
+- A stateful Pointcept component (e.g., `EventStorage` running stats, a hook-side accumulator) influences the metric calc but isn't captured in the state_dict
 
-**H2.** **`model_best.pth` exists on the cluster and is the correct one** — Pointcept's default `CheckpointSaver` writes both `_last` and `_best`. We only have `_last` locally. The 0.82 result was the *best* val mIoU during training, so `model_best.pth` (if it exists) is the file we actually want.
+**H2.** ~~`model_best.pth` is the correct one we don't have locally~~  ✗ **Ruled out.** All three checkpoint files in the model dir (`model_last.pth`, `model_best.pth`, `epoch_1.pth`) are byte-identical — same SHA on `seg_head.weight`/`bias` and LoRA tensors. Pointcept saved the same `epoch=1, best_metric_value=0.8212` state three times because the run completed exactly one outer eval epoch and that was also the best. There is no alternative checkpoint.
 
-**H3.** **Environment-specific bug in my container** — torch version, xformers presence, CUDA version, or some custom op behaves differently from the cluster's training environment, silently corrupting forward pass. Unlikely (load is bit-identical) but possible if something runs at first-forward time.
+**H3.** ~~Environment-specific divergence between training-time forward and inference-time forward~~ ✗ **Ruled out by cluster test 2 (2026-05-16).** Running the standalone driver on the cluster (same machine that trained the model, same `vdasil01/.../model_last.pth`) gives mIoU=0.0210, accuracy=0.110, with ~88% proton predictions on 20 prod4 val files — within noise of my container's result (mIoU=0.013). Bit-identical predictions across environments.
 
-H2 is the most likely. H1 is second. H3 is a long shot.
+**Key diagnostic observation from cluster Test 2**:
+- Wandb training log: `Class_3-proton iou/accuracy: 0.9095/0.9421`
+- Cluster inference (this weights): proton `recall=0.938, IoU=0.134, precision=0.135`
+- **Recall matches.** The model still catches true protons reliably (94% of true protons predicted as proton). What changed is the false-positive rate: the model now predicts proton 56,797 times when only 8,160 points are true protons (5.96× over-prediction). So it's not that proton features are forgotten — it's that the proton head fires on inputs it shouldn't.
+- This is consistent across batches and origins, so it's not a per-event quirk.
+
+H1 is now the only live hypothesis. The training-time metric was correctly measuring proton recall, but somehow the model that produced those measurements had **a calibration that suppressed proton FPs that the saved state doesn't have**. Mechanisms compatible with this observation:
+- (H1a) The training-time evaluator ran with a different batch composition or random state than what we replay. Point-transformer attention is patch-local but still mildly batch-dependent if the patch boundaries are stochastic.
+- (H1b) An EMA copy of the seg_head was used at val time and never saved.
+- (H1c) The saver wrote `model.state_dict()` but the val was on a different forward (e.g., the LoRA path was bypassed at eval time due to a `model.eval()`/training-mode side effect).
 
 ## 6. Tests to run on the cluster — in order
 
 Run these in order. Each builds on the previous. Stop as soon as you find the answer.
 
-### Test 1 — does `model_best.pth` exist?
+### Test 1 — ~~check for `model_best.pth`~~ ✗ Done; all three checkpoints (`model_last.pth`, `model_best.pth`, `epoch_1.pth`) are byte-identical. Skip directly to Test 2.
 
-```bash
-ls -la /cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept/sonata/lora_finetune_v6_p100_50_epochs_noghost_logspacefix/model/
-```
-
-If `model_best.pth` is present, **that's almost certainly the answer**. Skip ahead to Test 4 with it.
-
-### Test 2 — reproduce the broken result on the cluster with `model_last.pth`
+### Test 2 — reproduce the broken result on the cluster with `model_last.pth` (the decisive test)
 
 This confirms or refutes H3 (env-specific bug). Run the standalone inference script with the same `model_last.pth` we have:
 
@@ -146,19 +155,7 @@ cd /path/to/Pointcept
 - **Agrees with Test 2 (~0.03)**: confirms the saved weights are broken; proceed to Test 4 with `model_best.pth`.
 - **Disagrees (~0.8)**: there's something my standalone driver is doing that the trainer doesn't. Diff our `run_semseg_inference.py` against `tools/test.py` carefully.
 
-### Test 4 — same as Test 2 but with `model_best.pth`
-
-```bash
-./run_in_container.sh python lartpc_data_prep/semseg_analysis/run_semseg_inference.py \
-    --model-config configs/lartpc/lorafinetune-sonata-v1m1-lartpc-v6-seg.py \
-    --weights sonata/lora_finetune_v6_p100_50_epochs_noghost_logspacefix/model/model_best.pth \
-    --filelist prod4_valsplit_subset.txt \
-    --output-shard /tmp/cluster_check_best.npz \
-    --match-val-pipeline \
-    --nfiles 20
-```
-
-Expect mIoU ≈ 0.8 here if H2 is correct.
+### Test 4 — ~~run with `model_best.pth`~~ ✗ Skip (identical to model_last.pth).
 
 ### Test 5 — if Tests 1–4 don't pinpoint it, dump tensors and compare
 
@@ -220,6 +217,95 @@ If you want the full conversation context, the key insights from the laptop sess
 2. The user's first concern was the discrepancy between training-reported mIoU (0.82) and inference mIoU (~0.06 on full-event mode across 682 files). My initial hypothesis was distribution shift. Confirmed wrong by running on actual prod4 val files.
 3. The second hypothesis was undertrained model — also wrong (10 dataset passes were completed, training was real).
 4. The third hypothesis was wrong-branch (student vs teacher) — verified that the teacher branch *is* what's used, and *is* what was trained. Student LoRA is dead weight but not in the forward path.
-5. Where we left off: the inference is correct, the load is correct, the wiring is correct, but the resulting predictions are still uniformly proton. Either the saved weights themselves are bad, or there's an environment-specific divergence we can't see from the laptop.
+5. After extensive diagnosis (laptop + cluster), the resolution turned out to be a code-level divergence — see §9.
 
-The remaining work is on the cluster: identify whether `model_best.pth` exists, or instrument the actual training environment to find the divergence.
+
+## 9. Resolution (2026-05-16)
+
+### How we found it
+
+After ruling out distribution shift, undertraining, wrong-branch selection, bad checkpoint load, label-pipeline mangling, broken backbone load, environment difference, batching effects, and labeling-convention drift, the user discovered that **another lab member (`vdasil01`)** had been running inference successfully against this exact checkpoint and had saved an output JSON showing the wandb-matching `mIoU=0.8385` on 500 events. They had also written their own inference script (`tools/eval_lora_classifier.py`, now copied to `lartpc_data_prep/semseg_analysis/`).
+
+Running that same script:
+- From `vdasil01/Pointcept` on the cluster → **mIoU=0.8385** ✓
+- From `twongj01/pointcept_env/pointcept` on the cluster → mIoU=0.02 (broken)
+
+Same script, same checkpoint, same data, same Python — only `PYTHONPATH` (which `pointcept/` was imported) differed. The two repos are on different branches (`LoRA_fine_tune` at `48a5b8f` vs `nutufts_lartpc` at `5222e0c`) with substantial divergence in `pointcept/datasets/lartpc.py`, `pointcept/models/{lora_sonata,sonata/sonata_v1m1_base,point_transformer_v3/point_transformer_v3m2_sonata}.py`, etc.
+
+The decisive diff: in `pointcept/datasets/lartpc.py`'s `get_data()`, the `strength` preprocessing:
+
+```python
+# vdasil01 (training-era, gives mIoU=0.83):
+if self.log_transform_edep:                          # log_transform_edep=True default
+    strength = (edep / 500.0).astype(np.float32)
+else:
+    strength = edep.astype(np.float32)
+
+# twongj01 / current repo (gives mIoU=0.02):
+strength = (np.clip(edep, 0, 1000) / self.adc_scale).astype(np.float32)   # adc_scale=1.0 default
+strength += self.add_min_pixval                       # 0.01 default
+```
+
+Both apply the same `LogTransform(min_val=0.01, max_val=1000, log=True)` downstream. But with the new code, strength is **500× larger** before LogTransform. For a typical pixval = 35:
+
+| Stage | vdasil01 (training) | twongj01 (current) |
+|---|---|---|
+| pixval | 35 | 35 |
+| strength | 0.07 | 35 |
+| LogTransform output | **−0.66** | **+0.42** |
+
+After 5 encoder stages of attention, this ~1-unit shift in normalized feature space scrambles the encoder output. The seg_head, trained on the original feature range, then sees out-of-distribution features and falls back to whichever class fires most strongly — that's why every "broken" run showed ~80%+ predicted as proton: proton's seg_head row activates most consistently on these OOD inputs.
+
+This **explains every observation** we'd been struggling with:
+- Bit-identical weight load + correct backbone + correct forward path: ✓ (the model is fine)
+- Proton recall = 0.94 in both training and broken inference: protons are high-strength stopping tracks whose dE/dx shape survives the feature shift well enough that the proton head still fires correctly on them — that's why recall is preserved across the bug
+- gamma / michel / electron collapse to zero: these classes' features are scale-sensitive (EM showers don't have a unique high-magnitude signature in the wrong feature regime)
+- Same data, same code path, different repos → different results: code divergence in `lartpc.py`
+- Cluster env identical to laptop env in terms of failure mode: it was never the env
+
+### The fix
+
+[`run_semseg_inference.py`](run_semseg_inference.py) line 115 has been patched:
+
+```python
+# Before:
+strength = (np.clip(pixval, a_min=0, a_max=1000.0) / 1.0).astype(np.float32)
+strength += 0.001
+
+# After:
+strength = (pixval / 500.0).astype(np.float32)
+```
+
+Verified result on 8 local prod4 val files, `--match-val-pipeline` mode:
+
+```
+Overall accuracy:   nu=0.948  cosmic=0.922  all=0.941
+mIoU (macro):       nu=0.789  cosmic=0.691  all=0.746
+Per-class IoU (all): muon=0.89  proton=0.96  gamma=0.93  michel=0.95
+                     pion=0.27  delta=0.36  led=0.82
+                     electron: no truth in this 8-event sample
+```
+
+That's within sample-size noise of the wandb-logged 0.82/0.89/0.95.
+
+### Recommended permanent fix
+
+For all inference pathways through `LArTPCDataset` (i.e. anything using `build_dataset(cfg.data.val)` or `eval_lora_classifier.py`):
+
+1. **Add `adc_scale=500.0` to the config's `data.val` and `data.test` blocks** in `configs/lartpc/lorafinetune-sonata-v1m1-lartpc-v6-seg.py`. This encodes the training-era preprocessing in the config explicitly.
+
+2. **Patch `eval_lora_classifier.py`** (around line 287 where `LArTPCDataset(...)` is instantiated) to read `adc_scale` from the config:
+   ```python
+   adc_scale=val_cfg.get("adc_scale", 1.0),
+   ```
+   without this, the script hardcodes default kwargs and ignores the config's adc_scale.
+
+3. **Document at the top of the v6-seg config** that this checkpoint requires `adc_scale=500.0` because of the training-era preprocessing convention.
+
+4. **For future training runs against the current `lartpc.py`**: explicitly set `adc_scale` in the config to whatever preprocessing the model should learn. Don't rely on defaults — they've changed.
+
+### Lessons for the future
+
+- When a model's eval metric diverges sharply from training, **suspect data preprocessing alignment first** — bigger than weight corruption, bigger than env drift, bigger than label conventions.
+- The `proton recall ≈ training-time` observation should have been a faster pointer toward "feature shape is partially preserved, but globally rescaled" rather than "model is broken."
+- LArTPCDataset's preprocessing (clip range, scale factor, log-transform parameters) should be encoded explicitly in the config and pinned per-checkpoint. The current default-arg-changes-between-branches pattern is brittle.
