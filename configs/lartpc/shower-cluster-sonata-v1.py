@@ -221,6 +221,12 @@ model = dict(
     frag_pool_max_points=512,
     # Shared (3) → (D) pos-embedding MLP hidden width. None = token_dim (256).
     pos_emb_hidden_dim=None,
+    # Origin regression head. When False: per-layer origin MLP is not
+    # built, the dynamic pos_emb(prev_origin) feedback into query_pos is
+    # skipped, and loss_kwargs["weight_origin"] is forced to 0. Use this
+    # to ablate the origin objective (e.g. when downstream tasks only
+    # need clustering / class).
+    enable_origin_head=False,
     loss_kwargs=dict(
         weight_class=2.0,
         weight_mask=5.0,

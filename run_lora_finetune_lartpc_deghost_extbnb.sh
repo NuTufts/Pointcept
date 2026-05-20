@@ -13,15 +13,13 @@ export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 # be initialised from scratch (expected missing keys, logged at startup).
 # ----------------------------------------------------------------------------
 #
-WEIGHTS=/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept/sonata/lartpc_v6_h200_noghosts_pretrain_logspace_resume/model/epoch_42.pth
-#WEIGHTS=/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept/sonata/lartpc_v6_h200_noghosts_pretrain/model/model_last.pth
-#WEIGHTS=/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept/sonata/lartpc_v5_h200_noghosts/model/model_last.pth
+WEIGHTS=/cluster/tufts/wongjiradlab/twongj01/mphys/Pointcept/sonata/lartpc_v7_h200_extbnb_larmatch_run1/model/epoch_18.pth
 # ----------------------------------------------------------------------------
 # Full 10-epoch production run (6 GPUs, full batch size, WandB enabled).
 # Uncomment this block and comment out the test block below when ready.
 # ----------------------------------------------------------------------------
 python3 tools/train.py \
-    --config configs/lartpc/lorafinetune-sonata-v1m1-lartpc-v6-deghost.py \
+    --config configs/lartpc/lorafinetune-sonata-v1m1-lartpc-v6-deghost-extbnb-larmatch.py \
     --num-gpus 2 \
     --options weight=$WEIGHTS
 

@@ -37,7 +37,7 @@ echo "Sourcing config file: ${CONFIG_FILE}"
 source "${CONFIG_FILE}"
 
 module load apptainer/1.2.4-suid
-cvmfs_config probe uboone.opensciencegrid.org
+#cvmfs_config probe uboone.opensciencegrid.org
 
 WORKDIR_BASE=${WORKDIR_BASE:-/tmp}
 KEEP_INTERMEDIATES=${KEEP_INTERMEDIATES:-0}

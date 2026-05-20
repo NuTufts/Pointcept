@@ -68,7 +68,7 @@ amp_dtype = "bfloat16" # use this for default 'flash_attn' backend
 
 enable_wandb = True
 wandb_project = "pointcept"
-save_path = "sonata/lartpc_v7_h200_extbnb_larmatch_run1"
+save_path = "sonata/lartpc_v7_h200_extbnb_larmatch_lowerlr"
 
 TRAIN_FILE_LIST="/cluster/tufts/wongjiradlab/twongj01/mphys/Pointcept/lartpc_data_prep/extbnb_larmatch/hdlist_extbnb_larmatch_run3_g1_sonata_validated.txt"
 VAL_FILE_LIST="/cluster/tufts/wongjiradlab/twongj01/mphys/Pointcept/lartpc_data_prep/extbnb_larmatch/hdlist_extbnb_larmatch_run3_g1_sonata_validated.txt"
@@ -87,7 +87,7 @@ biased_spherecrop_radius=20.0
 # original run
 epoch = 50
 eval_epoch = 50
-base_lr = 0.002
+base_lr = 0.0002
 # extended run
 #epoch = 50
 #eval_epoch = 50

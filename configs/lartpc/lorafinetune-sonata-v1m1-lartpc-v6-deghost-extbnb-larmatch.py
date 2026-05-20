@@ -51,7 +51,7 @@ empty_cache      = False
 enable_amp       = False
 enable_wandb     = True
 wandb_project    = "pointcept-lora-deghost"
-save_path        = "sonata/lora_deghost_v6_hasmatch"
+save_path        = "sonata/lora_deghost_v6_hasmatch_extbnb_larmatch"
 epoch            = 50
 eval_epoch       = 50
 base_lr          = 5e-4
@@ -75,13 +75,13 @@ _strength_jitter_clip  = 0.05
 
 max_points_per_view      = 20480
 max_points_spherecrop    = 10240
-min_points_spherecrop    = 2048
+min_points_spherecrop    = 4096
 biased_spherecrop_radius = 20.0
 
 TRAIN_FILE_LIST = "/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept/lartpc_data_prep/hdflist_combined_prod4_validated_shuffled_trainsplit.txt"
 VAL_FILE_LIST   = "/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept/lartpc_data_prep/hdflist_combined_prod4_validated_shuffled_valsplit.txt"
 
-pretrain_model_path = "/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept/sonata/lartpc_v6_h200_noghosts_pretrain_logspace_resume/model/epoch_42.pth"
+pretrain_model_path = "/cluster/tufts/wongjiradlab/twongj01/mphys/Pointcept/sonata/lartpc_v7_h200_extbnb_larmatch_run1/model/epoch_18.pth"
 
 # ============================================================================
 # Model
@@ -115,7 +115,7 @@ model = dict(
             shuffle_orders=True,
             pre_norm=True,
             enable_rpe=False,
-            enable_flash=False,
+            enable_flash=True,
             flash_backend=flash_backend,
             upcast_attention=False,
             upcast_softmax=False,

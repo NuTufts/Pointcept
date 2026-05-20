@@ -54,8 +54,9 @@ REQ_MPT = ("trackid", "parent_trackid", "pid")  # only if mc_particle_tree prese
 
 class FileReport:
     __slots__ = ("path", "errors", "warnings", "static_ok", "functional_ok",
-                 "n_spacepoints", "n_fragments", "n_gt_instances",
-                 "elapsed_static", "elapsed_functional")
+                 "oversized", "n_spacepoints", "n_fragments",
+                 "n_gt_instances", "elapsed_static", "elapsed_functional",
+                 "n_hits_seen", "max_hits_cap")
 
     def __init__(self, path):
         self.path = path
@@ -63,9 +64,12 @@ class FileReport:
         self.warnings = []
         self.static_ok = False
         self.functional_ok = None  # None == not run
+        self.oversized = False
         self.n_spacepoints = None
         self.n_fragments = None
         self.n_gt_instances = None
+        self.n_hits_seen = None
+        self.max_hits_cap = None
         self.elapsed_static = 0.0
         self.elapsed_functional = 0.0
 
@@ -77,6 +81,11 @@ class FileReport:
 
     @property
     def ok(self):
+        # Oversized placeholders are intentional skips, not training-
+        # eligible files. They're reported in their own bucket and
+        # excluded from pass-list, but they're not treated as failures.
+        if self.oversized:
+            return False
         if not self.static_ok:
             return False
         if self.functional_ok is False:
@@ -130,6 +139,25 @@ def static_validate(path, report):
                 report.err("missing top-level group 'entry_0'")
                 return
             entry = f["entry_0"]
+
+            # ---- Oversized placeholder shortcut ----
+            # Step 2 writes these when an event's larmatch-hit count exceeds
+            # the --max-hits cap. They're schema-compatible but contain no
+            # data; report them in their own bucket so the user can drop
+            # them with --remove-oversized.
+            if int(entry.attrs.get("oversized", 0)) == 1:
+                report.oversized = True
+                report.n_hits_seen = int(entry.attrs.get("n_hits_seen", 0))
+                report.max_hits_cap = int(entry.attrs.get("max_hits_cap", 0))
+                report.n_spacepoints = 0
+                report.warnings.append(
+                    f"oversized placeholder: n_hits_seen={report.n_hits_seen} "
+                    f"> max_hits_cap={report.max_hits_cap}"
+                )
+                # Treat as a clean intentional skip: static_ok stays False
+                # (so .ok stays False and it's excluded from pass-list)
+                # but no error is recorded.
+                return
 
             # ---- triplet_data ----
             if "triplet_data" not in entry:
@@ -413,14 +441,21 @@ def discover_paths(args):
 # --- Reporting -----------------------------------------------------------
 
 def print_report(rep, verbose):
-    status = "PASS" if rep.ok else "FAIL"
+    if rep.oversized:
+        status = "SKIP"  # intentional skip from Step 2's max-hits cap
+    elif rep.ok:
+        status = "PASS"
+    else:
+        status = "FAIL"
     func_str = ""
     if rep.functional_ok is True:
         func_str = " func=ok"
     elif rep.functional_ok is False:
         func_str = " func=FAIL"
     extras = []
-    if rep.n_spacepoints is not None:
+    if rep.oversized:
+        extras.append(f"n_hits={rep.n_hits_seen}")
+    if rep.n_spacepoints is not None and not rep.oversized:
         extras.append(f"N={rep.n_spacepoints}")
     if rep.n_fragments is not None:
         extras.append(f"F={rep.n_fragments}")
@@ -428,7 +463,7 @@ def print_report(rep, verbose):
         extras.append(f"GT={rep.n_gt_instances}")
     extras_str = (" " + " ".join(extras)) if extras else ""
     print(f"[{status}]{func_str}{extras_str}  {rep.path}")
-    if verbose or not rep.ok:
+    if verbose or (not rep.ok and not rep.oversized):
         for w in rep.warnings:
             print(f"    WARN: {w}")
         for e in rep.errors:
@@ -470,6 +505,16 @@ def main():
                     help="Write passing file paths to this file, one per "
                          "line. Use this output as the data list for "
                          "training/validation splits.")
+    ap.add_argument("--remove-oversized", action="store_true",
+                    help="Delete files marked oversized (entry_0.attrs."
+                         "oversized=1, written by Step 2 when an event "
+                         "exceeded the --max-hits cap). These placeholders "
+                         "have no usable data; removing them simplifies "
+                         "downstream tooling that doesn't understand the "
+                         "attribute.")
+    ap.add_argument("--oversized-list", default=None,
+                    help="Write paths of oversized placeholder files to "
+                         "this file, one per line (useful for auditing).")
     args = ap.parse_args()
 
     paths = discover_paths(args)
@@ -497,16 +542,30 @@ def main():
     print(f"Validating {len(paths)} file(s) "
           f"[functional={args.functional}, lm_threshold={args.lm_threshold}]")
 
-    n_pass = n_fail = 0
+    n_pass = n_fail = n_skip = 0
+    n_removed = 0
     failures = []
     passes = []
+    oversized_paths = []
     t_start = time.perf_counter()
     for i, p in enumerate(paths):
         rep = FileReport(p)
         static_validate(p, rep)
         if args.functional and rep.static_ok:
             functional_validate(p, rep, lm_threshold=args.lm_threshold)
-        if rep.ok:
+
+        if rep.oversized:
+            n_skip += 1
+            oversized_paths.append(p)
+            if not args.quiet:
+                print_report(rep, args.verbose)
+            if args.remove_oversized:
+                try:
+                    os.remove(p)
+                    n_removed += 1
+                except OSError as e:
+                    print(f"    WARN: could not remove {p}: {e}")
+        elif rep.ok:
             n_pass += 1
             passes.append(p)
             if not args.quiet:
@@ -518,8 +577,10 @@ def main():
 
     elapsed = time.perf_counter() - t_start
     print()
-    print(f"Summary: {n_pass} PASS, {n_fail} FAIL, total {len(paths)} "
-          f"({elapsed:.1f}s)")
+    print(f"Summary: {n_pass} PASS, {n_fail} FAIL, {n_skip} SKIP "
+          f"(oversized), total {len(paths)} ({elapsed:.1f}s)")
+    if args.remove_oversized and n_skip:
+        print(f"  Removed {n_removed} of {n_skip} oversized placeholder files")
 
     if args.fail_list and failures:
         with open(args.fail_list, "w") as f:
@@ -531,6 +592,12 @@ def main():
             if passes:
                 f.write("\n".join(passes) + "\n")
         print(f"Wrote {len(passes)} passing paths to {args.pass_list}")
+
+    if args.oversized_list and oversized_paths:
+        with open(args.oversized_list, "w") as f:
+            f.write("\n".join(oversized_paths) + "\n")
+        print(f"Wrote {len(oversized_paths)} oversized paths to "
+              f"{args.oversized_list}")
 
     sys.exit(0 if n_fail == 0 else 1)
 
