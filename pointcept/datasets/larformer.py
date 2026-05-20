@@ -118,7 +118,9 @@ class LArFormerDataset(DefaultDataset):
         lm_score_aug_high=0.40,
         lm_score_val_threshold=0.15,
         min_fragment_points_post_filter=20,
-        log_transform_strength=True,
+        strength_clip_max=1000.0,
+        strength_log_min_val=0.01,
+        strength_log_max_val=1000.0,
         wire_scale=1.0 / 3456.0,
         gt_source="slice",
         emit_fragments=False,
@@ -131,7 +133,48 @@ class LArFormerDataset(DefaultDataset):
         test_cfg=None,
         cache=False,
         ignore_index=-1,
+        **deprecated_kwargs,
     ):
+        """
+        ...
+        Strength preprocessing (standardized — matches the Sonata-v1m1 v6
+        pretrain and the LoRA-deghoster fine-tuning pipelines exactly):
+
+            strength = LogTransform_v6(clip(pixval, 0, strength_clip_max))
+
+        which is, per pixval x ≥ 0:
+
+            strength = 2 · (log10(x + min_val) − log10(min_val))
+                         / (log10(max_val + min_val) − log10(min_val)) − 1
+
+        producing values normalized into [−1, +1]. This is the canonical
+        per-SP strength input that all v6-compatible backbones (Sonata
+        pretrain, LoRA-fine-tuned deghoster, …) were trained on.
+
+        Knobs (all default to the v6 settings):
+            strength_clip_max:   upper clamp on pixval (default 1000).
+                                  None disables the clamp.
+            strength_log_min_val: LogTransform min_val (default 0.01).
+            strength_log_max_val: LogTransform max_val (default 1000).
+        """
+        # Old log1p mode + the `log_transform_strength` boolean toggle have
+        # been removed. If a config still passes `log_transform_strength`,
+        # raise loudly so the user knows nothing silently changed semantics.
+        for legacy in ("log_transform_strength", "strength_transform"):
+            if legacy in deprecated_kwargs:
+                raise TypeError(
+                    f"LArFormerDataset no longer accepts `{legacy}`. The "
+                    f"strength transform is now fixed at the v6 "
+                    f"LogTransform (clip→log10→normalize to [-1,1]) to "
+                    f"match the Sonata-v1m1 pretrained backbone. Remove "
+                    f"the `{legacy}` kwarg from your config; tune via "
+                    f"`strength_clip_max`, `strength_log_{{min,max}}_val`."
+                )
+        if deprecated_kwargs:
+            raise TypeError(
+                f"LArFormerDataset got unexpected kwargs: "
+                f"{list(deprecated_kwargs.keys())}"
+            )
         if gt_source not in ("shower_trunk", "slice", "deghost", "particle"):
             raise ValueError(
                 f"gt_source must be one of "
@@ -157,7 +200,10 @@ class LArFormerDataset(DefaultDataset):
         self.lm_score_aug_high = float(lm_score_aug_high)
         self.lm_score_val_threshold = float(lm_score_val_threshold)
         self.min_fragment_points_post_filter = int(min_fragment_points_post_filter)
-        self.log_transform_strength = bool(log_transform_strength)
+        self.strength_clip_max = (float(strength_clip_max)
+                                  if strength_clip_max is not None else None)
+        self.strength_log_min_val = float(strength_log_min_val)
+        self.strength_log_max_val = float(strength_log_max_val)
         self.wire_scale = float(wire_scale)
         self.gt_source = gt_source
         self.emit_fragments = bool(emit_fragments)
@@ -267,8 +313,19 @@ class LArFormerDataset(DefaultDataset):
 
         lm_score = td["lm_score"][:].astype(np.float32)
         pixval = td["pixval"][:].astype(np.float32)
-        if self.log_transform_strength:
-            pixval = np.log1p(np.clip(pixval, 0.0, None))
+        # v6 strength preprocessing (standard, non-optional — must match the
+        # Sonata-v1m1 v6 pretrain / LoRA-deghoster pipeline).
+        #
+        # See pointcept.datasets.transform.LogTransform — this code
+        # reproduces it inline so the dataset's output `feat` column matches
+        # what the trained backbone weights were trained on, without
+        # requiring the caller to also assemble a `transform=[LogTransform]`
+        # pipeline.
+        pixval = np.clip(pixval, 0.0, self.strength_clip_max).astype(np.float32)
+        pixval = pixval + self.strength_log_min_val
+        log_min = np.log10(self.strength_log_min_val)
+        log_max = np.log10(self.strength_log_max_val + self.strength_log_min_val)
+        pixval = 2.0 * (np.log10(pixval) - log_min) / (log_max - log_min) - 1.0
         if all(k in td for k in ("uwire", "vwire", "ywire")):
             wire = np.stack([
                 td["uwire"][:].astype(np.float32) * self.wire_scale,

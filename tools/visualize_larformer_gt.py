@@ -12,13 +12,32 @@ The viz queries the same code paths the loss uses:
 so if the visualizer and trainer ever disagree, the bug is in shared code,
 not in two parallel implementations. See `Pointcept/docs/LArFormer.md` §11.
 
+Two filtering modes:
+
+  - Default (no `--cascade-config`): uses only the dataset's lm_score
+    augmentation filter (what LArFormerDataset does on every __getitem__).
+    No backbone load; runs CPU-only.
+
+  - With `--cascade-config <CascadedSlicer-cfg>`: ALSO builds the cascade's
+    LoRA-tuned deghoster (loads its checkpoint) and applies the same
+    `P(real) > τ` filter the cascade uses at training time. Adds a τ
+    slider to the UI so you can sweep the threshold and see which
+    spacepoints get dropped. Requires CUDA (Sonata backbone is heavy).
+
 Usage:
+    # Plain mode (no deghoster):
     ./run_in_container.sh python tools/visualize_larformer_gt.py \\
         --config configs/lartpc/larformer-slicer-v0.py
 
+    # Cascade-deghoster mode (run the SAME trained deghoster as training):
     ./run_in_container.sh python tools/visualize_larformer_gt.py \\
-        --config configs/lartpc/larformer-slicer-v0.py \\
-        --split train --entry 3 --port 8052
+        --config configs/lartpc/larformer-slicer-v1-cascaded-loradeghost.py \\
+        --cascade-config configs/lartpc/larformer-slicer-v1-cascaded-loradeghost.py
+
+(The two `--config` args can point at the same cascade config; `--config`
+controls the dataset + levels for GT viz, `--cascade-config` controls the
+deghoster model. Splitting them lets you visualize against a different
+levels block than the deghoster's training config.)
 
 Once running, open http://<host>:8050 in a browser.
 """
@@ -74,10 +93,101 @@ def cls_color(c: int) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Cascade deghoster filter (the LoRA path)
+# ---------------------------------------------------------------------------
+
+class CascadeDeghostFilter:
+    """Builds the cascade's deghoster + applies the same P(real) > τ filter.
+
+    Holds:
+      - `deghoster`: an nn.Module built from the cascade config's
+        `deghoster` subconfig, with its trained weights loaded
+      - `class_index_real`: which column of the deghoster's softmax is the
+        real-class probability (0 for SonataLoRADeghostSegmentor, 1 for
+        the LArFormer-flavored deghoster — same convention as the cascade
+        config's `deghoster_class_index_real`)
+
+    Used by the visualizer to mirror exactly what `CascadedSlicer.forward`
+    does at training time: collate one event, run the deghoster, build
+    the keep mask, filter via `filter_batch_by_keep_mask`. Then the rest
+    of the GT-build pipeline sees only the deghosted spacepoints —
+    matching what the slicer is trained on.
+    """
+
+    def __init__(
+        self,
+        deghoster_cfg: dict,
+        deghoster_weight: "str | None",
+        class_index_real: int,
+        device: str = "cuda",
+    ):
+        from pointcept.models.builder import build_model
+        from pointcept.models.LArFormer.cascaded import CascadedSlicer
+        self.deghoster = build_model(deghoster_cfg).to(device).eval()
+        if deghoster_weight is not None:
+            CascadedSlicer._load_state_dict_into(
+                self.deghoster, deghoster_weight, "deghoster",
+            )
+        self.class_index_real = int(class_index_real)
+        self.device = device
+
+    @torch.no_grad()
+    def p_real(self, batched_dict: dict) -> torch.Tensor:
+        """Run the deghoster + return flat (N_total,) P(real). Handles both
+        SonataLoRA-style (`seg_logits`) and LArFormer-style (`predictions`)
+        output conventions — same dispatch as
+        CascadedSlicer._run_deghoster_p_real."""
+        out = self.deghoster(batched_dict)
+        if "seg_logits" in out:
+            return out["seg_logits"].softmax(dim=-1)[:, self.class_index_real]
+        if "predictions" in out:
+            chunks = []
+            for ev_pred in out["predictions"]:
+                logits = ev_pred["per_level_cls"]["spacepoint"]
+                chunks.append(
+                    logits.softmax(dim=-1)[:, self.class_index_real]
+                )
+            return torch.cat(chunks, dim=0)
+        raise RuntimeError(
+            f"Unrecognized deghoster output keys: {list(out.keys())}"
+        )
+
+
+def _unpack_single_event_sample(batched: dict) -> dict:
+    """Convert a 1-event (post-filter) batched dict back to a dataset-style
+    per-event sample dict (numpy per-SP fields, scalar per-event fields).
+
+    Mirrors what LArFormerDataset.__getitem__ would return for a single
+    event, so downstream code (`build_event_gt`) doesn't need to branch.
+    """
+    assert int(batched["offset"].numel()) == 1, "expected 1-event batched dict"
+    sample: dict = {}
+    for k in ("coord", "coord_norm", "grid_coord", "feat", "lm_score", "wire",
+              "trackid", "pid", "origin_label", "hasmatch", "ssnet_label",
+              "slice_id"):
+        if k in batched:
+            v = batched[k]
+            sample[k] = v.detach().cpu().numpy() if isinstance(v, torch.Tensor) else v
+    sample["n_spacepoints"] = int(batched["n_spacepoints"][0].item())
+    sample["gt_instances"] = batched["gt_instances_per_event"][0]
+    sample["n_gt_instances"] = int(batched["n_gt_instances"][0].item()) \
+        if "n_gt_instances" in batched else len(sample["gt_instances"])
+    for plural, singular in (("names", "name"), ("runs", "run"),
+                             ("subruns", "subrun"), ("events", "event")):
+        if plural in batched and len(batched[plural]) > 0:
+            sample[singular] = batched[plural][0]
+    if "lm_score_threshold" in batched:
+        sample["lm_score_threshold"] = float(batched["lm_score_threshold"][0])
+    return sample
+
+
+# ---------------------------------------------------------------------------
 # GT extraction (the visualizer's only model-side call site)
 # ---------------------------------------------------------------------------
 
-def build_event_gt(model_levels_cfg, token_dim, dataset, idx):
+def build_event_gt(model_levels_cfg, token_dim, dataset, idx,
+                   deghoster_filter: "CascadeDeghostFilter | None" = None,
+                   tau: float = 0.5):
     """Run the same level builders + GT lifters the loss uses, on one event.
 
     Returns:
@@ -90,9 +200,88 @@ def build_event_gt(model_levels_cfg, token_dim, dataset, idx):
             level_instance_per_token — OrderedDict[level_name → (M,) int64]
                           (which instance owns each token, or −1 if none)
     """
-    from pointcept.models.LArFormer import CompositeTokenizer, build_per_level_gt
+    from pointcept.models.LArFormer import (
+        CompositeTokenizer, build_per_level_gt, filter_batch_by_keep_mask,
+    )
+    from pointcept.datasets import larformer_collate
 
     sample = dataset[idx]
+    n_sp_pre = int(sample["n_spacepoints"])
+    deghost_info: "dict | None" = None
+
+    # Always-available "data composition" info from the dataset-side
+    # hasmatch field (post-lm_score-filter, pre-deghoster). hasmatch=1 = real,
+    # hasmatch=0 = ghost. Useful baseline even with the deghoster off.
+    composition_info = None
+    if "hasmatch" in sample:
+        hm_pre = np.asarray(sample["hasmatch"])
+        n_real_pre = int((hm_pre == 1).sum())
+        n_ghost_pre = int((hm_pre == 0).sum())
+        composition_info = {
+            "n_real_pre": n_real_pre,
+            "n_ghost_pre": n_ghost_pre,
+            "real_frac": n_real_pre / max(n_real_pre + n_ghost_pre, 1),
+        }
+
+    # ---- Optional cascade-deghoster filter ---------------------------------
+    if deghoster_filter is not None:
+        # Mirror CascadedSlicer.forward: 1-event collate → deghoster →
+        # P(real) > τ → filter_batch_by_keep_mask → unpack back to a
+        # sample-like dict for the rest of the pipeline.
+        batched = larformer_collate([sample])
+        for k, v in batched.items():
+            if isinstance(v, torch.Tensor):
+                batched[k] = v.to(deghoster_filter.device, non_blocking=True)
+        p_real = deghoster_filter.p_real(batched)
+        keep = p_real > float(tau)
+        n_post = int(keep.sum().item())
+
+        # Per-class confusion against the dataset's hasmatch GT, computed
+        # from the BATCHED dict (still pre-filter at this point). Gives us
+        # real-recall (fraction of true real points kept) and ghost-reject
+        # (fraction of true ghosts dropped). These are the operational
+        # quality numbers the user actually cares about.
+        hm_t = batched.get("hasmatch")
+        deghost_metrics = {}
+        if hm_t is not None:
+            real_mask = (hm_t == 1)
+            ghost_mask = (hm_t == 0)
+            n_real_pre_dg = int(real_mask.sum().item())
+            n_ghost_pre_dg = int(ghost_mask.sum().item())
+            n_real_kept = int((keep & real_mask).sum().item())
+            n_ghost_kept = int((keep & ghost_mask).sum().item())
+            deghost_metrics = {
+                "n_real_pre": n_real_pre_dg,
+                "n_ghost_pre": n_ghost_pre_dg,
+                "n_real_kept": n_real_kept,
+                "n_ghost_kept": n_ghost_kept,
+                "real_recall": (n_real_kept / n_real_pre_dg
+                                if n_real_pre_dg > 0 else float("nan")),
+                "ghost_reject": (1.0 - n_ghost_kept / n_ghost_pre_dg
+                                 if n_ghost_pre_dg > 0 else float("nan")),
+            }
+
+        if n_post == 0:
+            # All SPs dropped at this τ — fall back to NO filter so the user
+            # still gets something to look at, and surface the issue in the
+            # metadata panel. Avoids a hard crash if τ is set unreasonably.
+            deghost_info = {
+                "tau": float(tau), "n_sp_pre": n_sp_pre,
+                "n_sp_post": 0, "keep_frac": 0.0,
+                **deghost_metrics,
+                "warning": ("τ dropped every SP; showing pre-filter GT. "
+                            "Lower τ to recover."),
+            }
+        else:
+            filtered = filter_batch_by_keep_mask(batched, keep)
+            sample = _unpack_single_event_sample(filtered)
+            deghost_info = {
+                "tau": float(tau), "n_sp_pre": n_sp_pre,
+                "n_sp_post": int(sample["n_spacepoints"]),
+                "keep_frac": int(sample["n_spacepoints"]) / max(n_sp_pre, 1),
+                **deghost_metrics,
+            }
+
     n_sp = int(sample["n_spacepoints"])
     # Build a minimal "event_dict" matching what LArFormer.forward() would
     # hand to a level builder.
@@ -154,6 +343,8 @@ def build_event_gt(model_levels_cfg, token_dim, dataset, idx):
         "levels": levels,
         "per_level_gt": per_level_gt,
         "level_instance_per_token": level_inst,
+        "deghost_info": deghost_info,
+        "composition_info": composition_info,
     }
 
 
@@ -368,6 +559,50 @@ def metadata_panel(event_data):
         html.Tr([html.Td(html.B("n_gt_instances")),
                  html.Td(str(sample["n_gt_instances"]))]),
     ]
+
+    ci = event_data.get("composition_info")
+    if ci is not None:
+        rows.append(html.Tr([html.Td(colSpan=2,
+            children=html.Hr(style={"margin": "4px 0"}))]))
+        rows.append(html.Tr([html.Td(html.B("data composition"),
+                                     colSpan=2,
+                                     style={"fontStyle": "italic"})]))
+        rows.append(html.Tr([html.Td("n true-real (hasmatch=1)"),
+                             html.Td(str(ci["n_real_pre"]))]))
+        rows.append(html.Tr([html.Td("n true-ghost (hasmatch=0)"),
+                             html.Td(str(ci["n_ghost_pre"]))]))
+        rows.append(html.Tr([html.Td("real fraction (S/(S+N))"),
+                             html.Td(f"{ci['real_frac']:.3f}")]))
+
+    di = event_data.get("deghost_info")
+    if di is not None:
+        rows.append(html.Tr([html.Td(colSpan=2,
+            children=html.Hr(style={"margin": "4px 0"}))]))
+        rows.append(html.Tr([html.Td(html.B("deghoster filter"),
+                                     colSpan=2,
+                                     style={"fontStyle": "italic"})]))
+        rows.append(html.Tr([html.Td(html.B("deghost τ")),
+                             html.Td(f"{di['tau']:.3f}")]))
+        rows.append(html.Tr([html.Td(html.B("n_sp pre-filter")),
+                             html.Td(str(di["n_sp_pre"]))]))
+        rows.append(html.Tr([html.Td(html.B("n_sp post-filter")),
+                             html.Td(str(di["n_sp_post"]))]))
+        rows.append(html.Tr([html.Td(html.B("keep_frac")),
+                             html.Td(f"{di['keep_frac']:.3f}")]))
+        if "n_real_pre" in di:
+            rr = di["real_recall"]; gr = di["ghost_reject"]
+            rows.append(html.Tr([html.Td("real kept / real pre"),
+                html.Td(f"{di['n_real_kept']} / {di['n_real_pre']}  "
+                        f"({rr:.3f})" if rr == rr else
+                        f"{di['n_real_kept']} / {di['n_real_pre']}  (—)")]))
+            rows.append(html.Tr([html.Td("ghost kept / ghost pre"),
+                html.Td(f"{di['n_ghost_kept']} / {di['n_ghost_pre']}  "
+                        f"(reject {gr:.3f})" if gr == gr else
+                        f"{di['n_ghost_kept']} / {di['n_ghost_pre']}  (reject —)")]))
+        if di.get("warning"):
+            rows.append(html.Tr([html.Td(colSpan=2,
+                children=html.Div(di["warning"],
+                                  style={"color": "#c33", "fontWeight": "bold"}))]))
     md = [html.Table(rows, style={"width": "100%", "fontSize": "13px"})]
     # Per-instance breakdown
     gts = sample["gt_instances"]
@@ -408,7 +643,19 @@ def metadata_panel(event_data):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", required=True,
-                    help="Path to a LArFormer training config file")
+                    help="Path to a LArFormer training config file. May be "
+                         "a plain LArFormer or a CascadedSlicer config "
+                         "(auto-detected; cascade pulls deghoster + slicer "
+                         "levels from the model subconfig).")
+    ap.add_argument("--cascade-config", default=None,
+                    help="Optional separate CascadedSlicer config to use "
+                         "ONLY for the deghoster + threshold. Use when "
+                         "--config is a plain LArFormer but you want to "
+                         "visualize against a separately-trained deghoster.")
+    ap.add_argument("--no-deghoster", action="store_true",
+                    help="Skip the cascade's deghoster filter even when "
+                         "--config or --cascade-config is cascade-shaped. "
+                         "Falls back to the dataset's lm_score filter only.")
     ap.add_argument("--split", default="val", choices=("train", "val", "test"),
                     help="Which dataset split to read")
     ap.add_argument("--entry", type=int, default=0,
@@ -421,6 +668,7 @@ def main():
 
     from pointcept.utils.config import Config
     cfg = Config.fromfile(args.config)
+    import pointcept.models  # noqa: F401 — register MODELS for cascade build
 
     # Build the dataset directly (skips MODELS / TRAINERS registration of
     # heavy components). Force `split` and apply CLI overrides.
@@ -430,11 +678,51 @@ def main():
         ds_cfg["max_spacepoints"] = args.max_spacepoints
     dataset = build_dataset(ds_cfg)
     print(f"Loaded {args.split} dataset: {len(dataset)} events")
-    level_names = [L["name"] for L in cfg.model.levels]
+
+    # Levels source — cascade configs nest them under model.slicer.levels.
+    if cfg.model.get("type") == "CascadedSlicer":
+        levels_cfg = cfg.model.slicer.levels
+        token_dim = int(cfg.model.slicer.token_dim)
+        print("Detected CascadedSlicer config; using model.slicer.levels.")
+    else:
+        levels_cfg = cfg.model.levels
+        token_dim = int(cfg.model.token_dim)
+    level_names = [L["name"] for L in levels_cfg]
     print(f"Levels declared in config: {level_names}")
 
-    levels_cfg = cfg.model.levels
-    token_dim = int(cfg.model.token_dim)
+    # ---- Optional cascade-deghoster filter --------------------------------
+    deghoster_filter = None
+    deghost_tau_default = 0.5
+    if not args.no_deghoster:
+        cascade_cfg = cfg
+        if args.cascade_config and args.cascade_config != args.config:
+            cascade_cfg = Config.fromfile(args.cascade_config)
+        if cascade_cfg.model.get("type") == "CascadedSlicer":
+            dgh_cfg = cascade_cfg.model.get("deghoster")
+            dgh_w = cascade_cfg.model.get("deghoster_weight")
+            cls_real = int(cascade_cfg.model.get(
+                "deghoster_class_index_real", 1))
+            deghost_tau_default = float(cascade_cfg.model.get(
+                "deghost_threshold_val", 0.5))
+            if dgh_cfg is None:
+                print("[viz] Cascade config has no `deghoster` block; "
+                      "skipping deghoster filter.")
+            else:
+                if dgh_w is None or not os.path.exists(dgh_w):
+                    print(f"[viz] WARNING: deghoster_weight {dgh_w!r} "
+                          f"not found; building deghoster with RANDOM init "
+                          f"(P(real) ≈ 0.5 → keep_frac ≈ τ-dependent).")
+                    dgh_w = None
+                else:
+                    print(f"[viz] Building cascade deghoster from "
+                          f"{args.cascade_config or args.config} "
+                          f"(class_index_real={cls_real}, "
+                          f"τ_default={deghost_tau_default})")
+                deghoster_filter = CascadeDeghostFilter(
+                    deghoster_cfg=dict(dgh_cfg),
+                    deghoster_weight=dgh_w,
+                    class_index_real=cls_real,
+                )
 
     app = Dash(__name__)
     app.title = "LArFormer GT visualizer"
@@ -470,6 +758,18 @@ def main():
                                     "marginRight": "16px"}),
                 html.Button("Reload event", id="reload", n_clicks=0,
                             style={"marginLeft": "12px"}),
+                # τ input — only visible when the cascade deghoster is active.
+                html.Span("  |  deghoster τ: ",
+                          style={"marginLeft": "12px", "marginRight": "6px",
+                                 "display": ("inline-block"
+                                             if deghoster_filter is not None
+                                             else "none")}),
+                dcc.Input(id="tau", type="number", min=0.0, max=1.0,
+                          step=0.05, value=deghost_tau_default,
+                          style={"width": "80px",
+                                 "display": ("inline-block"
+                                             if deghoster_filter is not None
+                                             else "none")}),
             ], style={"marginBottom": "8px"}),
         ]),
         html.Div([
@@ -487,15 +787,21 @@ def main():
     ], style={"fontFamily": "Helvetica, Arial, sans-serif",
               "padding": "8px"})
 
-    # Cache last-loaded event so the user can flip color_by / level without
-    # re-running the tokenizer.
-    cache = {"entry": None, "data": None}
+    # Cache last-built event_data, keyed by (entry, tau). Switching level
+    # or color reuses the cache; switching entry or τ rebuilds (deghoster
+    # forward is expensive but is only re-run on those changes).
+    cache = {"key": None, "data": None}
 
-    def get_event(entry):
-        if cache["entry"] == entry and cache["data"] is not None:
+    def get_event(entry, tau):
+        key = (int(entry), float(tau) if tau is not None else None)
+        if cache["key"] == key and cache["data"] is not None:
             return cache["data"]
-        ev = build_event_gt(levels_cfg, token_dim, dataset, entry)
-        cache["entry"] = entry
+        ev = build_event_gt(
+            levels_cfg, token_dim, dataset, entry,
+            deghoster_filter=deghoster_filter,
+            tau=float(tau) if tau is not None else 0.5,
+        )
+        cache["key"] = key
         cache["data"] = ev
         return ev
 
@@ -506,15 +812,18 @@ def main():
         Input("level", "value"),
         Input("color", "value"),
         Input("reload", "n_clicks"),
+        Input("tau", "value"),
     )
-    def update(entry, level, color, n_clicks):
+    def update(entry, level, color, n_clicks, tau):
         if entry is None:
             entry = args.entry
         entry = max(0, min(int(entry), len(dataset) - 1))
+        if tau is None:
+            tau = deghost_tau_default
         # `reload` button invalidates the cache by forcing a re-fetch.
-        if n_clicks and cache["entry"] == entry:
-            cache["entry"] = None
-        ev = get_event(entry)
+        if n_clicks and cache["key"] is not None and cache["key"][0] == entry:
+            cache["key"] = None
+        ev = get_event(entry, tau)
         fig = figure_for_event(ev, level, color)
         meta = metadata_panel(ev)
         return fig, meta

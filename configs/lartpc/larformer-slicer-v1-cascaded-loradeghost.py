@@ -47,7 +47,7 @@ deghoster_weight = "/home/twongjirad/working/larbys/gen2/container_u22/Pointcept
 coord_center = (125.0, 0.0, 518.0)
 coord_scale = 179.55
 flash_backend = "xformers"
-token_dim = 128
+token_dim = 256                       # bumped from 128 for slicer capacity
 backbone_out_channels = 1232          # Sonata-v1m1 up_cast_level=4 (both stages)
 
 # =============================================================================
@@ -69,10 +69,16 @@ _dataset_common = dict(
     emit_fragments=False,
     slice_class_map={1: 0, 2: 1},
     merge_nu_slices=True,
-    lm_score_aug_low=0.05,
-    lm_score_aug_high=0.30,
-    lm_score_val_threshold=0.10,
-    log_transform_strength=True,
+    # No lm_score pre-filter: the cascade's deghoster (Stage 1) is the
+    # sole ghost discriminator. The LArMatch-stage lm_score is left
+    # available to the model as a per-SP feature (via `feat`) but is not
+    # used to drop SPs at the dataset level — that would double-up ghost
+    # rejection (LArMatch already trims obvious ghosts at its own
+    # threshold) and would feed the deghoster a non-representative input
+    # subset that depresses its measured recall.
+    lm_score_aug_low=0.0,
+    lm_score_aug_high=0.0,
+    lm_score_val_threshold=0.0,
     wire_scale=1.0 / 3456.0,
     min_fragment_points_post_filter=50,
 )
@@ -201,7 +207,11 @@ slicer_cfg = dict(
     levels=levels,
     scale_pattern=scale_pattern,
     token_dim=token_dim,
-    num_queries=32,
+    num_queries=64,                   # bumped from 32: with ~30 GT slices per
+                                       # event, 32 had no Hungarian slack →
+                                       # noisy per-query specialization. 64
+                                       # gives ~half the queries as "extra"
+                                       # so matched assignments stabilize.
     num_classes=3,
     freeze_backbone=True,
     enable_origin_head=False,
@@ -210,10 +220,28 @@ slicer_cfg = dict(
         weight_class=2.0,
         weight_mask_primary=5.0,
         weight_dice_primary=5.0,
-        weight_aux_mask=1.0,
+        weight_aux_mask=0.3,           # dropped from 1.0: aux losses at 3
+                                        # voxel levels were swamping the
+                                        # primary mask signal (3 × 1.0 = 3.0
+                                        # vs primary 5+5=10; aux is computed
+                                        # at every layer too, so effective
+                                        # weight is even higher).
         weight_per_level_cls=0.5,
         weight_origin=0.0,
-        num_sample_points=4096,
+        num_sample_points=8192,        # bumped from 4096 — after dropping
+                                        # the lm_score pre-filter, the slicer
+                                        # sees ~3x more SPs per event, so the
+                                        # per-pair sampler needs more budget
+                                        # to cover each query's positive set.
+        # PointRend-style hard-negative mining for the per-pair mask BCE/Dice.
+        # 75% of each pair's negative budget is drawn from the model's
+        # currently-uncertain region (sigmoid(logit) ≈ 0.5 — the halo
+        # around the predicted mask boundary). Ported from shower_clustering
+        # where it gave a measurable uplift on the same set-prediction loss
+        # shape. Defaults match shower_clustering's documented values.
+        use_importance_sampling=True,
+        importance_oversample_ratio=3.0,
+        importance_ratio=0.75,
         aux_max_tokens=20_000,
         no_object_weight=0.1,
     ),
@@ -241,7 +269,7 @@ model = dict(
     slicer=slicer_cfg,
     slicer_backbone_weight=slicer_backbone_weight,
     deghost_threshold_min=0.3,
-    deghost_threshold_max=0.7,
+    deghost_threshold_max=0.6,
     deghost_threshold_val=0.5,
     freeze_deghoster=True,
     # KEY: the LoRA deghoster has class 0 = real, class 1 = ghost (from

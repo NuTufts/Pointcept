@@ -64,9 +64,7 @@ _dataset_common = dict(
     emit_fragments=False,
     lm_score_aug_low=0.05,            # MUCH lower so ghosts are present
     lm_score_aug_high=0.30,            # for training (else they're filtered
-    lm_score_val_threshold=0.10,       # before the deghoster ever sees them)
-    log_transform_strength=True,
-    wire_scale=1.0 / 3456.0,
+    lm_score_val_threshold=0.10,       # before the deghoster ever sees them)wire_scale=1.0 / 3456.0,
     min_fragment_points_post_filter=50,
 )
 

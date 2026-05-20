@@ -58,7 +58,7 @@ _dataset_common = dict(
     lm_score_aug_low=0.05,
     lm_score_aug_high=0.30,
     lm_score_val_threshold=0.10,
-    log_transform_strength=True, wire_scale=1.0 / 3456.0,
+    wire_scale=1.0 / 3456.0,
     min_fragment_points_post_filter=50,
 )
 data = dict(

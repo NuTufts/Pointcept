@@ -58,7 +58,7 @@ slicer_backbone_weight = (
 coord_center = (125.0, 0.0, 518.0)
 coord_scale = 179.55
 flash_backend = "xformers"
-token_dim = 128
+token_dim = 256                       # bumped from 128 for slicer capacity
 backbone_out_channels = 1232          # Sonata-v1m1 up_cast_level=4
 
 # =============================================================================
@@ -72,14 +72,16 @@ _dataset_common = dict(
     emit_fragments=False,             # slicer doesn't use the fragment level
     slice_class_map={1: 0, 2: 1},      # nu→0, cosmic→1; no_object=2
     merge_nu_slices=True,
-    # lm_score range left LOW: the deghoster (Stage 1) is the primary
-    # ghost discriminator now, so we want the dataset to pass ghosts
-    # through so the deghoster can decide. Final per-SP filter is the
-    # deghoster's `P(real) > τ`, not the dataset's lm_score.
-    lm_score_aug_low=0.05,
-    lm_score_aug_high=0.30,
-    lm_score_val_threshold=0.10,
-    log_transform_strength=True,
+    # No lm_score pre-filter: the cascade's deghoster (Stage 1) is the
+    # sole ghost discriminator. Doubling up (LArMatch pre-filter +
+    # deghoster) feeds the deghoster a non-representative input subset
+    # that depresses its measured recall (verified on the dev sample:
+    # τ=0.5 recall jumps from 0.13 with lm_threshold=0.10 to 0.65 with
+    # lm_threshold=0.0, matching the inference-script measurement of
+    # 0.71 across 100 events).
+    lm_score_aug_low=0.0,
+    lm_score_aug_high=0.0,
+    lm_score_val_threshold=0.0,
     wire_scale=1.0 / 3456.0,
     min_fragment_points_post_filter=50,
 )
@@ -200,7 +202,8 @@ slicer_cfg = dict(
     levels=levels,
     scale_pattern=scale_pattern,
     token_dim=token_dim,
-    num_queries=32,
+    num_queries=64,                   # bumped from 32: Hungarian needs slack
+                                       # vs the ~30 GT slices per event.
     num_classes=3,
     freeze_backbone=True,
     enable_origin_head=False,         # slicer doesn't need vertex regression
@@ -209,10 +212,20 @@ slicer_cfg = dict(
         weight_class=2.0,
         weight_mask_primary=5.0,
         weight_dice_primary=5.0,
-        weight_aux_mask=1.0,
+        weight_aux_mask=0.3,           # dropped from 1.0: aux at 3 levels
+                                        # was diluting the primary signal.
         weight_per_level_cls=0.5,
         weight_origin=0.0,
-        num_sample_points=4096,
+        num_sample_points=8192,        # bumped from 4096 — slicer sees ~3x
+                                        # more SPs after dropping lm_score
+                                        # pre-filter; sample budget needs
+                                        # to scale or per-pair BCE undersamples.
+        # PointRend-style hard-negative mining (ported from shower_clustering)
+        # to bias negatives toward the over-prediction halo region. Cheap,
+        # measurable uplift on the same set-prediction loss shape.
+        use_importance_sampling=True,
+        importance_oversample_ratio=3.0,
+        importance_ratio=0.75,
         aux_max_tokens=20_000,
         no_object_weight=0.1,
     ),
