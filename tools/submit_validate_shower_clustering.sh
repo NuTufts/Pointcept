@@ -29,12 +29,21 @@
 set -euo pipefail
 
 # ---- Edit these ----------------------------------------------------------
-# DATA_DIR=/cluster/tufts/wongjiradlab/larbys/data/ub_on_tufts/hdf5/v3_larmatch/bnb_nu_corsika_prod2
-DATA_DIR=/cluster/tufts/wongjiradlab/larbys/data/ub_on_tufts/hdf5/v3_larmatch/bnb_nu_pi0filter_corsika/merged_h5/
-OUTPUT_DIR=/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept/lartpc_data_prep/lantern_scripts/validation_output/bnb_nu_pi0filter_corsika
+# DATA_DIR=/cluster/tufts/wongjiradlab/larbys/data/ub_on_tufts/hdf5/v3_larmatch/bnb_nu_pi0filter_corsika/merged_h5/
+# OUTPUT_DIR=/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept/lartpc_data_prep/lantern_scripts/validation_output/bnb_nu_pi0filter_corsika
+#DATA_DIR=/cluster/tufts/wongjiradlab/larbys/data/ub_on_tufts/hdf5/v3_larmatch/bnb_nu_corsika_prod2
+#OUTPUT_DIR=/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept/lartpc_data_prep/lantern_scripts/validation_output/bnb_nu_corsika_prod2
+# DATA_DIR=/cluster/tufts/wongjiradlab/larbys/data/ub_on_tufts/hdf5/v3_larmatch/bnb_nue_corsika
+# OUTPUT_DIR=/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept/lartpc_data_prep/lantern_scripts/validation_output/bnb_nue_corsika
+#DATA_DIR=/cluster/tufts/wongjiradlab/larbys/data/ub_on_tufts/hdf5/v3_larmatch/bnb_nu_chargedpiplus_corsika
+#OUTPUT_DIR=/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept/lartpc_data_prep/lantern_scripts/validation_output/bnb_nu_chargedpiplus_corsika
+DATA_DIR=/cluster/tufts/wongjiradlab/larbys/data/ub_on_tufts/hdf5/v3_larmatch/bnb_nu_corsika_set2_prod2/merged_h5/
+OUTPUT_DIR=/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept/lartpc_data_prep/lantern_scripts/validation_output/bnb_nu_corsika_set2_prod2/
+
+
 N_SHARDS=100   # MUST equal the array length (count of #SBATCH --array)
 FUNCTIONAL=1   # 1 = static + functional (slow but exhaustive); 0 = static only
-LM_THRESHOLD=0.25
+LM_THRESHOLD=0.5
 # --------------------------------------------------------------------------
 
 if [ "${SLURM_ARRAY_TASK_COUNT:-${N_SHARDS}}" -ne "${N_SHARDS}" ]; then

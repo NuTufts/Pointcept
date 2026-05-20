@@ -1,13 +1,13 @@
 #!/bin/bash
 
 #SBATCH --job-name=larsonata
-#SBATCH --output=larsonata.v4.%j.%N.log
+#SBATCH --output=larsonata.v6.%j.%N.log
 #SBATCH --mem-per-cpu=2000
-#SBATCH --cpus-per-task=20
+#SBATCH --cpus-per-task=32
 #SBATCH --time=2-00:00:00
 #SBATCH --partition=gpu
-#SBATCH --gres=gpu:h200:1
-#SBATCH --error=larsonata.v4.%j.%N.err
+#SBATCH --gres=gpu:h200:2
+#SBATCH --error=larsonata.v6.%j.%N.err
 
 # set the location of your copy of the repo here
 WORKDIR=/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept/

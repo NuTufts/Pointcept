@@ -19,8 +19,20 @@ container=/cluster/tufts/wongjiradlabnu/larbys/larbys-container/pointcept_cuml.s
 module load apptainer
 
 # run job script inside container
+#apptainer exec --nv --bind /cluster:/cluster $container bash -c "cd ${WORKDIR}/../ && \
+#  source setenv_pointcept_only.sh && \
+#  cd ${WORKDIR} && \
+#  python tools/train.py --config configs/lartpc/shower-cluster-sonata-v1-h200.py --num-gpus 2"
+
+# run job script inside container: resume
+
+
+CHECKPOINT_FOLDER="/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept/exp/shower_clustering/run2_h200/"
+#resume_checkpoint="${CHECKPOINT_FOLDER}/model_epoch30.pth"
+#resume_checkpoint="${CHECKPOINT_FOLDER}/model_epoch48.pth"
+resume_checkpoint="${CHECKPOINT_FOLDER}/model_epoch60.pth"
 apptainer exec --nv --bind /cluster:/cluster $container bash -c "cd ${WORKDIR}/../ && \
   source setenv_pointcept_only.sh && \
   cd ${WORKDIR} && \
-  python tools/train.py --config configs/lartpc/shower-cluster-sonata-v1-h200.py --num-gpus 2"
+  python tools/train.py --config configs/lartpc/shower-cluster-sonata-v1-h200.py --num-gpus 2 --options resume=True weight=${resume_checkpoint}"
 
