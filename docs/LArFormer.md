@@ -127,14 +127,28 @@ If a level declares `supervision.cls`, a small linear head is attached to the le
 
 ```python
 target_per_level = scatter_reduce(
-    src       = data["spacepoint"][label_src],     # (N,)
-    index     = sp_to_level_id,                    # (N,)
+    src       = label_remap_if_set(data["spacepoint"][label_src]),  # (N,)
+    index     = sp_to_level_id,                                      # (N,)
     dim_size  = M_level,
-    reduce    = "amax" | "plurality" | "mean",
+    reduce    = "amax" | "plurality",
 )
 ```
 
-`label_src` names a field already in the dataset (e.g., `hasmatch`, `origin_label`, `slice_id`, `pid`). `reduce="plurality"` is implemented as scatter-mode (most common label per level). For binary labels (deghosting), `amax` works.
+`label_src` names a field already in the dataset (e.g., `hasmatch`, `origin_label`, `slice_id`, `pid`). `reduce="plurality"` is implemented as scatter-mode (most common label per level). `reduce="amax"` is right for binary labels (deghosting) and for **priority pooling** (see below). `mean` is not exposed — token cls is an integer label, not a regression target.
+
+**Priority pooling via `label_remap`.** For multi-class labels where one class should dominate ("any voxel touched by a nu spacepoint should be a nu voxel, even if cosmics outnumber"), set `label_remap` so the priority class has the largest integer code, then use `reduce="amax"`. Example for slicer per-voxel cls on the dataset's `origin_label = {0=ghost, 1=nu, 2=cosmic}`:
+
+```python
+cls=dict(
+    num_classes=3,
+    label_src="origin_label",
+    label_remap={0: 0, 1: 2, 2: 1},   # post-remap: 0=ghost, 1=cosmic, 2=nu
+    reduce="amax",                     # any-nu voxel → nu; else any-cosmic → cosmic; else ghost
+    weight=0.5, loss="ce", ignore_index=-1,
+)
+```
+
+`label_remap` is identity for any keys not listed, and `ignore_index` entries are passed through unremapped. This keeps the priority semantics in the model config rather than baking them into the dataset, so the same `LArFormerDataset` instance can serve multiple tasks with different priority orders.
 
 This is the single mechanism that handles:
 
@@ -367,6 +381,7 @@ Logged here so they're not forgotten:
 - **Flash-match loss for the slicer.** Specced in [Event_Slicer_Spec.md](Event_Slicer_Spec.md). A `FlashMatchHead` stub is in the file layout but its loss term is out of v1; the slicer trains on mask + cls + query CE only for the first pass.
 - **Pre-computed multi-resolution voxel grids in the dataset.** Decided to keep voxelization model-side. Revisit if dataloader becomes the bottleneck.
 - **Custom builders beyond spacepoint / voxel / fragment.** Easy to add later via the registry.
+- **Shared-backbone cascade (the "deghost-decoder" path).** v0 `CascadedSlicer` runs two independent Sonata backbones (one per stage, ~400M params total, two forward passes per training step). The clean alternative is to keep the backbone vanilla + train the **deghoster as a per-SP decoder head** on top of those shared features instead of LoRA-tuning the backbone — then the slicer reads the same backbone features, one pass total. Cost: retrain the deghoster from scratch with a non-LoRA architecture (e.g., a PTv3 decoder block per `larformer-deghost-v0-ptv3decoder.py` or a deeper per-SP MLP). Benefits: 1× backbone compute, naturally extensible to a single-pass 3-stage model. Revisit when (a) the trained Stage-1 deghoster reaches good val mIoU with the LoRA approach AND (b) the 2× backbone cost becomes a practical bottleneck.
 
 ---
 

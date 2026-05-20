@@ -24,6 +24,7 @@ from .shapenet_part import ShapeNetPartDataset
 from .lartpc import LArTPCDataset, LArTPCInstanceDataset
 from .shower_origin import ShowerOriginDataset, ShowerOriginDatasetSimple
 from .shower_clustering import ShowerClusteringDataset, shower_clustering_collate
+from .larformer import LArFormerDataset, larformer_collate
 
 # dataloader
 from .dataloader import MultiDatasetDataloader

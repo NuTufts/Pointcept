@@ -32,6 +32,9 @@ from .shower_origin import *
 
 # Shower Clustering (Mask2Former)
 from .shower_clustering import *
+
+# LArFormer (generalized Mask2Former over configurable levels)
+from .LArFormer import *
 #Fine Tuning Files 
 from .lora_sonata import *
 from .lora_sonata_deghost import *
