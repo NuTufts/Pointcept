@@ -98,6 +98,40 @@ _IMPORTANCE_RATIO = _IMPORTANCE_BUDGET * (1.0 - HARD_NEG_FRACTION_OF_IMPORTANCE)
 _HARD_NEG_RATIO = _IMPORTANCE_BUDGET * HARD_NEG_FRACTION_OF_IMPORTANCE
 
 # =============================================================================
+# Token refiner (PerLevelSelfAttn — Option 1)
+# =============================================================================
+# When enabled, applies N self-attention + FFN blocks INDEPENDENTLY to each
+# non-spacepoint level's tokens BEFORE the Mask2Former decoder sees them.
+# The voxel tokens get a chance to evolve their representations so the mask
+# head can distinguish content-similar distant tracks via more than just
+# pos_emb. See docs/LArFormer.md §15 for the failure-mode analysis.
+#
+# Design notes:
+#   - Operates on voxel levels only (target_levels=None → heuristic = every
+#     `voxel_*` level). Spacepoint level is intentionally excluded: full
+#     O(N²) self-attention on ~50K SPs is infeasible and PTv3's windowed
+#     attention already mixes SP context inside the (frozen) backbone.
+#   - Refiner has its OWN pos_emb (not shared with the decoder's). Set
+#     `pos_emb_kind="sinusoidal"` to use the fixed sinusoidal variant on
+#     the refiner side independently of the decoder's choice.
+#   - Adds ~100k params per layer per voxel level (small). The cascade's
+#     existing slicer-backbone checkpoint loads cleanly; the refiner
+#     weights initialize randomly and train from scratch.
+USE_PERLEVEL_REFINER = True
+PERLEVEL_REFINER_LAYERS = 2
+
+_token_refiner_cfg = (
+    dict(type="PerLevelSelfAttn",
+         num_layers=PERLEVEL_REFINER_LAYERS,
+         num_heads=4,
+         mlp_ratio=4.0,
+         # target_levels=["voxel_20cm", "voxel_10cm", "voxel_5cm"],  # explicit override
+         # pos_emb_kind="sinusoidal",                                # independent of decoder
+         )
+    if USE_PERLEVEL_REFINER else None
+)
+
+# =============================================================================
 # Coords + backbone shape
 # =============================================================================
 coord_center = (125.0, 0.0, 518.0)
@@ -274,6 +308,7 @@ slicer_cfg = dict(
     num_classes=3,
     freeze_backbone=True,
     enable_origin_head=ENABLE_ORIGIN_HEAD_WITH_CENTROID,
+    token_refiner=_token_refiner_cfg,
     decoder_kwargs=dict(
         num_heads=4, mlp_ratio=4.0,
         **(dict(pos_emb_kind="sinusoidal") if USE_SINUSOIDAL_POS_EMB else {}),
@@ -353,7 +388,7 @@ model = dict(
 # `weight = "exp/.../model/model_last.pth"` + `resume = True`.
 weight = None
 
-save_path        = "exp/larformer_slicer_v1_cascaded_loradeghost"
+save_path        = "exp/larformer_slicer_v1_cascaded_loradeghost_perlevelrefiner"
 epoch            = 1000
 eval_epoch       = 200
 batch_size       = 2

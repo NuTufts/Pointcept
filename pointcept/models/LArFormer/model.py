@@ -47,6 +47,7 @@ from .builders import LevelOutput
 from .decoder import Mask2FormerDecoder
 from .heads import PerTokenClsHead
 from .losses import LArFormerLoss
+from .refiners import build_token_refiner
 from .tokenizer import CompositeTokenizer
 
 
@@ -85,6 +86,7 @@ class LArFormer(nn.Module):
         enable_origin_head: bool = True,
         loss_kwargs: Optional[dict] = None,
         decoder_kwargs: Optional[dict] = None,
+        token_refiner: Optional[dict] = None,
     ):
         super().__init__()
         self.backbone = build_model(backbone)
@@ -104,6 +106,22 @@ class LArFormer(nn.Module):
             token_dim=token_dim,
         )
         self.levels_cfg = list(self.tokenizer.levels_cfg)
+
+        # TokenRefiner sits between the tokenizer (static pooled features)
+        # and the decoder. Default = IdentityRefiner (zero-op, reproduces
+        # pre-refiner behavior). See pointcept/models/LArFormer/refiners/
+        # for available implementations.
+        refiner_cfg = dict(token_refiner) if token_refiner is not None else None
+        if refiner_cfg is not None \
+                and refiner_cfg.get("type") not in (None, "IdentityRefiner"):
+            # Convenience: refiners that need to know token dim + the level
+            # list get them auto-injected here, so the config doesn't have
+            # to repeat token_dim / levels. `levels_cfg` is what lets the
+            # refiner build all per-level submodules EAGERLY at __init__
+            # — required for DDP and for model.to(device) to work.
+            refiner_cfg.setdefault("dim", token_dim)
+            refiner_cfg.setdefault("levels_cfg", self.levels_cfg)
+        self.token_refiner = build_token_refiner(refiner_cfg)
 
         # When num_queries == 0 the model degenerates to a pure per-level
         # cls model (Stage-1 deghoster pattern: no instance reasoning).
@@ -280,6 +298,7 @@ class LArFormer(nn.Module):
             event_dict = self._build_event_dict(data_dict, ev)
 
             levels = self.tokenizer(sp_feat, coord_norm, event_dict)
+            levels = self.token_refiner(levels)
             decoder_out = (self.decoder(levels)
                            if self.decoder is not None else None)
 
