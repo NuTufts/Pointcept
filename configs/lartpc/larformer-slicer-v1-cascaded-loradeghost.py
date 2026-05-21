@@ -42,11 +42,68 @@ _DEFAULT_LIST = "/home/twongjirad/working/larbys/gen2/container_u22/Pointcept/de
 deghoster_weight = "/home/twongjirad/working/larbys/gen2/container_u22/Pointcept/sonata/lora_deghost_v6_hasmatch/model/epoch_30.pth"
 
 # =============================================================================
+# Toggles to combat "mirror-symmetric" slice mergers
+# =============================================================================
+# Observed pathology: when the decoder's only spatial signal comes from a
+# learnable 3-layer MLP pos_emb AND queries carry no spatial anchor, two
+# content-similar tracks at very different positions can get bound to the same
+# query (the model has no good way to break the tie). The two knobs below
+# inject hard positional priors:
+#
+# 1) USE_SINUSOIDAL_POS_EMB:
+#      Replace the learnable MLP pos_emb with a fixed NeRF-style sinusoidal
+#      embedding (log-spaced frequencies, sin/cos per axis). Every coord
+#      gets a unique structured signature out of the box, so positions can't
+#      collapse to mirror-symmetric features during the early training.
+#
+# 2) ENABLE_ORIGIN_HEAD_WITH_CENTROID:
+#      Turn the per-query origin head back on AND use slice-centroid as the
+#      regression target (vs. primary_start_pos, which can sit outside the
+#      slice for charged primaries). Centroid is well-bounded inside the
+#      TPC and tightly correlated with the slice's spacepoints, so the
+#      regression has a clean signal. The predicted origin feeds back into
+#      query_pos_dyn each layer → each query develops a spatial bias.
+USE_SINUSOIDAL_POS_EMB = False
+ENABLE_ORIGIN_HEAD_WITH_CENTROID = False
+
+# =============================================================================
+# Toggles for the per-pair negative sampler (over-clustering failure mode)
+# =============================================================================
+# The default PointRend importance sampler picks "uncertain" negatives near
+# the predicted boundary (smallest |sigm - 0.5|). That's the right
+# intervention for ambiguous-halo failures, but for over-clustering — where
+# a query confidently absorbs another slice (sigm≈1 on the wrong points) —
+# those confidently-wrong negatives are explicitly DEPRIORITIZED by the halo
+# criterion and barely get any gradient pressure. See docs/LArFormer.md §15.
+#
+# Two complementary knobs:
+#
+# 1) PURE_RANDOM_NEGATIVES:
+#      Disable importance sampling entirely → all negatives are uniform
+#      random over bg. Cheapest ablation: tells you whether the sampler is
+#      the bottleneck. Costs the boundary-refinement benefit. When True,
+#      HARD_NEG_FRACTION_OF_IMPORTANCE is ignored.
+#
+# 2) HARD_NEG_FRACTION_OF_IMPORTANCE:
+#      Within the 75% importance budget (the non-random share of negatives),
+#      what fraction goes to "confident false-positive" mining — topk(sigm,
+#      largest=True). 0.0 = all halo (current behavior). 0.5 = half halo /
+#      half hard-neg. 1.0 = all hard-neg. The remaining 25% stays uniform
+#      random for coverage.
+PURE_RANDOM_NEGATIVES = False
+HARD_NEG_FRACTION_OF_IMPORTANCE = 0.5
+
+_IMPORTANCE_BUDGET = 0.0 if PURE_RANDOM_NEGATIVES else 0.75
+_IMPORTANCE_RATIO = _IMPORTANCE_BUDGET * (1.0 - HARD_NEG_FRACTION_OF_IMPORTANCE)
+_HARD_NEG_RATIO = _IMPORTANCE_BUDGET * HARD_NEG_FRACTION_OF_IMPORTANCE
+
+# =============================================================================
 # Coords + backbone shape
 # =============================================================================
 coord_center = (125.0, 0.0, 518.0)
 coord_scale = 179.55
-flash_backend = "xformers"
+#flash_backend = "xformers"
+flash_backend = "flash_attn"
 token_dim = 256                       # bumped from 128 for slicer capacity
 backbone_out_channels = 1232          # Sonata-v1m1 up_cast_level=4 (both stages)
 
@@ -68,6 +125,8 @@ _dataset_common = dict(
     gt_source="slice",
     emit_fragments=False,
     slice_class_map={1: 0, 2: 1},
+    slice_origin_kind=("centroid" if ENABLE_ORIGIN_HEAD_WITH_CENTROID
+                       else "primary_start_pos"),
     merge_nu_slices=True,
     # No lm_score pre-filter: the cascade's deghoster (Stage 1) is the
     # sole ghost discriminator. The LArMatch-stage lm_score is left
@@ -214,8 +273,11 @@ slicer_cfg = dict(
                                        # so matched assignments stabilize.
     num_classes=3,
     freeze_backbone=True,
-    enable_origin_head=False,
-    decoder_kwargs=dict(num_heads=4, mlp_ratio=4.0),
+    enable_origin_head=ENABLE_ORIGIN_HEAD_WITH_CENTROID,
+    decoder_kwargs=dict(
+        num_heads=4, mlp_ratio=4.0,
+        **(dict(pos_emb_kind="sinusoidal") if USE_SINUSOIDAL_POS_EMB else {}),
+    ),
     loss_kwargs=dict(
         weight_class=2.0,
         weight_mask_primary=5.0,
@@ -227,8 +289,8 @@ slicer_cfg = dict(
                                         # at every layer too, so effective
                                         # weight is even higher).
         weight_per_level_cls=0.5,
-        weight_origin=0.0,
-        num_sample_points=8192,        # bumped from 4096 — after dropping
+        weight_origin=(0.5 if ENABLE_ORIGIN_HEAD_WITH_CENTROID else 0.0),
+        num_sample_points=8192,         # bumped from 4096 — after dropping
                                         # the lm_score pre-filter, the slicer
                                         # sees ~3x more SPs per event, so the
                                         # per-pair sampler needs more budget
@@ -239,9 +301,10 @@ slicer_cfg = dict(
         # around the predicted mask boundary). Ported from shower_clustering
         # where it gave a measurable uplift on the same set-prediction loss
         # shape. Defaults match shower_clustering's documented values.
-        use_importance_sampling=True,
+        use_importance_sampling=(not PURE_RANDOM_NEGATIVES),
         importance_oversample_ratio=3.0,
-        importance_ratio=0.75,
+        importance_ratio=_IMPORTANCE_RATIO,
+        importance_hard_neg_ratio=_HARD_NEG_RATIO,
         aux_max_tokens=20_000,
         no_object_weight=0.1,
     ),
@@ -291,12 +354,12 @@ model = dict(
 weight = None
 
 save_path        = "exp/larformer_slicer_v1_cascaded_loradeghost"
-epoch            = 200
+epoch            = 1000
 eval_epoch       = 200
 batch_size       = 2
-batch_size_val   = 1
+batch_size_val   = 2
 num_worker       = 2
-num_worker_val   = 1
+num_worker_val   = 2
 evaluate         = True          # LArFormerSlicerEvaluator runs after each epoch
 enable_amp       = False
 empty_cache      = True
@@ -304,13 +367,66 @@ enable_wandb     = True
 wandb_project    = "pointcept-larformer"
 find_unused_parameters = True
 
-base_lr = 5e-5
-param_dicts = None
+# =============================================================================
+# Optimizer / scheduler
+# =============================================================================
 
+# Previous Simple, One-Cycle Cosine Annealing Schedule
+#base_lr = 5e-5
+#param_dicts = None
+# optimizer = dict(type="AdamW", lr=base_lr, weight_decay=0.01)
+# scheduler = dict(
+#     type="CosineAnnealingLR",
+#     eta_min=base_lr * 0.01,
+# )
+
+# Flat LR with two decay triggers (see pointcept/utils/scheduler.py
+# FlatWithDecayLR docstring):
+#   - epoch trigger:   cut LR by `gamma` every `step_period_epochs`.
+#   - plateau trigger: cut LR by `gamma` after `patience_epochs` of no
+#                      val/loss improvement > `min_delta`, then suppress
+#                      further plateau triggers for `cooldown_epochs`.
+#   - mode="both":     either trigger fires (whichever first).
+# Driven by the LREpochScheduler hook (must sit between the evaluator
+# and CheckpointSaver in `hooks=` below). When resuming a run trained
+# with this scheduler, set `extend_scheduler=False` on the checkpoint
+# loader — the OneCycleLR-aware extend path rewrites max_lr/initial_lr
+# and would corrupt FlatWithDecayLR state.
+base_lr = 1.0e-4
+param_dicts = None
 optimizer = dict(type="AdamW", lr=base_lr, weight_decay=0.01)
 scheduler = dict(
-    type="CosineAnnealingLR",
-    eta_min=base_lr * 0.01,
+    # Pointcept's config merge deep-merges nested dicts, so without
+    # _delete_=True the base config's OneCycleLR keys (max_lr, pct_start,
+    # …) leak through and FlatWithDecayLR.__init__ explodes with an
+    # 'unexpected keyword argument' TypeError. See
+    # pointcept/utils/config.py::_merge_a_into_b for the _delete_ docs.
+    #_delete_=True,
+    type="FlatWithDecayLR",
+    mode="plateau", # options: plateau, epoch, both
+    gamma=0.5,
+    min_lr=1e-7,
+    step_period_epochs=200, # based on train epochs, used in epoch and both mode 
+    patience_epochs=8,      # based on eval epochs, used in plateau and both mode
+    min_delta=1e-4,
+    cooldown_epochs=2,
+    # Manual LR override on resume. When not None, FlatWithDecayLR's
+    # load_state_dict overwrites every param_group's lr to this value
+    # AFTER optimizer.load_state_dict() and the scheduler counter
+    # restore — i.e. it is the final word for the next iteration.
+    # Useful when the saved checkpoint's LR is too high after a long
+    # run and you want to drop it before continuing.
+    #
+    # Caveat: this is applied EVERY time load_state_dict runs. After
+    # your first resume produces a new checkpoint, set back to None
+    # (or just delete the line) — otherwise the next resume will reset
+    # the LR to this value again, undoing any decays in between.
+    #
+    # Set `reset_counters=True` to also wipe best_val_loss and the
+    # plateau / period counters (use when reset_lr changes the loss
+    # landscape enough that the old "best" is no longer comparable).
+    reset_lr=1.0e-5,    
+    reset_counters=True,
 )
 
 hooks = [
@@ -328,6 +444,7 @@ hooks = [
          nu_class_id=0,
          empty_cache=True,
          log_per_event=False),
+    dict(type="LREpochScheduler"),
     dict(type="CheckpointSaver", save_freq=None),
 ]
 

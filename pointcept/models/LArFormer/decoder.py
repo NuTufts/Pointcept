@@ -25,6 +25,7 @@ style: PE is added to Q and K but NOT V. Mask head is position-aware via
 `mask_embed(q) @ (tokens + pos_emb(coords)).T`.
 """
 
+import math
 from collections import OrderedDict
 from typing import Optional, Sequence
 
@@ -36,6 +37,53 @@ from .builders import LevelOutput
 
 def _with_pos(x: torch.Tensor, pos: Optional[torch.Tensor]) -> torch.Tensor:
     return x if pos is None else x + pos
+
+
+class SinusoidalPosEmb3D(nn.Module):
+    """NeRF-style fixed sinusoidal position embedding for 3D coords.
+
+    For each of the 3 input axes, emits `num_freq` (sin, cos) pairs at log-
+    spaced frequencies in [1, max_freq], so the raw embedding width is
+    `3 * 2 * num_freq`. A final Linear projects to `dim` (no nonlinearity:
+    the embedding itself is the nonlinear part). Inputs are assumed to be
+    pre-normalized to roughly [-1, 1] (LArFormerDataset's coord_norm).
+
+    Unlike the MLP pos_emb, this gives every coord a unique, spatially
+    structured signature out of the box, which lets queries learn position-
+    specific behavior (e.g. distinguishing two content-similar tracks on
+    opposite sides of the detector) without depending on a learned MLP that
+    can collapse to mirror-symmetric features early in training.
+    """
+
+    def __init__(self, dim: int,
+                 num_freq: Optional[int] = None,
+                 max_freq: float = 256.0):
+        super().__init__()
+        if num_freq is None:
+            num_freq = max(1, dim // 12)  # 3 axes * 2 (sin,cos) * num_freq ≈ dim/2
+        freqs = 2.0 ** torch.linspace(
+            0.0, math.log2(float(max_freq)), int(num_freq)
+        )
+        self.register_buffer("freqs", freqs, persistent=False)
+        self.num_freq = int(num_freq)
+        self.raw_dim = 3 * 2 * self.num_freq
+        self.proj = nn.Linear(self.raw_dim, int(dim))
+
+    def forward(self, coords: torch.Tensor) -> torch.Tensor:
+        # coords: (..., 3)  →  (..., dim)
+        if coords.shape[-1] != 3:
+            raise ValueError(
+                f"SinusoidalPosEmb3D expects last dim == 3, got "
+                f"shape {tuple(coords.shape)}"
+            )
+        # Broadcast: (..., 3, 1) * (F,) → (..., 3, F)
+        scaled = coords.unsqueeze(-1) * self.freqs  # (..., 3, F)
+        sin = torch.sin(scaled)
+        cos = torch.cos(scaled)
+        # Interleave to (..., 3*2*F) without losing axis identity
+        emb = torch.stack([sin, cos], dim=-1)        # (..., 3, F, 2)
+        emb = emb.flatten(-3)                        # (..., 3*F*2)
+        return self.proj(emb)
 
 
 class _MaskedDecoderLayer(nn.Module):
@@ -132,7 +180,20 @@ class Mask2FormerDecoder(nn.Module):
         mlp_ratio:           FFN expansion
         dropout:             applied to MHA + optional FFN
         mask_threshold:      pre-sigmoid threshold for mask-gating attn mask
+        pos_emb_kind:        "mlp" (default) — learnable (3)→(D) MLP, original
+                              behavior; or "sinusoidal" — fixed log-spaced
+                              NeRF-style frequencies + a single Linear proj.
+                              Sinusoidal gives every coord a unique, spatially
+                              structured signature, breaking the mirror-
+                              symmetry pathology where two content-similar
+                              tracks far apart get bound to the same query.
         pos_emb_hidden_dim:  hidden dim of the shared (3)→(D) pos-emb MLP
+                              (only used when pos_emb_kind == "mlp")
+        pos_emb_num_freq:    number of log-spaced frequencies per axis (only
+                              used when pos_emb_kind == "sinusoidal"). Default
+                              picks dim // 12 so the raw embedding ≈ dim/2.
+        pos_emb_max_freq:    highest frequency (only used when sinusoidal).
+                              Default 256 covers a [-1, 1]-normalized coord.
         enable_origin_head:  if False, origin is identically 0 and skipped
                               from the dynamic query_pos
     """
@@ -147,7 +208,10 @@ class Mask2FormerDecoder(nn.Module):
         mlp_ratio: float = 4.0,
         dropout: float = 0.0,
         mask_threshold: float = 0.0,
+        pos_emb_kind: str = "mlp",
         pos_emb_hidden_dim: Optional[int] = None,
+        pos_emb_num_freq: Optional[int] = None,
+        pos_emb_max_freq: float = 256.0,
         enable_origin_head: bool = True,
     ):
         super().__init__()
@@ -165,13 +229,25 @@ class Mask2FormerDecoder(nn.Module):
         self.query_pos = nn.Parameter(torch.empty(num_queries, dim))
         nn.init.trunc_normal_(self.query_pos, std=0.02)
 
-        if pos_emb_hidden_dim is None:
-            pos_emb_hidden_dim = dim
-        self.pos_emb = nn.Sequential(
-            nn.Linear(3, pos_emb_hidden_dim),
-            nn.GELU(),
-            nn.Linear(pos_emb_hidden_dim, dim),
-        )
+        pos_emb_kind = str(pos_emb_kind).lower()
+        if pos_emb_kind not in ("mlp", "sinusoidal"):
+            raise ValueError(
+                f"pos_emb_kind must be 'mlp' or 'sinusoidal'; "
+                f"got {pos_emb_kind!r}"
+            )
+        self.pos_emb_kind = pos_emb_kind
+        if pos_emb_kind == "mlp":
+            if pos_emb_hidden_dim is None:
+                pos_emb_hidden_dim = dim
+            self.pos_emb = nn.Sequential(
+                nn.Linear(3, pos_emb_hidden_dim),
+                nn.GELU(),
+                nn.Linear(pos_emb_hidden_dim, dim),
+            )
+        else:
+            self.pos_emb = SinusoidalPosEmb3D(
+                dim, num_freq=pos_emb_num_freq, max_freq=pos_emb_max_freq,
+            )
 
         self.init_heads = _PerLayerHeads(
             dim, num_classes, enable_origin_head=self.enable_origin_head,

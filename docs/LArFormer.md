@@ -1,9 +1,9 @@
 # LArFormer — Design and Implementation Plan
 
-**Status:** Draft / pre-implementation. Not yet started in code.
+**Status:** P1–P6 implemented (scaffold → multi-level voxel → fragment builder → `LArFormerDataset` + GT visualizer → Stage-1 deghoster → Stage-2 cascaded slicer). Currently in slicer-debug iteration on a 10-event dev sample; see §15. P7 (particle clusterer) not started.
 **Owner:** taritree.wongjirad@tufts.edu
 **Generalizes:** [`ShowerClusteringMask2Former`](../pointcept/models/shower_clustering/model.py) (kept frozen for the trained shower-origin pipeline).
-**Lives at:** `pointcept/models/LArFormer/` (new).
+**Lives at:** `pointcept/models/LArFormer/`.
 
 This document is the living design reference. Update as decisions change or phases complete.
 
@@ -167,17 +167,21 @@ The decoder's per-query class head and Hungarian matcher stay essentially as tod
 
 ## 5. Loss budget defaults
 
-Inheriting from `ShowerClusteringLoss`, generalized:
+Inheriting from `ShowerClusteringLoss`, generalized. Default weights below are the spec defaults; the v1 cascaded-slicer configs have tuned values noted in the rightmost column (see [`larformer-slicer-v1-cascaded-loradeghost.py`](../configs/lartpc/larformer-slicer-v1-cascaded-loradeghost.py) for the canonical set).
 
-| Component                               | Default weight | Notes                                              |
-|-----------------------------------------|----------------|----------------------------------------------------|
-| Query class CE (matched)                | 2.0            | Hungarian-matched query → GT class                 |
-| Query class CE (no-object)              | × 0.1          | Down-weight for unmatched queries                  |
-| Primary-level mask BCE (per-pair, sampled, S=4096) | 5.0  | Point-sampled à la PointRend; balanced pos/neg     |
-| Primary-level Dice                      | 5.0            | Same sampled set                                   |
-| Aux mask BCE per non-primary level       | 1.0            | Full-mask BCE if `M_level ≤ aux_max_tokens`        |
-| Per-level cls CE (if declared)          | 1.0            | Per-token CE on the level's tokens                  |
-| Origin L1 (matched, if origin head on)  | 1.0            | As today                                            |
+| Component                                          | Spec default | Slicer-v1 value | Notes                                              |
+|----------------------------------------------------|--------------|-----------------|----------------------------------------------------|
+| Query class CE (matched)                           | 2.0          | 2.0             | Hungarian-matched query → GT class                 |
+| Query class CE (no-object)                         | × 0.1        | × 0.1           | Down-weight for unmatched queries                  |
+| Primary-level mask BCE (per-pair, sampled)         | 5.0          | 5.0             | Point-sampled à la PointRend; balanced pos/neg     |
+| Primary-level Dice                                 | 5.0          | 5.0             | Same sampled set                                   |
+| Aux mask BCE per non-primary level                 | 1.0          | 0.3             | Full-mask BCE if `M_level ≤ aux_max_tokens` (=20 000) |
+| Per-level cls CE (if declared)                     | 1.0          | 0.5             | Per-token CE on the level's tokens                 |
+| Origin L1 (matched, if origin head on)             | 1.0          | 0.0 / 0.5       | 0 = head off (default); 0.5 when `ENABLE_ORIGIN_HEAD_WITH_CENTROID=True` |
+
+**`num_sample_points`** for the primary BCE/Dice sampler is **8192** in the slicer-v1 configs (bumped from the 4096 default after dropping the `lm_score` pre-filter and so per-event SP counts ~3× larger).
+
+**Importance sampling** (PointRend-style hard-negative mining for the per-pair mask losses) is enabled in slicer-v1: `use_importance_sampling=True`, `importance_oversample_ratio=3.0`, `importance_ratio=0.75`. Negatives are drawn preferentially from the `|sigmoid(logit) - 0.5|` halo around the predicted mask boundary. Ported from `shower_clustering` where it gave a measurable uplift on the same set-prediction loss shape.
 
 Deep supervision: all the above are applied at the init prediction + every decoder layer, then summed. This is unchanged from `ShowerClusteringLoss`.
 
@@ -222,10 +226,15 @@ Joint fine-tuning (unfreezing all three stages end-to-end) is a future option an
 
 Open spec, expected to land per-stage as the cascade is built:
 
-- **Stage 1 → Stage 2.** Deghoster's per-SP `real` score is added to the slicer's input `feat`. The slicer's input set is the filter `score > τ` (τ matches deghoster training).
+- **Stage 1 → Stage 2.** Deghoster's per-SP `real` score is added to the slicer's input `feat`. The slicer's input set is the filter `score > τ` (τ sampled at train time, fixed at eval).
 - **Stage 2 → Stage 3.** Slicer's chosen nu-slice mask defines stage 3's input spacepoints. Slice metadata (flash time, vertex position) can ride along as extra per-event tokens.
 
-These hookpoints live in dataset-side wrappers (`LArFormerDeghostedDataset`, `LArFormerSliceCarvedDataset`) that take the prior stage's frozen checkpoint as a kwarg and run it once at `__getitem__` time. The downstream model itself doesn't know about the cascade.
+**Implementation note (Stage 1 → Stage 2).** v1 ended up doing the cascade *model-side* rather than dataset-side: [`CascadedSlicer`](../pointcept/models/LArFormer/cascaded.py) wraps the deghoster + slicer as one `nn.Module`. Forward: run the deghoster, threshold its per-SP `p(real)` against a τ sampled per-batch (`U(min,max)` in train, `val` at eval), call [`filter_batch_by_keep_mask`](../pointcept/models/LArFormer/cascade_filter.py) to drop ghost SPs from every per-SP tensor + recompute `offset`, then run the slicer on the surviving SPs. GT instances are filtered to the survivors too (`filtered_gt_instances_per_event` is exposed on the eval output so the evaluator's Hungarian uses the post-filter K). This keeps the dataset task-agnostic; the model knows about the cascade.
+
+Two cascade variants exist:
+
+- [`larformer-slicer-v1-cascaded.py`](../configs/lartpc/larformer-slicer-v1-cascaded.py) — LArFormer-flavored Stage-1 deghoster (per-token cls on the spacepoint level, class 1 = real). The deghoster is a separately-trained `LArFormer` checkpoint produced from [`larformer-deghost-v0.py`](../configs/lartpc/larformer-deghost-v0.py).
+- [`larformer-slicer-v1-cascaded-loradeghost.py`](../configs/lartpc/larformer-slicer-v1-cascaded-loradeghost.py) — uses the existing trained [`SonataLoRADeghostSegmentor`](../pointcept/models/sonata_lora_deghost.py) as Stage 1 (LoRA-finetuned Sonata-v1m1, class 0 = real via the HasmatchAsGhost convention). `CascadedSlicer._run_deghoster_p_real` accepts either output convention and picks the right softmax column based on `deghoster_class_index_real` on the cascade config. **This is the active variant for the current debug effort** because the LoRA deghoster is already trained and gives `real_recall=0.65` / `ghost_reject=0.83` at τ=0.5 on the dev sample.
 
 ---
 
@@ -401,24 +410,83 @@ Logged so the reasoning isn't lost.
 
 ## 14. Implementation phases (proposed)
 
-Each phase ends with a runnable training config and at least one overfit / sanity test.
+Each phase ends with a runnable training config and at least one overfit / sanity test. Smoke-test scripts for the model-side phases live in [`tools/smoke_test_larformer_p{2,3,4,5,6}.py`](../tools/).
 
-| Phase | Scope | Done when |
-|-------|-------|-----------|
-| **P1 — Scaffold** | `builders/{base,spacepoint,voxel}.py`, generic decoder + loss with one-level (spacepoint-only) config | Overfits a single event, no fragment dependency |
-| **P2 — Multi-level voxel** | Add 2–3 voxel levels in config; verify per-level mask aux losses work; verify scale pattern dispatch | A pure-voxel + spacepoint slicer-style config trains for 1 epoch on a small sample |
-| **P3 — Fragment builder** | Port `FragmentPool` + content enricher into `builders/fragment.py`; reproduce `ShowerClusteringMask2Former` behavior to within numerical tolerance | Equivalent config gives mask_iou parity vs the existing model on a small eval set |
-| **P4 — `LArFormerDataset`** | New dataset with pluggable `gt_source`; pull slice GT via `slice_labels.py`; collate handles optional fragments | Loads the canonical example for `gt_source="slice"` and `gt_source="shower_trunk"` |
-| **P4b — GT visualizer** | Extract `build_levels` + `build_per_level_gt` into pure helpers (§11); wire `tools/visualize_larformer_gt.py` against them | Per-level coords + instance / cls coloring renders for the canonical example under both `gt_source` settings |
-| **P5 — Stage 1: deghoster** | Per-level cls head on the spacepoint level; minimal/no queries; train on `hasmatch` | Beats or matches the existing LoRA deghoster on val mIoU |
-| **P6 — Stage 2: slicer** | Slicer config, frozen Stage 1 in the dataset wrapper, query-set predicts slices | Pure-mask + cls training converges on a small sample; flash loss not yet wired |
-| **P7 — Stage 3: particle clusterer** | Particle config, frozen stages 1+2 in the dataset wrapper | Overfit one nu slice end-to-end |
+| Phase | Scope | Status | Notes |
+|-------|-------|--------|-------|
+| **P1 — Scaffold** | `builders/{base,spacepoint,voxel}.py`, generic decoder + loss with one-level (spacepoint-only) config | **Done** | Single-event overfit works. |
+| **P2 — Multi-level voxel** | Add 2–3 voxel levels; verify per-level mask aux losses + scale-pattern dispatch | **Done** | Smoke test in `smoke_test_larformer_p2.py`. |
+| **P3 — Fragment builder** | Port `FragmentPool` + content enricher into `builders/fragment.py`; reproduce `ShowerClusteringMask2Former` behavior | **Done** | Smoke test in `smoke_test_larformer_p3.py`. |
+| **P4 — `LArFormerDataset`** | Pluggable `gt_source`; slice GT via `slice_labels.py`; collate handles optional fragments | **Done** | `gt_source="slice"` + `"shower_trunk"` + `"deghost"` all working. `gt_source="particle"` (P7) raises `NotImplementedError`. |
+| **P4b — GT visualizer** | Extract `build_levels` + `build_per_level_gt` into pure helpers (§11); wire `tools/visualize_larformer_gt.py` | **Done** | Visualizer at [`tools/visualize_larformer_gt.py`](../tools/visualize_larformer_gt.py), extended in v1 with a prediction-panel mode (see §15). |
+| **P5 — Stage 1: deghoster** | Per-level cls head on the spacepoint level; train on `hasmatch` | **Done (LArFormer flavor); LoRA variant adopted for cascade** | Both [`larformer-deghost-v0.py`](../configs/lartpc/larformer-deghost-v0.py) (LArFormer-flavored) and the LoRA-finetuned [`SonataLoRADeghostSegmentor`](../pointcept/models/sonata_lora_deghost.py) work as Stage 1. v1 cascade defaults to the LoRA variant (see §6 implementation note). |
+| **P6 — Stage 2: slicer** | Slicer config, frozen Stage 1 wired in-model via `CascadedSlicer`, query-set predicts slices | **Done (architecture); in active debug** | Trains end-to-end and reaches `nu_mIoU=0.67 / cosmic_mIoU=0.47 / mIoU=0.48` on a 10-event dev sample before plateauing — see §15 for the open failure mode and the toggles being tried against it. Flash-match loss still not wired (out of v1 scope). |
+| **P7 — Stage 3: particle clusterer** | Particle config, frozen stages 1+2 in the dataset wrapper | **Not started** | Blocked on P6 reaching usable val mIoU. |
 
 Phases 1–4 are model + dataset plumbing and can be done without committing to any downstream task. Phases 5–7 are the cascade itself and depend on having sufficient training data and the upstream stages working.
 
 ---
 
-## 15. References
+## 15. Current state (slicer-debug, 2026-05-21)
+
+### Setup
+
+- **Config in active iteration:** [`configs/lartpc/larformer-slicer-v1-cascaded-loradeghost.py`](../configs/lartpc/larformer-slicer-v1-cascaded-loradeghost.py).
+- **Stage-1 deghoster:** frozen `SonataLoRADeghostSegmentor` from `sonata/lora_deghost_v6_hasmatch/model/epoch_30.pth` (HasmatchAsGhost convention, class 0 = real).
+- **Stage-2 slicer:** Sonata-v1m1 backbone (frozen, initialized from `sonata/lartpc_v6_h200_noghosts_pretrain_logspace_resume/model/epoch_42.pth`) + Mask2Former decoder (`token_dim=256`, `num_queries=64`, `num_heads=4`, 6-layer scale pattern: `voxel_20cm → voxel_10cm → voxel_10cm → voxel_5cm → spacepoint → spacepoint`).
+- **Training data:** 10-event dev sample, single `_DEFAULT_LIST` used for train/val/test (intentional — this run is for overfit + failure-mode characterization, not generalization).
+- **Optimizer / schedule:** AdamW @ `1e-4`, `FlatWithDecayLR(plateau, gamma=0.5, patience_epochs=4, cooldown_epochs=2, min_lr=1e-7)` driven by the `LREpochScheduler` hook.
+- **Augmentation knob (cascade-specific):** the dataset's `lm_score_aug_low/high/val` were all dropped to `0.0` (no `lm_score` pre-filter at the dataset stage). The previous default (`0.15/0.40/0.15`) pre-filtered SPs at the LArMatch stage and then handed the deghoster a non-representative subset; that double-filtering depressed the measured `real_recall` from `~0.71` (inference-script value, 100-event eval) to `~0.13` (in-training at τ=0.5 with the pre-filter still on). With pre-filter off, in-training `real_recall=0.65` and `ghost_reject=0.83` at τ=0.5, matching the inference script.
+
+### Tooling added during the debug iteration
+
+- [`tools/run_slicer_inference.py`](../tools/run_slicer_inference.py) — reads an input list + a `CascadedSlicer` checkpoint and writes a per-event HDF5 with `pre/post/queries/gt/meta` groups (pre- and post-deghost SPs, query predictions, matched GT slice IDs, run/subrun/event ids). Used both for offline mIoU measurement (matches the in-training evaluator) and as the source-of-truth for the visualizer's prediction panel.
+- [`tools/visualize_larformer_gt.py`](../tools/visualize_larformer_gt.py) — extended with a `--slicerpred-dir` mode that overlays the inference script's HDF5 output as a second 3D scene stacked under the GT scene. Color modes: `pred_correct` (matched / mismatched / unmatched), `pred_slice_id`, `slice_id_gt`, `pred_class`, `p_real`. Track-ID color cycling is shared between GT and pred for visual alignment.
+
+### Current results & failure mode
+
+Best val metrics on the 10-event dev sample, plateauing around iter 2800:
+
+| Metric          | Value |
+|-----------------|-------|
+| `nu_mIoU`       | 0.67  |
+| `cosmic_mIoU`   | 0.47  |
+| `mIoU`          | 0.48  |
+
+Hand-scan of two events (37 GT slices total) using the visualizer's `pred_correct` mode:
+
+| Outcome                                              | Count |
+|------------------------------------------------------|-------|
+| Good slice prediction (~1-to-1 matched to a GT slice) | 13/37 |
+| Mirror-symmetric / parallel over-clustering          | 13/37 |
+| Slice predicted as several small disjoint pieces     |  7/37 |
+
+The dominant new failure pattern (driving the cosmic mIoU drag) is **two content-similar tracks at very different positions getting bound to the same query** — often two roughly parallel tracks in opposite halves of the TPC, or a track plus its mirror across a TPC axis. The model has no good way to break the tie: with `enable_origin_head=False`, each query is just a learnable slot identity with no spatial anchor, and the decoder's only spatial signal is a learnable 3-layer MLP `pos_emb` that can collapse to mirror-symmetric features early in training.
+
+### Toggles added to combat the mirror-symmetric pathology
+
+Both configs (`larformer-slicer-v1-cascaded.py` and `…-cascaded-loradeghost.py`) carry two top-of-file flags that select between the spec's defaults and the new positional priors:
+
+```python
+USE_SINUSOIDAL_POS_EMB = False               # decoder.pos_emb_kind
+ENABLE_ORIGIN_HEAD_WITH_CENTROID = False     # enable_origin_head + slice_origin_kind + weight_origin
+```
+
+1. **`USE_SINUSOIDAL_POS_EMB`** swaps the learnable MLP `pos_emb` in [`Mask2FormerDecoder`](../pointcept/models/LArFormer/decoder.py) for a fixed NeRF-style sinusoidal embedding (`SinusoidalPosEmb3D`: 3 axes × `(sin, cos)` × `num_freq` log-spaced freqs in `[1, 256]` + a single Linear projection). Every coord gets a unique structured signature out of the box.
+
+   *Status (2026-05-21): tried; no measurable improvement, possibly slightly worse than the MLP baseline. Currently `False`.*
+
+2. **`ENABLE_ORIGIN_HEAD_WITH_CENTROID`** re-enables the per-query origin head + sets the regression target to the **slice centroid** (`coord_norm[truth_indices].mean(0)`) rather than `primary_start_pos`. Centroid is well-bounded inside the TPC and tightly correlated with the slice's own spacepoints — for cosmics in particular, `primary_start_pos` is the cosmic-ray start above the TPC surface and can sit ~16+ norm-units away from the slice (i.e. ~2900 cm), which makes the regression target essentially noise. The centroid target also matches the spatial scale of the decoder's `pos_emb` input. When `True`, the loss adds `weight_origin=0.5`, the dataset's `slice_origin_kind="centroid"`, and the dynamic `query_pos = query_pos + pos_emb(predicted_origin)` is re-enabled per layer so the spatial anchor refines layer-to-layer.
+
+   Implementation: `slice_origin_kind` is a new kwarg on [`LArFormerDataset`](../pointcept/datasets/larformer.py) (default `"primary_start_pos"` for backward compatibility); the `"centroid"` branch in `_gt_from_slices` computes the per-slice mean of the coord-normalized spacepoint positions for that slice. The origin head itself is a direct query → 3-vec regression (per-layer MLP `Linear(D,D) → GELU → Linear(D,3)`, see [`_PerLayerHeads`](../pointcept/models/LArFormer/decoder.py)) with an L1 loss on Hungarian-matched (query, slice) pairs — **no mask involvement**.
+
+   *Status (2026-05-21): in active trial.*
+
+If the origin head alone doesn't fix the mirror-symmetric merger, the next thing to try is **initializing the layer-0 origin from the layer-0 mask centroid** (currently the layer-0 origin is whatever the init MLP outputs from the raw learnable query token, with no spatial signal) or stop-grad'ing the predicted origin into `query_pos` for the first layer so a bad init can't pin down the spatial anchor for the rest of the stack.
+
+---
+
+## 16. References
 
 - Existing model being generalized:
   [`pointcept/models/shower_clustering/`](../pointcept/models/shower_clustering/) — model / tokenizer / decoder / losses / matcher.

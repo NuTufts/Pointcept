@@ -92,6 +92,131 @@ def cls_color(c: int) -> str:
     return palette[c % len(palette)]
 
 
+def _track_id_color(tid: int, origin_type: int = -1) -> str:
+    """Color by trackid (consistent across GT and prediction panels).
+
+    GT panel's `instance_color(k, ot)` previously hashed by instance index
+    `k`, which means the same physical slice could get different colors in
+    the GT vs prediction panel if their instance orderings differed.
+    Hashing by trackid gives one color per physical track id, so a slice's
+    color is identical wherever it shows up (top panel, bottom panel,
+    cross-event browsing).
+
+    origin_type=0 ("nu" in the slicer's class set) always renders red so
+    the user can spot the nu slice instantly regardless of trackid hash.
+    """
+    if origin_type == 0:
+        return "rgba(255,60,60,1)"
+    # Golden-ratio hash on the absolute trackid; produces well-distributed
+    # hues with no two consecutive trackids landing on the same color.
+    h = (abs(int(tid)) * 0.61803398875) % 1.0
+    r, g, b = colorsys.hsv_to_rgb(h, 0.80, 0.95)
+    return f"rgba({int(r*255)},{int(g*255)},{int(b*255)},1)"
+
+
+# ---------------------------------------------------------------------------
+# Prediction-panel hover-text helper
+# ---------------------------------------------------------------------------
+
+_PRED_HOVER_TEMPLATE = (
+    "x=%{x:.1f} y=%{y:.1f} z=%{z:.1f}<br>"
+    "mask_prob=%{customdata[0]:.3f}<br>"
+    "pred_slice=%{customdata[1]}<br>"
+    "gt_slice=%{customdata[2]}<extra></extra>"
+)
+
+
+def _pred_hover_kwargs(mask, customdata_full):
+    """Return customdata + hovertemplate kwargs for a per-token Scatter3d.
+
+    If `customdata_full` is None (older HDF5 written before per-token mask
+    confidence was emitted), returns {} so the caller's Scatter3d falls
+    back to the default plotly hover (no per-point mask prob shown).
+    """
+    if customdata_full is None:
+        return {}
+    return dict(
+        customdata=customdata_full[mask],
+        hovertemplate=_PRED_HOVER_TEMPLATE,
+    )
+
+
+def _build_pred_customdata(pred_mask_prob, pred_slice_id, slice_id_gt):
+    """Stack the three per-token fields into a (N, 3) customdata array for
+    plotly. Returns None if pred_mask_prob is missing (older HDF5)."""
+    if pred_mask_prob is None:
+        return None
+    return np.stack([
+        pred_mask_prob.astype(np.float32),
+        pred_slice_id.astype(np.int64),
+        slice_id_gt.astype(np.int64),
+    ], axis=-1)
+
+
+def _apply_pred_threshold(
+    pred_mask_prob, pred_slice_id, pred_class, no_object_class_id,
+    min_mask_prob,
+):
+    """Apply a per-token confidence threshold to a prediction triple.
+
+    The cascade's inference rule is plain argmax over active queries — so
+    a token with all queries weakly negative (e.g. max sigm ≈ 0.05) still
+    gets bound to whichever query was the least bad. That's a no-threshold
+    panoptic assignment, not a model commitment.
+
+    With `min_mask_prob > 0`, tokens whose assigned-query sigm falls below
+    the threshold are demoted to "unassigned" (pred_slice_id = -1, pred_class
+    = no_object). The returned low_conf mask lets pred_correct coloring
+    distinguish "model wrong" from "model unsure".
+
+    Returns (pred_slice_id', pred_class', low_conf_mask). If
+    pred_mask_prob is None (older HDF5) the arrays are returned unchanged
+    and low_conf_mask is all-False.
+    """
+    n = pred_slice_id.shape[0]
+    if pred_mask_prob is None or min_mask_prob <= 0.0 or n == 0:
+        return pred_slice_id, pred_class, np.zeros(n, dtype=bool)
+    low_conf = pred_mask_prob < float(min_mask_prob)
+    out_slice = pred_slice_id.copy()
+    out_class = pred_class.copy()
+    out_slice[low_conf] = -1
+    out_class[low_conf] = int(no_object_class_id)
+    return out_slice, out_class, low_conf
+
+
+# ---------------------------------------------------------------------------
+# Slicer-prediction H5 reader
+# ---------------------------------------------------------------------------
+
+def _load_slicerpred(path: str) -> "dict | None":
+    """Load one `slicerpred_<basename>.h5` file produced by
+    `tools/run_slicer_inference.py` into a flat dict of numpy arrays +
+    scalars. Returns None if the file doesn't exist (caller falls back to
+    a "no prediction available" placeholder).
+
+    The returned dict mirrors the H5's group/key structure as `group/key`
+    strings (e.g. `post/coord`, `gt/primary_trackid`). Scalar attributes
+    live under `meta/*` keys with the `meta_` prefix dropped.
+    """
+    import h5py
+    if not os.path.exists(path):
+        return None
+    out: dict = {}
+    with h5py.File(path, "r") as f:
+        def visit(name, obj):
+            if isinstance(obj, h5py.Dataset):
+                out[name] = obj[()]
+        f.visititems(visit)
+        for k, v in f.attrs.items():
+            # h5py stores scalars as numpy types; coerce to native for
+            # ease of downstream use.
+            if hasattr(v, "item"):
+                out[k] = v.item()
+            else:
+                out[k] = v
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Cascade deghoster filter (the LoRA path)
 # ---------------------------------------------------------------------------
@@ -452,9 +577,15 @@ def figure_for_event(event_data, level_name, color_by):
                     continue
                 gi = gt_instances[k] if k < len(gt_instances) else {}
                 ot = int(gi.get("origin_type", -1))
-                clr = instance_color(k, origin_type=ot)
+                # Color by trackid (primary_trackid for slice mode,
+                # trunk_trackid for shower mode, fall back to instance k
+                # if neither is set). This way the same physical slice
+                # gets the same color in the prediction panel below.
+                tid = int(gi.get("primary_trackid",
+                                 gi.get("trunk_trackid", k)))
+                clr = _track_id_color(tid, origin_type=ot)
                 pts = coords_plot[m]
-                label_bits = [f"k={k}"]
+                label_bits = [f"k={k}", f"tid={tid}"]
                 if "origin_type" in gi:
                     label_bits.append(f"type={ot}")
                 if "primary_origin" in gi:
@@ -542,8 +673,427 @@ def figure_for_event(event_data, level_name, color_by):
     return fig
 
 
-def metadata_panel(event_data):
-    """HTML metadata table for the current event."""
+# ---------------------------------------------------------------------------
+# Prediction figure
+# ---------------------------------------------------------------------------
+
+def _figure_for_prediction_at_level(pred: dict, color_by: str,
+                                    level: str,
+                                    min_mask_prob: float = 0.0) -> go.Figure:
+    """Render the per-voxel prediction at a non-spacepoint `level`.
+
+    Expects keys `levels/<level>/{coord, pred_query, pred_class,
+    pred_slice_id, slice_id_gt, pred_correct}` written by
+    `run_slicer_inference.py`. If the requested level isn't present,
+    returns an explanatory placeholder figure.
+    """
+    coord_key = f"levels/{level}/coord"
+    if coord_key not in pred:
+        emitted = pred.get("voxel_levels", "")  # set in inference script meta
+        return go.Figure(data=[], layout=go.Layout(
+            title=f"Level {level!r} not in this prediction file. "
+                  f"(emitted voxel levels: {emitted or '<none>'}). Re-run "
+                  f"tools/run_slicer_inference.py with the current script "
+                  f"version to regenerate.",
+            margin=dict(l=0, r=0, b=0, t=40),
+        ))
+
+    traces = make_detector_outline_trace()
+    coord = pred[coord_key]                                  # (M, 3) cm
+    pred_slice_id = pred[f"levels/{level}/pred_slice_id"]    # (M,)
+    pred_class = pred[f"levels/{level}/pred_class"]          # (M,)
+    pred_correct = pred[f"levels/{level}/pred_correct"].astype(bool)
+    slice_id_gt = pred[f"levels/{level}/slice_id_gt"]        # (M,)
+    pred_mask_prob = pred.get(f"levels/{level}/pred_mask_prob")  # (M,) or None
+
+    customdata_full = _build_pred_customdata(
+        pred_mask_prob, pred_slice_id, slice_id_gt,
+    )
+
+    # Apply confidence threshold (no-op when min_mask_prob == 0 or when the
+    # HDF5 doesn't carry per-token mask probs). Low-conf tokens become
+    # "unassigned" for pred_slice_id / pred_class coloring; pred_correct
+    # gets a separate low-conf bucket so it isn't conflated with "wrong".
+    no_obj = int(pred.get("meta_no_object_class_id", 2))
+    pred_slice_id, pred_class, low_conf = _apply_pred_threshold(
+        pred_mask_prob, pred_slice_id, pred_class, no_obj, min_mask_prob,
+    )
+    pred_correct = pred_correct & ~low_conf
+
+    # Per-voxel marker is bigger than the SP marker so a sparser level
+    # stays visible. Tuned roughly by 1/cuberoot(M).
+    M = int(coord.shape[0])
+    #marker_size = max(2.5, 12.0 * (1000.0 / max(M, 100)) ** (1.0 / 3.0)) # too big, hard to see
+    marker_size = 2.0
+
+    primary_trackid_gt = pred.get("gt/primary_trackid", np.zeros(0, dtype=np.int64))
+    origin_type_gt = pred.get("gt/origin_type", np.zeros(0, dtype=np.int64))
+    tid_to_origin = {int(tid): int(ot) for tid, ot
+                     in zip(primary_trackid_gt, origin_type_gt)}
+
+    if color_by == "pred_correct":
+        # 4 buckets when threshold > 0; the "low-conf" bucket only fires
+        # when min_mask_prob > 0 AND pred_mask_prob is available, since
+        # `low_conf` is all-False otherwise.
+        correct_mask = pred_correct & (slice_id_gt >= 0) & ~low_conf
+        wrong_mask = (~pred_correct) & (slice_id_gt >= 0) & ~low_conf
+        low_conf_mask = low_conf & (slice_id_gt >= 0)
+        unmatched_gt_mask = (slice_id_gt < 0)
+        for mask, color, name in [
+            (correct_mask, "rgba(60,200,80,0.9)",
+             f"correct ({int(correct_mask.sum())})"),
+            (wrong_mask, "rgba(255,60,60,0.9)",
+             f"wrong ({int(wrong_mask.sum())})"),
+            (low_conf_mask, "rgba(255,200,60,0.9)",
+             f"low-conf (<{min_mask_prob:.2f}) ({int(low_conf_mask.sum())})"),
+            (unmatched_gt_mask, "rgba(150,150,150,0.4)",
+             f"no GT slice ({int(unmatched_gt_mask.sum())})"),
+        ]:
+            if not mask.any():
+                continue
+            pts = coord[mask]
+            traces.append(go.Scatter3d(
+                x=pts[:, 2], y=pts[:, 0], z=pts[:, 1],
+                mode="markers",
+                marker=dict(size=marker_size, color=color),
+                name=name,
+                **_pred_hover_kwargs(mask, customdata_full),
+            ))
+
+    elif color_by == "pred_slice_id":
+        unmapped = (pred_slice_id < 0)
+        if unmapped.any():
+            pts = coord[unmapped]
+            traces.append(go.Scatter3d(
+                x=pts[:, 2], y=pts[:, 0], z=pts[:, 1],
+                mode="markers",
+                marker=dict(size=marker_size * 0.8,
+                            color="rgba(150,150,150,0.4)"),
+                name=f"unassigned ({int(unmapped.sum())})",
+                **_pred_hover_kwargs(unmapped, customdata_full),
+            ))
+        for tid in sorted(set(int(t) for t in pred_slice_id if t >= 0)):
+            m = (pred_slice_id == tid)
+            ot = tid_to_origin.get(tid, -1)
+            pts = coord[m]
+            traces.append(go.Scatter3d(
+                x=pts[:, 2], y=pts[:, 0], z=pts[:, 1],
+                mode="markers",
+                marker=dict(size=marker_size,
+                            color=_track_id_color(tid, ot)),
+                name=f"pred tid={tid} ({int(m.sum())})"
+                     + (" [nu]" if ot == 0 else ""),
+                **_pred_hover_kwargs(m, customdata_full),
+            ))
+
+    elif color_by == "slice_id_gt":
+        ghost = (slice_id_gt < 0)
+        if ghost.any():
+            pts = coord[ghost]
+            traces.append(go.Scatter3d(
+                x=pts[:, 2], y=pts[:, 0], z=pts[:, 1],
+                mode="markers",
+                marker=dict(size=marker_size * 0.8,
+                            color="rgba(150,150,150,0.4)"),
+                name=f"no GT slice ({int(ghost.sum())})",
+                **_pred_hover_kwargs(ghost, customdata_full),
+            ))
+        for tid in sorted(set(int(t) for t in slice_id_gt if t >= 0)):
+            m = (slice_id_gt == tid)
+            ot = tid_to_origin.get(tid, -1)
+            pts = coord[m]
+            traces.append(go.Scatter3d(
+                x=pts[:, 2], y=pts[:, 0], z=pts[:, 1],
+                mode="markers",
+                marker=dict(size=marker_size,
+                            color=_track_id_color(tid, ot)),
+                name=f"GT tid={tid} ({int(m.sum())})"
+                     + (" [nu]" if ot == 0 else ""),
+                **_pred_hover_kwargs(m, customdata_full),
+            ))
+
+    elif color_by == "pred_class":
+        no_obj = int(pred.get("meta_no_object_class_id", 2))
+        for c in sorted(set(int(x) for x in pred_class)):
+            m = (pred_class == c)
+            pts = coord[m]
+            label = "no_object" if c == no_obj else f"class={c}"
+            color = "rgba(150,150,150,0.4)" if c == no_obj else cls_color(c)
+            traces.append(go.Scatter3d(
+                x=pts[:, 2], y=pts[:, 0], z=pts[:, 1],
+                mode="markers",
+                marker=dict(size=marker_size, color=color),
+                name=f"{label} ({int(m.sum())})",
+                **_pred_hover_kwargs(m, customdata_full),
+            ))
+
+    elif color_by == "p_real":
+        # p_real is pre-deghost per-SP only; not meaningful at a voxel level.
+        return go.Figure(data=[], layout=go.Layout(
+            title=f"p_real coloring is spacepoint-only — not defined at "
+                  f"level {level!r}. Switch level to 'spacepoint' or pick "
+                  f"a different color mode.",
+            margin=dict(l=0, r=0, b=0, t=40),
+        ))
+
+    n_pre = pred.get("meta_n_sp_pre", 0)
+    n_post = pred.get("meta_n_sp_post", 0)
+    tau = pred.get("meta_tau", float("nan"))
+    title = (
+        f"PREDICTION  level={level}  M={M}  "
+        f"event={pred.get('meta_event', '?')} "
+        f"run={pred.get('meta_run', '?')} "
+        f"subrun={pred.get('meta_subrun', '?')}  |  "
+        f"n_sp {n_pre} → {n_post}  τ={tau:.3f}  "
+        f"matched={pred.get('meta_n_matched', 0)}/"
+        f"{pred.get('meta_n_gt_instances', 0)}"
+    )
+    return go.Figure(data=traces, layout=go.Layout(
+        title=title,
+        scene=dict(
+            xaxis=dict(title="z (cm)"),
+            yaxis=dict(title="x (cm)"),
+            zaxis=dict(title="y (cm)"),
+            aspectmode="data",
+        ),
+        margin=dict(l=0, r=0, b=0, t=40),
+        legend=dict(itemsizing="constant"),
+    ))
+
+
+def figure_for_prediction(pred: "dict | None", color_by: str,
+                          level: str = "spacepoint",
+                          min_mask_prob: float = 0.0) -> go.Figure:
+    """Build the 3D Plotly figure for the slicer's per-event prediction.
+
+    Args:
+        pred: dict loaded by `_load_slicerpred` (or None if no file).
+        color_by: see color-mode list below.
+        level: which level's mask predictions to render.
+                - "spacepoint" (default) — uses the cascade's post-filter SP
+                   predictions (post/pred_*). Most fine-grained view.
+                - any other name (e.g. "voxel_10cm") — uses the per-voxel
+                   per-level predictions emitted by `run_slicer_inference.py`
+                   under `levels/<name>/*`. Useful for comparing merger
+                   behavior across mask resolutions (the same mask_embed
+                   produces masks at every level, so a merge present at the
+                   spacepoint level should appear at the voxel levels too
+                   — see docs/LArFormer.md §15).
+
+    Color modes (spacepoint level supports all five; voxel levels skip
+    `p_real` because it's pre-deghost-only):
+      - "pred_correct"   green / red overlay on the post-filter / per-voxel
+                          tokens (the fastest way to see where the model
+                          goes wrong)
+      - "pred_slice_id"  each token colored by its predicted slice id;
+                          uses _track_id_color so the same trackid renders
+                          the same color across panels
+      - "slice_id_gt"    same tokens colored by their TRUE slice id (per-
+                          voxel plurality vote at non-spacepoint levels)
+      - "pred_class"     nu / cosmic / no_object class assignment
+      - "p_real"         deghoster's P(real); continuous colorscale on
+                          all pre-filter SPs (spacepoint level only)
+    """
+    if pred is None:
+        return go.Figure(
+            data=[],
+            layout=go.Layout(
+                title="No prediction file for this event "
+                      "(set --slicerpred-dir on the CLI and run "
+                      "tools/run_slicer_inference.py first).",
+                margin=dict(l=0, r=0, b=0, t=40),
+            ),
+        )
+
+    if level != "spacepoint":
+        return _figure_for_prediction_at_level(
+            pred, color_by, level, min_mask_prob=min_mask_prob,
+        )
+
+    traces = make_detector_outline_trace()
+
+    pre_coord = pred["pre/coord"]                     # (n_pre, 3) cm
+    keep_mask = pred["pre/keep"].astype(bool)          # (n_pre,) bool
+
+    # The post-filter arrays in the H5 are aligned with `pre_coord[keep_mask]`
+    # in original order. Recover the post-filter cm coords by indexing.
+    post_coord_cm = pre_coord[keep_mask]
+    post_slice_id_gt = pred["post/slice_id_gt"]
+    pred_slice_id = pred["post/pred_slice_id"]
+    pred_class = pred["post/pred_class"]
+    pred_correct = pred["post/pred_correct"].astype(bool)
+    pred_mask_prob = pred.get("post/pred_mask_prob")  # (n_post,) or None
+    p_real_pre = pred["pre/p_real"]
+
+    customdata_full = _build_pred_customdata(
+        pred_mask_prob, pred_slice_id, post_slice_id_gt,
+    )
+
+    # Apply per-token confidence threshold (no-op when min_mask_prob == 0
+    # or when older HDF5 lacks per-token mask probs). Low-conf tokens
+    # become "unassigned" for the pred_slice_id / pred_class color modes;
+    # pred_correct gets its own low-conf bucket (yellow) so it isn't
+    # conflated with model-confidently-wrong (red).
+    no_obj = int(pred.get("meta_no_object_class_id", 2))
+    pred_slice_id, pred_class, low_conf = _apply_pred_threshold(
+        pred_mask_prob, pred_slice_id, pred_class, no_obj, min_mask_prob,
+    )
+    pred_correct = pred_correct & ~low_conf
+
+    # GT-instance metadata for nu/cosmic-aware coloring
+    primary_trackid_gt = pred.get("gt/primary_trackid", np.zeros(0, dtype=np.int64))
+    origin_type_gt = pred.get("gt/origin_type", np.zeros(0, dtype=np.int64))
+    tid_to_origin = {int(tid): int(ot) for tid, ot
+                     in zip(primary_trackid_gt, origin_type_gt)}
+
+    if color_by == "pred_correct":
+        # 4 buckets when threshold > 0; low_conf is all-False otherwise.
+        correct_mask = pred_correct & (post_slice_id_gt >= 0) & ~low_conf
+        wrong_mask = (~pred_correct) & (post_slice_id_gt >= 0) & ~low_conf
+        low_conf_mask = low_conf & (post_slice_id_gt >= 0)
+        unmatched_gt_mask = (post_slice_id_gt < 0)
+        for mask, color, name in [
+            (correct_mask, "rgba(60,200,80,0.9)",
+             f"correct ({int(correct_mask.sum())})"),
+            (wrong_mask, "rgba(255,60,60,0.9)",
+             f"wrong ({int(wrong_mask.sum())})"),
+            (low_conf_mask, "rgba(255,200,60,0.9)",
+             f"low-conf (<{min_mask_prob:.2f}) ({int(low_conf_mask.sum())})"),
+            (unmatched_gt_mask, "rgba(150,150,150,0.4)",
+             f"no GT slice ({int(unmatched_gt_mask.sum())})"),
+        ]:
+            if not mask.any():
+                continue
+            pts = post_coord_cm[mask]
+            traces.append(go.Scatter3d(
+                x=pts[:, 2], y=pts[:, 0], z=pts[:, 1],
+                mode="markers",
+                marker=dict(size=1.6, color=color),
+                name=name,
+                **_pred_hover_kwargs(mask, customdata_full),
+            ))
+
+    elif color_by == "pred_slice_id":
+        # Per-trackid coloring on post-filter SPs. Unassigned (pred_slice_id==-1)
+        # is dim gray; everything else hashes by trackid.
+        unmapped = (pred_slice_id < 0)
+        if unmapped.any():
+            pts = post_coord_cm[unmapped]
+            traces.append(go.Scatter3d(
+                x=pts[:, 2], y=pts[:, 0], z=pts[:, 1],
+                mode="markers",
+                marker=dict(size=1.5, color="rgba(150,150,150,0.4)"),
+                name=f"unassigned ({int(unmapped.sum())})",
+                **_pred_hover_kwargs(unmapped, customdata_full),
+            ))
+        used_tids = sorted(set(int(t) for t in pred_slice_id if t >= 0))
+        for tid in used_tids:
+            m = (pred_slice_id == tid)
+            ot = tid_to_origin.get(tid, -1)
+            pts = post_coord_cm[m]
+            traces.append(go.Scatter3d(
+                x=pts[:, 2], y=pts[:, 0], z=pts[:, 1],
+                mode="markers",
+                marker=dict(size=2.0, color=_track_id_color(tid, ot)),
+                name=f"pred tid={tid} ({int(m.sum())})"
+                     + (" [nu]" if ot == 0 else ""),
+                **_pred_hover_kwargs(m, customdata_full),
+            ))
+
+    elif color_by == "slice_id_gt":
+        # GT-side coloring on the same post-filter SPs — direct visual
+        # comparison anchor for `pred_slice_id`.
+        ghost = (post_slice_id_gt < 0)
+        if ghost.any():
+            pts = post_coord_cm[ghost]
+            traces.append(go.Scatter3d(
+                x=pts[:, 2], y=pts[:, 0], z=pts[:, 1],
+                mode="markers",
+                marker=dict(size=1.5, color="rgba(150,150,150,0.4)"),
+                name=f"ghost / no GT slice ({int(ghost.sum())})",
+                **_pred_hover_kwargs(ghost, customdata_full),
+            ))
+        used_tids = sorted(set(int(t) for t in post_slice_id_gt if t >= 0))
+        for tid in used_tids:
+            m = (post_slice_id_gt == tid)
+            ot = tid_to_origin.get(tid, -1)
+            pts = post_coord_cm[m]
+            traces.append(go.Scatter3d(
+                x=pts[:, 2], y=pts[:, 0], z=pts[:, 1],
+                mode="markers",
+                marker=dict(size=2.0, color=_track_id_color(tid, ot)),
+                name=f"GT tid={tid} ({int(m.sum())})"
+                     + (" [nu]" if ot == 0 else ""),
+                **_pred_hover_kwargs(m, customdata_full),
+            ))
+
+    elif color_by == "pred_class":
+        no_obj = int(pred.get("meta_no_object_class_id", 2))
+        for c in sorted(set(int(x) for x in pred_class)):
+            m = (pred_class == c)
+            pts = post_coord_cm[m]
+            label = "no_object" if c == no_obj else f"class={c}"
+            # Use cls_color so nu=red, cosmic=blue convention is reused.
+            color = "rgba(150,150,150,0.4)" if c == no_obj else cls_color(c)
+            traces.append(go.Scatter3d(
+                x=pts[:, 2], y=pts[:, 0], z=pts[:, 1],
+                mode="markers",
+                marker=dict(size=2.0, color=color),
+                name=f"{label} ({int(m.sum())})",
+                **_pred_hover_kwargs(m, customdata_full),
+            ))
+
+    elif color_by == "p_real":
+        # Continuous colorscale on ALL pre-filter SPs. Shows the deghoster's
+        # full output, not just the kept points.
+        traces.append(go.Scatter3d(
+            x=pre_coord[:, 2], y=pre_coord[:, 0], z=pre_coord[:, 1],
+            mode="markers",
+            marker=dict(
+                size=1.5, color=p_real_pre,
+                colorscale="RdYlBu",       # red = low P(real); blue = high
+                cmin=0.0, cmax=1.0,
+                showscale=True,
+                colorbar=dict(title="P(real)", thickness=12),
+            ),
+            name=f"all SPs ({len(pre_coord)})",
+            hovertemplate="P(real)=%{marker.color:.3f}<extra></extra>",
+        ))
+
+    n_pre = pred.get("meta_n_sp_pre", 0)
+    n_post = pred.get("meta_n_sp_post", 0)
+    tau = pred.get("meta_tau", float("nan"))
+    title = (
+        f"PREDICTION  event={pred.get('meta_event', '?')} "
+        f"run={pred.get('meta_run', '?')} "
+        f"subrun={pred.get('meta_subrun', '?')}  |  "
+        f"n_sp {n_pre} → {n_post}  τ={tau:.3f}  "
+        f"matched={pred.get('meta_n_matched', 0)}/"
+        f"{pred.get('meta_n_gt_instances', 0)}"
+    )
+    return go.Figure(data=traces, layout=go.Layout(
+        title=title,
+        scene=dict(
+            xaxis=dict(title="z (cm)"),
+            yaxis=dict(title="x (cm)"),
+            zaxis=dict(title="y (cm)"),
+            aspectmode="data",
+        ),
+        margin=dict(l=0, r=0, b=0, t=40),
+        legend=dict(itemsizing="constant"),
+    ))
+
+
+def metadata_panel(event_data, prediction: "dict | None" = None):
+    """HTML metadata table for the current event.
+
+    Args:
+        event_data: dict from build_event_gt (GT side).
+        prediction: optional dict from _load_slicerpred (model output side).
+                     When given, appends a "prediction summary" section
+                     with per-pair IoU stats, nu/cosmic confusion breakdown,
+                     and per-instance matched-query mapping.
+    """
     sample = event_data["sample"]
     rows = [
         html.Tr([html.Td(html.B("run/subrun/event")),
@@ -633,6 +1183,86 @@ def metadata_panel(event_data):
                                   f"(showing first {min(50, len(gts))}):")))
         md.append(html.Table(inst_rows,
                              style={"width": "100%", "fontSize": "12px"}))
+
+    # ---- prediction summary ----------------------------------------------
+    if prediction is not None:
+        pair_iou = prediction.get("gt/pair_iou", np.zeros(0))
+        valid = pair_iou[pair_iou >= 0] if pair_iou.size else pair_iou
+        pair_cls_correct = prediction.get("gt/pair_cls_correct", np.zeros(0))
+        valid_cls = (pair_cls_correct[pair_cls_correct >= 0]
+                     if pair_cls_correct.size else pair_cls_correct)
+        origin_type = prediction.get("gt/origin_type", np.zeros(0))
+        matched_query = prediction.get("gt/matched_query", np.zeros(0))
+        primary_trackid = prediction.get("gt/primary_trackid", np.zeros(0))
+
+        # Per-event summary
+        n_matched = int(prediction.get("meta_n_matched", 0))
+        n_gt = int(prediction.get("meta_n_gt_instances", 0))
+        miou = float(np.mean(valid)) if valid.size else float("nan")
+        miou_p25 = float(np.percentile(valid, 25)) if valid.size else float("nan")
+        cls_acc = (float(valid_cls.mean()) if valid_cls.size > 0
+                   else float("nan"))
+
+        # Per-class breakdown
+        nu_mask = (origin_type == 0)
+        cosmic_mask = (origin_type == 1)
+        nu_iou = (float(np.mean(pair_iou[nu_mask & (pair_iou >= 0)]))
+                  if (nu_mask & (pair_iou >= 0)).any() else float("nan"))
+        cosmic_iou = (float(np.mean(pair_iou[cosmic_mask & (pair_iou >= 0)]))
+                      if (cosmic_mask & (pair_iou >= 0)).any() else float("nan"))
+
+        pred_rows = [
+            html.Tr([html.Td(colSpan=2,
+                children=html.Hr(style={"margin": "4px 0"}))]),
+            html.Tr([html.Td(html.B("prediction summary"),
+                             colSpan=2,
+                             style={"fontStyle": "italic"})]),
+            html.Tr([html.Td("matched / GT"),
+                     html.Td(f"{n_matched} / {n_gt}")]),
+            html.Tr([html.Td("mean pair IoU"),
+                     html.Td(f"{miou:.3f}  (p25={miou_p25:.3f})")]),
+            html.Tr([html.Td("nu mean IoU"),
+                     html.Td(f"{nu_iou:.3f}")]),
+            html.Tr([html.Td("cosmic mean IoU"),
+                     html.Td(f"{cosmic_iou:.3f}")]),
+            html.Tr([html.Td("class accuracy (matched)"),
+                     html.Td(f"{cls_acc:.3f}")]),
+        ]
+        md.append(html.Table(pred_rows,
+                             style={"width": "100%", "fontSize": "13px"}))
+
+        # Per-GT-instance pair table (which query, what IoU, right class?)
+        if pair_iou.size > 0:
+            inst_rows = [html.Tr([
+                html.Th("k"), html.Th("tid"), html.Th("ot"),
+                html.Th("n_pts"), html.Th("matched_q"),
+                html.Th("pair IoU"), html.Th("cls ok"),
+            ])]
+            n_pts = prediction.get("gt/n_truth_points", np.zeros(len(pair_iou)))
+            for k in range(min(int(len(pair_iou)), 50)):
+                tid = int(primary_trackid[k]) if k < len(primary_trackid) else -1
+                ot = int(origin_type[k]) if k < len(origin_type) else -1
+                mq = int(matched_query[k]) if k < len(matched_query) else -1
+                npp = int(n_pts[k]) if k < len(n_pts) else 0
+                iou_val = float(pair_iou[k])
+                cls_ok = int(pair_cls_correct[k]) if k < len(pair_cls_correct) else -1
+                iou_str = f"{iou_val:.3f}" if iou_val >= 0 else "—"
+                cls_str = ("✓" if cls_ok == 1 else
+                           ("✗" if cls_ok == 0 else "—"))
+                inst_rows.append(html.Tr([
+                    html.Td(str(k)),
+                    html.Td(str(tid)),
+                    html.Td(str(ot)),
+                    html.Td(str(npp)),
+                    html.Td(str(mq)),
+                    html.Td(iou_str),
+                    html.Td(cls_str),
+                ]))
+            md.append(html.Div(html.B("matched pairs (predicted vs GT):"),
+                               style={"marginTop": "4px"}))
+            md.append(html.Table(inst_rows,
+                                 style={"width": "100%", "fontSize": "12px"}))
+
     return md
 
 
@@ -662,6 +1292,12 @@ def main():
                     help="Initial event index")
     ap.add_argument("--max-spacepoints", type=int, default=None,
                     help="Override dataset's max_spacepoints (for browser perf)")
+    ap.add_argument("--slicerpred-dir", default=None,
+                    help="Directory of slicerpred_<basename>.h5 files "
+                         "produced by tools/run_slicer_inference.py. When "
+                         "set, a second 3D scene appears below the GT one "
+                         "showing the model's predictions for the same "
+                         "event. File matching is by event basename.")
     ap.add_argument("--host", default="0.0.0.0")
     ap.add_argument("--port", type=int, default=8050)
     args = ap.parse_args()
@@ -774,7 +1410,74 @@ def main():
         ]),
         html.Div([
             html.Div([
-                dcc.Graph(id="scene", style={"height": "85vh"}),
+                # GT scene (top). 50vh when prediction panel is shown so
+                # both scenes fit in one viewport; 85vh otherwise so the
+                # GT-only case stays full-height.
+                dcc.Graph(
+                    id="scene",
+                    style={"height": ("50vh"
+                                      if args.slicerpred_dir is not None
+                                      else "85vh")},
+                ),
+                # Prediction-scene color-by + level selector (hidden when
+                # no --slicerpred-dir was given).
+                html.Div([
+                    html.Span("Prediction level: ",
+                              style={"marginRight": "6px"}),
+                    dcc.Dropdown(
+                        id="pred-level",
+                        options=[{"label": n, "value": n}
+                                 for n in level_names],
+                        value="spacepoint",
+                        clearable=False,
+                        style={"width": "180px",
+                               "display": "inline-block",
+                               "marginRight": "16px"},
+                    ),
+                    html.Span("Prediction color by: ",
+                              style={"marginRight": "6px"}),
+                    dcc.Dropdown(
+                        id="pred-color",
+                        options=[
+                            {"label": "correct / wrong (vs GT)",
+                             "value": "pred_correct"},
+                            {"label": "predicted slice id (trackid)",
+                             "value": "pred_slice_id"},
+                            {"label": "GT slice id (post-filter SPs)",
+                             "value": "slice_id_gt"},
+                            {"label": "predicted class (nu/cosmic)",
+                             "value": "pred_class"},
+                            {"label": "deghoster P(real) (all pre-filter SPs)",
+                             "value": "p_real"},
+                        ],
+                        value="pred_correct",
+                        clearable=False,
+                        style={"width": "300px",
+                               "display": "inline-block",
+                               "marginRight": "16px"},
+                    ),
+                    html.Span("min mask prob: ",
+                              style={"marginRight": "6px"}),
+                    dcc.Input(id="pred-thresh", type="number",
+                              min=0.0, max=1.0, step=0.05, value=0.5,
+                              style={"width": "80px",
+                                     "display": "inline-block"}),
+                ], style={
+                    "marginTop": "4px",
+                    "display": ("block"
+                                if args.slicerpred_dir is not None
+                                else "none"),
+                }),
+                # Prediction scene (bottom).
+                dcc.Graph(
+                    id="pred-scene",
+                    style={"height": ("50vh"
+                                      if args.slicerpred_dir is not None
+                                      else "0"),
+                           "display": ("block"
+                                       if args.slicerpred_dir is not None
+                                       else "none")},
+                ),
             ], style={"width": "70%", "display": "inline-block",
                       "verticalAlign": "top"}),
             html.Div(id="meta",
@@ -782,7 +1485,10 @@ def main():
                             "verticalAlign": "top",
                             "padding": "8px", "boxSizing": "border-box",
                             "fontFamily": "monospace",
-                            "overflowY": "auto", "maxHeight": "85vh"}),
+                            "overflowY": "auto",
+                            "maxHeight": ("105vh"
+                                          if args.slicerpred_dir is not None
+                                          else "85vh")}),
         ]),
     ], style={"fontFamily": "Helvetica, Arial, sans-serif",
               "padding": "8px"})
@@ -791,6 +1497,10 @@ def main():
     # or color reuses the cache; switching entry or τ rebuilds (deghoster
     # forward is expensive but is only re-run on those changes).
     cache = {"key": None, "data": None}
+    # Cache last-loaded slicerpred file, keyed by entry only (no tau
+    # dependency — the prediction was made by run_slicer_inference at the
+    # cascade's val τ, not at the viewer's τ slider).
+    pred_cache = {"entry": None, "data": None}
 
     def get_event(entry, tau):
         key = (int(entry), float(tau) if tau is not None else None)
@@ -805,28 +1515,60 @@ def main():
         cache["data"] = ev
         return ev
 
+    def get_prediction(entry: int) -> "dict | None":
+        if args.slicerpred_dir is None:
+            return None
+        if pred_cache["entry"] == entry and pred_cache["data"] is not None:
+            return pred_cache["data"]
+        # Look up the slicerpred file by the dataset event's basename.
+        # The dataset's sample["name"] is set in LArFormerDataset._load_event.
+        sample = dataset[entry]
+        in_name = sample.get("name", "")
+        stem = os.path.splitext(in_name)[0]
+        path = os.path.join(args.slicerpred_dir, f"slicerpred_{stem}.h5")
+        pred = _load_slicerpred(path)
+        if pred is None:
+            print(f"[viz] prediction file not found: {path}")
+        pred_cache["entry"] = entry
+        pred_cache["data"] = pred
+        return pred
+
     @app.callback(
         Output("scene", "figure"),
+        Output("pred-scene", "figure"),
         Output("meta", "children"),
         Input("entry", "value"),
         Input("level", "value"),
         Input("color", "value"),
         Input("reload", "n_clicks"),
         Input("tau", "value"),
+        Input("pred-color", "value"),
+        Input("pred-level", "value"),
+        Input("pred-thresh", "value"),
     )
-    def update(entry, level, color, n_clicks, tau):
+    def update(entry, level, color, n_clicks, tau, pred_color, pred_level,
+               pred_thresh):
         if entry is None:
             entry = args.entry
         entry = max(0, min(int(entry), len(dataset) - 1))
         if tau is None:
             tau = deghost_tau_default
-        # `reload` button invalidates the cache by forcing a re-fetch.
+        if pred_thresh is None:
+            pred_thresh = 0.5
+        # `reload` button invalidates BOTH caches by forcing a re-fetch.
         if n_clicks and cache["key"] is not None and cache["key"][0] == entry:
             cache["key"] = None
+            pred_cache["entry"] = None
         ev = get_event(entry, tau)
         fig = figure_for_event(ev, level, color)
-        meta = metadata_panel(ev)
-        return fig, meta
+        pred = get_prediction(entry)
+        pred_fig = figure_for_prediction(
+            pred, pred_color or "pred_correct",
+            level=pred_level or "spacepoint",
+            min_mask_prob=float(pred_thresh),
+        )
+        meta = metadata_panel(ev, prediction=pred)
+        return fig, pred_fig, meta
 
     print(f"\nStarting Dash on http://{args.host}:{args.port}/  (Ctrl+C to stop)")
     app.run(host=args.host, port=args.port, debug=False)

@@ -234,56 +234,90 @@ def _importance_sample_negatives(
     n_neg_target: int,
     oversample_ratio: float = 3.0,
     importance_ratio: float = 0.75,
+    hard_neg_ratio: float = 0.0,
 ) -> torch.Tensor:
-    """PointRend / Mask2Former-style importance sampling of negatives.
+    """PointRend / Mask2Former-style importance sampling of negatives, with
+    an optional complementary hard-negative branch.
 
-    Ported from `pointcept.models.shower_clustering.losses._importance_sample_negatives`
-    (the shower-clustering devs documented a meaningful uplift from this on
-    a similar set-prediction loss; see their inline notes about an
-    "over-prediction halo" failure mode at mask_iou=0.03).
+    Three independent budget fractions on `n_neg_target`:
 
-    Algorithm:
-      1. Oversample `oversample_ratio * n_neg_target` random background points.
-      2. Score uncertainty `|sigmoid(logit) - 0.5|` (small = on the fence =
-         halo around the model's predicted mask boundary).
-      3. Take `importance_ratio * n_neg_target` most-uncertain points.
-      4. Top up with `(1 - importance_ratio) * n_neg_target` fresh random
-         background points for coverage diversity.
+      • `importance_ratio` — picks the smallest `|sigmoid(logit) - 0.5|`,
+        i.e. the most-uncertain (boundary halo) points. Default 0.75. Right
+        intervention when the failure mode is ambiguous-boundary halos.
 
-    The scoring step uses `torch.no_grad()` — uncertainty PICKS points;
-    gradients don't backprop through the selection.
+      • `hard_neg_ratio` — picks the largest `sigmoid(logit)`, i.e. the
+        model's most-confident false-positives among the bg. Right
+        intervention when the failure mode is over-clustering / merging
+        (confidently wrong predictions sitting at `sigm≈1`, which the
+        halo-uncertainty criterion explicitly DEPRIORITIZES). Default 0.0.
+
+      • remainder (`1 - importance_ratio - hard_neg_ratio`) — uniform
+        random over all bg, for coverage diversity.
+
+    Both importance and hard-neg picks are drawn from the same oversampled
+    candidate pool (`oversample_ratio * n_neg_target` random bg points).
+    The two branches can overlap; that's tolerated. If
+    `importance_ratio + hard_neg_ratio > 1`, the random budget clamps to 0
+    and the two branches' actual sizes are scaled down to fit.
+
+    All scoring uses `torch.no_grad()` — selection doesn't backprop.
+
+    Originally ported from `pointcept.models.shower_clustering.losses.
+    _importance_sample_negatives`, where the halo-only variant uplifted a
+    `mask_iou=0.03` setting. See `docs/LArFormer.md` §15 for the failure-
+    mode analysis that motivates the hard-neg extension.
     """
     device = bg_indices.device
     n_bg = int(bg_indices.numel())
     if n_neg_target <= 0 or n_bg == 0:
         return torch.zeros(0, dtype=torch.long, device=device)
 
-    # (1) oversample
+    # (1) oversample candidates
     n_over = min(int(round(oversample_ratio * n_neg_target)), n_bg)
     perm = torch.randperm(n_bg, device=device)[:n_over]
     candidates = bg_indices[perm]
 
-    # (2) uncertainty (no grad)
-    with torch.no_grad():
-        unc = (pred_logits_q[candidates].sigmoid() - 0.5).abs()
+    # Resolve per-branch budgets, clamped to the candidate pool size.
+    if importance_ratio + hard_neg_ratio > 1.0:
+        # Proportionally rescale the two structured branches to fit.
+        scale = 1.0 / (importance_ratio + hard_neg_ratio)
+        importance_ratio = importance_ratio * scale
+        hard_neg_ratio = hard_neg_ratio * scale
 
-    # (3) pick the importance subset (smallest unc = most uncertain)
     n_imp = min(int(round(importance_ratio * n_neg_target)), n_over)
+    n_hard = min(int(round(hard_neg_ratio * n_neg_target)),
+                 max(0, n_over - n_imp))
+    n_rand = max(0, n_neg_target - n_imp - n_hard)
+
+    # (2a) halo branch — smallest |sigm - 0.5|
+    if n_imp > 0 or n_hard > 0:
+        with torch.no_grad():
+            sigm = pred_logits_q[candidates].sigmoid()
+
     if n_imp > 0:
-        _, imp_idx = torch.topk(unc, n_imp, largest=False)
+        with torch.no_grad():
+            unc = (sigm - 0.5).abs()
+            _, imp_idx = torch.topk(unc, n_imp, largest=False)
         sampled_imp = candidates[imp_idx]
     else:
         sampled_imp = torch.zeros(0, dtype=torch.long, device=device)
 
-    # (4) top-up with fresh random (collisions with sampled_imp tolerated)
-    n_rand = max(0, n_neg_target - n_imp)
+    # (2b) hard-negative branch — largest sigm (confident false-positives)
+    if n_hard > 0:
+        with torch.no_grad():
+            _, hard_idx = torch.topk(sigm, n_hard, largest=True)
+        sampled_hard = candidates[hard_idx]
+    else:
+        sampled_hard = torch.zeros(0, dtype=torch.long, device=device)
+
+    # (3) random top-up (collisions with the structured picks tolerated)
     if n_rand > 0:
         perm2 = torch.randperm(n_bg, device=device)[:n_rand]
         sampled_rand = bg_indices[perm2]
     else:
         sampled_rand = torch.zeros(0, dtype=torch.long, device=device)
 
-    return torch.cat([sampled_imp, sampled_rand], dim=0)
+    return torch.cat([sampled_imp, sampled_hard, sampled_rand], dim=0)
 
 
 def _balanced_point_sample(
@@ -341,6 +375,7 @@ def _per_pair_sampled_mask_loss(
     use_importance_sampling: bool = False,
     importance_oversample_ratio: float = 3.0,
     importance_ratio: float = 0.75,
+    importance_hard_neg_ratio: float = 0.0,
 ):
     """Per-pair sampled BCE + Dice. Returns (bce_loss, dice_loss) — scalar
     tensors averaged over the matched pairs.
@@ -348,8 +383,11 @@ def _per_pair_sampled_mask_loss(
     With `use_importance_sampling=True`, the negative half of each per-pair
     sample is drawn via `_importance_sample_negatives` — biases negatives
     toward the model's currently-uncertain region (the over-prediction halo
-    around the predicted mask boundary). The positive half is unchanged
-    (random subset of GT positives up to n_pos = pos_fraction * n_sample).
+    around the predicted mask boundary). `importance_hard_neg_ratio > 0`
+    additionally diverts part of the negative budget to confident false-
+    positives (largest sigm), targeting the over-clustering failure mode.
+    The positive half is unchanged (random subset of GT positives up to
+    n_pos = pos_fraction * n_sample).
     """
     device = pred_logits.device
     if len(q_idx) == 0:
@@ -381,6 +419,7 @@ def _per_pair_sampled_mask_loss(
                     n_neg_target=n_neg_target,
                     oversample_ratio=importance_oversample_ratio,
                     importance_ratio=importance_ratio,
+                    hard_neg_ratio=importance_hard_neg_ratio,
                 )
             else:
                 n_neg = min(n_neg_target, int(bg.numel()))
@@ -462,9 +501,14 @@ class LArFormerLoss(nn.Module):
         # per-pair mask loss. See _importance_sample_negatives for details.
         # Off by default to preserve baseline behavior; flip on for slicer-
         # style configs where the over-prediction halo is a known failure mode.
+        # `importance_hard_neg_ratio > 0` diverts part of the negative budget
+        # to confident false-positives (largest sigm); targets the over-
+        # clustering / mirror-merge failure mode described in
+        # `docs/LArFormer.md` §15. Default 0 keeps the halo-only behavior.
         use_importance_sampling: bool = False,
         importance_oversample_ratio: float = 3.0,
         importance_ratio: float = 0.75,
+        importance_hard_neg_ratio: float = 0.0,
     ):
         super().__init__()
         if match_layer not in ("final", "init"):
@@ -487,6 +531,7 @@ class LArFormerLoss(nn.Module):
         self.use_importance_sampling = bool(use_importance_sampling)
         self.importance_oversample_ratio = float(importance_oversample_ratio)
         self.importance_ratio = float(importance_ratio)
+        self.importance_hard_neg_ratio = float(importance_hard_neg_ratio)
 
         ce_weights = torch.ones(self.num_classes)
         ce_weights[self.no_object_class_id] = float(no_object_weight)
@@ -542,6 +587,7 @@ class LArFormerLoss(nn.Module):
             use_importance_sampling=self.use_importance_sampling,
             importance_oversample_ratio=self.importance_oversample_ratio,
             importance_ratio=self.importance_ratio,
+            importance_hard_neg_ratio=self.importance_hard_neg_ratio,
         )
         return bce
 
@@ -593,6 +639,7 @@ class LArFormerLoss(nn.Module):
                 use_importance_sampling=self.use_importance_sampling,
                 importance_oversample_ratio=self.importance_oversample_ratio,
                 importance_ratio=self.importance_ratio,
+                importance_hard_neg_ratio=self.importance_hard_neg_ratio,
             )
             out["mask_primary"] = bce
             out["dice_primary"] = dice

@@ -125,6 +125,7 @@ class LArFormerDataset(DefaultDataset):
         gt_source="slice",
         emit_fragments=False,
         slice_class_map=None,
+        slice_origin_kind="primary_start_pos",
         merge_nu_slices=True,
         shower_trunk_label_source="truth",
         transform=None,
@@ -210,6 +211,12 @@ class LArFormerDataset(DefaultDataset):
         self.slice_class_map = (dict(slice_class_map)
                                 if slice_class_map is not None
                                 else dict(DEFAULT_SLICE_CLASS_MAP))
+        if slice_origin_kind not in ("primary_start_pos", "centroid"):
+            raise ValueError(
+                f"slice_origin_kind must be 'primary_start_pos' or "
+                f"'centroid'; got {slice_origin_kind!r}"
+            )
+        self.slice_origin_kind = slice_origin_kind
         self.merge_nu_slices = bool(merge_nu_slices)
         self.shower_trunk_label_source = shower_trunk_label_source
         self.data_list_file = data_list_file
@@ -432,7 +439,7 @@ class LArFormerDataset(DefaultDataset):
                 fragment_trackid=fragment_trackid,
             )
         elif self.gt_source == "slice":
-            gt_instances = self._gt_from_slices(slice_info, n_keep)
+            gt_instances = self._gt_from_slices(slice_info, n_keep, coord_norm)
         elif self.gt_source == "deghost":
             gt_instances = []
         else:  # pragma: no cover — already validated in __init__
@@ -587,8 +594,14 @@ class LArFormerDataset(DefaultDataset):
             })
         return gt_instances
 
-    def _gt_from_slices(self, slice_info, n_keep):
-        """One instance per non-ghost slice."""
+    def _gt_from_slices(self, slice_info, n_keep, coord_norm):
+        """One instance per non-ghost slice.
+
+        `origin_coord_norm` is either:
+          - the primary particle start position (default), or
+          - the centroid of the slice's spacepoints in coord_norm space,
+        depending on `self.slice_origin_kind`.
+        """
         if slice_info is None:
             return []
         slice_id = slice_info["slice_id"]                # (N,)
@@ -605,9 +618,12 @@ class LArFormerDataset(DefaultDataset):
                 continue
             origin = int(primary_origin[k])
             origin_type = self.slice_class_map.get(origin, origin)
-            origin_norm = (
-                primary_start_pos[k] - self.coord_center
-            ) / self.coord_scale
+            if self.slice_origin_kind == "centroid":
+                origin_norm = coord_norm[truth_idx].mean(axis=0)
+            else:
+                origin_norm = (
+                    primary_start_pos[k] - self.coord_center
+                ) / self.coord_scale
             gt_instances.append({
                 "primary_trackid": key,
                 "primary_origin": origin,

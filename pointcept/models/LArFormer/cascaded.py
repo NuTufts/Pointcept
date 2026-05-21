@@ -358,4 +358,10 @@ class CascadedSlicer(nn.Module):
             "filtered_subruns": filtered.get("subruns", []),
             "filtered_events": filtered.get("events", []),
             "filtered_n_spacepoints": filtered["n_spacepoints"],
+            # Post-filter gt_instances (mirrors gt_instances_per_event but
+            # with empty / dropped instances pruned — what the slicer's
+            # matcher actually saw). Downstream analyzers can index this
+            # list with `eval_loss["k_idx"]` to get matched-GT metadata.
+            "filtered_gt_instances_per_event":
+                filtered.get("gt_instances_per_event", []),
         }
