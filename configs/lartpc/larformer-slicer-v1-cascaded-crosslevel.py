@@ -511,7 +511,7 @@ model = dict(
 # `weight = "exp/.../model/model_last.pth"` + `resume = True`.
 weight = None
 
-save_path        = "exp/larformer_slicer_v1_cascaded_loradeghost_perlevelrefiner"
+save_path        = "exp/larformer_slicer_v1_cascaded_loradeghost_crosslevelrefiner"
 epoch            = 1000
 eval_epoch       = 200
 batch_size       = 2
@@ -563,7 +563,7 @@ scheduler = dict(
     type="FlatWithDecayLR",
     mode="plateau", # options: plateau, epoch, both
     gamma=0.5,
-    min_lr=1e-7,
+    min_lr=1e-6,
     step_period_epochs=200, # based on train epochs, used in epoch and both mode 
     patience_epochs=12,      # based on eval epochs, used in plateau and both mode
     min_delta=1e-4,

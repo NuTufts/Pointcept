@@ -6,6 +6,7 @@ from .fragment import (
     FragmentContentEnricher,
     FragmentPool,
 )
+from .ptv3_decoder_stage import PTv3DecoderStageLevel
 from .spacepoint import SpacepointBuilder
 from .voxel import VoxelBuilder
 
@@ -18,4 +19,5 @@ __all__ = [
     "FragmentBuilder",
     "FragmentPool",
     "FragmentContentEnricher",
+    "PTv3DecoderStageLevel",
 ]

@@ -139,7 +139,7 @@ _HARD_NEG_RATIO = _IMPORTANCE_BUDGET * HARD_NEG_FRACTION_OF_IMPORTANCE
 #                  `max_source_tokens_per_level` if SP-as-source dominates
 #                  GPU memory; 8192 is a safe cap for ~50K-SP events.
 #
-TOKEN_REFINER_KIND = "cross_level"          # "identity" | "per_level" | "cross_level"
+TOKEN_REFINER_KIND = "identity"          # "identity" | "per_level" | "cross_level"
 TOKEN_REFINER_LAYERS = 2
 
 if TOKEN_REFINER_KIND == "identity":
@@ -209,7 +209,7 @@ token_dim = 256                       # bumped from 128 for slicer capacity
 #     pair it with TOKEN_REFINER_KIND="identity" so the PTv3 decoder is
 #     doing the multi-scale work alone, but a refiner ON TOP of the PTv3
 #     decoder is also a valid hybrid (e.g. CrossLevelAttn).
-USE_PTV3_DECODER_LEVELS = False
+USE_PTV3_DECODER_LEVELS = True
 
 if USE_PTV3_DECODER_LEVELS:
     # PT-v3m2 decoder defaults (mirror the model's own defaults):
@@ -342,7 +342,10 @@ if USE_PTV3_DECODER_LEVELS:
         dict(name="ptv3_dec3",
              builder="PTv3DecoderStageLevel",
              builder_cfg=dict(stage_key="dec3", in_dim=_PTV3_DEC_CHANNELS[3]),
-             supervision=dict(mask=dict(weight=1.0, mode="aux"))),
+             supervision=dict(mask=dict(weight=1.0, mode="aux"),
+                              cls=dict(num_classes=3, label_src="origin_label",
+                                       label_remap={0: 0, 1: 2, 2: 1}, reduce="amax",
+                                       weight=0.5, loss="ce", ignore_index=-1),)),
         dict(name="ptv3_dec2",
              builder="PTv3DecoderStageLevel",
              builder_cfg=dict(stage_key="dec2", in_dim=_PTV3_DEC_CHANNELS[2]),
@@ -350,12 +353,7 @@ if USE_PTV3_DECODER_LEVELS:
         dict(name="ptv3_dec1",
              builder="PTv3DecoderStageLevel",
              builder_cfg=dict(stage_key="dec1", in_dim=_PTV3_DEC_CHANNELS[1]),
-             supervision=dict(
-                 mask=dict(weight=1.0, mode="aux"),
-                 cls=dict(num_classes=3, label_src="origin_label",
-                          label_remap={0: 0, 1: 2, 2: 1}, reduce="amax",
-                          weight=0.5, loss="ce", ignore_index=-1),
-             )),
+             supervision=dict(mask=dict(weight=1.0, mode="aux"))),
         dict(name="spacepoint",
              builder="SpacepointBuilder",
              supervision=dict(mask=dict(weight=5.0, mode="primary"))),

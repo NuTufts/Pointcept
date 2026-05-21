@@ -310,6 +310,70 @@ def _unpack_single_event_sample(batched: dict) -> dict:
 # GT extraction (the visualizer's only model-side call site)
 # ---------------------------------------------------------------------------
 
+def _replicate_ptv3_pool_chain(
+    grid_coord: torch.Tensor,    # (N_sp, 3) integer grid coords
+    coord_norm: torch.Tensor,    # (N_sp, 3) float, normalized
+    stages_needed: list,          # e.g. ["dec1", "dec2", "dec3"]
+    in_dims: dict,                # {stage_name: int (= dec_channels[stage])}
+    encoder_strides: tuple = (2, 2, 2, 2),
+) -> dict:
+    """Reproduce PT-v3m2's GridPooling chain WITHOUT running the backbone.
+
+    GridPooling at stage K is purely a function of `grid_coord` and `batch`:
+    it computes `unique(batch + floor(grid_coord/stride))` and records the
+    inverse map (sp_to_cluster). Since the visualizer only needs each
+    decoder stage's `coords` and `sp_to_level_id` for GT plotting, we can
+    replicate this deterministically without touching the model.
+
+    Tokens are zero-filled (visualizer never renders them; only the
+    geometry matters for GT viz).
+
+    Returns a dict matching what `LArFormer._build_decoder_stages_per_event`
+    produces for a single event:
+        {stage_name: {"tokens": (M, in_dim) zeros,
+                      "coords": (M, 3) cluster-mean coord_norm,
+                      "sp_to_level_id": (N_sp,) cluster ID per SP}}
+    """
+    out = {}
+    if grid_coord.dtype != torch.long:
+        grid_coord = grid_coord.long()
+    cum_stride = 1
+    for stage_idx in range(1, len(encoder_strides) + 1):
+        cum_stride *= int(encoder_strides[stage_idx - 1])
+        stage_name = f"dec{stage_idx}"
+        if stage_name not in stages_needed:
+            continue
+        stage_grid = torch.div(grid_coord, cum_stride, rounding_mode="trunc")
+        # Single-event visualization: batch is identically 0, so the
+        # batch-packing trick GridPooling uses isn't needed — plain
+        # torch.unique over the (N_sp, 3) grid is equivalent and avoids
+        # the int64-bit-shift gymnastics.
+        _, inverse = torch.unique(
+            stage_grid, dim=0, return_inverse=True, sorted=True,
+        )
+        M = int(inverse.max().item()) + 1
+        # Cluster centroids in coord_norm space (matches GridPooling's
+        # reduce="mean" on coord).
+        coords_stage = torch.zeros(
+            M, 3, dtype=coord_norm.dtype, device=coord_norm.device,
+        )
+        counts = torch.zeros(
+            M, dtype=torch.long, device=coord_norm.device,
+        )
+        coords_stage.index_add_(0, inverse, coord_norm)
+        counts.index_add_(0, inverse, torch.ones_like(inverse))
+        coords_stage = coords_stage / counts.unsqueeze(-1).float().clamp(min=1)
+        out[stage_name] = {
+            "tokens": torch.zeros(
+                M, int(in_dims[stage_name]),
+                dtype=coord_norm.dtype, device=coord_norm.device,
+            ),
+            "coords": coords_stage,
+            "sp_to_level_id": inverse.to(torch.long),
+        }
+    return out
+
+
 def build_event_gt(model_levels_cfg, token_dim, dataset, idx,
                    deghoster_filter: "CascadeDeghostFilter | None" = None,
                    tau: float = 0.5):
@@ -419,6 +483,34 @@ def build_event_gt(model_levels_cfg, token_dim, dataset, idx,
         event_dict["fragment_indices"] = [
             torch.from_numpy(idx) for idx in sample["fragment_indices"]
         ]
+
+    # Detect PTv3DecoderStageLevel builders. If any are declared, we need
+    # to populate event_dict["ptv3_dec_stages"] BEFORE the tokenizer runs
+    # — the builder reads its coords + sp_to_level_id from there. We
+    # replicate PT-v3m2's deterministic GridPooling chain directly off
+    # the dataset's grid_coord (no backbone forward required for GT viz).
+    ptv3_stages_in_dims = {}
+    for lc in model_levels_cfg:
+        if lc.get("builder") == "PTv3DecoderStageLevel":
+            bcfg = lc.get("builder_cfg") or {}
+            sk = bcfg.get("stage_key")
+            id_ = bcfg.get("in_dim")
+            if sk is not None and id_ is not None:
+                ptv3_stages_in_dims[str(sk)] = int(id_)
+    if ptv3_stages_in_dims:
+        if "grid_coord" not in sample:
+            raise KeyError(
+                "PTv3DecoderStageLevel needs sample['grid_coord'] for "
+                "pool-chain replication, but the dataset didn't emit it. "
+                "Check that LArFormerDataset returns grid_coord."
+            )
+        gc = torch.from_numpy(sample["grid_coord"])
+        event_dict["ptv3_dec_stages"] = _replicate_ptv3_pool_chain(
+            grid_coord=gc,
+            coord_norm=coord_norm,
+            stages_needed=list(ptv3_stages_in_dims.keys()),
+            in_dims=ptv3_stages_in_dims,
+        )
 
     # We don't have a backbone — zero-fill per-SP features. The builders'
     # in_proj weights are random (the tokenizer is freshly constructed per
@@ -652,6 +744,57 @@ def figure_for_event(event_data, level_name, color_by):
                     colorbar=dict(title="level token id", thickness=12),
                 ),
                 name=f"mapped SPs ({int(mapped.sum())})",
+            ))
+
+    elif color_by == "sp_by_level_inst":
+        # "Back-projected" rendering: plot ALL spacepoints at their original
+        # cm coords, but color each SP by the GT instance the level's
+        # *cluster* (containing that SP) was assigned. This shows, for
+        # pyramid levels where cluster centroids coincide with member SPs
+        # (e.g. PTv3 dec1 at 0.5 cm effective grid), exactly what GT
+        # assignment the loss "sees" AT that level — including any two
+        # physically distinct objects that happen to pool to the same
+        # cluster and therefore inherit the same level-side GT id.
+        inst = level_inst[level_name]                # (M,) int64
+        sp_to_lvl = lvl.sp_to_level_id.cpu().numpy()  # (N_sp,)
+        # Back-project: per-SP cluster GT id.
+        sp_inst = np.full(sp_to_lvl.shape[0], -1, dtype=np.int64)
+        mapped = (sp_to_lvl >= 0)
+        sp_inst[mapped] = inst[sp_to_lvl[mapped]]
+
+        gt_instances = sample["gt_instances"]
+        # Unmapped / no-instance SPs go to a dim-gray bucket.
+        unassigned = (sp_inst < 0)
+        if unassigned.any():
+            pts = sp_coord_cm[unassigned]
+            traces.append(go.Scatter3d(
+                x=pts[:, 2], y=pts[:, 0], z=pts[:, 1],
+                mode="markers",
+                marker=dict(size=1.2, color="rgba(150,150,150,0.4)"),
+                name=f"unassigned SPs ({int(unassigned.sum())})",
+            ))
+        # Per-instance traces, color hashed by primary_trackid (matches
+        # `instance_id` mode, the prediction panel, and cross-level
+        # comparisons).
+        used = sorted(set(int(x) for x in sp_inst if x >= 0))
+        for k in used:
+            m = (sp_inst == k)
+            if not m.any():
+                continue
+            gi = gt_instances[k] if k < len(gt_instances) else {}
+            ot = int(gi.get("origin_type", -1))
+            tid = int(gi.get("primary_trackid",
+                             gi.get("trunk_trackid", k)))
+            clr = _track_id_color(tid, origin_type=ot)
+            pts = sp_coord_cm[m]
+            label = f"k={k} tid={tid} ({int(m.sum())} SPs)"
+            if ot == 0:
+                label += " [nu]"
+            traces.append(go.Scatter3d(
+                x=pts[:, 2], y=pts[:, 0], z=pts[:, 1],
+                mode="markers",
+                marker=dict(size=1.5, color=clr),
+                name=label,
             ))
 
     title = (f"event {sample.get('event', '?')} run={sample.get('run', '?')} "
@@ -1386,10 +1529,12 @@ def main():
                                   "value": "cls_target"},
                                  {"label": "sp_to_level_id (partition viz)",
                                   "value": "sp_to_level_id"},
+                                 {"label": "SPs by level-cluster GT (back-projected)",
+                                  "value": "sp_by_level_inst"},
                              ],
                              value="instance_id",
                              clearable=False,
-                             style={"width": "260px",
+                             style={"width": "320px",
                                     "display": "inline-block",
                                     "marginRight": "16px"}),
                 html.Button("Reload event", id="reload", n_clicks=0,

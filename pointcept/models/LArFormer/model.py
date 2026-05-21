@@ -83,18 +83,37 @@ class LArFormer(nn.Module):
         num_queries: int = 64,
         num_classes: int = 6,
         freeze_backbone: bool = True,
+        unfreeze_decoder: bool = False,
         enable_origin_head: bool = True,
         loss_kwargs: Optional[dict] = None,
         decoder_kwargs: Optional[dict] = None,
         token_refiner: Optional[dict] = None,
+        capture_decoder_stages: bool = False,
     ):
         super().__init__()
         self.backbone = build_model(backbone)
         self.freeze_backbone = bool(freeze_backbone)
+        self.unfreeze_decoder = bool(unfreeze_decoder)
         if self.freeze_backbone:
-            for p in self.backbone.parameters():
-                p.requires_grad = False
+            for n, p in self.backbone.named_parameters():
+                # When unfreeze_decoder is set, keep PT-v3m2 decoder
+                # blocks trainable (`*.dec.*` in name). The encoder + every
+                # other backbone module stays frozen.
+                if self.unfreeze_decoder and (".dec." in n or n.endswith(".dec")
+                                              or ".dec." in f".{n}"):
+                    p.requires_grad = True
+                else:
+                    p.requires_grad = False
         self.backbone_out_channels = int(backbone_out_channels)
+
+        # Forward-hook capture of PT-v3m2 decoder stages (the
+        # PTv3DecoderStageLevel builders read from this dict). Cleared
+        # before each _encode() call; populated as the backbone forward
+        # walks self.backbone.<teacher|student>.backbone.dec.dec{s}.
+        self.capture_decoder_stages = bool(capture_decoder_stages)
+        self._dec_stage_capture: dict = {}
+        if self.capture_decoder_stages:
+            self._register_decoder_stage_hooks()
         self.token_dim = int(token_dim)
         self.num_queries = int(num_queries)
         self.num_classes = int(num_classes)
@@ -169,6 +188,51 @@ class LArFormer(nn.Module):
     # Backbone
     # ------------------------------------------------------------------
 
+    def _find_ptv3_inner(self):
+        """Locate the inner PT-v3m2 module so we can hook its decoder stages.
+
+        Sonata-v1m1 wraps PT-v3m2 inside `self.teacher.backbone` (and a
+        twin in `self.student.backbone`). Sonata-v1m1.forward(return_point=
+        True) only runs teacher, so we hook teacher.backbone. For a bare
+        PT-v3m2 backbone we just hook `self.backbone` directly.
+        """
+        bb = self.backbone
+        if hasattr(bb, "teacher") and hasattr(bb.teacher, "backbone"):
+            return bb.teacher.backbone
+        if hasattr(bb, "student") and hasattr(bb.student, "backbone"):
+            return bb.student.backbone
+        return bb
+
+    def _register_decoder_stage_hooks(self) -> None:
+        """Register forward hooks on PT-v3m2's dec{s} submodules so each
+        stage's output Point is captured into self._dec_stage_capture."""
+        ptv3 = self._find_ptv3_inner()
+        if getattr(ptv3, "enc_mode", True):
+            raise ValueError(
+                "capture_decoder_stages=True requires the inner PT-v3m2 "
+                "backbone to be constructed with enc_mode=False. Update "
+                "the backbone subconfig (and set up_cast_level=0 on the "
+                "Sonata-v1m1 wrapper so it doesn't try to upcast non-"
+                "existent pooling_parent chains)."
+            )
+        dec = getattr(ptv3, "dec", None)
+        if dec is None:
+            raise ValueError(
+                "PT-v3m2 backbone has no self.dec — enc_mode is False but "
+                "the decoder wasn't built. Check dec_depths / dec_channels "
+                "etc. in the backbone config."
+            )
+
+        def _make_hook(name):
+            def hook(_mod, _inp, output):
+                self._dec_stage_capture[name] = output
+            return hook
+
+        # PointSequential stores its named children in self.dec._modules
+        for child_name, child_mod in dec.named_children():
+            if child_name.startswith("dec"):
+                child_mod.register_forward_hook(_make_hook(child_name))
+
     def _encode(self, batched_dict: dict) -> torch.Tensor:
         bb_in = {
             "coord":      batched_dict["coord_norm"],
@@ -176,7 +240,20 @@ class LArFormer(nn.Module):
             "offset":     batched_dict["offset"],
             "grid_coord": batched_dict["grid_coord"],
         }
-        if self.freeze_backbone:
+        # Clear last forward's captured decoder stages BEFORE re-running
+        # the backbone, so a hook miss surfaces as a clean KeyError later
+        # rather than silently reusing stale values.
+        if self.capture_decoder_stages:
+            self._dec_stage_capture.clear()
+
+        # If the decoder is trainable, we must NOT wrap the backbone in
+        # no_grad — otherwise nothing flowing through the decoder builds
+        # a grad-tracking graph. The encoder's params have
+        # requires_grad=False, so they still won't accumulate gradients
+        # even though their activations are differentiable; only the
+        # decoder's params get optimizer updates.
+        use_no_grad = self.freeze_backbone and not self.unfreeze_decoder
+        if use_no_grad:
             with torch.no_grad():
                 result = self.backbone(bb_in, return_point=True)
         else:
@@ -282,12 +359,102 @@ class LArFormer(nn.Module):
         return out
 
     # ------------------------------------------------------------------
+    # PT-v3m2 decoder-stage per-event extractor
+    # ------------------------------------------------------------------
+
+    def _build_decoder_stages_per_event(
+        self, data_dict: dict, events: List[dict],
+    ) -> Optional[dict]:
+        """Slice the hooked decoder-stage Points into per-event tensors and
+        derive per-event sp_to_level_id by chaining pooling_inverse.
+
+        Returns: {stage_name → list[B] of {tokens, coords, sp_to_level_id}}
+        Or None if no stages were captured.
+
+        Algorithm for sp_to_level_id at stage K:
+            stage_1.pooling_inverse: (N_sp,)  → [0, M_1)
+            stage_2.pooling_inverse: (M_1,)   → [0, M_2)
+            stage_3.pooling_inverse: (M_2,)   → [0, M_3)
+            sp_to_stage_K = stage_K.inv[…[stage_2.inv[stage_1.inv]]…]
+
+        Per-event slicing: each stage's Point.batch is sorted by batch id
+        (encoder's GridPooling packs batch into the high bits of grid_coord
+        before unique), so we can use searchsorted on `batch` to find each
+        event's contiguous token block.
+        """
+        if not self.capture_decoder_stages or not self._dec_stage_capture:
+            return None
+
+        # PT-v3m2 names its decoder stages dec0, dec1, dec2, dec3 (for the
+        # standard 4-stride encoder). dec_s outputs a Point at stride 2^s.
+        # Sort finest-first so the pooling_inverse chain composes correctly.
+        def _stage_idx(name):
+            return int(name[3:])
+
+        ordered = sorted(self._dec_stage_capture.keys(), key=_stage_idx)
+        # Skip dec0 (per-SP, same resolution as the spacepoint level): the
+        # SpacepointBuilder covers that. A builder that wants dec0
+        # specifically can be added later.
+        ordered = [n for n in ordered if _stage_idx(n) >= 1]
+        if not ordered:
+            return None
+
+        # Build the global sp→stage_K chain (sp index = stage_0 token id).
+        sp_to_global: dict = {}
+        cur = None
+        for name in ordered:
+            inv = self._dec_stage_capture[name].pooling_inverse
+            if cur is None:
+                cur = inv                          # (N_sp,) → [0, M_1)
+            else:
+                cur = inv[cur]                     # (N_sp,) → [0, M_k)
+            sp_to_global[name] = cur
+
+        # Per-event SP block boundaries from the dataset's offset.
+        out: dict = {name: [] for name in ordered}
+        for name in ordered:
+            pt = self._dec_stage_capture[name]
+            batch = pt.batch                                # (M_total,) sorted
+            n_total = int(pt.feat.shape[0])
+            # Per-event start offsets in this stage's token list.
+            # searchsorted on sorted batch yields the first index >= ei.
+            stage_starts = []
+            for ev in events:
+                ei = ev["ei"]
+                idx = torch.searchsorted(
+                    batch, torch.tensor(ei, device=batch.device),
+                ).item()
+                stage_starts.append(idx)
+            stage_starts.append(n_total)
+
+            sp_to_stage_global = sp_to_global[name]
+            for ev in events:
+                ei = ev["ei"]
+                sp_slice = ev["sp_slice"]
+                s = stage_starts[ei]
+                e = stage_starts[ei + 1]
+                ev_tokens = pt.feat[s:e]                    # (M_ev, C)
+                ev_coords = pt.coord[s:e]                   # (M_ev, 3)
+                # Per-event sp_to_level_id in event-local indices [0, M_ev).
+                ev_sp_global = sp_to_stage_global[sp_slice]  # (N_sp_ev,)
+                ev_sp_to_level = (ev_sp_global - s).to(torch.long)
+                out[name].append({
+                    "tokens": ev_tokens,
+                    "coords": ev_coords,
+                    "sp_to_level_id": ev_sp_to_level,
+                })
+        return out
+
+    # ------------------------------------------------------------------
     # Forward
     # ------------------------------------------------------------------
 
     def forward(self, data_dict: dict) -> dict:
         sp_feat_all = self._encode(data_dict)
         events = self._per_event_slices(data_dict)
+        per_event_dec_stages = self._build_decoder_stages_per_event(
+            data_dict, events,
+        )
 
         per_event_loss = []
         per_event_pred = []
@@ -296,6 +463,11 @@ class LArFormer(nn.Module):
             coord_norm = data_dict["coord_norm"][sp]
             sp_feat = sp_feat_all[sp]
             event_dict = self._build_event_dict(data_dict, ev)
+            if per_event_dec_stages is not None:
+                event_dict["ptv3_dec_stages"] = {
+                    name: per_event_dec_stages[name][ev["ei"]]
+                    for name in per_event_dec_stages
+                }
 
             levels = self.tokenizer(sp_feat, coord_norm, event_dict)
             levels = self.token_refiner(levels)

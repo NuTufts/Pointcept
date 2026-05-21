@@ -139,7 +139,7 @@ _HARD_NEG_RATIO = _IMPORTANCE_BUDGET * HARD_NEG_FRACTION_OF_IMPORTANCE
 #                  `max_source_tokens_per_level` if SP-as-source dominates
 #                  GPU memory; 8192 is a safe cap for ~50K-SP events.
 #
-TOKEN_REFINER_KIND = "cross_level"          # "identity" | "per_level" | "cross_level"
+TOKEN_REFINER_KIND = "per_level"          # "identity" | "per_level" | "cross_level"
 TOKEN_REFINER_LAYERS = 2
 
 if TOKEN_REFINER_KIND == "identity":

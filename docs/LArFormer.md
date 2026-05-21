@@ -1,6 +1,6 @@
 # LArFormer — Design and Implementation Plan
 
-**Status:** P1–P6 implemented (scaffold → multi-level voxel → fragment builder → `LArFormerDataset` + GT visualizer → Stage-1 deghoster → Stage-2 cascaded slicer). Currently in slicer-debug iteration on a 10-event dev sample; see §15. P7 (particle clusterer) not started.
+**Status:** P1–P6 implemented (scaffold → multi-level voxel → fragment builder → `LArFormerDataset` + GT visualizer → Stage-1 deghoster → Stage-2 cascaded slicer). Currently in slicer-debug iteration on a 10-event dev sample; see §15. A **`TokenRefiner`** abstraction (§16) was added to sit between the tokenizer and the decoder so multi-scale feature refinement can be ablated independently of the rest of the pipeline. P7 (particle clusterer) not started.
 **Owner:** taritree.wongjirad@tufts.edu
 **Generalizes:** [`ShowerClusteringMask2Former`](../pointcept/models/shower_clustering/model.py) (kept frozen for the trained shower-origin pipeline).
 **Lives at:** `pointcept/models/LArFormer/`.
@@ -486,7 +486,125 @@ If the origin head alone doesn't fix the mirror-symmetric merger, the next thing
 
 ---
 
-## 16. References
+## 16. The `TokenRefiner` abstraction
+
+### Motivation
+
+The mirror-symmetric merger analysis in §15 narrowed the failure to: `mask_embed(q)` can't separate two content-similar tracks at different positions, because the only spatial information the mask head sees is `pos_emb(coord)` added to each level's tokens. In vanilla LArFormer, the level tokens themselves are static mean-pooled backbone features — they never learn to encode "I am in *this* region of the detector with *these* neighbors." A merger-rate diagnostic on the dev sample confirmed the model's confidently-wrong cluster mass is concentrated at the *voxel scales* (7–10% confident over-cluster mass at voxel_5/10/20cm vs. only 1.7% at the spacepoint scale, where most over-cluster appearance is panoptic-argmax noise).
+
+This is the canonical setup for Mask2Former-style architectures: between the backbone (which gives you per-token features) and the transformer decoder (which cross-attends queries to those tokens), Mask2Former inserts a **pixel decoder** — a trainable module whose job is to refine the per-token features into mask-friendly multi-scale representations. LArFormer originally skipped this stage entirely (queries cross-attend straight against pooled backbone features). The `TokenRefiner` abstraction adds it back, in a way that respects LArFormer's flexible-levels design.
+
+### Contract
+
+A `TokenRefiner` is a drop-in transform on the tokenizer's output:
+
+```python
+OrderedDict[level_name → LevelOutput]   →   OrderedDict[level_name → LevelOutput]
+```
+
+Same keys in, same keys out; per-level `(coords, sp_to_level_id, name)` are preserved; only `tokens` may change. Token count `M_level` MUST stay the same (the decoder's mask logits and the loss's per-level GT masks are indexed by token position).
+
+The refiner runs once per event, between [`CompositeTokenizer`](../pointcept/models/LArFormer/tokenizer.py) and [`Mask2FormerDecoder`](../pointcept/models/LArFormer/decoder.py). The integration point in [`LArFormer.forward`](../pointcept/models/LArFormer/model.py) is one line:
+
+```python
+levels = self.tokenizer(sp_feat, coord_norm, event_dict)
+levels = self.token_refiner(levels)            # ← the new step
+decoder_out = self.decoder(levels)
+```
+
+The decoder, loss, evaluator, and visualizer are unchanged. The refiner is opt-in via config; the default `IdentityRefiner` pass-through reproduces pre-refiner behavior bit-exactly.
+
+### File layout
+
+```
+pointcept/models/LArFormer/refiners/
+├── __init__.py            # REFINERS registry + build_token_refiner()
+├── base.py                # TokenRefiner ABC + IdentityRefiner
+├── pos_emb.py             # Shared MLPPosEmb / SinusoidalPosEmb3D / build_pos_emb
+├── per_level_sa.py        # PerLevelSelfAttn   (Option 1)
+└── cross_level.py         # CrossLevelAttn     (Option 2)
+```
+
+### Available refiners
+
+| Refiner | Levels touched | What it does | Params (D=256, default cfg) |
+|---|---|---|---|
+| `IdentityRefiner` | none | Pass-through. Baseline. | 0 |
+| `PerLevelSelfAttn` | each voxel level independently | N transformer-style SA + FFN blocks per voxel level, with the level's own `pos_emb` on Q/K. No cross-level interaction. | ~4.94M (2 layers × 3 voxel levels × heads=4 × mlp_ratio=4) |
+| `CrossLevelAttn` | voxel levels (Q); all levels incl. SP as K/V | For each target voxel level, cross-attention against the concatenated token pool of all source levels. Shared `pos_emb` bridges scales via coords. Voxel tokens can READ from per-SP context. Updated tokens feed back into the K/V pool for the next layer (scales co-evolve). | ~4.78M |
+| (deferred) `CrossLevelAttn(attn_kind="deformable")` | as above | kNN-based deformable sampling; defer until the full-attn variant is shown to be the right kind of mechanism. | ~5–6M projected |
+
+All three live behind a single config knob — `slicer_cfg.token_refiner` — and the LArFormer model auto-injects `dim=token_dim` and `levels_cfg` so the per-level submodules build EAGERLY at `__init__` (required for DDP and post-construction `.to(device)`).
+
+### Why the spacepoint level is excluded by default
+
+`PerLevelSelfAttn` skips spacepoint and `CrossLevelAttn` excludes it from *targets* (it stays available as a *source* — voxel queries can attend to per-SP keys). Two reasons:
+
+- **Cost.** Full self-attention on ~50K post-deghost SPs is infeasible: ~10⁹ attention ops per layer per head, and the attention matrix alone is ~10GB. No shape-friendly version of this exists without windowing.
+- **PTv3's own windowed attention** already mixes SP context inside the (frozen) backbone via serialization-based patches. A non-windowed SA layer on top would be duplicating that work at huge cost.
+
+Voxel levels at our token counts (~500–2500 per level) are cheap (full-attention attention matrix is ~MB, microseconds) AND are exactly where the merger-rate diagnostic localized the confident-FP problem.
+
+### Hybrid: PTv3 native decoder as a "refiner"
+
+PT-v3m2 has a built-in learned decoder (`self.dec`, gated by `enc_mode=False`) that mirrors the encoder's pyramid. Each `dec{s}` stage is a `GridUnpooling` + `dec_depths[s]` transformer Blocks operating at the encoder's native stride. Turning this on gives a learned multi-scale refinement that's *structurally inside the backbone* rather than bolted on between backbone and decoder.
+
+To use it, set `USE_PTV3_DECODER_LEVELS = True` in the cascaded-loradeghost config:
+
+- `enc_mode=False` on the inner PT-v3m2 → builds `self.dec`
+- `up_cast_level=0` on the Sonata-v1m1 wrapper → bypasses the (now-unneeded) post-encoder concat-scatter upcast
+- `backbone_out_channels = dec_channels[0] = 64` → SP-level features are now the final dec0 output, not the encoder's concatenated pyramid
+- `levels = [ptv3_dec3, ptv3_dec2, ptv3_dec1, spacepoint]` with [`PTv3DecoderStageLevel`](../pointcept/models/LArFormer/builders/ptv3_decoder_stage.py) builders that consume each captured decoder stage
+- `capture_decoder_stages=True` on the LArFormer model → registers forward hooks on `teacher.backbone.dec.dec{s}` so each stage's output Point is captured into `self._dec_stage_capture`, then sliced per-event in `_build_decoder_stages_per_event()`
+- `unfreeze_decoder=True` → frees parameters whose name contains `.dec.` so the decoder is trainable from random init (the encoder stays frozen on the pretrain weights). `_encode` skips its `no_grad` wrapper when the decoder is trainable so the gradient graph spans the decoder.
+- `token_refiner=None` (Identity) — the PTv3 decoder IS the refiner in this setup. A non-Identity refiner could also stack on top as a hybrid.
+
+A standalone config preset lives at [`configs/lartpc/larformer-slicer-v1-cascaded-ptv3decoder.py`](../configs/lartpc/larformer-slicer-v1-cascaded-ptv3decoder.py).
+
+**Caveat — PTv3 pyramid is finer than user-defined voxels.** PT-v3m2's strides `(2,2,2,2)` apply to the input grid_coord, which the dataset emits at `backbone_grid_size_cm=0.25`. So dec1/dec2/dec3 have effective grids of 0.5/1/2 cm respectively. Compared with `voxel_5/10/20cm`, the PTv3 pyramid pools *much less aggressively* on LArTPC-spaced data (real spacepoints sit ~1–3 cm apart, finer than dec3's 2 cm grid). To get the PTv3 pyramid to pool as coarsely as `voxel_20cm` would require bumping `backbone_grid_size_cm` substantially (changing the encoder's input grid, a non-trivial decision).
+
+### How to switch (cascaded-loradeghost config)
+
+```python
+TOKEN_REFINER_KIND = "identity"     # "identity" | "per_level" | "cross_level"
+TOKEN_REFINER_LAYERS = 2
+USE_PTV3_DECODER_LEVELS = False     # PTv3 native decoder; pair with TOKEN_REFINER_KIND="identity"
+```
+
+The three `TOKEN_REFINER_KIND` choices and the orthogonal `USE_PTV3_DECODER_LEVELS` flag give a 4-by configuration matrix:
+
+| `USE_PTV3_DECODER_LEVELS` | `TOKEN_REFINER_KIND` | Levels | Refiner / multi-scale learning lives in… |
+|---|---|---|---|
+| `False` | `"identity"` | voxel_20/10/5cm + SP | nowhere (the baseline; what existed before the abstraction) |
+| `False` | `"per_level"` | voxel_20/10/5cm + SP | `PerLevelSelfAttn` per voxel level (no cross-scale flow) |
+| `False` | `"cross_level"` | voxel_20/10/5cm + SP | `CrossLevelAttn` across all levels |
+| `True`  | `"identity"` | ptv3_dec3/2/1 + SP | PT-v3m2's `self.dec` (learned native pyramid) |
+| `True`  | `"per_level"` or `"cross_level"` | ptv3_dec* + SP | PTv3 decoder *and* refiner on top (hybrid) |
+
+### Ablation plan
+
+Recommended order, paired with the merger-rate diagnostic ([`tools/measure_merger_rates.py`](../tools/measure_merger_rates.py)) at both `--min-mask-prob 0` (panoptic) and `--min-mask-prob 0.5` (confident-only) for headline comparisons:
+
+| # | Setup | Hypothesis tested | Status (2026-05-21) |
+|---|---|---|---|
+| 1 | baseline = `identity` + voxels | reference for everything else | done |
+| 2 | `per_level` + voxels | per-level intra-token mixing helps the voxel-scale masks separate content-similar distant tracks | in progress |
+| 3 | `cross_level` + voxels | cross-level information flow (voxel tokens read per-SP context, coarse↔fine flows both ways) beats per-level | queued after #2 |
+| 4 | `identity` + PTv3 decoder | the encoder-native pyramid + learned decoder is the "right" multi-scale machinery for LArTPC | queued after #3; requires deciding the right `backbone_grid_size_cm` so the pyramid pools at physically meaningful scales |
+| 5 | `cross_level` + PTv3 decoder (hybrid) | combine PTv3-native pyramid with bridge-style cross-level mixing; closest analog to Mask2Former + MSDeformAttn | only if #4 looks promising |
+
+For each setup, the per-level merger rates (and the gap between `min_mask_prob=0` and `min_mask_prob=0.5` numbers) are the most informative metric, alongside `nu_mIoU` and `cosmic_mIoU`. Hand-scan a small sample with the visualizer's new `sp_by_level_inst` color mode at coarser levels — that lets you literally see whether two physically distinct objects pool into the same cluster at a given level (which the loss can't unmerge there).
+
+### Design points worth flagging
+
+- **`pos_emb` is per-refiner, not shared with the decoder.** Both `PerLevelSelfAttn` and `CrossLevelAttn` build their own pos_emb (`build_pos_emb` from [`refiners/pos_emb.py`](../pointcept/models/LArFormer/refiners/pos_emb.py)) so ablations can vary the refiner's `pos_emb_kind` independently of the decoder's. `CrossLevelAttn` further uses ONE shared pos_emb across all levels (positions are in the same `coord_norm` frame, so no per-level duplication).
+- **DDP / `.to(device)` safety.** Both Option 1 and Option 2 build their per-level submodules eagerly in `__init__` (via the `levels_cfg` kwarg the LArFormer auto-injects). The lazy-build fallback remains for standalone smoke tests but is documented as DDP-unsafe.
+- **The SP source asymmetry in `CrossLevelAttn`.** Voxel target tokens can read SP-level keys (huge K), but SP tokens are never *updated*. This keeps the cost asymmetric: full Q×K with Q in the thousands and K in the tens of thousands is bounded and (with FlashAttention) fast. A `max_source_tokens_per_level` knob (default `8192` in the active config) randomly subsamples big sources per forward to keep K bounded.
+- **PTv3 decoder is trainable from scratch.** The Sonata pretrain ran with `enc_mode=True`, so decoder weights are NOT in the pretrain checkpoint. They initialize randomly. The encoder stays frozen on the pretrain. Expect higher trainable-param counts (~22M including the new decoder, vs ~7M for refiner-only setups) and somewhat slower training; memory needs the encoder's activations retained for backward through the decoder.
+
+---
+
+## 17. References
 
 - Existing model being generalized:
   [`pointcept/models/shower_clustering/`](../pointcept/models/shower_clustering/) — model / tokenizer / decoder / losses / matcher.
