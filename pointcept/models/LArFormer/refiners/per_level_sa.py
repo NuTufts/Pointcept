@@ -19,7 +19,6 @@ The pos_emb is local to the refiner (not shared with the decoder's), so
 ablations can vary the refiner's pos_emb_kind independently.
 """
 
-import math
 from collections import OrderedDict
 from typing import Optional, Sequence
 
@@ -28,67 +27,11 @@ import torch.nn as nn
 
 from ..builders import LevelOutput
 from .base import REFINERS, TokenRefiner
+from .pos_emb import build_pos_emb
 
 
-# ---------------------------------------------------------------------------
-# Local position-embedding modules (mirror decoder.py's two flavors).
-# Duplicated to keep the refiner self-contained and independently
-# configurable.
-# ---------------------------------------------------------------------------
-
-class _MLPPosEmb(nn.Module):
-    def __init__(self, dim: int, hidden_dim: Optional[int] = None):
-        super().__init__()
-        if hidden_dim is None:
-            hidden_dim = dim
-        self.net = nn.Sequential(
-            nn.Linear(3, hidden_dim),
-            nn.GELU(),
-            nn.Linear(hidden_dim, dim),
-        )
-
-    def forward(self, coords: torch.Tensor) -> torch.Tensor:
-        return self.net(coords)
-
-
-class _SinusoidalPosEmb3D(nn.Module):
-    def __init__(self, dim: int,
-                 num_freq: Optional[int] = None,
-                 max_freq: float = 256.0):
-        super().__init__()
-        if num_freq is None:
-            num_freq = max(1, dim // 12)
-        freqs = 2.0 ** torch.linspace(0.0, math.log2(float(max_freq)),
-                                       int(num_freq))
-        self.register_buffer("freqs", freqs, persistent=False)
-        self.num_freq = int(num_freq)
-        self.raw_dim = 3 * 2 * self.num_freq
-        self.proj = nn.Linear(self.raw_dim, int(dim))
-
-    def forward(self, coords: torch.Tensor) -> torch.Tensor:
-        if coords.shape[-1] != 3:
-            raise ValueError(
-                f"_SinusoidalPosEmb3D expects last dim == 3, got "
-                f"shape {tuple(coords.shape)}"
-            )
-        scaled = coords.unsqueeze(-1) * self.freqs
-        emb = torch.stack([torch.sin(scaled), torch.cos(scaled)], dim=-1)
-        emb = emb.flatten(-3)
-        return self.proj(emb)
-
-
-def _build_pos_emb(kind: str, dim: int,
-                   hidden_dim: Optional[int],
-                   num_freq: Optional[int],
-                   max_freq: float) -> nn.Module:
-    kind = str(kind).lower()
-    if kind == "mlp":
-        return _MLPPosEmb(dim, hidden_dim=hidden_dim)
-    if kind == "sinusoidal":
-        return _SinusoidalPosEmb3D(dim, num_freq=num_freq, max_freq=max_freq)
-    raise ValueError(
-        f"pos_emb_kind must be 'mlp' or 'sinusoidal'; got {kind!r}"
-    )
+# Alias for backward compatibility with the inlined helper name.
+_build_pos_emb = build_pos_emb
 
 
 # ---------------------------------------------------------------------------

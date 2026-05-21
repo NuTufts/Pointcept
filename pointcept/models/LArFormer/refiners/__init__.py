@@ -15,6 +15,7 @@ abstraction and the menu of refiner options.
 """
 
 from .base import REFINERS, TokenRefiner, IdentityRefiner, build_token_refiner
+from .cross_level import CrossLevelAttn
 from .per_level_sa import PerLevelSelfAttn
 
 __all__ = [
@@ -22,5 +23,6 @@ __all__ = [
     "TokenRefiner",
     "IdentityRefiner",
     "PerLevelSelfAttn",
+    "CrossLevelAttn",
     "build_token_refiner",
 ]

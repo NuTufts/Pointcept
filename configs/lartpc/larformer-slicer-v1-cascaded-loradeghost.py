@@ -91,7 +91,7 @@ ENABLE_ORIGIN_HEAD_WITH_CENTROID = False
 #      half hard-neg. 1.0 = all hard-neg. The remaining 25% stays uniform
 #      random for coverage.
 PURE_RANDOM_NEGATIVES = False
-HARD_NEG_FRACTION_OF_IMPORTANCE = 0.5
+HARD_NEG_FRACTION_OF_IMPORTANCE = 0.0
 
 _IMPORTANCE_BUDGET = 0.0 if PURE_RANDOM_NEGATIVES else 0.75
 _IMPORTANCE_RATIO = _IMPORTANCE_BUDGET * (1.0 - HARD_NEG_FRACTION_OF_IMPORTANCE)
@@ -117,19 +117,62 @@ _HARD_NEG_RATIO = _IMPORTANCE_BUDGET * HARD_NEG_FRACTION_OF_IMPORTANCE
 #   - Adds ~100k params per layer per voxel level (small). The cascade's
 #     existing slicer-backbone checkpoint loads cleanly; the refiner
 #     weights initialize randomly and train from scratch.
-USE_PERLEVEL_REFINER = True
-PERLEVEL_REFINER_LAYERS = 2
+#
+# Three options available — pick one by setting TOKEN_REFINER_KIND:
+#
+#   "identity"   — no refiner (current pre-refiner behavior; A/B baseline).
+#
+#   "per_level"  — Option 1 (PerLevelSelfAttn): each voxel level gets its
+#                  own self-attention stack. Voxels within a level mix
+#                  context with each other but not across levels. Cheapest.
+#                  ~4.94M params at the default num_layers=2.
+#
+#   "cross_level"— Option 2 (CrossLevelAttn): each voxel level cross-
+#                  attends against the concatenated token pool of all
+#                  source levels (default: all levels including spacepoint).
+#                  Level-agnostic analog of Mask2Former's pixel decoder —
+#                  voxel tokens can READ from per-SP features, so a coarse
+#                  voxel can pull fine-scale context. The shared pos_emb
+#                  bridges levels via coords (no hierarchical pool needed,
+#                  preserving LArFormer's flexible-levels design).
+#                  ~4.78M params at num_layers=2. Set
+#                  `max_source_tokens_per_level` if SP-as-source dominates
+#                  GPU memory; 8192 is a safe cap for ~50K-SP events.
+#
+TOKEN_REFINER_KIND = "per_level"          # "identity" | "per_level" | "cross_level"
+TOKEN_REFINER_LAYERS = 2
 
-_token_refiner_cfg = (
-    dict(type="PerLevelSelfAttn",
-         num_layers=PERLEVEL_REFINER_LAYERS,
-         num_heads=4,
-         mlp_ratio=4.0,
-         # target_levels=["voxel_20cm", "voxel_10cm", "voxel_5cm"],  # explicit override
-         # pos_emb_kind="sinusoidal",                                # independent of decoder
-         )
-    if USE_PERLEVEL_REFINER else None
-)
+if TOKEN_REFINER_KIND == "identity":
+    _token_refiner_cfg = None
+elif TOKEN_REFINER_KIND == "per_level":
+    _token_refiner_cfg = dict(
+        type="PerLevelSelfAttn",
+        num_layers=TOKEN_REFINER_LAYERS,
+        num_heads=4,
+        mlp_ratio=4.0,
+        # target_levels=["voxel_20cm", "voxel_10cm", "voxel_5cm"],
+        # pos_emb_kind="sinusoidal",
+    )
+elif TOKEN_REFINER_KIND == "cross_level":
+    _token_refiner_cfg = dict(
+        type="CrossLevelAttn",
+        num_layers=TOKEN_REFINER_LAYERS,
+        num_heads=4,
+        mlp_ratio=4.0,
+        # target_levels=["voxel_20cm", "voxel_10cm", "voxel_5cm"],
+        # source_levels=None,                  # None = all levels (incl. SP)
+        max_source_tokens_per_level=8192,      # cap SP's K/V contribution
+        # pos_emb_kind="sinusoidal",
+    )
+else:
+    raise ValueError(
+        f"TOKEN_REFINER_KIND must be 'identity', 'per_level', or "
+        f"'cross_level'; got {TOKEN_REFINER_KIND!r}"
+    )
+
+# Back-compat alias for any external code that read the old name.
+USE_PERLEVEL_REFINER = (TOKEN_REFINER_KIND == "per_level")
+PERLEVEL_REFINER_LAYERS = TOKEN_REFINER_LAYERS
 
 # =============================================================================
 # Coords + backbone shape
