@@ -42,7 +42,7 @@
 #SBATCH --error=logs/merge-shards-%j.err
 #SBATCH --time=08:00:00
 #SBATCH --nodes=1
-#SBATCH --ntasks=1
+#SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=16
 #SBATCH --mem=64G
 #SBATCH --signal=B:USR1@120
@@ -52,9 +52,9 @@ set -euo pipefail
 
 # === Config (override via env) ===
 STAGING_DIR="${STAGING_DIR:-/projects/u6jo/staging}"
-SHARDLIST="${SHARDLIST:-$STAGING_DIR/isambard_shardlist.txt}"
-OUTPUT_DIR="${OUTPUT_DIR:-$STAGING_DIR}"
-OUTPUT_NAME="${OUTPUT_NAME:-combined_pretrain-sonata-v7-extbnb-larmatch}"
+SHARDLIST="${SHARDLIST:-$STAGING_DIR/isambard_shardlist_test.txt}"
+OUTPUT_DIR="${OUTPUT_DIR:-/projects/u6jo/datasets}"
+OUTPUT_NAME="${OUTPUT_NAME:-combined_pretrain-sonata-v7-extbnb-larmatch-test}"
 MKSQUASHFS="${MKSQUASHFS:-mksquashfs.static}"
 UNSQUASHFS="${UNSQUASHFS:-unsquashfs}"
 SQUASHFUSE="${SQUASHFUSE:-squashfuse}"
