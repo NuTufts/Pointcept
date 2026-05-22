@@ -1,0 +1,22 @@
+Bootstrap: docker
+From: alpine:3.19
+
+%labels
+    Purpose Minimal sidecar container providing mksquashfs / unsquashfs for
+            the Isambard shard-merge job (merge_shards_on_isambard.sh). The
+            training container (pointcept_cuml.sif) does not ship squashfs-tools.
+    BuildHost Built on Tufts via:
+            apptainer build --fakeroot squashfs_tools.sif squashfs_tools.def
+
+%post
+    set -eux
+    apk add --no-cache squashfs-tools
+    mksquashfs -version
+    unsquashfs -version
+
+%runscript
+    exec "$@"
+
+%test
+    mksquashfs -version >/dev/null
+    unsquashfs -version >/dev/null
