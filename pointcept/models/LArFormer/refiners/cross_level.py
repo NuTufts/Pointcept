@@ -64,6 +64,15 @@ class _CrossAttnFFNBlock(nn.Module):
             nn.Linear(hidden, dim),
         )
 
+        # DETR/Mask2Former zero-init on the OUTPUT projections. Each
+        # residual block is identity at init → cross-level information
+        # flow only ramps up as the model learns; the random-init
+        # amplification cascade through N stacked blocks is avoided.
+        nn.init.zeros_(self.attn.out_proj.weight)
+        nn.init.zeros_(self.attn.out_proj.bias)
+        nn.init.zeros_(self.ffn[-1].weight)
+        nn.init.zeros_(self.ffn[-1].bias)
+
     def forward(
         self,
         q_tokens: torch.Tensor,    # (M_q, D)

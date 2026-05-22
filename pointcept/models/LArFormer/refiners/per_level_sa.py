@@ -57,6 +57,16 @@ class _SelfAttnFFNBlock(nn.Module):
             nn.Linear(hidden, dim),
         )
 
+        # DETR/Mask2Former zero-init on the OUTPUT projections so each
+        # residual block is the identity at init. Refiner tokens pass
+        # through unchanged → the FFN/attention "amplification cascade"
+        # through N stacked random-init blocks is avoided. Gradient still
+        # flows back into these zeroed weights via the input side.
+        nn.init.zeros_(self.attn.out_proj.weight)
+        nn.init.zeros_(self.attn.out_proj.bias)
+        nn.init.zeros_(self.ffn[-1].weight)
+        nn.init.zeros_(self.ffn[-1].bias)
+
     def forward(self, tokens: torch.Tensor, pos: torch.Tensor) -> torch.Tensor:
         # tokens: (M, D); pos: (M, D). Add batch dim for MHA.
         x = tokens.unsqueeze(0)

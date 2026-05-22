@@ -104,6 +104,15 @@ class LArFormer(nn.Module):
                     p.requires_grad = True
                 else:
                     p.requires_grad = False
+        if self.unfreeze_decoder:
+            # DETR/Mask2Former-style zero-init on PT-v3m2 decoder Block
+            # output projections (CPE Linear, attn.proj, mlp.fc2). Plus
+            # a per-Block forward hook that sanitizes point.feat — covers
+            # cases where attention INTERNALS produce NaN (e.g., flash
+            # attention with random Q/K hitting a numerical edge case)
+            # which propagate through zeroed proj because `0 * NaN = NaN`.
+            self._zero_init_ptv3_decoder_blocks()
+            self._register_ptv3_decoder_block_sanitizers()
         self.backbone_out_channels = int(backbone_out_channels)
 
         # Forward-hook capture of PT-v3m2 decoder stages (the
@@ -183,6 +192,157 @@ class LArFormer(nn.Module):
         if not self.enable_origin_head:
             loss_kwargs["weight_origin"] = 0.0
         self.loss_fn = LArFormerLoss(levels_cfg=self.levels_cfg, **loss_kwargs)
+
+        # Defense-in-depth: register a NaN/Inf-zeroing hook on every
+        # trainable parameter's gradient. This guarantees no NaN/Inf
+        # reaches the optimizer regardless of which internal layer
+        # produced it (LayerNorm of an Inf input, softmax over an Inf-
+        # scale Q@K, etc.). Critical for the early iters of configs
+        # where multiple from-scratch subsystems (PTv3 decoder + token
+        # refiner + Mask2Former decoder) co-train. `clip_grad_norm_`
+        # alone is NOT enough — it computes total_norm = sqrt(sum(g²)),
+        # which is NaN if any single grad has NaN, leaving every
+        # gradient un-clipped. This hook fires BEFORE clip_grad_norm_,
+        # so by the time the trainer clips, the gradients are at worst
+        # finite-but-large (which clip_grad_norm_ then bounds).
+        self._register_nan_safe_grad_hooks()
+
+    @staticmethod
+    def _nan_safe_grad_hook(g: torch.Tensor) -> torch.Tensor:
+        return torch.nan_to_num(g, nan=0.0, posinf=0.0, neginf=0.0)
+
+    def _register_nan_safe_grad_hooks(self) -> None:
+        for p in self.parameters():
+            if p.requires_grad:
+                p.register_hook(self._nan_safe_grad_hook)
+
+    def _zero_init_ptv3_decoder_blocks(self) -> None:
+        """Zero-init `attn.proj` and `mlp.fc2` of every Block inside the
+        PT-v3m2 decoder. These are the output projections of each
+        residual sub-update; zeroing them makes the Block an identity at
+        init, which keeps the from-scratch decoder's output equal to
+        the encoder's skip features (i.e. clean) on the first iter.
+
+        Only applies when `unfreeze_decoder=True` (i.e. the decoder is
+        from-scratch trainable). Safe to call regardless of whether the
+        backbone has a decoder; quietly no-ops if the path doesn't exist.
+        """
+        ptv3 = self._find_ptv3_inner()
+        dec = getattr(ptv3, "dec", None)
+        if dec is None:
+            return
+        import torch.nn as nn
+        n_zeroed = 0
+        for stage_name, stage_seq in dec.named_children():
+            # Each stage_seq is a PointSequential: up (GridUnpooling) +
+            # block0, block1, ... (Blocks). We zero only the Blocks.
+            for child_name, mod in stage_seq.named_children():
+                if not child_name.startswith("block"):
+                    continue
+                # Block.cpe = PointSequential(SubMConv3d, Linear, LayerNorm).
+                # Zero the Linear → cpe out = LN(Linear(0)) = 0; the CPE
+                # residual `shortcut + cpe_out` becomes identity. This
+                # neutralizes the random-init sparse conv + Linear chain
+                # that empirically produces NaN entries from edge cases
+                # in some point positions.
+                cpe_seq = getattr(mod, "cpe", None)
+                if cpe_seq is not None:
+                    for m in cpe_seq.modules():
+                        if isinstance(m, nn.Linear):
+                            nn.init.zeros_(m.weight)
+                            if m.bias is not None:
+                                nn.init.zeros_(m.bias)
+                            n_zeroed += 1
+                            break  # only the first Linear (CPE output proj)
+                # Block.attn is SerializedAttention with self.proj (output
+                # Linear) + self.qkv (Linear that produces Q/K/V).
+                # - Disable flash attention on the decoder side. The
+                #   flash_attn kernel casts to bfloat16 internally and
+                #   its backward kernel produces NaN with the degenerate
+                #   Q=K=V (caused by our zero-init of qkv) — vanilla
+                #   attention is numerically stable for this case. The
+                #   decoder's token counts per stage (~5K max) are small
+                #   enough that vanilla attention is affordable.
+                # - Zero `qkv.weight`: makes qkv_out = qkv.bias (constant
+                #   across tokens) → Q=K=V=constant → uniform attention
+                #   → output is a constant.
+                # - Zero `proj.weight` + bias: makes the attention output
+                #   exactly 0 (because `proj(constant) = 0`), so the
+                #   block's attention residual is identity at init.
+                attn = getattr(mod, "attn", None)
+                if attn is not None:
+                    # Switch the decoder blocks to xformers backend.
+                    # PT-v3m2's default flash_attn backend casts to
+                    # bfloat16 internally; its backward kernel produces
+                    # NaN with degenerate Q=K=V (which our zero-init
+                    # qkv creates). xformers uses fp16 with the standard
+                    # softmax derivatives and handles this case cleanly.
+                    # The vanilla (enable_flash=False) path is broken
+                    # in PT-v3m2 — references undefined `patch_size_max`
+                    # AND has a reshape mismatch for non-padded inputs.
+                    if hasattr(attn, "flash_backend"):
+                        attn.flash_backend = "xformers"
+                    qkv = getattr(attn, "qkv", None)
+                    if isinstance(qkv, nn.Linear):
+                        nn.init.zeros_(qkv.weight)
+                        # Keep qkv.bias at default init (small) so V isn't
+                        # exactly zero; this gives a tiny but nonzero V
+                        # value to attend to, so the backward gradient
+                        # back into qkv.weight is nonzero and the
+                        # attention can start learning.
+                        n_zeroed += 1
+                    proj = getattr(attn, "proj", None)
+                    if isinstance(proj, nn.Linear):
+                        nn.init.zeros_(proj.weight)
+                        if proj.bias is not None:
+                            nn.init.zeros_(proj.bias)
+                        n_zeroed += 1
+                # Block.mlp is PointSequential wrapping an MLP whose
+                # final Linear is .fc2.
+                mlp_seq = getattr(mod, "mlp", None)
+                if mlp_seq is not None:
+                    for m in mlp_seq.modules():
+                        fc2 = getattr(m, "fc2", None)
+                        if isinstance(fc2, nn.Linear):
+                            nn.init.zeros_(fc2.weight)
+                            if fc2.bias is not None:
+                                nn.init.zeros_(fc2.bias)
+                            n_zeroed += 1
+                            break
+        # (No logger here — LArFormer.__init__ runs before logging is up.
+        # Smoke test below verifies n_zeroed > 0.)
+        self._n_ptv3_dec_blocks_zeroed = n_zeroed
+
+    def _register_ptv3_decoder_block_sanitizers(self) -> None:
+        """Forward-hook each PT-v3m2 decoder Block to sanitize point.feat
+        on the way out. Belt-and-suspenders for cases where attention
+        internals (e.g., flash attention) produce NaN that the zero-init
+        on `attn.proj` doesn't catch because `0 * NaN = NaN`."""
+        ptv3 = self._find_ptv3_inner()
+        dec = getattr(ptv3, "dec", None)
+        if dec is None:
+            return
+
+        def _hook(_mod, _inp, out):
+            # Out is a Point-like object with .feat (and possibly
+            # .sparse_conv_feat). Sanitize both in-place so any
+            # downstream code that reads sparse_conv_feat doesn't see
+            # NaN either.
+            if hasattr(out, "feat"):
+                out.feat = torch.nan_to_num(
+                    out.feat, nan=0.0, posinf=1000.0, neginf=-1000.0,
+                ).clamp(-1000.0, 1000.0)
+                if hasattr(out, "sparse_conv_feat") and out.sparse_conv_feat is not None:
+                    out.sparse_conv_feat = out.sparse_conv_feat.replace_feature(out.feat)
+            return out
+
+        n = 0
+        for stage_name, stage_seq in dec.named_children():
+            for child_name, mod in stage_seq.named_children():
+                if child_name.startswith("block"):
+                    mod.register_forward_hook(_hook)
+                    n += 1
+        self._n_ptv3_dec_block_sanitizer_hooks = n
 
     # ------------------------------------------------------------------
     # Backbone
@@ -433,7 +593,15 @@ class LArFormer(nn.Module):
                 sp_slice = ev["sp_slice"]
                 s = stage_starts[ei]
                 e = stage_starts[ei + 1]
-                ev_tokens = pt.feat[s:e]                    # (M_ev, C)
+                # Sanitize stage features at the source. From-scratch
+                # PT-v3m2 decoder Blocks can produce NaN/Inf features at
+                # init; PTv3DecoderStageLevel projects these via Linear,
+                # whose weight grad = stage_features.T @ grad_output goes
+                # NaN if the input is NaN — same class of bug we hit on
+                # the per-level cls heads.
+                ev_tokens = torch.nan_to_num(
+                    pt.feat[s:e], nan=0.0, posinf=1000.0, neginf=-1000.0,
+                ).clamp(-1000.0, 1000.0)
                 ev_coords = pt.coord[s:e]                   # (M_ev, 3)
                 # Per-event sp_to_level_id in event-local indices [0, M_ev).
                 ev_sp_global = sp_to_stage_global[sp_slice]  # (N_sp_ev,)
@@ -451,6 +619,21 @@ class LArFormer(nn.Module):
 
     def forward(self, data_dict: dict) -> dict:
         sp_feat_all = self._encode(data_dict)
+        # Sanitize backbone output at the source. Covers any from-scratch
+        # PT-v3m2 decoder (when enc_mode=False + unfreeze_decoder=True)
+        # whose random-init Blocks can produce NaN/Inf per-SP features
+        # in the first iters. With clean sp_feat_all, the tokenizer's
+        # VoxelBuilder / SpacepointBuilder / PTv3DecoderStageLevel all
+        # produce clean tokens, and the refiner blocks' LayerNorm /
+        # attention / FFN see in-range inputs (so their BACKWARD weight
+        # grads — which depend on input.T @ grad_output — stay finite
+        # even though their forward output is zeroed at init).
+        # _INTERMEDIATE_CAP=1000 matches the decoder's intermediate
+        # sanitizer convention (generous range; sigmoid/softmax don't
+        # come anywhere near).
+        sp_feat_all = torch.nan_to_num(
+            sp_feat_all, nan=0.0, posinf=1000.0, neginf=-1000.0,
+        ).clamp(-1000.0, 1000.0)
         events = self._per_event_slices(data_dict)
         per_event_dec_stages = self._build_decoder_stages_per_event(
             data_dict, events,
@@ -471,17 +654,47 @@ class LArFormer(nn.Module):
 
             levels = self.tokenizer(sp_feat, coord_norm, event_dict)
             levels = self.token_refiner(levels)
+            # Sanitize tokens at the refiner output boundary. Both the
+            # per-level cls heads AND the decoder consume `levels[name].
+            # tokens`. If the refiner (random-init transformer blocks)
+            # produces NaN/Inf in tokens, `head(tokens)` is clean in
+            # forward but `∂(matmul)/∂(head.weight) = tokens.T` is NaN
+            # in backward — corrupts the cls-head weight gradient.
+            # Sanitizing once here covers both consumers.
+            from .builders import LevelOutput as _LO
+            from collections import OrderedDict as _OD
+            levels = _OD(
+                (name, _LO(
+                    tokens=(torch.nan_to_num(
+                        lvl.tokens, nan=0.0, posinf=1000.0, neginf=-1000.0,
+                    ).clamp(-1000.0, 1000.0)
+                            if lvl.tokens.shape[0] > 0 else lvl.tokens),
+                    coords=lvl.coords,
+                    sp_to_level_id=lvl.sp_to_level_id,
+                    name=lvl.name,
+                ))
+                for name, lvl in levels.items()
+            )
             decoder_out = (self.decoder(levels)
                            if self.decoder is not None else None)
 
-            # Per-level cls logits (one head per level that declared cls)
+            # Per-level cls logits (one head per level that declared cls).
+            # Sanitize the same way the decoder sanitizes its own predictions
+            # (clamp + nan_to_num) — protects all downstream consumers (the
+            # loss, the matcher, the evaluator) from pathological logits
+            # while the deep freshly-random stack is warming up. Same
+            # rationale as `Mask2FormerDecoder._sanitize_logits`.
             per_level_cls: "OrderedDict[str, torch.Tensor]" = OrderedDict()
             for name, head in self.cls_heads.items():
                 lvl = levels[name]
                 if lvl.n_tokens == 0:
                     per_level_cls[name] = lvl.tokens.new_zeros(0, head.num_classes)
                 else:
-                    per_level_cls[name] = head(lvl.tokens)
+                    raw = head(lvl.tokens)
+                    per_level_cls[name] = torch.nan_to_num(
+                        raw.clamp(-50.0, 50.0),
+                        nan=0.0, posinf=50.0, neginf=-50.0,
+                    )
 
             pred: dict = {
                 "per_level_cls":   per_level_cls,

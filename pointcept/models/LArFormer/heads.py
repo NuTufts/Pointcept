@@ -43,8 +43,17 @@ class PerTokenClsHead(nn.Module):
                 nn.Dropout(dropout) if dropout > 0 else nn.Identity(),
                 nn.Linear(hidden_dim, num_classes),
             )
+            output_linear = self.net[-1]
         else:
             self.net = nn.Linear(dim, num_classes)
+            output_linear = self.net
+        # Zero-init the OUTPUT projection (DETR/Mask2Former-style). Makes
+        # cls_logits == bias_init (≈ 0) at init → softmax is uniform →
+        # CE loss is well-defined and gradient is small but nonzero. Avoids
+        # the random-init logit explosion that NaN's the per-pair loss when
+        # this head is downstream of from-scratch transformer blocks.
+        nn.init.zeros_(output_linear.weight)
+        nn.init.zeros_(output_linear.bias)
 
     def forward(self, tokens: torch.Tensor) -> torch.Tensor:
         """tokens: (M, D) → (M, num_classes)."""

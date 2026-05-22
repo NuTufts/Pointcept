@@ -119,25 +119,42 @@ class CosineAnnealingLR(lr_scheduler.CosineAnnealingLR):
 @SCHEDULERS.register_module()
 class FlatWithDecayLR(lr_scheduler._LRScheduler):
     """
-    Flat learning rate with explicit, epoch-driven decays.
+    Flat learning rate with optional linear warmup + explicit, epoch-driven
+    decays. Optionally smooths the plateau-detection signal with an EMA.
 
-    Per-iteration ``step()`` is a no-op — the LR stays at whatever
-    ``param_groups[i]['lr']`` was last set to. Decays happen only when
-    ``step_epoch(val_loss)`` is called once per epoch (by the
-    ``LREpochScheduler`` hook).
+    Phases:
+      1. Warmup (iters ``[0, warmup_iters)``):
+         Linear ramp from ``warmup_start_lr`` → each param group's
+         target LR (``_post_warmup_lrs[i]``, initialized to the
+         constructor-time LR). ``step_epoch`` is a no-op during warmup —
+         counters don't advance and decays don't fire (gradients are
+         noisy and we don't want a flaky early plateau trigger to
+         collapse the LR).
+      2. Flat phase (iters ``>= warmup_iters``):
+         LR held at ``_post_warmup_lrs[i]`` (mutated only by decays via
+         ``_apply_decay``). ``step_epoch(val_loss)`` may trigger a decay
+         per the ``mode`` setting below.
 
     Two decay triggers, selected by ``mode``:
       - ``"epoch"``   : multiply LR by ``gamma`` every ``step_period_epochs``.
       - ``"plateau"`` : multiply LR by ``gamma`` after ``patience_epochs``
-                        epochs with no val-loss improvement greater than
-                        ``min_delta``. After each plateau decay, a
-                        ``cooldown_epochs`` window suppresses further
-                        plateau triggers.
+                        epochs with no improvement in the plateau-detection
+                        signal greater than ``min_delta``. After each
+                        plateau decay, a ``cooldown_epochs`` window
+                        suppresses further plateau triggers.
       - ``"both"``    : either trigger fires (whichever comes first); each
                         keeps its own counter.
 
+    Plateau-detection signal:
+      - ``ema_alpha is None`` (default): use raw ``val_loss``. A single
+        fluke-low epoch pins ``best_val_loss`` to a hard-to-beat value.
+      - ``0 < ema_alpha <= 1``: use ``ema_alpha * val_loss + (1 -
+        ema_alpha) * prev_ema``. Smooths short-term fluctuations so a
+        single noisy epoch doesn't latch the "best". EMA starts AFTER
+        warmup completes — the noisy warmup phase shouldn't seed it.
+
     LR floor is ``min_lr``; further decays are skipped once the floor is
-    hit (also resets the relevant counters so we don't keep flapping).
+    hit.
 
     Constructor accepts (and ignores) ``total_steps`` because Pointcept's
     ``Trainer.build_scheduler`` injects it for the OneCycle/Cosine families.
@@ -146,7 +163,9 @@ class FlatWithDecayLR(lr_scheduler._LRScheduler):
     ``CheckpointLoader`` rewrites ``initial_lr`` / ``max_lr`` and is NOT
     appropriate here. When resuming a FlatWithDecayLR run, leave
     ``extend_scheduler=False`` so ``scheduler.load_state_dict`` restores
-    counters and ``best_val_loss`` exactly.
+    counters / ``best_val_loss`` / EMA state / ``_post_warmup_lrs`` exactly.
+    Warmup resumes mid-phase because ``last_epoch`` (the per-iter counter)
+    is restored by the parent class.
     """
 
     def __init__(
@@ -159,6 +178,9 @@ class FlatWithDecayLR(lr_scheduler._LRScheduler):
         patience_epochs=8,
         min_delta=1e-4,
         cooldown_epochs=2,
+        warmup_iters=0,
+        warmup_start_lr=0.0,
+        ema_alpha=None,
         reset_lr=None,
         reset_counters=False,
         total_steps=None,  # accepted for trainer compatibility, unused
@@ -169,6 +191,11 @@ class FlatWithDecayLR(lr_scheduler._LRScheduler):
                 f"FlatWithDecayLR: mode must be one of "
                 f"'epoch'|'plateau'|'both', got {mode!r}"
             )
+        if ema_alpha is not None and not (0.0 < float(ema_alpha) <= 1.0):
+            raise ValueError(
+                f"FlatWithDecayLR: ema_alpha must be in (0, 1] or None; "
+                f"got {ema_alpha!r}"
+            )
         self.mode = mode
         self.gamma = float(gamma)
         self.min_lr = float(min_lr)
@@ -176,6 +203,9 @@ class FlatWithDecayLR(lr_scheduler._LRScheduler):
         self.patience_epochs = int(patience_epochs)
         self.min_delta = float(min_delta)
         self.cooldown_epochs = int(cooldown_epochs)
+        self.warmup_iters = int(warmup_iters)
+        self.warmup_start_lr = float(warmup_start_lr)
+        self.ema_alpha = None if ema_alpha is None else float(ema_alpha)
         # On resume, `load_state_dict` will override every param_group's
         # `lr` with this value (if not None). Use this to manually drop
         # the LR below whatever was saved when continuing a run. The
@@ -184,9 +214,9 @@ class FlatWithDecayLR(lr_scheduler._LRScheduler):
         # has produced its first checkpoint, otherwise subsequent resumes
         # will keep stomping the LR back to this value.
         self._reset_lr = None if reset_lr is None else float(reset_lr)
-        # If True, also wipe plateau/period counters and best_val_loss on
-        # load — useful when reset_lr changes the loss landscape enough
-        # that the old "best" is no longer comparable.
+        # If True, also wipe plateau/period counters, best_val_loss, and
+        # the EMA state on load — useful when reset_lr changes the loss
+        # landscape enough that the old "best" is no longer comparable.
         self._reset_counters = bool(reset_counters)
 
         self.best_val_loss = float("inf")
@@ -194,41 +224,119 @@ class FlatWithDecayLR(lr_scheduler._LRScheduler):
         self.epochs_since_improvement = 0
         self.cooldown_remaining = 0
         self.num_decays = 0
+        self._ema_val_loss = None    # set on first post-warmup val_loss
+
+        # MUST come after the attribute init above: _LRScheduler.__init__
+        # calls step() (and therefore get_lr()), which reads
+        # _post_warmup_lrs. We initialize it from the per-group LRs the
+        # optimizer currently carries, which is what the parent class
+        # uses to populate self.base_lrs anyway.
+        self._post_warmup_lrs = [
+            float(g["lr"]) for g in optimizer.param_groups
+        ]
 
         super().__init__(optimizer, last_epoch=last_epoch)
 
+    # ------------------------------------------------------------------
+    # Per-iter LR computation
+    # ------------------------------------------------------------------
+
+    def _in_warmup(self) -> bool:
+        # `last_epoch` is the per-iter counter (parent class increments
+        # it on every step()). Warmup is active for the FIRST
+        # `warmup_iters` calls to step(); after that the flat phase
+        # takes over.
+        return self.warmup_iters > 0 and self.last_epoch < self.warmup_iters
+
     def get_lr(self):
-        # No iteration-driven schedule: hold whatever's currently set on
-        # each param group. Returning the live values makes
-        # `get_last_lr()` consistent with what the optimizer is using.
-        return [group["lr"] for group in self.optimizer.param_groups]
+        if self._in_warmup():
+            # Linear ramp from warmup_start_lr → target. Use (last_epoch + 1)
+            # so the LAST warmup step lands exactly on the target (consistent
+            # with most torch warmup conventions and unambiguous when
+            # last_epoch == warmup_iters - 1).
+            frac = float(self.last_epoch + 1) / float(self.warmup_iters)
+            return [
+                self.warmup_start_lr
+                + frac * (target - self.warmup_start_lr)
+                for target in self._post_warmup_lrs
+            ]
+        # Post-warmup: held at _post_warmup_lrs (mutated by decays).
+        return list(self._post_warmup_lrs)
 
     def _apply_decay(self, reason):
         new_lrs = []
         any_above_floor = False
-        for group in self.optimizer.param_groups:
-            new_lr = max(group["lr"] * self.gamma, self.min_lr)
-            if new_lr < group["lr"]:
+        for i, group in enumerate(self.optimizer.param_groups):
+            cur = self._post_warmup_lrs[i]
+            new_lr = max(cur * self.gamma, self.min_lr)
+            if new_lr < cur:
                 any_above_floor = True
+            self._post_warmup_lrs[i] = new_lr
+            # Mirror the change onto the live param-group LR. The trainer's
+            # next per-iter step() will overwrite group["lr"] via get_lr()
+            # with the same value, so this is consistent — but doing it
+            # here means any code that reads `group["lr"]` before that
+            # next step() sees the post-decay value.
             group["lr"] = new_lr
             new_lrs.append(new_lr)
         if any_above_floor:
             self.num_decays += 1
         return new_lrs, any_above_floor, reason
 
+    # ------------------------------------------------------------------
+    # Per-epoch decay logic
+    # ------------------------------------------------------------------
+
     def step_epoch(self, val_loss=None):
         """
         Call once at the end of each epoch. Returns a dict describing
-        whether a decay happened and the new LRs (handy for logging).
+        whether a decay happened, the new LRs (handy for logging), and
+        — when EMA is enabled — the current EMA-smoothed val_loss.
+
+        No-op during warmup: counters don't advance, decays don't fire,
+        EMA isn't seeded. The returned dict carries ``in_warmup=True``
+        plus a ``warmup_progress`` fraction in ``[0, 1]`` so log lines
+        can show what the warmup is doing.
         """
+        if self._in_warmup():
+            return dict(
+                decayed=False,
+                reason="warmup",
+                lrs=[g["lr"] for g in self.optimizer.param_groups],
+                best_val_loss=self.best_val_loss,
+                ema_val_loss=self._ema_val_loss,
+                epochs_since_decay=self.epochs_since_decay,
+                epochs_since_improvement=self.epochs_since_improvement,
+                cooldown_remaining=self.cooldown_remaining,
+                num_decays=self.num_decays,
+                in_warmup=True,
+                warmup_progress=(float(self.last_epoch + 1)
+                                 / float(self.warmup_iters)),
+            )
+
         decayed = False
         reason = None
 
-        # plateau bookkeeping (only meaningful when val_loss provided)
+        # Plateau bookkeeping. When EMA is enabled, use the smoothed
+        # value for plateau detection (and for best_val_loss tracking).
+        # EMA is seeded from the first POST-warmup val_loss.
+        val_for_plateau = None
         if val_loss is not None and val_loss == val_loss:  # not NaN
-            improved = val_loss < (self.best_val_loss - self.min_delta)
+            if self.ema_alpha is not None:
+                if self._ema_val_loss is None:
+                    self._ema_val_loss = float(val_loss)
+                else:
+                    self._ema_val_loss = (
+                        self.ema_alpha * float(val_loss)
+                        + (1.0 - self.ema_alpha) * self._ema_val_loss
+                    )
+                val_for_plateau = self._ema_val_loss
+            else:
+                val_for_plateau = float(val_loss)
+
+            improved = val_for_plateau < (self.best_val_loss - self.min_delta)
             if improved:
-                self.best_val_loss = float(val_loss)
+                self.best_val_loss = float(val_for_plateau)
                 self.epochs_since_improvement = 0
             else:
                 self.epochs_since_improvement += 1
@@ -255,8 +363,7 @@ class FlatWithDecayLR(lr_scheduler._LRScheduler):
             not decayed
             and self.mode in ("plateau", "both")
             and self.cooldown_remaining == 0
-            and val_loss is not None
-            and val_loss == val_loss
+            and val_for_plateau is not None
             and self.patience_epochs > 0
             and self.epochs_since_improvement >= self.patience_epochs
         ):
@@ -272,10 +379,13 @@ class FlatWithDecayLR(lr_scheduler._LRScheduler):
             reason=reason,
             lrs=[g["lr"] for g in self.optimizer.param_groups],
             best_val_loss=self.best_val_loss,
+            ema_val_loss=self._ema_val_loss,
             epochs_since_decay=self.epochs_since_decay,
             epochs_since_improvement=self.epochs_since_improvement,
             cooldown_remaining=self.cooldown_remaining,
             num_decays=self.num_decays,
+            in_warmup=False,
+            warmup_progress=1.0 if self.warmup_iters > 0 else None,
         )
 
     # Two sets of attributes:
@@ -286,7 +396,7 @@ class FlatWithDecayLR(lr_scheduler._LRScheduler):
     #     constructed value on resume — making it impossible to change
     #     e.g. step_period_epochs from one resume to the next.
     #   _STATEFUL_KEYS — true runtime state that MUST survive resumes
-    #     (counters, best-so-far, etc).
+    #     (counters, best-so-far, EMA value, per-group post-warmup LRs).
     _CONFIG_ONLY_KEYS = (
         "mode",
         "gamma",
@@ -295,6 +405,9 @@ class FlatWithDecayLR(lr_scheduler._LRScheduler):
         "patience_epochs",
         "min_delta",
         "cooldown_epochs",
+        "warmup_iters",
+        "warmup_start_lr",
+        "ema_alpha",
         "_reset_lr",
         "_reset_counters",
     )
@@ -304,6 +417,8 @@ class FlatWithDecayLR(lr_scheduler._LRScheduler):
         "epochs_since_improvement",
         "cooldown_remaining",
         "num_decays",
+        "_ema_val_loss",
+        "_post_warmup_lrs",
     )
 
     def state_dict(self):
@@ -334,9 +449,15 @@ class FlatWithDecayLR(lr_scheduler._LRScheduler):
         # the parent restores last_epoch/_step_count, and AFTER the
         # caller has already done optimizer.load_state_dict(), so this is
         # the final word on what the optimizer's param_groups carry.
+        # Also rewrites _post_warmup_lrs so the post-warmup hold value
+        # matches (otherwise a subsequent decay would multiply the saved
+        # pre-reset target, overshooting min_lr in the wrong direction).
         if self._reset_lr is not None:
             for group in self.optimizer.param_groups:
                 group["lr"] = self._reset_lr
+            self._post_warmup_lrs = [
+                self._reset_lr for _ in self.optimizer.param_groups
+            ]
             # Keep get_last_lr() / future state_dicts consistent.
             self._last_lr = [self._reset_lr for _ in self.optimizer.param_groups]
         if self._reset_counters:
@@ -345,6 +466,7 @@ class FlatWithDecayLR(lr_scheduler._LRScheduler):
             self.epochs_since_improvement = 0
             self.cooldown_remaining = 0
             self.num_decays = 0
+            self._ema_val_loss = None
 
 
 @SCHEDULERS.register_module()

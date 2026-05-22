@@ -111,6 +111,19 @@ class _MaskedDecoderLayer(nn.Module):
             nn.Linear(hidden, dim),
         )
 
+        # DETR/Mask2Former zero-init on the OUTPUT projections of each
+        # residual block. At init each block is `x + 0 = x` — the layer
+        # passes queries through unchanged, so the deep decoder stack
+        # produces stable activations and the random-init "amplification
+        # cascade" through N layers is avoided. Gradient still flows into
+        # these zeroed weights via the residual connection.
+        nn.init.zeros_(self.cross_attn.out_proj.weight)
+        nn.init.zeros_(self.cross_attn.out_proj.bias)
+        nn.init.zeros_(self.self_attn.out_proj.weight)
+        nn.init.zeros_(self.self_attn.out_proj.bias)
+        nn.init.zeros_(self.ffn[-1].weight)
+        nn.init.zeros_(self.ffn[-1].bias)
+
     def forward(
         self,
         queries: torch.Tensor,
@@ -156,6 +169,21 @@ class _PerLayerHeads(nn.Module):
             nn.GELU(),
             nn.Linear(dim, dim),
         )
+
+        # DETR/Mask2Former-style zero-init on the OUTPUT projections.
+        # Makes class_logits / mask_embed(q) / origin start at 0 at init,
+        # so mask_logits = mask_embed(q) @ keys.T starts at 0 (sigmoid 0.5)
+        # and softmax over class_logits is uniform. CE / BCE / Dice are
+        # all finite and small. Gradient still flows (the matmuls are
+        # nontrivial via the OTHER operand), so the model learns; it
+        # just doesn't explode in the first iters.
+        nn.init.zeros_(self.class_head.weight)
+        nn.init.zeros_(self.class_head.bias)
+        nn.init.zeros_(self.mask_embed[-1].weight)
+        nn.init.zeros_(self.mask_embed[-1].bias)
+        if self.enable_origin_head:
+            nn.init.zeros_(self.origin_head[-1].weight)
+            nn.init.zeros_(self.origin_head[-1].bias)
 
     def forward(self, queries: torch.Tensor) -> dict:
         origin = (self.origin_head(queries) if self.enable_origin_head
@@ -274,6 +302,47 @@ class Mask2FormerDecoder(nn.Module):
                 f"{list(levels.keys())!r}"
             )
 
+    # Two-tier sanitization:
+    #   _LOGIT_CAP        — tight cap on FINAL mask/class logits. sigmoid
+    #                       / softmax saturate well before ±50, so this is
+    #                       a no-op for normal training but bounds the
+    #                       loss's view of pathological outputs.
+    #   _INTERMEDIATE_CAP — generous cap on INTERMEDIATE tensors that go
+    #                       into matmuls (mask_embed, keys_pe). The matmul
+    #                       backward is `∂(A@B.T)/∂A = B`, so if B has Inf
+    #                       entries, A's gradient gets Inf even if the
+    #                       output is sanitized. Sanitizing INPUTS to the
+    #                       matmul keeps the backward gradient finite.
+    #                       1000 is large enough that normal training
+    #                       (post-warmup, ~unit-scale activations) is
+    #                       unaffected, but caps anything that's exploding
+    #                       in the random-init regime.
+    _LOGIT_CAP = 50.0
+    _INTERMEDIATE_CAP = 1000.0
+
+    @staticmethod
+    def _nan_to_num_then_clamp(x: torch.Tensor, cap: float) -> torch.Tensor:
+        # Order matters: nan_to_num FIRST, then clamp. If we clamp first,
+        # clamp(NaN) = NaN, and then in the backward pass autograd computes
+        # 0 (nan_to_num grad at NaN) × NaN (clamp grad at NaN) = NaN —
+        # which propagates back into the optimizer state. Doing nan_to_num
+        # first replaces NaN/Inf with finite values BEFORE the clamp ever
+        # sees them.
+        return torch.nan_to_num(
+            x, nan=0.0, posinf=cap, neginf=-cap,
+        ).clamp(-cap, cap)
+
+    def _sanitize_logits(self, x: torch.Tensor) -> torch.Tensor:
+        """Sanitize a FINAL logit tensor (mask / class) — tight cap."""
+        return self._nan_to_num_then_clamp(x, self._LOGIT_CAP)
+
+    def _sanitize_intermediate(self, x: torch.Tensor) -> torch.Tensor:
+        """Sanitize an INTERMEDIATE tensor that will go into a matmul —
+        generous cap. Bounds the gradient produced by the matmul's
+        backward (∂(A@B.T)/∂A = B) so a single Inf entry in one operand
+        doesn't NaN the other operand's gradient."""
+        return self._nan_to_num_then_clamp(x, self._INTERMEDIATE_CAP)
+
     def _compute_predictions(
         self,
         heads: _PerLayerHeads,
@@ -281,16 +350,21 @@ class Mask2FormerDecoder(nn.Module):
         keys_pe_by_level: "OrderedDict[str, torch.Tensor]",
     ) -> dict:
         out = heads(queries)
-        mask_embed = out["mask_embed"]
+        # Sanitize the matmul INPUTS so backward gradients don't propagate
+        # Inf/NaN. See _sanitize_intermediate docstring.
+        mask_embed = self._sanitize_intermediate(out["mask_embed"])
         Q = queries.shape[0]
         mask_logits = OrderedDict()
         for name, keys_pe in keys_pe_by_level.items():
             if keys_pe.shape[0] == 0:
                 mask_logits[name] = mask_embed.new_zeros(Q, 0)
             else:
-                mask_logits[name] = mask_embed @ keys_pe.transpose(0, 1)
+                keys_pe_clean = self._sanitize_intermediate(keys_pe)
+                mask_logits[name] = self._sanitize_logits(
+                    mask_embed @ keys_pe_clean.transpose(0, 1)
+                )
         return {
-            "class_logits": out["class_logits"],
+            "class_logits": self._sanitize_logits(out["class_logits"]),
             "origin":       out["origin"],
             "mask_logits":  mask_logits,
         }
@@ -317,8 +391,25 @@ class Mask2FormerDecoder(nn.Module):
         D = self.dim
         queries = self.query_content.unsqueeze(0).clone()
 
+        # Sanitize input tokens ONCE at the decoder entry point. Every
+        # downstream consumer (cross-attention `keys`, `keys_pe` for
+        # mask-logit matmul, the LayerNorms inside each decoder layer)
+        # then sees clean values. Without this, NaN/Inf in `lvl.tokens`
+        # poisons `LayerNorm(keys)` inside `_MaskedDecoderLayer` →
+        # NaN attention → NaN backward gradient at any param upstream
+        # of those tokens.
+        levels = OrderedDict(
+            (name, LevelOutput(
+                tokens=(self._sanitize_intermediate(lvl.tokens)
+                        if lvl.tokens.shape[0] > 0 else lvl.tokens),
+                coords=lvl.coords,
+                sp_to_level_id=lvl.sp_to_level_id,
+                name=lvl.name,
+            ))
+            for name, lvl in levels.items()
+        )
+
         # Compute the shared per-level positional embedding once.
-        any_tokens = next(iter(levels.values())).tokens
         pos_by_level: "OrderedDict[str, torch.Tensor]" = OrderedDict()
         keys_pe_by_level: "OrderedDict[str, torch.Tensor]" = OrderedDict()
         for name, lvl in levels.items():
