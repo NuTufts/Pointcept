@@ -313,10 +313,13 @@ below for what to do then.
    `$MOUNT_ROOT/<rel>/<rel>/file.h5` — doubled. Pointing `subdir` at the
    leaf strips the prefix so contents land at `$MOUNT_ROOT/<rel>/file.h5`.
    Mounts run in parallel (`xargs -P 8`) — 696 mounts complete in ~10–30 s.
-5. Runs `mksquashfs.static $MOUNT_ROOT $OUTPUT_SQSH -comp zstd -noI -noD
-   -b 128K` — identical flags to `build_squashfs.py`, so the combined
-   image has the same compression behavior as the individual shards
-   (i.e. `.h5` data stays uncompressed, metadata tables zstd level 1).
+5. Runs `mksquashfs.static $MOUNT_ROOT $OUTPUT_SQSH -comp $COMPRESSOR
+   -noI -noD -b 128K`. The source shards were built with `-comp zstd
+   -Xcompression-level 1`, but Isambard's `mksquashfs.static` only ships
+   `gzip` and `lz4` — so the combined image uses `gzip` by default. With
+   `-noI -noD` only metadata tables are compressed (data blocks stay raw,
+   matching the source shards), so the size difference between the two
+   compressors is negligible.
 6. Writes a `.sha256` and counts `.h5` files in the combined image as a
    sanity check against the source shard count.
 7. On exit (normal, error, or signal) releases every FUSE mount under
@@ -464,8 +467,9 @@ multi-hour run is at risk of being reaped by idle / session timeouts.
 | `OUTPUT_DIR` | `$STAGING_DIR` | Where the combined `.sqsh` and `.sha256` are written. |
 | `OUTPUT_NAME` | `combined_pretrain-sonata-v7-extbnb-larmatch` | Basename for the output (without `.sqsh`). Refusing-to-overwrite is enforced. |
 | `MKSQUASHFS` | `mksquashfs.static` | Image-builder binary. Override if Isambard names it differently or requires a `module load`. |
-| `UNSQUASHFS` | `unsquashfs` | Used for the final `.h5` file-count sanity check. |
+| `UNSQUASHFS` | `unsquashfs.static` | Optional. Only used for the final `.h5` file-count sanity check; if not on `$PATH` the check is skipped (not an error). |
 | `SQUASHFUSE` | `squashfuse` | Mount tool. `squashfuse_ll` works too if available. |
+| `COMPRESSOR` | `gzip` | Compressor passed as `mksquashfs -comp`. Isambard's `mksquashfs.static` only supports `gzip` and `lz4` (no `zstd`). With `-noI -noD` only metadata tables are compressed, so the choice barely affects output size. |
 | `PROCESSORS` | `$SLURM_CPUS_PER_TASK` (16) | `mksquashfs -processors`. |
 | `MOUNT_PARALLEL` | 8 | `xargs -P` for the mount loop. |
 | `MOUNT_ROOT` | `$SLURM_TMPDIR/merge_mounts.$SLURM_JOB_ID` | Where shards get mounted. Default lives on node-local scratch so SLURM cleans it. |
@@ -514,6 +518,7 @@ the binaries, not lifecycle management.
 | Smoke-test produces `$MOUNT_ROOT/<rel>/<rel>/...` (doubled paths) | Internal shard layout differs from the `build_squashfs.py` hardlink-tree convention. | Inspect with `unsquashfs -l <one>.sqsh`. Either drop `subdir=/$rel` from the `mount_one` function (if files are at shard root) or adjust the path. |
 | `mksquashfs.static: command not found` | Isambard's squashfs tools are behind a `module load`, or named differently. | Source the module in your `~/.bashrc` or in the script, or set `MKSQUASHFS=...` to the absolute path. |
 | `squashfuse: command not found` | Same as above. | Set `SQUASHFUSE=...`. Or fall back to the sidecar (above). |
+| `mksquashfs.static: Compressor "X" is not supported!` | Isambard's `mksquashfs.static` is a minimal build with limited compressor support (typically just `gzip` and `lz4`). | Override `COMPRESSOR=gzip` (the default) or `COMPRESSOR=lz4`. Do not change the source shards' compression — only the combined output is affected. |
 | `fusermount: failed to unmount: Device or resource busy` during cleanup | A process inside the mount tree still has open fds. | The trap uses `-uz` (lazy unmount) which sidesteps EBUSY by detaching the mountpoint and letting the kernel finish cleanup when fds close. If you see this, it means the lazy path also failed — investigate manually with `lsof`. |
 | Job hits wall clock before completion | Underestimated throughput, or shared-FS contention. | Output is unusable; mksquashfs has no resume. Delete the partial `.sqsh`, raise `--time=`, resubmit. The USR1 trap should have caught the pre-timeout and unmounted; verify in the log. |
 | `df`-based preflight refuses to start | Less than 1.05× total shard size free in `$OUTPUT_DIR`. | Free space, or set `$OUTPUT_DIR` to a different filesystem with capacity. Don't bypass — running out of space mid-merge wastes hours. |

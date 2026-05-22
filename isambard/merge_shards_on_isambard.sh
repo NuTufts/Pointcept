@@ -61,6 +61,12 @@ MKSQUASHFS="${MKSQUASHFS:-mksquashfs.static}"
 # necessarily unsquashfs), the check is skipped instead of aborting.
 UNSQUASHFS="${UNSQUASHFS:-unsquashfs.static}"
 SQUASHFUSE="${SQUASHFUSE:-squashfuse}"
+# Compressor for the metadata tables in the combined .sqsh. Isambard's
+# mksquashfs.static only supports gzip and lz4 (no zstd). With -noI -noD the
+# compressor only affects small metadata tables, not data blocks, so output
+# size barely changes. gzip is the universal default; lz4 is marginally
+# faster to decompress at mount time.
+COMPRESSOR="${COMPRESSOR:-gzip}"
 PROCESSORS="${PROCESSORS:-${SLURM_CPUS_PER_TASK:-8}}"
 MOUNT_PARALLEL="${MOUNT_PARALLEL:-8}"
 
@@ -176,8 +182,9 @@ export -f mount_one
 export MOUNT_ROOT STAGING_DIR SQUASHFUSE
 
 # NUL-delimit so paths with spaces survive (shouldn't happen for these shards, but safe).
+# -I{} implies one-arg-per-invocation, so no -n1 needed.
 tr '\n' '\0' < "$SHARDLIST" \
-    | xargs -0 -n1 -P "$MOUNT_PARALLEL" -I{} bash -c 'mount_one "$@"' _ {} \
+    | xargs -0 -P "$MOUNT_PARALLEL" -I{} bash -c 'mount_one "$@"' _ {} \
     || { log "ERROR: at least one mount failed; see stderr"; exit 5; }
 
 mounted=$(awk -v root="$MOUNT_ROOT" \
@@ -193,7 +200,7 @@ log "Running $MKSQUASHFS ($PROCESSORS processors) -> $OUTPUT_SQSH"
 t_merge_start=$SECONDS
 
 "$MKSQUASHFS" "$MOUNT_ROOT" "$OUTPUT_SQSH" \
-    -comp zstd -Xcompression-level 1 \
+    -comp "$COMPRESSOR" \
     -noI -noD \
     -b 128K \
     -processors "$PROCESSORS" \
