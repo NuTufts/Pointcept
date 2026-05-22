@@ -275,13 +275,25 @@ slicer_cfg = dict(
         weight_aux_mask=0.7,
         weight_per_level_cls=0.5,
         weight_origin=(0.5 if ENABLE_ORIGIN_HEAD_WITH_CENTROID else 0.0),
-        num_sample_points=16384,
+        num_sample_points=16392,
         use_importance_sampling=(not PURE_RANDOM_NEGATIVES),
         importance_oversample_ratio=3.0,
         importance_ratio=_IMPORTANCE_RATIO,
         importance_hard_neg_ratio=_HARD_NEG_RATIO,
         aux_max_tokens=20_000,
         no_object_weight=0.5,
+    ),
+    # Phase A: DINO/Mask-DINO mixed query selection. Pick the K query
+    # anchors from voxel_8cm's tokens, scored by `1 - p(no_object)` from
+    # the level's cls head (the same head supervised above via
+    # weight_per_level_cls). FPS over the top-M filters keeps anchors
+    # spatially diverse (otherwise long cosmics dominate the top-K).
+    # See docs/LArFormer.md §17.
+    mixed_query_selection=dict(
+        source_level="voxel_8cm",
+        score_source="cls_head",
+        selection_mode="top_m_then_fps",
+        score_filter_multiplier=4,
     ),
 )
 
@@ -312,7 +324,7 @@ model = dict(
 # =============================================================================
 weight = None
 
-save_path        = "exp/larformer_slicer_v1_cascaded_ptv3hybrid_crosslevel"
+save_path        = "exp/larformer_slicer_v1_cascaded_ptv3hybrid_crosslevel_mixedqsel"
 epoch            = 1000
 eval_epoch       = 200
 batch_size       = 1
@@ -336,7 +348,7 @@ find_unused_parameters = True
 # =============================================================================
 # Optimizer / scheduler
 # =============================================================================
-base_lr = 1.0e-4
+base_lr = 2e-5
 param_dicts = None
 optimizer = dict(type="AdamW", lr=base_lr, weight_decay=0.01)
 scheduler = dict(
@@ -354,7 +366,7 @@ scheduler = dict(
     # first ~50 iters are noisy enough to spike the loss curve, so we
     # don't want the plateau detector touching anything during that
     # phase. step_epoch is a no-op while in warmup (counters frozen).
-    warmup_iters=500,
+    warmup_iters=1000,
     warmup_start_lr=0.0,
     # EMA over the val/loss for plateau detection. A single lucky-low
     # raw val_loss (which fluctuates a few % epoch-to-epoch on this

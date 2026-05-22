@@ -385,11 +385,33 @@ class Mask2FormerDecoder(nn.Module):
     def forward(
         self,
         levels: "OrderedDict[str, LevelOutput]",
+        init_query_content: Optional[torch.Tensor] = None,
+        init_anchor_coords: Optional[torch.Tensor] = None,
     ) -> dict:
+        """
+        Args (mixed query selection, both required to enable):
+            init_query_content: (Q, D) token features selected by an
+                external MixedQuerySelector. When provided, the decoder
+                treats `self.query_content` as a per-slot zero-init delta
+                ON TOP of these anchor features.
+            init_anchor_coords: (Q, 3) coord_norm-space anchor positions
+                from the same selector. The decoder adds
+                `pos_emb(anchor_coords)` to `self.query_pos` so each
+                query's positional prior starts at its anchor.
+
+        When both are None (default), behavior matches the original
+        pure learnable-query path: queries = self.query_content,
+        query_pos = self.query_pos.
+        """
         self._validate_levels(levels)
 
         D = self.dim
-        queries = self.query_content.unsqueeze(0).clone()
+        if init_query_content is not None:
+            # Mixed query selection: queries = anchor features +
+            # (zero-init when selector is active) self.query_content delta.
+            queries = (init_query_content + self.query_content).unsqueeze(0).clone()
+        else:
+            queries = self.query_content.unsqueeze(0).clone()
 
         # Sanitize input tokens ONCE at the decoder entry point. Every
         # downstream consumer (cross-attention `keys`, `keys_pe` for
@@ -421,6 +443,16 @@ class Mask2FormerDecoder(nn.Module):
                 pos_by_level[name] = pe
                 keys_pe_by_level[name] = lvl.tokens + pe
 
+        # Mixed-query anchor positional contribution: when an external
+        # selector supplied per-query anchor coords, embed them once and
+        # add into every layer's `query_pos_dyn`. With self.query_pos
+        # zero-init'd by LArFormer (when mixed query selection is active),
+        # this gives each query a positional prior centered on its anchor;
+        # the origin head's per-layer refinement (and any nonzero delta in
+        # self.query_pos) is then a learnable correction on top.
+        anchor_pe = (self.pos_emb(init_anchor_coords)
+                     if init_anchor_coords is not None else None)
+
         init_predictions = self._compute_predictions(
             self.init_heads, queries.squeeze(0), keys_pe_by_level,
         )
@@ -445,12 +477,13 @@ class Mask2FormerDecoder(nn.Module):
 
             keys_b = keys.unsqueeze(0)
 
+            query_pos_dyn = self.query_pos
+            if anchor_pe is not None:
+                query_pos_dyn = query_pos_dyn + anchor_pe
             if self.enable_origin_head:
-                query_pos_dyn = self.query_pos + self.pos_emb(
+                query_pos_dyn = query_pos_dyn + self.pos_emb(
                     last_predictions["origin"]
                 )
-            else:
-                query_pos_dyn = self.query_pos
 
             queries = self.layers[li](
                 queries, query_pos_dyn, keys_b, key_pos, attn_mask=attn_mask,

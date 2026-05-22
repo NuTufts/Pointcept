@@ -285,6 +285,18 @@ slicer_cfg = dict(
         aux_max_tokens=20_000,
         no_object_weight=0.5,
     ),
+    # Phase A: DINO/Mask-DINO mixed query selection. Pick the K query
+    # anchors from voxel_8cm's tokens, scored by `1 - p(no_object)` from
+    # the level's cls head (the same head supervised above via
+    # weight_per_level_cls). FPS over the top-M filters keeps anchors
+    # spatially diverse (otherwise long cosmics dominate the top-K).
+    # See docs/LArFormer.md §17.
+    mixed_query_selection=dict(
+        source_level="voxel_8cm",
+        score_source="cls_head",
+        selection_mode="top_m_then_fps",
+        score_filter_multiplier=4,
+    ),
 )
 
 # =============================================================================

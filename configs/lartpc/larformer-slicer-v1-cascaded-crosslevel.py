@@ -466,6 +466,19 @@ slicer_cfg = dict(
         aux_max_tokens=20_000,
         no_object_weight=0.1,
     ),
+    # Phase A: DINO/Mask-DINO mixed query selection. Pick K query anchors
+    # from voxel_10cm's tokens, scored by `1 - p(no_object)` from the
+    # level's cls head (same head supervised via weight_per_level_cls).
+    # voxel_10cm is the cls-supervised level here (the ptv3hybrid_perlevel
+    # twin uses voxel_8cm); both share the role of intermediate-granularity
+    # objectness scorer for the selector. FPS over the top-M filter keeps
+    # anchors spatially diverse. See docs/LArFormer.md §17.
+    mixed_query_selection=dict(
+        source_level="voxel_10cm",
+        score_source="cls_head",
+        selection_mode="top_m_then_fps",
+        score_filter_multiplier=4,
+    ),
 )
 
 # =============================================================================

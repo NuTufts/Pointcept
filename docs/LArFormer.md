@@ -604,7 +604,72 @@ For each setup, the per-level merger rates (and the gap between `min_mask_prob=0
 
 ---
 
-## 17. References
+## 17. Mixed Query Selection (Phase A)
+
+### Motivation
+
+After §16 added a learned `TokenRefiner` between the backbone and the decoder, two related pathologies remained:
+
+1. **Matching instability.** Hungarian assignments shuffle across iterations because the K decoder queries are initialized from a single learnable embedding bank — at init they're nearly indistinguishable, so which query "owns" which GT slice flips depending on small perturbations in the per-token features. The decoder spends many epochs untangling query identities before mask losses can specialize.
+
+2. **Over-claim.** Instrumented via the `pair_iou` vs `argmax_iou` gap from `tools/run_slicer_inference.py` (v2 fields) and aggregated by [`tools/measure_overclaim.py`](../tools/measure_overclaim.py). Multiple queries compete to claim the same easy SPs of a confident track. With identical init, queries cluster on whichever GT slice has the cleanest signal; spatial diversity has to emerge from training alone.
+
+DINO and Mask-DINO solve both with **mixed query selection**: replace the learnable query bank with the top-K most "object-like" tokens picked from the encoder/refiner output, and seed each query's positional prior with the picked token's coordinates. Each query now starts at a concrete spatial anchor with a meaningful content vector — matching is more stable (queries are pre-specialized to a region) and over-claim drops (anchors are spread, not piled on top of each other).
+
+### Adaptation for LArTPC
+
+LArTPC slices vary enormously in size. One long cosmic produces hundreds of high-score `voxel_8cm` tokens; smaller tracks produce a handful. Pure DINO-style top-K would happily put dozens of queries on the longest cosmic and miss several smaller tracks entirely. The selection pipeline therefore has a diversity step:
+
+1. **Score** every token in the chosen source level (`voxel_8cm` by default) by `1 - p(no_object)` from that level's already-trained per-token cls head. No new supervision needed — the cls head is supervised by [`larformer-slicer-v1-cascaded-ptv3hybrid_perlevel.py`](../configs/lartpc/larformer-slicer-v1-cascaded-ptv3hybrid_perlevel.py) anyway.
+2. **Top-M filter:** keep the M = K × `score_filter_multiplier` (default 4) highest-scoring tokens.
+3. **FPS** (farthest-point sampling) from the M survivors picks K spatially-diverse anchors. FPS is seeded with the highest-score token (index 0 of the topk result), so the most confident candidate is always selected.
+
+The smoke test [`tools/smoke_test_larformer_p7_mixed_query.py`](../tools/smoke_test_larformer_p7_mixed_query.py) verifies that on a synthetic event with one dominant high-score cluster and four smaller clusters, FPS gives ~1.6× the mean-nearest-neighbor distance of pure top-K.
+
+### Decoder wiring
+
+[`Mask2FormerDecoder.forward`](../pointcept/models/LArFormer/decoder.py) accepts two new optional kwargs:
+
+```
+forward(levels,
+        init_query_content: (Q, D),    # token features at selected anchors
+        init_anchor_coords: (Q, 3))     # anchor coords (coord_norm frame)
+```
+
+When provided:
+
+- `queries = init_query_content + self.query_content` (additive delta on top of anchors).
+- `anchor_pe = self.pos_emb(init_anchor_coords)` is computed once and added into every layer's `query_pos_dyn`.
+
+The pre-existing `self.query_content` and `self.query_pos` parameters become **zero-initialized learnable deltas** when the [`MixedQuerySelector`](../pointcept/models/LArFormer/query_selection.py) is active. That zero-init is the standard DETR/Mask-DINO trick — at init the decoder sees pure anchor features + pure anchor PE; the deltas only become non-trivial as training progresses.
+
+### Config knob
+
+The `LArFormer` ctor gains one new kwarg:
+
+```python
+model = dict(
+    type="LArFormer",
+    ...,
+    mixed_query_selection=dict(
+        source_level="voxel_8cm",              # must declare supervision.cls
+        score_source="cls_head",               # only mode in v1
+        selection_mode="top_m_then_fps",       # or "top_k"
+        score_filter_multiplier=4,             # M = K × this
+    ),
+)
+```
+
+When `mixed_query_selection` is omitted the model behaves exactly as before (learnable query bank, no anchors). Enabling it requires the configured source level to have a `supervision.cls` block; the selector raises a clear `ValueError` at construction time otherwise.
+
+### What's deliberately NOT in Phase A
+
+- **No dedicated proposer head.** Score source is fixed at `cls_head`. Adding a separate proposer + aux BCE loss (DINO's "dedicated" mode) is deferred to Phase B/C, gated on Phase A failing to lift the matching-stability / over-claim metrics.
+- **No denoising queries.** Mask DINO's mask-denoising path is the planned next architectural addition, but kept separate from Phase A so each piece can be evaluated in isolation.
+
+---
+
+## 18. References
 
 - Existing model being generalized:
   [`pointcept/models/shower_clustering/`](../pointcept/models/shower_clustering/) — model / tokenizer / decoder / losses / matcher.

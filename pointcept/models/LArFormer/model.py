@@ -47,6 +47,7 @@ from .builders import LevelOutput
 from .decoder import Mask2FormerDecoder
 from .heads import PerTokenClsHead
 from .losses import LArFormerLoss
+from .query_selection import MixedQuerySelector
 from .refiners import build_token_refiner
 from .tokenizer import CompositeTokenizer
 
@@ -71,6 +72,14 @@ class LArFormer(nn.Module):
         enable_origin_head: keep the per-query origin regression head
         loss_kwargs: forwarded to LArFormerLoss (num_classes is auto-set)
         decoder_kwargs: forwarded to Mask2FormerDecoder
+        mixed_query_selection: optional dict — when provided, build a
+            MixedQuerySelector that picks Q anchor tokens from a source
+            level (default voxel_8cm) and feeds them into the decoder as
+            initial query content + positional anchor. The decoder's
+            `query_content` / `query_pos` are then zero-initialized so
+            they act as learnable per-slot deltas on top of the selected
+            anchors. Source level must declare `supervision.cls` so the
+            cls head can score tokens. See `query_selection.py`.
     """
 
     def __init__(
@@ -89,6 +98,7 @@ class LArFormer(nn.Module):
         decoder_kwargs: Optional[dict] = None,
         token_refiner: Optional[dict] = None,
         capture_decoder_stages: bool = False,
+        mixed_query_selection: Optional[dict] = None,
     ):
         super().__init__()
         self.backbone = build_model(backbone)
@@ -186,6 +196,38 @@ class LArFormer(nn.Module):
                     hidden_dim=int(ccfg.get("hidden_dim", 0)),
                     dropout=float(ccfg.get("dropout", 0.0)),
                 )
+
+        # Mixed query selection (Phase A): pick K anchor tokens from a
+        # source level and feed them in as initial query content + anchor
+        # coords. When active, the decoder's `query_content` / `query_pos`
+        # parameters get zero-initialized (so they act as per-slot
+        # learnable deltas on the selected anchors).
+        self.query_selector: Optional[MixedQuerySelector] = None
+        if mixed_query_selection is not None:
+            if self.decoder is None:
+                raise ValueError(
+                    "mixed_query_selection requires num_queries > 0 "
+                    "(a Mask2Former decoder must be built)."
+                )
+            qs_cfg = dict(mixed_query_selection)
+            qs_cfg.setdefault("token_dim", token_dim)
+            qs_cfg.setdefault("num_queries", num_queries)
+            src = qs_cfg.get("source_level", "voxel_8cm")
+            qs_cfg["source_level"] = src
+            score_source = qs_cfg.get("score_source", "cls_head")
+            if score_source == "cls_head" and src not in self.cls_heads:
+                raise ValueError(
+                    f"mixed_query_selection with score_source='cls_head' "
+                    f"requires source_level={src!r} to declare "
+                    f"supervision.cls in its level config so the per-level "
+                    f"cls head exists. Levels with cls heads: "
+                    f"{list(self.cls_heads.keys())!r}"
+                )
+            self.query_selector = MixedQuerySelector(**qs_cfg)
+            # Zero the decoder's learnable query embeddings so they act
+            # as deltas on top of the anchor features/coords.
+            nn.init.zeros_(self.decoder.query_content)
+            nn.init.zeros_(self.decoder.query_pos)
 
         loss_kwargs = dict(loss_kwargs or {})
         loss_kwargs.setdefault("num_classes", num_classes)
@@ -675,15 +717,16 @@ class LArFormer(nn.Module):
                 ))
                 for name, lvl in levels.items()
             )
-            decoder_out = (self.decoder(levels)
-                           if self.decoder is not None else None)
-
             # Per-level cls logits (one head per level that declared cls).
             # Sanitize the same way the decoder sanitizes its own predictions
             # (clamp + nan_to_num) — protects all downstream consumers (the
             # loss, the matcher, the evaluator) from pathological logits
             # while the deep freshly-random stack is warming up. Same
             # rationale as `Mask2FormerDecoder._sanitize_logits`.
+            #
+            # Computed BEFORE the decoder so MixedQuerySelector (when
+            # active) can score source-level tokens via `1 - p(no_object)`
+            # from this dict.
             per_level_cls: "OrderedDict[str, torch.Tensor]" = OrderedDict()
             for name, head in self.cls_heads.items():
                 lvl = levels[name]
@@ -695,6 +738,21 @@ class LArFormer(nn.Module):
                         raw.clamp(-50.0, 50.0),
                         nan=0.0, posinf=50.0, neginf=-50.0,
                     )
+
+            if self.decoder is not None:
+                if self.query_selector is not None:
+                    init_q, init_anchor = self.query_selector(
+                        levels, per_level_cls,
+                    )
+                    decoder_out = self.decoder(
+                        levels,
+                        init_query_content=init_q,
+                        init_anchor_coords=init_anchor,
+                    )
+                else:
+                    decoder_out = self.decoder(levels)
+            else:
+                decoder_out = None
 
             pred: dict = {
                 "per_level_cls":   per_level_cls,
