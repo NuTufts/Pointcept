@@ -69,6 +69,11 @@ SQUASHFUSE="${SQUASHFUSE:-squashfuse}"
 COMPRESSOR="${COMPRESSOR:-gzip}"
 PROCESSORS="${PROCESSORS:-${SLURM_CPUS_PER_TASK:-8}}"
 MOUNT_PARALLEL="${MOUNT_PARALLEL:-8}"
+# sha256sum is single-threaded and on a 7.4 TB combined image takes ~5 h
+# (vs. ~1 h for the merge itself at the throughput we measured). Set
+# SKIP_SHA256=1 to skip it; you can always compute it separately later
+# with `sha256sum combined_*.sqsh > combined_*.sha256`.
+SKIP_SHA256="${SKIP_SHA256:-0}"
 
 # Mountpoints under node-local scratch so they vanish with the job.
 MOUNT_ROOT="${MOUNT_ROOT:-${SLURM_TMPDIR:-${TMPDIR:-/tmp}}/merge_mounts.${SLURM_JOB_ID:-$$}}"
@@ -212,8 +217,15 @@ log "mksquashfs finished in $((SECONDS - t_merge_start))s ($(( (SECONDS - t_merg
 ls -lh "$OUTPUT_SQSH"
 
 # === Checksum + sanity check ===
-log "Computing sha256 ..."
-( cd "$OUTPUT_DIR" && sha256sum "${OUTPUT_NAME}.sqsh" ) | tee "$OUTPUT_SHA"
+if (( SKIP_SHA256 )); then
+    log "Skipping sha256 (SKIP_SHA256=1). Run later with:"
+    log "  sha256sum ${OUTPUT_NAME}.sqsh > ${OUTPUT_NAME}.sha256"
+else
+    log "Computing sha256 (single-threaded; ~5 h on a 7.4 TB image) ..."
+    t_sha_start=$SECONDS
+    ( cd "$OUTPUT_DIR" && sha256sum "${OUTPUT_NAME}.sqsh" ) | tee "$OUTPUT_SHA"
+    log "sha256 finished in $((SECONDS - t_sha_start))s ($(( (SECONDS - t_sha_start) / 60 )) min)"
+fi
 
 if (( HAVE_UNSQUASHFS )); then
     log "File count check (.h5 files in combined image)..."

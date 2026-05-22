@@ -386,18 +386,24 @@ the compute node and `fusermount -uz` manually.
 bookkeeping: read 7.4 TB once through FUSE, write 7.4 TB once. Reads and
 writes overlap, so wall-clock ≈ max(read, write).
 
-| Sustained throughput | Wall time for 7.4 TB |
-|---|---|
-| 2 GB/s | ~1 h |
-| 1 GB/s | ~2 h |
-| 500 MB/s | ~4 h |
-| 250 MB/s (contention) | ~8 h |
+Observed on Isambard (5-shard / 27 GB smoke test): mksquashfs averaged
+**2.1 GB/s**, so the merge stage itself on the full 7.4 TB extrapolates to
+~**1 h**. The same smoke test showed `sha256sum` at **380 MB/s**
+(single-threaded), which extrapolates to **~5 h** on the full image —
+dominating the wall clock. Set `SKIP_SHA256=1` to skip if you don't need
+it (and compute it later if you do).
 
-Plus ~10–30 s for the parallel `squashfuse` mount loop and ~5–15 min for
-mksquashfs to assemble the in-memory inode/directory table over ~500k
-files at the end. The script defaults to `--time=08:00:00`, `--mem=64G`,
+| Stage | Smoke test (27 GB) | Full run (7.4 TB) projected |
+|---|---|---|
+| `squashfuse` mount loop | 0 s | ~30 s |
+| `mksquashfs.static -comp gzip -noI -noD` | 13 s | ~1 h |
+| `sha256sum` (single-threaded) | 71 s | ~5 h (skippable) |
+| **Total** | 84 s | **~1 h** (SKIP_SHA256=1) / **~6 h** (with sha256) |
+
+The script defaults to `--time=08:00:00`, `--mem=64G`,
 `--cpus-per-task=16` — the time is deliberately overcommitted because
-mksquashfs cannot resume.
+mksquashfs cannot resume. With `SKIP_SHA256=1` you could safely drop to
+`--time=02:00:00` if your queue prefers shorter jobs.
 
 **Do not run on the Isambard login node.** Sustained 7.4 TB read+write on
 shared storage will get flagged by admins, the ~10–30 GB RAM peak during
@@ -473,6 +479,7 @@ multi-hour run is at risk of being reaped by idle / session timeouts.
 | `PROCESSORS` | `$SLURM_CPUS_PER_TASK` (16) | `mksquashfs -processors`. |
 | `MOUNT_PARALLEL` | 8 | `xargs -P` for the mount loop. |
 | `MOUNT_ROOT` | `$SLURM_TMPDIR/merge_mounts.$SLURM_JOB_ID` | Where shards get mounted. Default lives on node-local scratch so SLURM cleans it. |
+| `SKIP_SHA256` | `0` | Set to `1` to skip the post-merge `sha256sum` step. `sha256sum` is single-threaded and dominates wall-clock at ~5 h on a 7.4 TB image (vs. ~1 h for the merge itself, measured at ~2.1 GB/s on Isambard). Compute later out-of-band if needed. |
 
 ### Sidecar container fallback
 
