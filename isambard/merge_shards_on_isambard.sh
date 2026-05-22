@@ -56,7 +56,10 @@ SHARDLIST="${SHARDLIST:-$STAGING_DIR/isambard_shardlist_test.txt}"
 OUTPUT_DIR="${OUTPUT_DIR:-/projects/u6jo/datasets}"
 OUTPUT_NAME="${OUTPUT_NAME:-combined_pretrain-sonata-v7-extbnb-larmatch-test}"
 MKSQUASHFS="${MKSQUASHFS:-mksquashfs.static}"
-UNSQUASHFS="${UNSQUASHFS:-unsquashfs}"
+# unsquashfs is only used for the post-merge file-count sanity check. If it
+# isn't installed (Isambard ships mksquashfs.static + squashfuse but not
+# necessarily unsquashfs), the check is skipped instead of aborting.
+UNSQUASHFS="${UNSQUASHFS:-unsquashfs.static}"
 SQUASHFUSE="${SQUASHFUSE:-squashfuse}"
 PROCESSORS="${PROCESSORS:-${SLURM_CPUS_PER_TASK:-8}}"
 MOUNT_PARALLEL="${MOUNT_PARALLEL:-8}"
@@ -99,16 +102,26 @@ trap cleanup_mounts EXIT
 trap graceful_exit USR1 TERM INT
 
 # === Preflight ===
-for tool in "$MKSQUASHFS" "$UNSQUASHFS" "$SQUASHFUSE" fusermount numfmt sha256sum; do
+# Required tools (script aborts if missing).
+for tool in "$MKSQUASHFS" "$SQUASHFUSE" fusermount numfmt sha256sum; do
     command -v "$tool" >/dev/null \
-        || { log "ERROR: '$tool' not on PATH. module load? or override with the matching env var (MKSQUASHFS/UNSQUASHFS/SQUASHFUSE)."; exit 2; }
+        || { log "ERROR: '$tool' not on PATH. module load? or override with the matching env var (MKSQUASHFS/SQUASHFUSE)."; exit 2; }
 done
+# Optional: unsquashfs is only used for the final file-count sanity check.
+HAVE_UNSQUASHFS=0
+if command -v "$UNSQUASHFS" >/dev/null; then
+    HAVE_UNSQUASHFS=1
+fi
 [[ -f "$SHARDLIST" ]] || { log "ERROR: shardlist not found: $SHARDLIST"; exit 2; }
 [[ -e "$OUTPUT_SQSH" ]] && { log "ERROR: $OUTPUT_SQSH already exists. Delete it or set OUTPUT_NAME=..."; exit 2; }
 
 log "Tools resolved:"
 log "  mksquashfs: $(command -v "$MKSQUASHFS")"
-log "  unsquashfs: $(command -v "$UNSQUASHFS")"
+if (( HAVE_UNSQUASHFS )); then
+    log "  unsquashfs: $(command -v "$UNSQUASHFS")"
+else
+    log "  unsquashfs: (not found - file-count sanity check will be skipped)"
+fi
 log "  squashfuse: $(command -v "$SQUASHFUSE")"
 log "  fusermount: $(command -v fusermount)"
 
@@ -195,9 +208,13 @@ ls -lh "$OUTPUT_SQSH"
 log "Computing sha256 ..."
 ( cd "$OUTPUT_DIR" && sha256sum "${OUTPUT_NAME}.sqsh" ) | tee "$OUTPUT_SHA"
 
-log "File count check (.h5 files in combined image)..."
-combined_files=$("$UNSQUASHFS" -l "$OUTPUT_SQSH" 2>/dev/null | grep -c '\.h5$' || true)
-log "  combined: $combined_files .h5 files"
+if (( HAVE_UNSQUASHFS )); then
+    log "File count check (.h5 files in combined image)..."
+    combined_files=$("$UNSQUASHFS" -l "$OUTPUT_SQSH" 2>/dev/null | grep -c '\.h5$' || true)
+    log "  combined: $combined_files .h5 files"
+else
+    log "Skipping .h5 file-count check ($UNSQUASHFS not available)."
+fi
 
 log "Total runtime: $((SECONDS - t_mount_start))s ($(( (SECONDS - t_mount_start) / 60 )) min)"
 log "Done. Cleanup runs via EXIT trap."
