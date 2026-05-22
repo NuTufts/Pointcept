@@ -4,10 +4,24 @@
 # file. Run this on Isambard as a SLURM job. Output lands next to the input
 # shards in $OUTPUT_DIR.
 #
-# Approach: launch one apptainer container with `--mount type=squashfs`
-# repeated once per shard, with image-src targeting each shard's internal
-# leaf-dir so the unified view at /unified mirrors the original source tree
-# without path doubling. Then mksquashfs /unified -> combined.sqsh.
+# Approach (bare-host, using Isambard's documented squashfs tooling):
+#   1. squashfuse-mount each shard at $MOUNT_ROOT/<rel> with `subdir=/<rel>`
+#      so the unified view mirrors the original source tree without path
+#      doubling (each shard's internal layout is <rel>/file.h5 because
+#      build_squashfs.py builds a hardlink staging tree before mksquashfs;
+#      the `subdir` option strips the prefix at mount time).
+#   2. mksquashfs.static $MOUNT_ROOT -> $OUTPUT_SQSH with the same flags
+#      build_squashfs.py used (-noI -noD -b 128K -comp zstd).
+#   3. Aggressive cleanup discipline: pre-cleanup any stale FUSE mounts
+#      left under our chosen MOUNT_ROOT by a prior crashed job, then trap
+#      EXIT/TERM/INT/USR1 so we unmount on any in-script exit. SIGKILL
+#      from SLURM cannot be trapped, but MOUNT_ROOT lives under
+#      $SLURM_TMPDIR so the per-job tmpfs gets reclaimed at job end.
+#
+# Tooling: defaults are Isambard's documented mksquashfs.static + squashfuse.
+# If those aren't on PATH for some reason, build the sidecar container
+# (squashfs_tools.def -> squashfs_tools.sif) and prefix every binary call
+# with `apptainer exec <sif>` — see the README's fallback subsection.
 #
 # Usage (sbatch):
 #     sbatch merge_shards_on_isambard.sh
@@ -31,6 +45,7 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=16
 #SBATCH --mem=64G
+#SBATCH --signal=B:USR1@120
 # TODO Isambard: fill in --partition / --account / --qos as your project requires.
 
 set -euo pipefail
@@ -40,8 +55,14 @@ STAGING_DIR="${STAGING_DIR:-/projects/u6jo/staging}"
 SHARDLIST="${SHARDLIST:-$STAGING_DIR/isambard_shardlist.txt}"
 OUTPUT_DIR="${OUTPUT_DIR:-$STAGING_DIR}"
 OUTPUT_NAME="${OUTPUT_NAME:-combined_pretrain-sonata-v7-extbnb-larmatch}"
-CONTAINER="${CONTAINER:-/projects/u6jo/pointcept.sif}"
+MKSQUASHFS="${MKSQUASHFS:-mksquashfs.static}"
+UNSQUASHFS="${UNSQUASHFS:-unsquashfs}"
+SQUASHFUSE="${SQUASHFUSE:-squashfuse}"
 PROCESSORS="${PROCESSORS:-${SLURM_CPUS_PER_TASK:-8}}"
+MOUNT_PARALLEL="${MOUNT_PARALLEL:-8}"
+
+# Mountpoints under node-local scratch so they vanish with the job.
+MOUNT_ROOT="${MOUNT_ROOT:-${SLURM_TMPDIR:-${TMPDIR:-/tmp}}/merge_mounts.${SLURM_JOB_ID:-$$}}"
 
 OUTPUT_SQSH="$OUTPUT_DIR/${OUTPUT_NAME}.sqsh"
 OUTPUT_SHA="$OUTPUT_DIR/${OUTPUT_NAME}.sha256"
@@ -51,16 +72,48 @@ mkdir -p "$(dirname "${BASH_SOURCE[0]}")/logs"
 
 log() { printf '[%s] %s\n' "$(date '+%F %T')" "$*"; }
 
-# === Preflight ===
-[[ -f "$SHARDLIST" ]] || { log "ERROR: shardlist not found: $SHARDLIST"; exit 2; }
-[[ -f "$CONTAINER" ]] || { log "ERROR: container not found: $CONTAINER"; exit 2; }
-if [[ -e "$OUTPUT_SQSH" ]]; then
-    log "ERROR: $OUTPUT_SQSH already exists. Delete it or set OUTPUT_NAME=..."
-    exit 2
-fi
+# === Cleanup machinery ===
+cleanup_mounts() {
+    # Deepest-first so unmounts don't fail with EBUSY due to nested mounts.
+    local mounts
+    mounts=$(awk -v root="$MOUNT_ROOT" \
+        '$2 ~ "^"root && $3 ~ /squashfs|fuse/ {print $2}' /proc/mounts \
+        | sort -r)
+    if [[ -n "$mounts" ]]; then
+        local n
+        n=$(printf '%s\n' "$mounts" | wc -l)
+        log "Releasing $n FUSE mount(s) under $MOUNT_ROOT"
+        printf '%s\n' "$mounts" \
+            | xargs -r -n1 fusermount -uz 2>/dev/null || true
+    fi
+    rm -rf "$MOUNT_ROOT" 2>/dev/null || true
+}
 
-# Check there's enough free space on the output FS (~1.05x of total shard size).
-total_bytes=$(awk -v dir="$STAGING_DIR" '
+graceful_exit() {
+    log "Caught signal — releasing mounts and exiting"
+    cleanup_mounts
+    exit 1
+}
+
+trap cleanup_mounts EXIT
+trap graceful_exit USR1 TERM INT
+
+# === Preflight ===
+for tool in "$MKSQUASHFS" "$UNSQUASHFS" "$SQUASHFUSE" fusermount numfmt sha256sum; do
+    command -v "$tool" >/dev/null \
+        || { log "ERROR: '$tool' not on PATH. module load? or override with the matching env var (MKSQUASHFS/UNSQUASHFS/SQUASHFUSE)."; exit 2; }
+done
+[[ -f "$SHARDLIST" ]] || { log "ERROR: shardlist not found: $SHARDLIST"; exit 2; }
+[[ -e "$OUTPUT_SQSH" ]] && { log "ERROR: $OUTPUT_SQSH already exists. Delete it or set OUTPUT_NAME=..."; exit 2; }
+
+log "Tools resolved:"
+log "  mksquashfs: $(command -v "$MKSQUASHFS")"
+log "  unsquashfs: $(command -v "$UNSQUASHFS")"
+log "  squashfuse: $(command -v "$SQUASHFUSE")"
+log "  fusermount: $(command -v fusermount)"
+
+# Free-space check (~1.05x of total shard size).
+total_bytes=$(awk '
     {
         path = $0
         if (path == "") next
@@ -83,61 +136,68 @@ if (( avail_bytes < needed_bytes )); then
     exit 4
 fi
 
-# === Build mount spec ===
-log "Building --mount args from $SHARDLIST ..."
-MOUNT_ARGS=()
-shard_count=0
-while IFS= read -r sqsh; do
-    [[ -z "$sqsh" ]] && continue
-    rel="${sqsh#$STAGING_DIR/}"
+# Pre-cleanup in case a prior crashed job left mounts under our root.
+cleanup_mounts
+mkdir -p "$MOUNT_ROOT"
+
+# === Mount all shards in parallel ===
+shard_count=$(grep -cE '\.sqsh\s*$' "$SHARDLIST")
+log "Mounting $shard_count shards into $MOUNT_ROOT (parallel=$MOUNT_PARALLEL)..."
+t_mount_start=$SECONDS
+
+mount_one() {
+    local sqsh="$1"
+    [[ -z "$sqsh" ]] && return 0
+    local rel="${sqsh#${STAGING_DIR}/}"
     rel="${rel%.sqsh}"
-    # image-src=/$rel exposes only the leaf directory inside the shard so the
-    # unified /unified/<rel>/ contains the leaf's files directly, not a
-    # doubled <rel>/<rel>/ chain.
-    MOUNT_ARGS+=(--mount "type=squashfs,source=$sqsh,destination=/unified/$rel,image-src=/$rel,ro")
-    shard_count=$((shard_count + 1))
-done < "$SHARDLIST"
-log "Prepared $shard_count shard mounts"
+    local mp="$MOUNT_ROOT/$rel"
+    mkdir -p "$mp"
+    # subdir=/$rel: expose only the leaf inside the shard so $mp/file.h5 works,
+    # not $mp/$rel/file.h5. See the script header.
+    if ! "$SQUASHFUSE" -o "subdir=/$rel" "$sqsh" "$mp" 2>&1; then
+        echo "FAILED mount: $sqsh" >&2
+        return 1
+    fi
+}
+export -f mount_one
+export MOUNT_ROOT STAGING_DIR SQUASHFUSE
 
-# === Run mksquashfs inside container with all shards mounted ===
-log "Launching apptainer + mksquashfs ($PROCESSORS processors)"
-log "  output: $OUTPUT_SQSH"
+# NUL-delimit so paths with spaces survive (shouldn't happen for these shards, but safe).
+tr '\n' '\0' < "$SHARDLIST" \
+    | xargs -0 -n1 -P "$MOUNT_PARALLEL" -I{} bash -c 'mount_one "$@"' _ {} \
+    || { log "ERROR: at least one mount failed; see stderr"; exit 5; }
 
-# Apptainer may need a writable /tmp for its own bookkeeping per-container.
-export APPTAINER_TMPDIR="${APPTAINER_TMPDIR:-${TMPDIR:-/tmp}/apptainer-merge-${SLURM_JOB_ID:-$$}}"
-mkdir -p "$APPTAINER_TMPDIR"
+mounted=$(awk -v root="$MOUNT_ROOT" \
+    '$2 ~ "^"root && $3 ~ /squashfs|fuse/' /proc/mounts | wc -l)
+log "Mounted $mounted shards in $((SECONDS - t_mount_start))s"
+if (( mounted != shard_count )); then
+    log "ERROR: expected $shard_count mounts, got $mounted. Aborting."
+    exit 5
+fi
 
-t0=$SECONDS
+# === Merge ===
+log "Running $MKSQUASHFS ($PROCESSORS processors) -> $OUTPUT_SQSH"
+t_merge_start=$SECONDS
 
-apptainer exec \
-    --bind "$OUTPUT_DIR:/out:rw" \
-    "${MOUNT_ARGS[@]}" \
-    "$CONTAINER" \
-    mksquashfs /unified "/out/${OUTPUT_NAME}.sqsh" \
-        -comp zstd -Xcompression-level 1 \
-        -noI -noD \
-        -b 128K \
-        -processors "$PROCESSORS" \
-        -no-recovery \
-        -no-progress \
-        -quiet
+"$MKSQUASHFS" "$MOUNT_ROOT" "$OUTPUT_SQSH" \
+    -comp zstd -Xcompression-level 1 \
+    -noI -noD \
+    -b 128K \
+    -processors "$PROCESSORS" \
+    -no-recovery \
+    -no-progress \
+    -quiet
 
-elapsed=$(( SECONDS - t0 ))
-log "mksquashfs finished in ${elapsed}s ($(( elapsed / 60 )) min)"
+log "mksquashfs finished in $((SECONDS - t_merge_start))s ($(( (SECONDS - t_merge_start) / 60 )) min)"
 ls -lh "$OUTPUT_SQSH"
 
-# === Checksum ===
+# === Checksum + sanity check ===
 log "Computing sha256 ..."
 ( cd "$OUTPUT_DIR" && sha256sum "${OUTPUT_NAME}.sqsh" ) | tee "$OUTPUT_SHA"
 
-# === Final sanity check: file count round-trip ===
-log "Counting files inside combined shard (sanity check)..."
-combined_files=$(apptainer exec \
-    --bind "$OUTPUT_DIR:/out:ro" \
-    "$CONTAINER" \
-    unsquashfs -l "/out/${OUTPUT_NAME}.sqsh" 2>/dev/null \
-    | grep -c '\.h5$' || true)
-log "Combined .sqsh contains $combined_files .h5 files"
+log "File count check (.h5 files in combined image)..."
+combined_files=$("$UNSQUASHFS" -l "$OUTPUT_SQSH" 2>/dev/null | grep -c '\.h5$' || true)
+log "  combined: $combined_files .h5 files"
 
-rm -rf "$APPTAINER_TMPDIR"
-log "Done."
+log "Total runtime: $((SECONDS - t_mount_start))s ($(( (SECONDS - t_mount_start) / 60 )) min)"
+log "Done. Cleanup runs via EXIT trap."

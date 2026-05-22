@@ -26,7 +26,8 @@ inode pressure of 300k–500k loose files and skips the 5–10 TB extract step.
 | `transfer_shards.py` | transfer | Worker: rsyncs each shard listed in the build's checksums file to Isambard staging. |
 | `submit_transfer_shards.sh` | transfer | SLURM wrapper for `transfer_shards.py`. Cert probe + optional `--chain`. |
 | `verify_shards_on_isambard.sh` | verify | Run on Isambard: `sha256sum -c` every shard listed in `<staging>/*.sha256sums.txt`. No extraction. |
-| `merge_shards_on_isambard.sh` | merge (optional) | Run on Isambard as a SLURM job: mount all shards via apptainer `--mount type=squashfs` and `mksquashfs` them into a single combined `.sqsh` so training only needs one bind. |
+| `merge_shards_on_isambard.sh` | merge (optional) | Run on Isambard as a SLURM job: `squashfuse`-mount every shard on the bare host, then `mksquashfs.static` them into a single combined `.sqsh` so training only needs one bind. Uses Isambard's documented `mksquashfs.static` + `squashfuse` by default. |
+| `squashfs_tools.def` | merge (optional, fallback) | Apptainer def for a ~10 MB alpine + `squashfs-tools` sidecar container. Only needed if Isambard's host-side `mksquashfs.static` / `squashfuse` are not on `$PATH` on compute nodes; see the merge section's sidecar fallback subsection. |
 | `clifton` | transfer | Vendor binary used to refresh the Isambard SSH certificate (~12h validity). |
 
 > Deprecated (kept for reference, no longer documented here): `tar_and_transfer.py`,
@@ -284,49 +285,97 @@ container start. [merge_shards_on_isambard.sh](merge_shards_on_isambard.sh)
 collapses all shards into one combined `.sqsh` so each training job mounts
 exactly one image.
 
-### What it does
+### Tooling
+
+Isambard's user documentation calls out two binaries for working with
+SquashFS: `mksquashfs.static` (build the image) and `squashfuse` (mount
+it). The merge script uses these directly on the bare host — no apptainer
+container needed for the merge itself. If those binaries are missing on
+the partition where you run the job (e.g. behind a `module load` you
+haven't sourced), the script aborts in preflight; see the
+[Sidecar container fallback](#sidecar-container-fallback) subsection
+below for what to do then.
+
+### What the script does
 
 1. Reads `$SHARDLIST` (a text file of shard paths on Isambard, e.g.
    [isambard_shardlist.txt](isambard_shardlist.txt)).
-2. Preflights: every shard exists, output path is free, `df` shows ≥1.05×
-   the total shard byte count available in `$OUTPUT_DIR`.
-3. Builds one `--mount type=squashfs,source=<sqsh>,destination=/unified/<rel>,image-src=/<rel>,ro`
-   argument per shard. The `image-src=/<rel>` is load-bearing: each shard's
-   internal layout mirrors its full relative path (because
-   `build_squashfs.py` builds a hardlink staging tree mirroring the source
-   layout before `mksquashfs`), so without `image-src` the unified view
-   would be `/unified/<rel>/<rel>/file.h5` — doubled. Pointing `image-src`
-   at the leaf strips the prefix so contents land at `/unified/<rel>/file.h5`.
-4. Inside one `apptainer exec`, runs `mksquashfs /unified
-   /out/<name>.sqsh -comp zstd -noI -noD -b 128K` — identical flags to
-   `build_squashfs.py`, so the combined image has the same compression
-   behavior as the individual shards (i.e. `.h5` data is stored
-   uncompressed, metadata tables zstd level 1).
-5. Writes a `.sha256` and counts `.h5` files in the combined image as a
+2. Preflights: tools on `$PATH`, every shard exists, output path is free,
+   `df` shows ≥1.05× the total shard byte count available in `$OUTPUT_DIR`.
+3. Sets up cleanup discipline (see [Cleanup discipline](#cleanup-discipline)
+   below) and pre-cleans any stale FUSE mounts left under `$MOUNT_ROOT`
+   by a prior crashed job.
+4. `squashfuse`-mounts each shard at `$MOUNT_ROOT/<rel>` with
+   `-o subdir=/<rel>`. The `subdir` is load-bearing: each shard's internal
+   layout mirrors its full relative path (because `build_squashfs.py`
+   builds a hardlink staging tree mirroring the source layout before
+   `mksquashfs`), so without `subdir` the unified view would be
+   `$MOUNT_ROOT/<rel>/<rel>/file.h5` — doubled. Pointing `subdir` at the
+   leaf strips the prefix so contents land at `$MOUNT_ROOT/<rel>/file.h5`.
+   Mounts run in parallel (`xargs -P 8`) — 696 mounts complete in ~10–30 s.
+5. Runs `mksquashfs.static $MOUNT_ROOT $OUTPUT_SQSH -comp zstd -noI -noD
+   -b 128K` — identical flags to `build_squashfs.py`, so the combined
+   image has the same compression behavior as the individual shards
+   (i.e. `.h5` data stays uncompressed, metadata tables zstd level 1).
+6. Writes a `.sha256` and counts `.h5` files in the combined image as a
    sanity check against the source shard count.
+7. On exit (normal, error, or signal) releases every FUSE mount under
+   `$MOUNT_ROOT` and removes the directory.
 
 ### Why this is option C, not just "do A/B with one bind"
 
 Three options exist for serving N shards to a training job:
 
 - **A — host-side per-shard FUSE mounts unioned with mergerfs:** no new
-  file, but ~700 stale `squashfuse_ll` mounts per crashed job pile up on
+  file, but ~700 stale `squashfuse` mounts per crashed job pile up on
   the node (the kernel marks them `ENOTCONN` until rebooted) and you depend
   on perfect cleanup discipline.
 - **B — apptainer-owned per-shard mounts (`--mount type=squashfs` repeated):**
   apptainer places the mounts in the container's mount namespace, so
   SIGKILL of the job cleanly releases them when the namespace refcount
   drops. Safer against leaked mounts, but the live-job cost (~700 daemons,
-  ~3–7 GB RSS, 30s–2min cold start) is paid every training job.
+  ~3–7 GB RSS, 30 s–2 min cold start) is paid every training job.
 - **C — pre-merge into one image:** spend disk and CPU once to produce
   `combined.sqsh`; thereafter every training job mounts a single image
   with one daemon and ~10 MB RSS. Trade-off: ~7.4 TB of additional disk
   while both the shards and the combined image coexist, and any future
   shard rebuild requires a re-merge.
 
-`merge_shards_on_isambard.sh` implements C using B's mount mechanism only
-during the merge itself, so even the merge job inherits B's clean-shutdown
-properties.
+The merge job itself is essentially "Option A but one-shot": 696
+`squashfuse` mounts go up, mksquashfs runs against them, mounts come
+down. The cleanup discipline below is the price of A — the merge script
+pays it carefully because the merge runs once; you do not want to pay it
+every training job.
+
+### Cleanup discipline
+
+The script mounts under `$MOUNT_ROOT` (defaults to
+`$SLURM_TMPDIR/merge_mounts.$SLURM_JOB_ID`, falling back to
+`$TMPDIR/...`) so all mountpoints live on node-local scratch that SLURM
+reclaims at job end.
+
+Three release paths:
+
+- **EXIT trap.** Catches normal exit and most error paths. `awk`s
+  `/proc/mounts` for everything under `$MOUNT_ROOT` whose fs type matches
+  `squashfs|fuse`, sorts deepest-first to avoid EBUSY on nested mounts,
+  and `fusermount -uz`s each. Then `rm -rf $MOUNT_ROOT`.
+- **TERM/INT/USR1 trap.** Catches SLURM's pre-timeout SIGTERM (sent
+  before the wall-clock SIGKILL by 30 s on most sites), Ctrl-C, and the
+  custom USR1 from `#SBATCH --signal=B:USR1@120` (notifies us 2 min
+  before TIMEOUT). Calls `cleanup_mounts` then exits 1.
+- **Pre-cleanup at job start.** Before mounting anything, the script
+  runs the same cleanup over `$MOUNT_ROOT`. If a prior crash left mounts
+  there (possible if `$MOUNT_ROOT` is overridden to non-SLURM-TMPDIR
+  storage, or if SLURM Epilog didn't run), this clears them before we
+  reuse the directory.
+
+SIGKILL cannot be trapped. If the job is killed by OOM-killer or
+`scancel --signal=KILL`, mountpoints remain in the kernel until SLURM's
+Epilog reclaims `$SLURM_TMPDIR` — node-local damage only, never
+propagated to `/projects/u6jo`. If `$MOUNT_ROOT` is overridden to a
+non-tmpfs location and the job dies via SIGKILL, you may need to ssh to
+the compute node and `fusermount -uz` manually.
 
 ### Resources and runtime
 
@@ -341,7 +390,7 @@ writes overlap, so wall-clock ≈ max(read, write).
 | 500 MB/s | ~4 h |
 | 250 MB/s (contention) | ~8 h |
 
-Plus ~1–2 min for 696 FUSE handshakes at container start and ~5–15 min for
+Plus ~10–30 s for the parallel `squashfuse` mount loop and ~5–15 min for
 mksquashfs to assemble the in-memory inode/directory table over ~500k
 files at the end. The script defaults to `--time=08:00:00`, `--mem=64G`,
 `--cpus-per-task=16` — the time is deliberately overcommitted because
@@ -355,7 +404,7 @@ multi-hour run is at risk of being reaped by idle / session timeouts.
 ### Workflow
 
 1. **Smoke-test on a handful of shards first.** This catches path-layout
-   surprises (`image-src=/<rel>` assumption) before you burn 4 hours:
+   surprises (`subdir=/<rel>` assumption) before you burn 4 hours:
 
    ```bash
    ssh u6jo.aip2.isambard
@@ -368,12 +417,12 @@ multi-hour run is at risk of being reaped by idle / session timeouts.
 
    Confirm paths look like `squashfs-root/ub_on_tufts/.../000/000/file.h5`,
    not doubled (`.../000/000/000/000/file.h5`). If the layout is wrong,
-   inspect a single shard with `unsquashfs -l <shard>.sqsh` and adjust the
-   `image-src=` argument inside the script accordingly.
+   inspect a single shard with `unsquashfs -l <shard>.sqsh` and adjust
+   the `subdir=` argument inside the script accordingly.
 
 2. **Full merge job.** Edit the SLURM directives to fill in the partition /
-   account / qos that your Isambard project uses (look for `# TODO
-   Isambard:` in the script), then:
+   account / qos that your Isambard project uses (look for
+   `# TODO Isambard:` in the script), then:
 
    ```bash
    sbatch merge_shards_on_isambard.sh
@@ -383,8 +432,8 @@ multi-hour run is at risk of being reaped by idle / session timeouts.
    matches the source count:
 
    ```bash
-   wc -l <stem>.sha256sums.txt    # one line per shard
-   apptainer exec <pointcept.sif> unsquashfs -l combined_*.sqsh | grep -c '\.h5$'
+   wc -l <stem>.sha256sums.txt           # one line per shard
+   unsquashfs -l combined_*.sqsh | grep -c '\.h5$'
    ```
 
    The two numbers should agree once you account for the shard-count vs.
@@ -410,22 +459,65 @@ multi-hour run is at risk of being reaped by idle / session timeouts.
 
 | Var | Default | Meaning |
 |---|---|---|
-| `STAGING_DIR` | `/projects/u6jo/staging` | Root the shardlist paths are relative to. Stripping this prefix yields the per-shard `<rel>` used in `image-src`. |
+| `STAGING_DIR` | `/projects/u6jo/staging` | Root the shardlist paths are relative to. Stripping this prefix yields the per-shard `<rel>` used in `subdir=`. |
 | `SHARDLIST` | `$STAGING_DIR/isambard_shardlist.txt` | One absolute shard path per line. |
 | `OUTPUT_DIR` | `$STAGING_DIR` | Where the combined `.sqsh` and `.sha256` are written. |
 | `OUTPUT_NAME` | `combined_pretrain-sonata-v7-extbnb-larmatch` | Basename for the output (without `.sqsh`). Refusing-to-overwrite is enforced. |
-| `CONTAINER` | `/projects/u6jo/pointcept.sif` | Apptainer image used to mount the shards and run `mksquashfs`. Must contain `squashfs-tools`. |
+| `MKSQUASHFS` | `mksquashfs.static` | Image-builder binary. Override if Isambard names it differently or requires a `module load`. |
+| `UNSQUASHFS` | `unsquashfs` | Used for the final `.h5` file-count sanity check. |
+| `SQUASHFUSE` | `squashfuse` | Mount tool. `squashfuse_ll` works too if available. |
 | `PROCESSORS` | `$SLURM_CPUS_PER_TASK` (16) | `mksquashfs -processors`. |
+| `MOUNT_PARALLEL` | 8 | `xargs -P` for the mount loop. |
+| `MOUNT_ROOT` | `$SLURM_TMPDIR/merge_mounts.$SLURM_JOB_ID` | Where shards get mounted. Default lives on node-local scratch so SLURM cleans it. |
+
+### Sidecar container fallback
+
+If `mksquashfs.static` or `squashfuse` is not on `$PATH` on Isambard
+compute nodes, [squashfs_tools.def](squashfs_tools.def) builds a tiny
+alpine + `squashfs-tools` container (~10 MB) that provides them. Build
+on Tufts and rsync to Isambard:
+
+```bash
+# On Tufts:
+cd /cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept/isambard
+apptainer build --fakeroot squashfs_tools.sif squashfs_tools.def
+apptainer exec squashfs_tools.sif mksquashfs -version    # sanity check
+rsync -aP squashfs_tools.sif \
+    u6jo.aip2.isambard:/projects/u6jo/containers/squashfs_tools.sif
+```
+
+If `--fakeroot` is unavailable on your Tufts shell, alternatives are
+(a) a node where it works, (b) `apptainer build --remote`, or (c) build
+on Isambard if their apptainer install supports `--fakeroot`.
+
+To use the sidecar from the merge script, override the tool env vars so
+each invocation goes through `apptainer exec`:
+
+```bash
+SIF=/projects/u6jo/containers/squashfs_tools.sif
+MKSQUASHFS="apptainer exec $SIF mksquashfs" \
+UNSQUASHFS="apptainer exec $SIF unsquashfs" \
+SQUASHFUSE="apptainer exec $SIF squashfuse" \
+    sbatch merge_shards_on_isambard.sh
+```
+
+Note: with this fallback, the FUSE mounts live in the host namespace
+(not in any apptainer container's namespace) because `squashfuse` is
+invoked as a one-shot child of the launcher shell. So the cleanup
+discipline above still applies — the apptainer wrapper just provides
+the binaries, not lifecycle management.
 
 ### Failure modes
 
 | Symptom | Cause | Action |
 |---|---|---|
-| Smoke-test produces `/unified/<rel>/<rel>/...` (doubled paths) | Internal shard layout differs from the `build_squashfs.py` hardlink-tree convention. | Inspect with `unsquashfs -l <one>.sqsh`. Either drop `image-src=/<rel>` from the script (if files are at shard root) or adjust the path. |
-| `apptainer exec` fails with `unknown mount type: squashfs` | Apptainer too old to support `--mount type=squashfs`. | Use Apptainer ≥ 1.1. On Isambard `apptainer --version` confirms. |
-| `mksquashfs: command not found` inside container | Pointcept container does not include `squashfs-tools`. | Build / pull a small sidecar `.sif` that does (Debian/Ubuntu `apt install squashfs-tools` is enough) and pass it via `CONTAINER=...`. |
-| Job hits wall clock before completion | Underestimated throughput, or shared-FS contention. | Output is unusable; mksquashfs has no resume. Delete the partial `.sqsh`, raise `--time=`, resubmit. |
+| Smoke-test produces `$MOUNT_ROOT/<rel>/<rel>/...` (doubled paths) | Internal shard layout differs from the `build_squashfs.py` hardlink-tree convention. | Inspect with `unsquashfs -l <one>.sqsh`. Either drop `subdir=/$rel` from the `mount_one` function (if files are at shard root) or adjust the path. |
+| `mksquashfs.static: command not found` | Isambard's squashfs tools are behind a `module load`, or named differently. | Source the module in your `~/.bashrc` or in the script, or set `MKSQUASHFS=...` to the absolute path. |
+| `squashfuse: command not found` | Same as above. | Set `SQUASHFUSE=...`. Or fall back to the sidecar (above). |
+| `fusermount: failed to unmount: Device or resource busy` during cleanup | A process inside the mount tree still has open fds. | The trap uses `-uz` (lazy unmount) which sidesteps EBUSY by detaching the mountpoint and letting the kernel finish cleanup when fds close. If you see this, it means the lazy path also failed — investigate manually with `lsof`. |
+| Job hits wall clock before completion | Underestimated throughput, or shared-FS contention. | Output is unusable; mksquashfs has no resume. Delete the partial `.sqsh`, raise `--time=`, resubmit. The USR1 trap should have caught the pre-timeout and unmounted; verify in the log. |
 | `df`-based preflight refuses to start | Less than 1.05× total shard size free in `$OUTPUT_DIR`. | Free space, or set `$OUTPUT_DIR` to a different filesystem with capacity. Don't bypass — running out of space mid-merge wastes hours. |
+| Stale mounts left after SIGKILL | The one signal that cannot be trapped. | `$MOUNT_ROOT` lives under `$SLURM_TMPDIR` by default → SLURM Epilog reclaims it on the next idle. If you overrode `MOUNT_ROOT`, ssh to the compute node and `awk '$2 ~ "^<root>" && $3 ~ /fuse/ {print $2}' /proc/mounts \| sort -r \| xargs -n1 fusermount -uz`. |
 
 ## Tunables
 
