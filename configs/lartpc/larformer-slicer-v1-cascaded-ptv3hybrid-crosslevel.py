@@ -88,6 +88,7 @@ backbone_out_channels = _PTV3_DEC_CHANNELS[0]   # 64 = dec0 width
 
 coord_center = (125.0, 0.0, 518.0)
 coord_scale = 179.55
+#flash_backend = "xformers"
 flash_backend = "flash_attn"
 token_dim = 256
 
@@ -213,21 +214,18 @@ scale_pattern = [
 ]
 
 # =============================================================================
-# Token refiner — PerLevelSelfAttn on every non-SP level
+# Token refiner — CrossLevelAttn on all non-SP level
 # =============================================================================
-# The refiner's default heuristic (target_levels=None → every `voxel_*`
-# level) would skip ptv3_dec*. We pass an EXPLICIT target list so all four
-# non-SP levels get a refinement pass.
-#
-# Per-level params ≈ 0.8M per layer per level (D=256, heads=4, mlp_ratio=4).
-# With 2 layers × 4 target levels ≈ 6.5M refiner params.
+
 _token_refiner_cfg = dict(
-    type="PerLevelSelfAttn",
+    type="CrossLevelAttn",
     num_layers=2,
     num_heads=4,
     mlp_ratio=4.0,
-    target_levels=["voxel_16cm", "voxel_8cm"],# "ptv3_dec3", "ptv3_dec2"],
-    # pos_emb_kind="sinusoidal",   # uncomment to swap the refiner's pos_emb
+    target_levels=["voxel_16cm", "voxel_8cm","ptv3_dec3","ptv3_dec2"],
+    # source_levels=None,                  # None = all levels (incl. SP)
+    max_source_tokens_per_level=16392,      # cap SP's K/V contribution
+    # pos_emb_kind="sinusoidal",
 )
 
 slicer_cfg = dict(
@@ -277,7 +275,7 @@ slicer_cfg = dict(
         weight_aux_mask=0.7,
         weight_per_level_cls=0.5,
         weight_origin=(0.5 if ENABLE_ORIGIN_HEAD_WITH_CENTROID else 0.0),
-        num_sample_points=16392,
+        num_sample_points=16384,
         use_importance_sampling=(not PURE_RANDOM_NEGATIVES),
         importance_oversample_ratio=3.0,
         importance_ratio=_IMPORTANCE_RATIO,

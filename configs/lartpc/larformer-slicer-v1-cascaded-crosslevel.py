@@ -91,7 +91,7 @@ ENABLE_ORIGIN_HEAD_WITH_CENTROID = False
 #      half hard-neg. 1.0 = all hard-neg. The remaining 25% stays uniform
 #      random for coverage.
 PURE_RANDOM_NEGATIVES = False
-HARD_NEG_FRACTION_OF_IMPORTANCE = 0.0
+HARD_NEG_FRACTION_OF_IMPORTANCE = 0.5
 
 _IMPORTANCE_BUDGET = 0.0 if PURE_RANDOM_NEGATIVES else 0.75
 _IMPORTANCE_RATIO = _IMPORTANCE_BUDGET * (1.0 - HARD_NEG_FRACTION_OF_IMPORTANCE)
@@ -554,37 +554,33 @@ base_lr = 1.0e-4
 param_dicts = None
 optimizer = dict(type="AdamW", lr=base_lr, weight_decay=0.01)
 scheduler = dict(
-    # Pointcept's config merge deep-merges nested dicts, so without
-    # _delete_=True the base config's OneCycleLR keys (max_lr, pct_start,
-    # …) leak through and FlatWithDecayLR.__init__ explodes with an
-    # 'unexpected keyword argument' TypeError. See
-    # pointcept/utils/config.py::_merge_a_into_b for the _delete_ docs.
-    #_delete_=True,
     type="FlatWithDecayLR",
-    mode="plateau", # options: plateau, epoch, both
+    mode="plateau",
     gamma=0.5,
-    min_lr=1e-6,
-    step_period_epochs=200, # based on train epochs, used in epoch and both mode 
-    patience_epochs=12,      # based on eval epochs, used in plateau and both mode
+    min_lr=1e-7,
+    step_period_epochs=200,
+    patience_epochs=12,
     min_delta=1e-4,
     cooldown_epochs=2,
-    # Manual LR override on resume. When not None, FlatWithDecayLR's
-    # load_state_dict overwrites every param_group's lr to this value
-    # AFTER optimizer.load_state_dict() and the scheduler counter
-    # restore — i.e. it is the final word for the next iteration.
-    # Useful when the saved checkpoint's LR is too high after a long
-    # run and you want to drop it before continuing.
-    #
-    # Caveat: this is applied EVERY time load_state_dict runs. After
-    # your first resume produces a new checkpoint, set back to None
-    # (or just delete the line) — otherwise the next resume will reset
-    # the LR to this value again, undoing any decays in between.
-    #
-    # Set `reset_counters=True` to also wipe best_val_loss and the
-    # plateau / period counters (use when reset_lr changes the loss
-    # landscape enough that the old "best" is no longer comparable).
-    reset_lr=1.0e-5,    
-    reset_counters=True,
+    # Linear warmup over the first 500 training iters (~100 epochs on the
+    # 10-event dev sample at batch_size=2). PTv3 decoder + refiner +
+    # Mask2Former decoder all initialize randomly here — gradients in the
+    # first ~50 iters are noisy enough to spike the loss curve, so we
+    # don't want the plateau detector touching anything during that
+    # phase. step_epoch is a no-op while in warmup (counters frozen).
+    warmup_iters=500,
+    warmup_start_lr=0.0,
+    # EMA over the val/loss for plateau detection. A single lucky-low
+    # raw val_loss (which fluctuates a few % epoch-to-epoch on this
+    # small dev sample) was pinning best_val_loss too tight, collapsing
+    # the LR prematurely. alpha=0.3 means each new val_loss contributes
+    # 30% to the smoothed signal; one outlier moves the EMA by at most
+    # 30% of the gap, not the full distance. Set None to disable
+    # smoothing (raw val_loss tracked, current pre-EMA behavior).
+    ema_alpha=0.3,
+    # No reset_lr by default — set on resume only.
+    reset_lr=None,
+    reset_counters=False,
 )
 
 hooks = [
