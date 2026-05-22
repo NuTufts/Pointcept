@@ -1186,6 +1186,42 @@ def figure_for_prediction(pred: "dict | None", color_by: str,
                 **_pred_hover_kwargs(m, customdata_full),
             ))
 
+    elif color_by == "pred_mask_raw":
+        # Show each matched query's FULL above-threshold mask (the set
+        # pair_iou is computed against), regardless of panoptic argmax.
+        # This is the "raw Q mask" view — SPs can appear in multiple
+        # queries' overlap (over-claim). Distinguishes "Q's high-prob
+        # claim" from "Q's argmax-won territory" (= the pred_slice_id
+        # view). Big gap between the two = Q is over-claiming SPs that
+        # other queries win.
+        pred_mask_bool = pred.get("gt/pred_mask_bool")
+        if pred_mask_bool is None:
+            traces.append(go.Scatter3d(x=[], y=[], z=[], name=(
+                "raw matched-Q mask requires gt/pred_mask_bool in the HDF5; "
+                "re-run tools/run_slicer_inference.py with the latest script "
+                "to regenerate.")))
+        else:
+            n_drawn = 0
+            for k in range(min(len(primary_trackid_gt), pred_mask_bool.shape[0])):
+                row = pred_mask_bool[k].astype(bool)
+                if not row.any():
+                    continue
+                tid = int(primary_trackid_gt[k])
+                ot = int(origin_type_gt[k])
+                pts = post_coord_cm[row]
+                traces.append(go.Scatter3d(
+                    x=pts[:, 2], y=pts[:, 0], z=pts[:, 1],
+                    mode="markers",
+                    marker=dict(size=2.0, color=_track_id_color(tid, ot)),
+                    name=f"raw matched-Q tid={tid} ({int(row.sum())})"
+                         + (" [nu]" if ot == 0 else ""),
+                    **_pred_hover_kwargs(row, customdata_full),
+                ))
+                n_drawn += 1
+            if n_drawn == 0:
+                traces.append(go.Scatter3d(x=[], y=[], z=[],
+                                           name="(no matched queries had mask above threshold)"))
+
     elif color_by == "p_real":
         # Continuous colorscale on ALL pre-filter SPs. Shows the deghoster's
         # full output, not just the kept points.
@@ -1376,29 +1412,46 @@ def metadata_panel(event_data, prediction: "dict | None" = None):
 
         # Per-GT-instance pair table (which query, what IoU, right class?)
         if pair_iou.size > 0:
+            # Header. `gt_n` = GT slice size; `pred_n` = matched query's
+            # above-threshold mask size (the set pair_iou uses on the
+            # pred side). The gap `pred_n - gt_n` shows over-claim:
+            # when pred_n >> gt_n, Q is claiming more SPs than the GT
+            # actually has — many of those go to OTHER queries in
+            # panoptic argmax, so the prediction panel hides them but
+            # pair_iou penalizes Q for them. Similarly,
+            # `pair_iou - argmax_iou` shows the magnitude of over-claim:
+            # when large, Q over-claims SPs other queries win.
             inst_rows = [html.Tr([
                 html.Th("k"), html.Th("tid"), html.Th("ot"),
-                html.Th("n_pts"), html.Th("matched_q"),
-                html.Th("pair IoU"), html.Th("cls ok"),
+                html.Th("gt_n"), html.Th("pred_n"), html.Th("matched_q"),
+                html.Th("pair IoU"), html.Th("argmax IoU"), html.Th("cls ok"),
             ])]
             n_pts = prediction.get("gt/n_truth_points", np.zeros(len(pair_iou)))
+            pred_n_pts = prediction.get("gt/pred_n_pts", np.full(len(pair_iou), -1, dtype=np.int64))
+            argmax_iou = prediction.get("gt/argmax_iou", np.full(len(pair_iou), -1.0, dtype=np.float32))
             for k in range(min(int(len(pair_iou)), 50)):
                 tid = int(primary_trackid[k]) if k < len(primary_trackid) else -1
                 ot = int(origin_type[k]) if k < len(origin_type) else -1
                 mq = int(matched_query[k]) if k < len(matched_query) else -1
                 npp = int(n_pts[k]) if k < len(n_pts) else 0
+                ppn = int(pred_n_pts[k]) if k < len(pred_n_pts) else -1
                 iou_val = float(pair_iou[k])
+                aiou_val = float(argmax_iou[k]) if k < len(argmax_iou) else -1.0
                 cls_ok = int(pair_cls_correct[k]) if k < len(pair_cls_correct) else -1
                 iou_str = f"{iou_val:.3f}" if iou_val >= 0 else "—"
+                aiou_str = f"{aiou_val:.3f}" if aiou_val >= 0 else "—"
                 cls_str = ("✓" if cls_ok == 1 else
                            ("✗" if cls_ok == 0 else "—"))
+                pred_n_str = str(ppn) if ppn >= 0 else "—"
                 inst_rows.append(html.Tr([
                     html.Td(str(k)),
                     html.Td(str(tid)),
                     html.Td(str(ot)),
                     html.Td(str(npp)),
+                    html.Td(pred_n_str),
                     html.Td(str(mq)),
                     html.Td(iou_str),
+                    html.Td(aiou_str),
                     html.Td(cls_str),
                 ]))
             md.append(html.Div(html.B("matched pairs (predicted vs GT):"),
@@ -1586,8 +1639,10 @@ def main():
                         options=[
                             {"label": "correct / wrong (vs GT)",
                              "value": "pred_correct"},
-                            {"label": "predicted slice id (trackid)",
+                            {"label": "predicted slice id (panoptic argmax)",
                              "value": "pred_slice_id"},
+                            {"label": "raw matched-Q mask (pair_iou view)",
+                             "value": "pred_mask_raw"},
                             {"label": "GT slice id (post-filter SPs)",
                              "value": "slice_id_gt"},
                             {"label": "predicted class (nu/cosmic)",
@@ -1597,7 +1652,7 @@ def main():
                         ],
                         value="pred_correct",
                         clearable=False,
-                        style={"width": "300px",
+                        style={"width": "340px",
                                "display": "inline-block",
                                "marginRight": "16px"},
                     ),

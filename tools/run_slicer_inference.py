@@ -266,6 +266,20 @@ def process_event(
     pair_cls_correct = (pair_pred_class == pair_gt_class).cpu().numpy().astype(bool) \
         if len(q_idx) > 0 else np.zeros(0, dtype=bool)
 
+    # Per-GT MATCHED QUERY MASK (above-threshold), independent of panoptic
+    # argmax. This is the "raw" pred-mask view that pair_iou computes
+    # against — saving it lets the visualizer show Q's full claim and
+    # makes the over-claim pathology directly visible (Q has high prob on
+    # SPs but other queries win them in argmax, so the panoptic view
+    # hides them while pair_iou penalizes Q for them).
+    pred_mask_bool_per_gt = np.zeros((K, n_post), dtype=bool)
+    pred_n_pts_per_gt = np.zeros(K, dtype=np.int64) - 1   # -1 = unmatched
+    for p in range(len(q_idx)):
+        q_p = int(q_idx[p]); k_p = int(k_idx[p])
+        m = (sp_mask[q_p] > 0).cpu().numpy()
+        pred_mask_bool_per_gt[k_p] = m
+        pred_n_pts_per_gt[k_p] = int(m.sum())
+
     # Query → matched-GT lookup
     query_matched_gt = np.full(Q, -1, dtype=np.int64)
     if len(q_idx) > 0:
@@ -378,6 +392,22 @@ def process_event(
     # derivation was hoisted above the per-voxel block; reuse it here).
     pred_correct = (pred_slice_id == post_slice_id_gt).astype(bool)
 
+    # Argmax-restricted IoU per matched pair. Uses the panoptic-argmax
+    # view (the visualizer's "predicted slice id" mode) — only the SPs
+    # the matched query Q WINS in argmax-among-active count as Q's pred
+    # set. Compared with pair_iou (which uses Q's full above-threshold
+    # mask), the GAP `pair_iou - argmax_iou` measures how much Q is
+    # "over-claiming" SPs that other queries actually win.
+    argmax_iou_per_pair = np.zeros(len(q_idx), dtype=np.float32)
+    for p in range(len(q_idx)):
+        q_p = int(q_idx[p]); k_p = int(k_idx[p])
+        tid_p = int(primary_trackid_gt[k_p])
+        pred_argmax = (pred_query == q_p) & (pred_mask_prob >= 0.5)
+        gt_mask_np = (post_slice_id_gt == tid_p)
+        inter = int((pred_argmax & gt_mask_np).sum())
+        union = int((pred_argmax | gt_mask_np).sum())
+        argmax_iou_per_pair[p] = (inter / union) if union > 0 else 0.0
+
     out_dict = {
         "event_dropped": False,
 
@@ -419,6 +449,22 @@ def process_event(
             pair_iou,
             np.full(max(K - len(pair_iou), 0), -1.0, dtype=np.float32),
         ])[:K],                                                            # (K,) -1 if unmatched
+        # `gt/pred_n_pts[k]` = number of SPs where the matched query's
+        # mask sigm > 0.5 (the "raw" pred mask count used by pair_iou).
+        # -1 if unmatched. Compare with `gt/n_truth_points` to spot
+        # over-claim: pred_n_pts >> n_truth_points → Q is claiming many
+        # more SPs than the GT slice has.
+        "gt/pred_n_pts": pred_n_pts_per_gt,                                # (K,) -1 if unmatched
+        # Per-SP boolean: True iff this SP is in the matched query's
+        # above-threshold mask (pair_iou's view), regardless of panoptic
+        # argmax. Used by visualizer's "raw matched-Q mask" color mode.
+        "gt/pred_mask_bool": pred_mask_bool_per_gt,                        # (K, n_post)
+        # Argmax-restricted IoU (visualizer's panoptic view of IoU).
+        # `pair_iou - argmax_iou` measures over-claim magnitude.
+        "gt/argmax_iou": np.concatenate([
+            argmax_iou_per_pair,
+            np.full(max(K - len(argmax_iou_per_pair), 0), -1.0, dtype=np.float32),
+        ])[:K],
         "gt/pair_cls_correct": np.concatenate([
             pair_cls_correct.astype(np.int8),
             np.full(max(K - len(pair_cls_correct), 0), -1, dtype=np.int8),
