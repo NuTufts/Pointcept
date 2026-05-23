@@ -90,7 +90,8 @@ class _MaskedDecoderLayer(nn.Module):
     """Pre-norm masked-cross-attn → self-attn → FFN. DETR-style PE on Q/K only."""
 
     def __init__(self, dim: int, num_heads: int,
-                 mlp_ratio: float = 4.0, dropout: float = 0.0):
+                 mlp_ratio: float = 4.0, dropout: float = 0.0,
+                 zero_init_output_proj: bool = False):
         super().__init__()
         self.cross_norm_q = nn.LayerNorm(dim)
         self.cross_norm_k = nn.LayerNorm(dim)
@@ -111,18 +112,25 @@ class _MaskedDecoderLayer(nn.Module):
             nn.Linear(hidden, dim),
         )
 
-        # DETR/Mask2Former zero-init on the OUTPUT projections of each
-        # residual block. At init each block is `x + 0 = x` — the layer
-        # passes queries through unchanged, so the deep decoder stack
-        # produces stable activations and the random-init "amplification
-        # cascade" through N layers is avoided. Gradient still flows into
-        # these zeroed weights via the residual connection.
-        nn.init.zeros_(self.cross_attn.out_proj.weight)
-        nn.init.zeros_(self.cross_attn.out_proj.bias)
-        nn.init.zeros_(self.self_attn.out_proj.weight)
-        nn.init.zeros_(self.self_attn.out_proj.bias)
-        nn.init.zeros_(self.ffn[-1].weight)
-        nn.init.zeros_(self.ffn[-1].bias)
+        # Opt-in zero-init on the OUTPUT projections of each residual
+        # block. When True: each block is `x + 0 = x` at init — the
+        # layer passes queries through unchanged, so the deep decoder
+        # stack produces stable activations and avoids the random-init
+        # "amplification cascade" through N layers. Gradient still
+        # flows into these zeroed weights via the residual connection,
+        # but symmetry-breaking is slow — empirically costs convergence
+        # rate on small training sets / refiner-only configs where
+        # standard random init is already stable. Recommended ON for
+        # configs that train the PTv3 decoder from scratch (where the
+        # cascade was actually producing NaNs); OFF (default) restores
+        # the original random init.
+        if zero_init_output_proj:
+            nn.init.zeros_(self.cross_attn.out_proj.weight)
+            nn.init.zeros_(self.cross_attn.out_proj.bias)
+            nn.init.zeros_(self.self_attn.out_proj.weight)
+            nn.init.zeros_(self.self_attn.out_proj.bias)
+            nn.init.zeros_(self.ffn[-1].weight)
+            nn.init.zeros_(self.ffn[-1].bias)
 
     def forward(
         self,
@@ -131,6 +139,7 @@ class _MaskedDecoderLayer(nn.Module):
         keys: torch.Tensor,
         key_pos: Optional[torch.Tensor],
         attn_mask: Optional[torch.Tensor] = None,
+        self_attn_mask: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         q_n = self.cross_norm_q(queries)
         k_n = self.cross_norm_k(keys)
@@ -143,7 +152,9 @@ class _MaskedDecoderLayer(nn.Module):
         s_n = self.self_norm(queries)
         s_q = _with_pos(s_n, query_pos.unsqueeze(0))
         s_k = _with_pos(s_n, query_pos.unsqueeze(0))
-        so, _ = self.self_attn(s_q, s_k, s_n, need_weights=False)
+        so, _ = self.self_attn(
+            s_q, s_k, s_n, attn_mask=self_attn_mask, need_weights=False,
+        )
         queries = queries + so
 
         queries = queries + self.ffn(self.ffn_norm(queries))
@@ -154,7 +165,8 @@ class _PerLayerHeads(nn.Module):
     """Class logits + optional origin head + shared mask embed."""
 
     def __init__(self, dim: int, num_classes: int,
-                 enable_origin_head: bool = True):
+                 enable_origin_head: bool = True,
+                 zero_init_output_proj: bool = False):
         super().__init__()
         self.class_head = nn.Linear(dim, num_classes)
         self.enable_origin_head = bool(enable_origin_head)
@@ -170,20 +182,25 @@ class _PerLayerHeads(nn.Module):
             nn.Linear(dim, dim),
         )
 
-        # DETR/Mask2Former-style zero-init on the OUTPUT projections.
-        # Makes class_logits / mask_embed(q) / origin start at 0 at init,
-        # so mask_logits = mask_embed(q) @ keys.T starts at 0 (sigmoid 0.5)
-        # and softmax over class_logits is uniform. CE / BCE / Dice are
-        # all finite and small. Gradient still flows (the matmuls are
-        # nontrivial via the OTHER operand), so the model learns; it
-        # just doesn't explode in the first iters.
-        nn.init.zeros_(self.class_head.weight)
-        nn.init.zeros_(self.class_head.bias)
-        nn.init.zeros_(self.mask_embed[-1].weight)
-        nn.init.zeros_(self.mask_embed[-1].bias)
-        if self.enable_origin_head:
-            nn.init.zeros_(self.origin_head[-1].weight)
-            nn.init.zeros_(self.origin_head[-1].bias)
+        # Opt-in zero-init on the OUTPUT projections. When True:
+        # class_logits = 0 (softmax uniform), mask_embed(q) = 0 so
+        # mask_logits = 0 (sigmoid 0.5), origin = 0. CE / BCE / Dice
+        # are finite and uniform across queries — useful for stabilizing
+        # from-scratch decoders that would otherwise produce wildly out-
+        # of-distribution logits in the first iters. But it makes all
+        # queries indistinguishable through the heads at init, so the
+        # Hungarian matcher has only random tie-breaking and per-query
+        # specialization is slow. OFF (default) keeps the original
+        # random init — recommended unless a from-scratch decoder is
+        # producing NaN/Inf.
+        if zero_init_output_proj:
+            nn.init.zeros_(self.class_head.weight)
+            nn.init.zeros_(self.class_head.bias)
+            nn.init.zeros_(self.mask_embed[-1].weight)
+            nn.init.zeros_(self.mask_embed[-1].bias)
+            if self.enable_origin_head:
+                nn.init.zeros_(self.origin_head[-1].weight)
+                nn.init.zeros_(self.origin_head[-1].bias)
 
     def forward(self, queries: torch.Tensor) -> dict:
         origin = (self.origin_head(queries) if self.enable_origin_head
@@ -241,6 +258,7 @@ class Mask2FormerDecoder(nn.Module):
         pos_emb_num_freq: Optional[int] = None,
         pos_emb_max_freq: float = 256.0,
         enable_origin_head: bool = True,
+        zero_init_output_proj: bool = False,
     ):
         super().__init__()
         if len(scale_pattern) == 0:
@@ -277,17 +295,24 @@ class Mask2FormerDecoder(nn.Module):
                 dim, num_freq=pos_emb_num_freq, max_freq=pos_emb_max_freq,
             )
 
+        self.zero_init_output_proj = bool(zero_init_output_proj)
         self.init_heads = _PerLayerHeads(
             dim, num_classes, enable_origin_head=self.enable_origin_head,
+            zero_init_output_proj=self.zero_init_output_proj,
         )
         self.layers = nn.ModuleList([
-            _MaskedDecoderLayer(dim, num_heads, mlp_ratio=mlp_ratio,
-                                dropout=dropout)
+            _MaskedDecoderLayer(
+                dim, num_heads, mlp_ratio=mlp_ratio, dropout=dropout,
+                zero_init_output_proj=self.zero_init_output_proj,
+            )
             for _ in self.scale_pattern
         ])
         self.layer_heads = nn.ModuleList([
-            _PerLayerHeads(dim, num_classes,
-                           enable_origin_head=self.enable_origin_head)
+            _PerLayerHeads(
+                dim, num_classes,
+                enable_origin_head=self.enable_origin_head,
+                zero_init_output_proj=self.zero_init_output_proj,
+            )
             for _ in self.scale_pattern
         ])
 
@@ -387,30 +412,51 @@ class Mask2FormerDecoder(nn.Module):
         levels: "OrderedDict[str, LevelOutput]",
         init_query_content: Optional[torch.Tensor] = None,
         init_anchor_coords: Optional[torch.Tensor] = None,
+        dn_self_attn_mask: Optional[torch.Tensor] = None,
     ) -> dict:
         """
         Args (mixed query selection, both required to enable):
-            init_query_content: (Q, D) token features selected by an
-                external MixedQuerySelector. When provided, the decoder
-                treats `self.query_content` as a per-slot zero-init delta
-                ON TOP of these anchor features.
-            init_anchor_coords: (Q, 3) coord_norm-space anchor positions
-                from the same selector. The decoder adds
-                `pos_emb(anchor_coords)` to `self.query_pos` so each
-                query's positional prior starts at its anchor.
+            init_query_content: (Q_total, D) token features selected by
+                an external MixedQuerySelector. When provided, the
+                decoder treats `self.query_content` as a per-slot
+                zero-init delta ON TOP of these anchor features.
 
-        When both are None (default), behavior matches the original
-        pure learnable-query path: queries = self.query_content,
-        query_pos = self.query_pos.
+                Mask denoising appends DN queries past the regular K:
+                `init_query_content[K:]` are DN queries, and the
+                learnable `self.query_content` is only applied to the
+                first K slots (DN queries pass through unchanged from
+                their class-embedding init).
+            init_anchor_coords: (Q_total, 3) coord_norm-space anchor
+                positions from the same selector. The decoder adds
+                `pos_emb(anchor_coords)` to `self.query_pos` (zero-
+                padded past K) so each query's positional prior starts
+                at its anchor.
+            dn_self_attn_mask: optional (Q_total, Q_total) bool. When
+                provided, applied as `self_attn`'s attn_mask in every
+                layer to block DN ↔ regular and DN-cross-group edges.
+                See `MaskDenoiser.build_self_attn_mask`.
+
+        When init_query_content is None (default), behavior matches the
+        original pure learnable-query path: queries = self.query_content,
+        query_pos = self.query_pos, no self-attn mask.
         """
         self._validate_levels(levels)
 
         D = self.dim
+        K_reg = self.query_content.shape[0]
         if init_query_content is not None:
-            # Mixed query selection: queries = anchor features +
-            # (zero-init when selector is active) self.query_content delta.
-            queries = (init_query_content + self.query_content).unsqueeze(0).clone()
+            Q_total = int(init_query_content.shape[0])
+            # Compose queries: init content + learnable delta on the first
+            # K_reg slots only. DN slots (the trailing Q_total - K_reg)
+            # pass through their class-embedding init unchanged.
+            queries = init_query_content.clone()
+            n_delta = min(Q_total, K_reg)
+            if n_delta > 0:
+                queries = queries.clone()
+                queries[:n_delta] = queries[:n_delta] + self.query_content[:n_delta]
+            queries = queries.unsqueeze(0)
         else:
+            Q_total = K_reg
             queries = self.query_content.unsqueeze(0).clone()
 
         # Sanitize input tokens ONCE at the decoder entry point. Every
@@ -453,6 +499,19 @@ class Mask2FormerDecoder(nn.Module):
         anchor_pe = (self.pos_emb(init_anchor_coords)
                      if init_anchor_coords is not None else None)
 
+        # Per-layer base query_pos. self.query_pos has shape (K_reg, D);
+        # when DN queries pad init_query_content past K_reg, we zero-pad
+        # the trailing slots — DN queries get all their positional prior
+        # from anchor_pe (and, if enabled, the origin head's per-layer
+        # refinement), not from self.query_pos.
+        if Q_total != K_reg:
+            query_pos_base = self.query_pos.new_zeros(Q_total, D)
+            n_apply = min(Q_total, K_reg)
+            if n_apply > 0:
+                query_pos_base[:n_apply] = self.query_pos[:n_apply]
+        else:
+            query_pos_base = self.query_pos
+
         init_predictions = self._compute_predictions(
             self.init_heads, queries.squeeze(0), keys_pe_by_level,
         )
@@ -477,7 +536,7 @@ class Mask2FormerDecoder(nn.Module):
 
             keys_b = keys.unsqueeze(0)
 
-            query_pos_dyn = self.query_pos
+            query_pos_dyn = query_pos_base
             if anchor_pe is not None:
                 query_pos_dyn = query_pos_dyn + anchor_pe
             if self.enable_origin_head:
@@ -486,7 +545,9 @@ class Mask2FormerDecoder(nn.Module):
                 )
 
             queries = self.layers[li](
-                queries, query_pos_dyn, keys_b, key_pos, attn_mask=attn_mask,
+                queries, query_pos_dyn, keys_b, key_pos,
+                attn_mask=attn_mask,
+                self_attn_mask=dn_self_attn_mask,
             )
 
             preds = self._compute_predictions(

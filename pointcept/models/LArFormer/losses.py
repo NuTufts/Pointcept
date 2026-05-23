@@ -509,6 +509,14 @@ class LArFormerLoss(nn.Module):
         importance_oversample_ratio: float = 3.0,
         importance_ratio: float = 0.75,
         importance_hard_neg_ratio: float = 0.0,
+        # Mask DINO-style denoising auxiliary loss. When the model passes
+        # a non-empty DN slice into `compute_dn_loss`, the per-pair losses
+        # (cls/mask/dice/origin) are computed against direct gt_target_idx
+        # matching (no Hungarian) and scaled by `weight_dn_loss`. Each
+        # individual component reuses the same per-pair sampler the
+        # regular path uses. Default 1.0 = DN losses contribute at the
+        # SAME magnitude as the matched losses; lower to 0.5 to halve.
+        weight_dn_loss: float = 1.0,
     ):
         super().__init__()
         if match_layer not in ("final", "init"):
@@ -532,6 +540,7 @@ class LArFormerLoss(nn.Module):
         self.importance_oversample_ratio = float(importance_oversample_ratio)
         self.importance_ratio = float(importance_ratio)
         self.importance_hard_neg_ratio = float(importance_hard_neg_ratio)
+        self.weight_dn_loss = float(weight_dn_loss)
 
         ce_weights = torch.ones(self.num_classes)
         ce_weights[self.no_object_class_id] = float(no_object_weight)
@@ -694,6 +703,108 @@ class LArFormerLoss(nn.Module):
             else:
                 raise ValueError(f"unknown per-level cls loss {loss_kind!r}")
         return cls_terms
+
+    def compute_dn_loss(
+        self,
+        decoder_output_dn: dict,
+        per_level_gt_mask: "OrderedDict[str, torch.Tensor]",
+        gt_classes: torch.Tensor,
+        gt_origin: Optional[torch.Tensor],
+        gt_target_idx: torch.Tensor,
+    ) -> Dict[str, torch.Tensor]:
+        """Direct (non-Hungarian) per-pair losses for Mask DINO-style
+        denoising queries.
+
+        Args:
+            decoder_output_dn: the DN slice of `Mask2FormerDecoder` output
+                — same {init, layers, final} structure as the regular
+                output, but with Q rows == Q_dn (number of DN queries)
+                rather than K_reg. The model is responsible for slicing
+                this before calling.
+            per_level_gt_mask: same per-level GT mask dict the regular
+                forward already builds. We re-use it — no recomputation.
+            gt_classes, gt_origin: per-instance targets, same shapes the
+                Hungarian path uses (K,) and (K, 3) or None.
+            gt_target_idx: (Q_dn,) long tensor — query i is supervised
+                against GT instance `gt_target_idx[i]`. Built by
+                `MaskDenoiser`.
+
+        Returns: dict with "total" (already scaled by `weight_dn_loss`)
+        plus the per-component scalars (un-scaled, for telemetry). The
+        model is expected to prefix these with "dn_" before logging /
+        merging with the regular loss dict.
+
+        Returns an all-zero dict (with finite "total") if Q_dn == 0 —
+        eval and zero-GT events fall through cleanly.
+        """
+        # Pull a device handle from any always-available tensor in the
+        # DN slice (every layer has a class_logits).
+        cls_logits_any = decoder_output_dn["final"]["class_logits"]
+        device = cls_logits_any.device
+        Q_dn = int(cls_logits_any.shape[0])
+
+        zero = cls_logits_any.new_zeros(())
+        empty: Dict[str, torch.Tensor] = {"total": zero}
+        if Q_dn == 0 or gt_target_idx.numel() == 0:
+            empty["n_dn"] = torch.zeros((), dtype=torch.long, device=device)
+            return empty
+        # Direct assignment: q_idx is identity, k_idx is gt_target_idx.
+        # _compute_layer_loss takes numpy arrays (matches the Hungarian
+        # path's interface from `scipy.optimize.linear_sum_assignment`).
+        q_idx = np.arange(Q_dn, dtype=np.int64)
+        k_idx = gt_target_idx.detach().cpu().numpy().astype(np.int64)
+
+        sup_layers = []
+        if self.deep_supervision:
+            sup_layers.append(decoder_output_dn["init"])
+            sup_layers.extend(decoder_output_dn["layers"])
+        else:
+            sup_layers.append(decoder_output_dn["final"])
+
+        per_layer_losses = [
+            self._compute_layer_loss(
+                layer_pred=lyr,
+                gt_classes=gt_classes,
+                gt_origin=gt_origin,
+                per_level_gt_mask=per_level_gt_mask,
+                q_idx=q_idx, k_idx=k_idx,
+            )
+            for lyr in sup_layers
+        ]
+        agg: Dict[str, torch.Tensor] = {
+            k: torch.stack([pl[k] for pl in per_layer_losses]).sum()
+            for k in per_layer_losses[0].keys()
+        }
+
+        cfg_by_name = {lc["name"]: lc for lc in self.levels_cfg}
+
+        # Aggregate into a DN total using the SAME per-component weights
+        # the regular path uses (matched semantics — DN supervises the
+        # same heads with the same per-pair sampler) then scale the
+        # final sum by `weight_dn_loss`. Aux mask weights still inherit
+        # any per-level override declared in the level cfg.
+        total = self.weight_class * agg["cls"]
+        if self.primary_level is not None:
+            total = (total
+                     + self.weight_mask_primary * agg["mask_primary"]
+                     + self.weight_dice_primary * agg["dice_primary"])
+        if gt_origin is not None and self.weight_origin > 0:
+            total = total + self.weight_origin * agg["origin"]
+        for name in per_level_gt_mask.keys():
+            if name == self.primary_level:
+                continue
+            sup = (cfg_by_name[name].get("supervision") or {}).get("mask", {})
+            w = float(sup.get("weight", self.weight_aux_mask))
+            total = total + w * agg[f"aux_mask_{name}"]
+        total = self.weight_dn_loss * total
+
+        out: Dict[str, torch.Tensor] = {"total": total}
+        for k, v in agg.items():
+            out[k] = v
+        out["n_dn"] = torch.tensor(Q_dn, dtype=torch.long, device=device)
+        return out
+
+    # ------------------------------------------------------------------
 
     def _cls_only_loss(
         self,

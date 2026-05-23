@@ -36,6 +36,7 @@ del _larformer_evaluator_module
 # Paths
 # =============================================================================
 _DEFAULT_LIST = "/home/twongjirad/working/larbys/gen2/container_u22/Pointcept/devdata_mergedh5_pi0filter_10files.txt"
+#_DEFAULT_LIST = "/home/twongjirad/working/larbys/gen2/container_u22/Pointcept/devdata_mergedh5_pi0filter_1event.txt"
 
 # Path to the trained SonataLoRADeghostSegmentor checkpoint. Replace with
 # your actual run path; defaults are placeholders.
@@ -479,6 +480,20 @@ slicer_cfg = dict(
         selection_mode="top_m_then_fps",
         score_filter_multiplier=4,
     ),
+    #mixed_query_selection=None,
+    # Phase B: Mask DINO-style mask denoising. Train-only auxiliary path:
+    # appends `dn_groups × n_gt` denoising queries after the regular K_reg
+    # queries, each anchored at a jittered GT centroid and content-init
+    # to a class embedding. Loss supervises them directly to their GT
+    # (no Hungarian). max_dn_per_event caps total DN queries per event
+    # (most events have ≤20 GT slices → ≤60 DN queries; the cap kicks
+    # in for outlier cosmic-heavy events). See docs/LArFormer.md §18.
+    mask_denoising=dict(
+        dn_groups=3,
+        max_dn_per_event=96,
+        anchor_jitter_std=0.05,
+    ),
+    # mask_denoising=None,
 )
 
 # =============================================================================
@@ -524,9 +539,9 @@ model = dict(
 # `weight = "exp/.../model/model_last.pth"` + `resume = True`.
 weight = None
 
-save_path        = "exp/larformer_slicer_v1_cascaded_loradeghost_crosslevelrefiner"
-epoch            = 1000
-eval_epoch       = 200
+save_path        = "exp/larformer_slicer_v1_cascaded_loradeghost_crosslevelrefiner_mixedq_maskdn_nonzeroinit_10event"
+epoch            = 2000
+eval_epoch       = 400
 batch_size       = 2
 batch_size_val   = 2
 num_worker       = 2
@@ -535,6 +550,7 @@ evaluate         = True          # LArFormerSlicerEvaluator runs after each epoc
 enable_amp       = False
 empty_cache      = True
 enable_wandb     = True
+clip_grad        = 1.0
 wandb_project    = "pointcept-larformer"
 find_unused_parameters = True
 
@@ -563,7 +579,7 @@ find_unused_parameters = True
 # with this scheduler, set `extend_scheduler=False` on the checkpoint
 # loader — the OneCycleLR-aware extend path rewrites max_lr/initial_lr
 # and would corrupt FlatWithDecayLR state.
-base_lr = 1.0e-4
+base_lr = 5.0e-5
 param_dicts = None
 optimizer = dict(type="AdamW", lr=base_lr, weight_decay=0.01)
 scheduler = dict(
@@ -571,8 +587,8 @@ scheduler = dict(
     mode="plateau",
     gamma=0.5,
     min_lr=1e-7,
-    step_period_epochs=200,
-    patience_epochs=12,
+    step_period_epochs=400,
+    patience_epochs=500,
     min_delta=1e-4,
     cooldown_epochs=2,
     # Linear warmup over the first 500 training iters (~100 epochs on the

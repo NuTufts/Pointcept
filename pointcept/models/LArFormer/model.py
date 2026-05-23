@@ -47,6 +47,7 @@ from .builders import LevelOutput
 from .decoder import Mask2FormerDecoder
 from .heads import PerTokenClsHead
 from .losses import LArFormerLoss
+from .query_denoising import MaskDenoiser
 from .query_selection import MixedQuerySelector
 from .refiners import build_token_refiner
 from .tokenizer import CompositeTokenizer
@@ -80,6 +81,15 @@ class LArFormer(nn.Module):
             they act as learnable per-slot deltas on top of the selected
             anchors. Source level must declare `supervision.cls` so the
             cls head can score tokens. See `query_selection.py`.
+        mask_denoising: optional dict — when provided, build a
+            MaskDenoiser that emits `dn_groups` denoising queries per
+            GT instance (capped per event) and supervises them DIRECTLY
+            (no Hungarian) against the original GT. Requires
+            `mixed_query_selection` to also be enabled (DN queries are
+            appended after the selector's K_reg regular queries; the
+            decoder's learnable query_content / query_pos must be zero-
+            init so they don't bleed into DN slots). Train-only —
+            the eval path skips DN entirely. See `query_denoising.py`.
     """
 
     def __init__(
@@ -99,6 +109,8 @@ class LArFormer(nn.Module):
         token_refiner: Optional[dict] = None,
         capture_decoder_stages: bool = False,
         mixed_query_selection: Optional[dict] = None,
+        mask_denoising: Optional[dict] = None,
+        ptv3_decoder_init_scale: float = 0.0,
     ):
         super().__init__()
         self.backbone = build_model(backbone)
@@ -114,14 +126,20 @@ class LArFormer(nn.Module):
                     p.requires_grad = True
                 else:
                     p.requires_grad = False
+        self.ptv3_decoder_init_scale = float(ptv3_decoder_init_scale)
         if self.unfreeze_decoder:
-            # DETR/Mask2Former-style zero-init on PT-v3m2 decoder Block
-            # output projections (CPE Linear, attn.proj, mlp.fc2). Plus
-            # a per-Block forward hook that sanitizes point.feat — covers
-            # cases where attention INTERNALS produce NaN (e.g., flash
-            # attention with random Q/K hitting a numerical edge case)
-            # which propagate through zeroed proj because `0 * NaN = NaN`.
-            self._zero_init_ptv3_decoder_blocks()
+            # Initialize PT-v3m2 decoder Block weights. `cpe.Linear`
+            # always goes to exactly zero (it's the actual NaN source
+            # from sparse-conv edge cases). `attn.qkv.weight`,
+            # `attn.proj.weight`, `mlp.fc2.weight` go to zero when
+            # ptv3_decoder_init_scale == 0 (DETR-style residual identity
+            # at init); otherwise truncated-normal with std=scale —
+            # small-mag init lets gradient flow into the block from
+            # iteration 1 while keeping the cpe NaN source guarded.
+            # Plus a per-Block forward hook that sanitizes point.feat
+            # for the attention-internals NaN cases the cpe zero doesn't
+            # catch.
+            self._init_ptv3_decoder_blocks(scale=self.ptv3_decoder_init_scale)
             self._register_ptv3_decoder_block_sanitizers()
         self.backbone_out_channels = int(backbone_out_channels)
 
@@ -235,6 +253,31 @@ class LArFormer(nn.Module):
             loss_kwargs["weight_origin"] = 0.0
         self.loss_fn = LArFormerLoss(levels_cfg=self.levels_cfg, **loss_kwargs)
 
+        # Mask DINO-style denoising (Phase B). Train-time auxiliary path:
+        # appends `dn_groups × n_gt` denoising queries after the regular
+        # K_reg queries, supervised directly against their GT (no
+        # Hungarian). Requires mixed_query_selection so that the decoder's
+        # learnable `query_content` / `query_pos` are zero-initialized —
+        # otherwise they'd leak into the DN slots' content.
+        self.denoiser: Optional[MaskDenoiser] = None
+        if mask_denoising is not None:
+            if self.decoder is None:
+                raise ValueError(
+                    "mask_denoising requires num_queries > 0 (a Mask2Former "
+                    "decoder must be built)."
+                )
+            if self.query_selector is None:
+                raise ValueError(
+                    "mask_denoising requires mixed_query_selection to be "
+                    "enabled — the decoder's query_content / query_pos must "
+                    "be zero-init for the regular path so they don't bleed "
+                    "into the appended DN slots."
+                )
+            dn_cfg = dict(mask_denoising)
+            dn_cfg.setdefault("token_dim", token_dim)
+            dn_cfg.setdefault("num_classes", num_classes)
+            self.denoiser = MaskDenoiser(**dn_cfg)
+
         # Defense-in-depth: register a NaN/Inf-zeroing hook on every
         # trainable parameter's gradient. This guarantees no NaN/Inf
         # reaches the optimizer regardless of which internal layer
@@ -253,40 +296,91 @@ class LArFormer(nn.Module):
     def _nan_safe_grad_hook(g: torch.Tensor) -> torch.Tensor:
         return torch.nan_to_num(g, nan=0.0, posinf=0.0, neginf=0.0)
 
+    @staticmethod
+    def _slice_decoder_output(decoder_out: dict, start: int, end: int) -> dict:
+        """Slice each per-layer Q dimension of a decoder output to [start, end).
+
+        Used to split a combined [regular | DN] decoder output back into
+        independent regular / DN dicts that the loss + downstream
+        evaluator can consume separately. Cheap — all slices share
+        storage with the source tensors.
+        """
+        def _slice_layer(layer: dict) -> dict:
+            out = {
+                "class_logits": layer["class_logits"][start:end],
+                "origin":       layer["origin"][start:end],
+                "mask_logits":  OrderedDict(
+                    (name, m[start:end])
+                    for name, m in layer["mask_logits"].items()
+                ),
+            }
+            if "scale" in layer:
+                out["scale"] = layer["scale"]
+            return out
+        return {
+            "init":   _slice_layer(decoder_out["init"]),
+            "layers": [_slice_layer(l) for l in decoder_out["layers"]],
+            "final":  _slice_layer(decoder_out["final"]),
+        }
+
     def _register_nan_safe_grad_hooks(self) -> None:
         for p in self.parameters():
             if p.requires_grad:
                 p.register_hook(self._nan_safe_grad_hook)
 
-    def _zero_init_ptv3_decoder_blocks(self) -> None:
-        """Zero-init `attn.proj` and `mlp.fc2` of every Block inside the
-        PT-v3m2 decoder. These are the output projections of each
-        residual sub-update; zeroing them makes the Block an identity at
-        init, which keeps the from-scratch decoder's output equal to
-        the encoder's skip features (i.e. clean) on the first iter.
+    def _init_ptv3_decoder_blocks(self, scale: float = 0.0) -> None:
+        """Initialize weights of every Block inside the PT-v3m2 decoder.
 
-        Only applies when `unfreeze_decoder=True` (i.e. the decoder is
-        from-scratch trainable). Safe to call regardless of whether the
-        backbone has a decoder; quietly no-ops if the path doesn't exist.
+        Two regimes, controlled by `scale`:
+
+          - `scale == 0` (default): zero-init `attn.qkv.weight`,
+            `attn.proj.weight`, `mlp.fc2.weight`. Each residual sub-
+            update is identity at init → the Block passes features
+            through unchanged → the from-scratch decoder's output
+            equals the encoder's skip features on the first iter.
+            Maximally stable; symmetry-breaking is slow because
+            gradient into the inner Q/K/V weights only flows through
+            the zeroed out_projs.
+
+          - `scale > 0`: truncated-normal with std=scale on those same
+            three weight matrices. The block is no longer identity at
+            init, but gradients flow into the inner weights immediately
+            so the block starts learning from iteration 1. Recommended
+            value: ~0.01 (≈ 5–6× smaller than PyTorch's default Linear
+            init for D=256, small enough to keep activations bounded
+            but large enough to break symmetry).
+
+        Unconditional in both regimes:
+          - `cpe.Linear` (CPE output projection after SubMConv3d):
+            always zero. This is the actual NaN source — the random-
+            init sparse-conv → Linear chain produces Inf entries on
+            edge-case point positions, and zeroing the Linear after
+            the sparse conv neutralizes it. NEVER use scale > 0 here.
+          - Biases on `cpe.Linear`, `attn.proj`, `mlp.fc2`: zero.
+            `attn.qkv.bias` is kept at PyTorch's default Linear init
+            (small uniform) so Q != K != V at scale=0 too — avoids
+            the degenerate flash_attn backward NaN.
+          - `attn.flash_backend = "xformers"`: switched on regardless
+            of scale. flash_attn's bfloat16 backward NaN was the issue
+            that originally forced this; xformers is comparably fast
+            at the decoder's token counts (~5K per stage) and removes
+            a risk surface.
+
+        Only called when `unfreeze_decoder=True`. No-ops on backbones
+        without a decoder attribute.
         """
         ptv3 = self._find_ptv3_inner()
         dec = getattr(ptv3, "dec", None)
         if dec is None:
             return
         import torch.nn as nn
-        n_zeroed = 0
+        scale = float(scale)
+        n_inited = 0
         for stage_name, stage_seq in dec.named_children():
-            # Each stage_seq is a PointSequential: up (GridUnpooling) +
-            # block0, block1, ... (Blocks). We zero only the Blocks.
             for child_name, mod in stage_seq.named_children():
                 if not child_name.startswith("block"):
                     continue
-                # Block.cpe = PointSequential(SubMConv3d, Linear, LayerNorm).
-                # Zero the Linear → cpe out = LN(Linear(0)) = 0; the CPE
-                # residual `shortcut + cpe_out` becomes identity. This
-                # neutralizes the random-init sparse conv + Linear chain
-                # that empirically produces NaN entries from edge cases
-                # in some point positions.
+                # cpe.Linear: ALWAYS zero (NaN source — see docstring).
                 cpe_seq = getattr(mod, "cpe", None)
                 if cpe_seq is not None:
                     for m in cpe_seq.modules():
@@ -294,66 +388,46 @@ class LArFormer(nn.Module):
                             nn.init.zeros_(m.weight)
                             if m.bias is not None:
                                 nn.init.zeros_(m.bias)
-                            n_zeroed += 1
+                            n_inited += 1
                             break  # only the first Linear (CPE output proj)
-                # Block.attn is SerializedAttention with self.proj (output
-                # Linear) + self.qkv (Linear that produces Q/K/V).
-                # - Disable flash attention on the decoder side. The
-                #   flash_attn kernel casts to bfloat16 internally and
-                #   its backward kernel produces NaN with the degenerate
-                #   Q=K=V (caused by our zero-init of qkv) — vanilla
-                #   attention is numerically stable for this case. The
-                #   decoder's token counts per stage (~5K max) are small
-                #   enough that vanilla attention is affordable.
-                # - Zero `qkv.weight`: makes qkv_out = qkv.bias (constant
-                #   across tokens) → Q=K=V=constant → uniform attention
-                #   → output is a constant.
-                # - Zero `proj.weight` + bias: makes the attention output
-                #   exactly 0 (because `proj(constant) = 0`), so the
-                #   block's attention residual is identity at init.
+                # attn.qkv.weight / attn.proj.weight: zero (scale=0) or
+                # trunc-normal(std=scale). Biases follow the rule in
+                # the docstring.
                 attn = getattr(mod, "attn", None)
                 if attn is not None:
-                    # Switch the decoder blocks to xformers backend.
-                    # PT-v3m2's default flash_attn backend casts to
-                    # bfloat16 internally; its backward kernel produces
-                    # NaN with degenerate Q=K=V (which our zero-init
-                    # qkv creates). xformers uses fp16 with the standard
-                    # softmax derivatives and handles this case cleanly.
-                    # The vanilla (enable_flash=False) path is broken
-                    # in PT-v3m2 — references undefined `patch_size_max`
-                    # AND has a reshape mismatch for non-padded inputs.
                     if hasattr(attn, "flash_backend"):
                         attn.flash_backend = "xformers"
                     qkv = getattr(attn, "qkv", None)
                     if isinstance(qkv, nn.Linear):
-                        nn.init.zeros_(qkv.weight)
-                        # Keep qkv.bias at default init (small) so V isn't
-                        # exactly zero; this gives a tiny but nonzero V
-                        # value to attend to, so the backward gradient
-                        # back into qkv.weight is nonzero and the
-                        # attention can start learning.
-                        n_zeroed += 1
+                        if scale == 0.0:
+                            nn.init.zeros_(qkv.weight)
+                        else:
+                            nn.init.trunc_normal_(qkv.weight, std=scale)
+                        n_inited += 1
                     proj = getattr(attn, "proj", None)
                     if isinstance(proj, nn.Linear):
-                        nn.init.zeros_(proj.weight)
+                        if scale == 0.0:
+                            nn.init.zeros_(proj.weight)
+                        else:
+                            nn.init.trunc_normal_(proj.weight, std=scale)
                         if proj.bias is not None:
                             nn.init.zeros_(proj.bias)
-                        n_zeroed += 1
-                # Block.mlp is PointSequential wrapping an MLP whose
-                # final Linear is .fc2.
+                        n_inited += 1
+                # mlp.fc2.weight: same regime as the attn weights.
                 mlp_seq = getattr(mod, "mlp", None)
                 if mlp_seq is not None:
                     for m in mlp_seq.modules():
                         fc2 = getattr(m, "fc2", None)
                         if isinstance(fc2, nn.Linear):
-                            nn.init.zeros_(fc2.weight)
+                            if scale == 0.0:
+                                nn.init.zeros_(fc2.weight)
+                            else:
+                                nn.init.trunc_normal_(fc2.weight, std=scale)
                             if fc2.bias is not None:
                                 nn.init.zeros_(fc2.bias)
-                            n_zeroed += 1
+                            n_inited += 1
                             break
-        # (No logger here — LArFormer.__init__ runs before logging is up.
-        # Smoke test below verifies n_zeroed > 0.)
-        self._n_ptv3_dec_blocks_zeroed = n_zeroed
+        self._n_ptv3_dec_blocks_inited = n_inited
 
     def _register_ptv3_decoder_block_sanitizers(self) -> None:
         """Forward-hook each PT-v3m2 decoder Block to sanitize point.feat
@@ -739,20 +813,64 @@ class LArFormer(nn.Module):
                         nan=0.0, posinf=50.0, neginf=-50.0,
                     )
 
+            # Denoising queries (Mask DINO Phase B): train-only path that
+            # appends `dn_groups × n_gt` queries after the regular K_reg.
+            # Eval / inference and the cls-only (decoder=None) path skip
+            # this entirely. dn_init.n_queries == 0 (empty event) is
+            # handled inside the decoder + loss as a no-op.
+            dn_init = None
+            dn_self_attn_mask = None
+            if (self.decoder is not None and self.training
+                    and self.denoiser is not None):
+                gt_for_dn = data_dict["gt_instances_per_event"][ev["ei"]]
+                dn_init = self.denoiser(
+                    gt_instances=gt_for_dn,
+                    device=sp_feat.device,
+                    dtype=sp_feat.dtype,
+                )
+                if dn_init.n_queries > 0:
+                    dn_self_attn_mask = MaskDenoiser.build_self_attn_mask(
+                        n_regular=self.num_queries,
+                        group_id=dn_init.group_id,
+                    )
+
             if self.decoder is not None:
                 if self.query_selector is not None:
                     init_q, init_anchor = self.query_selector(
                         levels, per_level_cls,
                     )
+                    if dn_init is not None and dn_init.n_queries > 0:
+                        init_q = torch.cat([init_q, dn_init.init_q], dim=0)
+                        init_anchor = torch.cat(
+                            [init_anchor, dn_init.init_anchor], dim=0,
+                        )
                     decoder_out = self.decoder(
                         levels,
                         init_query_content=init_q,
                         init_anchor_coords=init_anchor,
+                        dn_self_attn_mask=dn_self_attn_mask,
                     )
                 else:
                     decoder_out = self.decoder(levels)
             else:
                 decoder_out = None
+
+            # Split decoder output into [regular | DN]. The regular slice
+            # is what feeds the user-facing `pred` dict and the Hungarian
+            # loss path; the DN slice goes to `compute_dn_loss`. With no
+            # DN active (eval or denoiser=None), regular_dec is just
+            # decoder_out and dn_dec is None.
+            regular_dec = decoder_out
+            dn_dec = None
+            if (decoder_out is not None and dn_init is not None
+                    and dn_init.n_queries > 0):
+                regular_dec = self._slice_decoder_output(
+                    decoder_out, 0, self.num_queries,
+                )
+                dn_dec = self._slice_decoder_output(
+                    decoder_out, self.num_queries,
+                    self.num_queries + dn_init.n_queries,
+                )
 
             pred: dict = {
                 "per_level_cls":   per_level_cls,
@@ -764,22 +882,47 @@ class LArFormer(nn.Module):
                     for name, lvl in levels.items()
                 },
             }
-            if decoder_out is not None:
-                pred["class_logits"] = decoder_out["final"]["class_logits"]
-                pred["origin"]       = decoder_out["final"]["origin"]
-                pred["mask_logits"]  = decoder_out["final"]["mask_logits"]
+            if regular_dec is not None:
+                pred["class_logits"] = regular_dec["final"]["class_logits"]
+                pred["origin"]       = regular_dec["final"]["origin"]
+                pred["mask_logits"]  = regular_dec["final"]["mask_logits"]
             per_event_pred.append(pred)
 
             if self.training:
                 gt_instances = data_dict["gt_instances_per_event"][ev["ei"]]
                 per_sp_labels = self._per_sp_labels_for_event(data_dict, ev)
+                # When DN is active we need the loss to also return GT
+                # tensors (gt_classes / gt_origin / per_level_gt_mask) so
+                # compute_dn_loss can reuse them without recomputing.
+                want_dn = dn_dec is not None
                 loss_dict = self.loss_fn(
-                    decoder_output=decoder_out,
+                    decoder_output=regular_dec,
                     levels=levels,
                     gt_instances=gt_instances,
                     per_sp_labels=per_sp_labels,
                     per_level_cls_logits=per_level_cls,
+                    return_matching=want_dn,
                 )
+                if want_dn:
+                    dn_dict = self.loss_fn.compute_dn_loss(
+                        decoder_output_dn=dn_dec,
+                        per_level_gt_mask=loss_dict["per_level_gt_mask"],
+                        gt_classes=loss_dict["gt_classes"],
+                        gt_origin=loss_dict["gt_origin"],
+                        gt_target_idx=dn_init.gt_target_idx,
+                    )
+                    loss_dict["total"] = loss_dict["total"] + dn_dict["total"]
+                    for k, v in dn_dict.items():
+                        if k == "total":
+                            continue
+                        loss_dict[f"dn_{k}"] = v
+                    # Strip the non-scalar tensors / numpy arrays that
+                    # return_matching=True added — the training-mode
+                    # aggregator only handles 0-d tensors.
+                    for k in ("q_idx", "k_idx", "per_level_gt_mask",
+                              "gt_classes", "gt_origin",
+                              "gt_truth_indices"):
+                        loss_dict.pop(k, None)
                 per_event_loss.append(loss_dict)
             elif "gt_instances_per_event" in data_dict:
                 # Eval-with-GT path: compute matching + loss per event so
