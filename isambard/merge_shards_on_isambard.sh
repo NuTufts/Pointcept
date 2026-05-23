@@ -69,7 +69,7 @@
 #SBATCH --nodes=1
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=16
-#SBATCH --mem=64G
+#SBATCH --mem=256G
 #SBATCH --signal=B:USR1@120
 # TODO Isambard: fill in --partition / --account / --qos as your project requires.
 
@@ -77,9 +77,9 @@ set -euo pipefail
 
 # === Config (override via env) ===
 STAGING_DIR="${STAGING_DIR:-/projects/u6jo/staging}"
-SHARDLIST="${SHARDLIST:-$STAGING_DIR/isambard_shardlist_test.txt}"
+SHARDLIST="${SHARDLIST:-$STAGING_DIR/isambard_shardlist.txt}"
 OUTPUT_DIR="${OUTPUT_DIR:-/projects/u6jo/datasets}"
-OUTPUT_NAME="${OUTPUT_NAME:-combined_pretrain-sonata-v7-extbnb-larmatch-test}"
+OUTPUT_NAME="${OUTPUT_NAME:-combined_pretrain-sonata-v7-extbnb-larmatch}"
 
 # Number of shards merged per intermediate. Keep below the per-user FUSE
 # mount_max (default 1000 on Isambard, but other workloads count against the
@@ -91,7 +91,7 @@ BATCH_SIZE="${BATCH_SIZE:-64}"
 # the final output and is cleaned after a successful phase 2 unless
 # KEEP_INTERMEDIATES=1.
 INTERMEDIATES_DIR="${INTERMEDIATES_DIR:-$OUTPUT_DIR/${OUTPUT_NAME}.intermediates}"
-KEEP_INTERMEDIATES="${KEEP_INTERMEDIATES:-0}"
+KEEP_INTERMEDIATES="${KEEP_INTERMEDIATES:-1}"
 
 MKSQUASHFS="${MKSQUASHFS:-mksquashfs.static}"
 # unsquashfs is only used for the post-merge file-count sanity check. If it
@@ -111,7 +111,7 @@ MOUNT_PARALLEL="${MOUNT_PARALLEL:-8}"
 # (vs. ~1 h for the merge itself at the throughput we measured). Set
 # SKIP_SHA256=1 to skip it; you can always compute it separately later
 # with `sha256sum combined_*.sqsh > combined_*.sha256`.
-SKIP_SHA256="${SKIP_SHA256:-0}"
+SKIP_SHA256="${SKIP_SHA256:-1}"
 
 # Mountpoints under /tmp. Do NOT default to $SLURM_TMPDIR — on Isambard
 # (and likely other sites that configure SLURM TmpFS / PrivateTmp), that
