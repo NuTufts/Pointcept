@@ -15,8 +15,8 @@
 #   3. Aggressive cleanup discipline: pre-cleanup any stale FUSE mounts
 #      left under our chosen MOUNT_ROOT by a prior crashed job, then trap
 #      EXIT/TERM/INT/USR1 so we unmount on any in-script exit. SIGKILL
-#      from SLURM cannot be trapped, but MOUNT_ROOT lives under
-#      $SLURM_TMPDIR so the per-job tmpfs gets reclaimed at job end.
+#      from SLURM cannot be trapped; leftover mounts under /tmp survive
+#      until the next job's pre-cleanup or a node reboot.
 #
 # Tooling: defaults are Isambard's documented mksquashfs.static + squashfuse.
 # If those aren't on PATH for some reason, build the sidecar container
@@ -75,8 +75,15 @@ MOUNT_PARALLEL="${MOUNT_PARALLEL:-8}"
 # with `sha256sum combined_*.sqsh > combined_*.sha256`.
 SKIP_SHA256="${SKIP_SHA256:-0}"
 
-# Mountpoints under node-local scratch so they vanish with the job.
-MOUNT_ROOT="${MOUNT_ROOT:-${SLURM_TMPDIR:-${TMPDIR:-/tmp}}/merge_mounts.${SLURM_JOB_ID:-$$}}"
+# Mountpoints under /tmp. Do NOT default to $SLURM_TMPDIR — on Isambard
+# (and likely other sites that configure SLURM TmpFS / PrivateTmp), that
+# path has private mount propagation that makes user-space FUSE mounts
+# invisible in /proc/mounts to the script's bash. Confirmed empirically:
+# the same parallel mount loop succeeds under /tmp and produces 0 visible
+# mounts under $SLURM_TMPDIR. /tmp on Isambard compute nodes is node-local
+# and per-user effectively, and our trap EXIT plus pre-cleanup keep stale
+# mounts from accumulating across jobs.
+MOUNT_ROOT="${MOUNT_ROOT:-/tmp/merge_mounts.${SLURM_JOB_ID:-$$}}"
 
 OUTPUT_SQSH="$OUTPUT_DIR/${OUTPUT_NAME}.sqsh"
 OUTPUT_SHA="$OUTPUT_DIR/${OUTPUT_NAME}.sha256"
