@@ -28,6 +28,8 @@ inode pressure of 300k–500k loose files and skips the 5–10 TB extract step.
 | `verify_shards_on_isambard.sh` | verify | Run on Isambard: `sha256sum -c` every shard listed in `<staging>/*.sha256sums.txt`. No extraction. |
 | `merge_shards_on_isambard.sh` | merge (optional) | Run on Isambard as a SLURM job: `squashfuse`-mount every shard on the bare host, then `mksquashfs.static` them into a single combined `.sqsh` so training only needs one bind. Uses Isambard's documented `mksquashfs.static` + `squashfuse` by default. |
 | `squashfs_tools.def` | merge (optional, fallback) | Apptainer def for a ~10 MB alpine + `squashfs-tools` sidecar container. Only needed if Isambard's host-side `mksquashfs.static` / `squashfuse` are not on `$PATH` on compute nodes; see the merge section's sidecar fallback subsection. |
+| `test_dataset_read.py` | post-merge test | Python entrypoint that builds the real `LArTPCDataset` / `LArFormerDataset` from a pointcept config and reads N batches through `torch.utils.data.DataLoader`. Reports per-batch shapes / dtypes / stats and aggregate samples/sec + MiB/sec. |
+| `test_dataset_read.sh` | post-merge test | Apptainer-exec wrapper for `test_dataset_read.py`. Binds the combined `.sqsh` at `/data` inside `pointcept_cuml.sif`. Runs as both `bash` (login / interactive, no allocation) and `sbatch` (queued worker). |
 | `clifton` | transfer | Vendor binary used to refresh the Isambard SSH certificate (~12h validity). |
 
 > Deprecated (kept for reference, no longer documented here): `tar_and_transfer.py`,
@@ -298,32 +300,57 @@ below for what to do then.
 
 ### What the script does
 
+The merge is split into two phases to stay under Isambard's per-user FUSE
+mount cap (`mount_max=1000` by default in `/etc/fuse3.conf`, but other
+node workloads count against the same total — so we conservatively keep
+concurrent mounts below 100).
+
 1. Reads `$SHARDLIST` (a text file of shard paths on Isambard, e.g.
    [isambard_shardlist.txt](isambard_shardlist.txt)).
-2. Preflights: tools on `$PATH`, every shard exists, output path is free,
-   `df` shows ≥1.05× the total shard byte count available in `$OUTPUT_DIR`.
+2. Preflights: tools on `$PATH`, every shard exists, `df` shows ≥2.2× the
+   total shard byte count available in `$OUTPUT_DIR` (peak disk during
+   phase 2 is intermediates + emerging final).
 3. Sets up cleanup discipline (see [Cleanup discipline](#cleanup-discipline)
    below) and pre-cleans any stale FUSE mounts left under `$MOUNT_ROOT`
    by a prior crashed job.
-4. `squashfuse`-mounts each shard at `$MOUNT_ROOT/<rel>` with
-   `-o subdir=/<rel>`. The `subdir` is load-bearing: each shard's internal
-   layout mirrors its full relative path (because `build_squashfs.py`
-   builds a hardlink staging tree mirroring the source layout before
-   `mksquashfs`), so without `subdir` the unified view would be
-   `$MOUNT_ROOT/<rel>/<rel>/file.h5` — doubled. Pointing `subdir` at the
-   leaf strips the prefix so contents land at `$MOUNT_ROOT/<rel>/file.h5`.
-   Mounts run in parallel (`xargs -P 8`) — 696 mounts complete in ~10–30 s.
-5. Runs `mksquashfs.static $MOUNT_ROOT $OUTPUT_SQSH -comp $COMPRESSOR
-   -noI -noD -b 128K`. The source shards were built with `-comp zstd
+4. **Phase 1.** Processes shards in batches of `$BATCH_SIZE` (default 64):
+   for each batch, `squashfuse`-mounts the batch's shards under
+   `$MOUNT_ROOT/phase1_batch_<N>/<rel>` with `-o subdir=/<rel>` (the
+   `subdir` is load-bearing: each shard's internal layout mirrors its full
+   relative path, so without `subdir` the unified view would be
+   `$MOUNT_ROOT/<rel>/<rel>/file.h5` — doubled). Then runs
+   `mksquashfs.static` on that mount tree, writing
+   `$INTERMEDIATES_DIR/intermediate_<NNNN>.sqsh`, and unmounts the batch.
+   Mounts within a batch run in parallel via `xargs -P 8`. Repeat until
+   all batches done — typically ~12 intermediates of ~620 GB each for 708
+   shards / 7.4 TB.
+5. **Phase 2.** If more than one intermediate was produced,
+   `squashfuse`-mounts every intermediate under
+   `$MOUNT_ROOT/phase2/inter_<NNNN>` and runs `mksquashfs.static` with all
+   mount points as multiple sources (`mksquashfs A B C ... dest.sqsh`).
+   `mksquashfs` merges same-named directories across sources; the
+   intermediates' leaf-dir paths are disjoint by construction, so no
+   filename conflicts arise. If only one intermediate exists, it's
+   `mv`'d into place — no phase 2 needed.
+6. `mksquashfs` flags used in both phases: `-comp $COMPRESSOR -noI -noD
+   -b 128K`. The source shards were built with `-comp zstd
    -Xcompression-level 1`, but Isambard's `mksquashfs.static` only ships
-   `gzip` and `lz4` — so the combined image uses `gzip` by default. With
-   `-noI -noD` only metadata tables are compressed (data blocks stay raw,
-   matching the source shards), so the size difference between the two
-   compressors is negligible.
-6. Writes a `.sha256` and counts `.h5` files in the combined image as a
-   sanity check against the source shard count.
-7. On exit (normal, error, or signal) releases every FUSE mount under
+   `gzip` and `lz4` — so the combined image uses `gzip` by default.
+   With `-noI -noD` only metadata tables are compressed (data blocks stay
+   raw, matching the source shards), so the size difference between the
+   two compressors is negligible.
+7. Optionally writes a `.sha256` (skip with `SKIP_SHA256=1`) and runs the
+   `.h5` file-count sanity check (skipped if `unsquashfs` isn't on PATH).
+8. Deletes `$INTERMEDIATES_DIR` unless `KEEP_INTERMEDIATES=1`. On exit
+   (normal, error, or signal) releases every FUSE mount under
    `$MOUNT_ROOT` and removes the directory.
+
+**Resume support.** If `intermediate_<NNNN>.sqsh` already exists at the
+start of batch N, that batch is skipped. If the final `$OUTPUT_SQSH`
+already exists, phase 2 is skipped entirely. So a job that times out
+partway through phase 1 picks up where it left off on resubmit. To force
+a rebuild of a batch, delete its intermediate; to redo phase 2, delete
+the final and resubmit.
 
 ### Why this is option C, not just "do A/B with one bind"
 
@@ -353,9 +380,10 @@ every training job.
 ### Cleanup discipline
 
 The script mounts under `$MOUNT_ROOT` (defaults to
-`$SLURM_TMPDIR/merge_mounts.$SLURM_JOB_ID`, falling back to
-`$TMPDIR/...`) so all mountpoints live on node-local scratch that SLURM
-reclaims at job end.
+`/tmp/merge_mounts.$SLURM_JOB_ID`). `/tmp` is node-local on Isambard's
+compute nodes. SLURM does not reclaim it at job end, so the trap-based
+cleanup and the pre-cleanup at job start (described below) are what
+keep stale mounts from accumulating.
 
 Three release paths:
 
@@ -374,11 +402,26 @@ Three release paths:
   reuse the directory.
 
 SIGKILL cannot be trapped. If the job is killed by OOM-killer or
-`scancel --signal=KILL`, mountpoints remain in the kernel until SLURM's
-Epilog reclaims `$SLURM_TMPDIR` — node-local damage only, never
-propagated to `/projects/u6jo`. If `$MOUNT_ROOT` is overridden to a
-non-tmpfs location and the job dies via SIGKILL, you may need to ssh to
-the compute node and `fusermount -uz` manually.
+`scancel --signal=KILL`, mountpoints remain on the compute node under
+`/tmp/merge_mounts.<jobid>/` until either the next job using this
+script runs pre-cleanup, or the node reboots, or you ssh in and run
+`awk '$2 ~ "^/tmp/merge_mounts" && $3 ~ /fuse/ {print $2}' /proc/mounts | sort -r | xargs -r -n1 fusermount -uz`.
+The damage is node-local — `/projects/u6jo` is never affected.
+
+#### A note on `$SLURM_TMPDIR`
+
+You might expect `$SLURM_TMPDIR` to be the natural mount root since
+SLURM cleans it up automatically. **Do not use it on Isambard.** That
+path is set up by SLURM with mount-propagation semantics
+(`PrivateTmp` / a private bind mount) that make user-space FUSE mounts
+invisible in `/proc/mounts` to the script's own bash, even though
+`squashfuse` exits 0 and the daemon appears to start. Symptom: the
+script logs `Mounted 0 shards` and aborts with `expected N mounts, got 0`,
+with no errors in the `.err` file. We verified this empirically:
+the same parallel mount loop succeeds on `/tmp` and silently produces
+zero visible mounts on `$SLURM_TMPDIR`. The script's default avoids
+this pitfall; only set `MOUNT_ROOT=$SLURM_TMPDIR/...` if you've
+confirmed your site doesn't have this configuration.
 
 ### Resources and runtime
 
@@ -387,23 +430,32 @@ bookkeeping: read 7.4 TB once through FUSE, write 7.4 TB once. Reads and
 writes overlap, so wall-clock ≈ max(read, write).
 
 Observed on Isambard (5-shard / 27 GB smoke test): mksquashfs averaged
-**2.1 GB/s**, so the merge stage itself on the full 7.4 TB extrapolates to
-~**1 h**. The same smoke test showed `sha256sum` at **380 MB/s**
-(single-threaded), which extrapolates to **~5 h** on the full image —
-dominating the wall clock. Set `SKIP_SHA256=1` to skip if you don't need
-it (and compute it later if you do).
+**2.1 GB/s**. With the two-phase batched merge, total I/O roughly doubles
+(write all intermediates, then read them back during phase 2), so
+extrapolated runtime is ~2 h for the merge itself on 7.4 TB. The same
+smoke test showed `sha256sum` at **380 MB/s** (single-threaded), which
+extrapolates to **~5 h** on the full image — dominating the wall clock if
+enabled. Set `SKIP_SHA256=1` to skip and compute later if needed.
 
-| Stage | Smoke test (27 GB) | Full run (7.4 TB) projected |
+| Stage | Smoke test (27 GB / 5 shards) | Full run (7.4 TB / 708 shards) projected |
 |---|---|---|
-| `squashfuse` mount loop | 0 s | ~30 s |
-| `mksquashfs.static -comp gzip -noI -noD` | 13 s | ~1 h |
+| `squashfuse` mount loop (per batch) | <1 s | ~5 s × 12 batches |
+| `mksquashfs.static` phase 1 (build intermediates) | 13 s | ~1 h total |
+| `mksquashfs.static` phase 2 (merge ~12 intermediates) | 0 s (single-batch shortcut) | ~1 h |
 | `sha256sum` (single-threaded) | 71 s | ~5 h (skippable) |
-| **Total** | 84 s | **~1 h** (SKIP_SHA256=1) / **~6 h** (with sha256) |
+| **Total** | 84 s | **~2 h** (`SKIP_SHA256=1`) / **~7 h** (with sha256) |
+
+Peak disk during phase 2: roughly 2 × the shard total (intermediates +
+emerging final). After phase 2 + cleanup, only the final remains. With
+`KEEP_INTERMEDIATES=1`, steady-state is ~2 × the shard total.
 
 The script defaults to `--time=08:00:00`, `--mem=64G`,
-`--cpus-per-task=16` — the time is deliberately overcommitted because
-mksquashfs cannot resume. With `SKIP_SHA256=1` you could safely drop to
-`--time=02:00:00` if your queue prefers shorter jobs.
+`--cpus-per-task=16` — time is deliberately overcommitted. Phase 1 is
+fully resumable (one intermediate per batch), so a job that times out
+during phase 1 can be re-submitted and will pick up at the next missing
+batch. Phase 2 is one big `mksquashfs` call with no resume; if it times
+out, delete the partial `$OUTPUT_SQSH` and re-run (intermediates are
+preserved).
 
 **Do not run on the Isambard login node.** Sustained 7.4 TB read+write on
 shared storage will get flagged by admins, the ~10–30 GB RAM peak during
@@ -476,9 +528,12 @@ multi-hour run is at risk of being reaped by idle / session timeouts.
 | `UNSQUASHFS` | `unsquashfs.static` | Optional. Only used for the final `.h5` file-count sanity check; if not on `$PATH` the check is skipped (not an error). |
 | `SQUASHFUSE` | `squashfuse` | Mount tool. `squashfuse_ll` works too if available. |
 | `COMPRESSOR` | `gzip` | Compressor passed as `mksquashfs -comp`. Isambard's `mksquashfs.static` only supports `gzip` and `lz4` (no `zstd`). With `-noI -noD` only metadata tables are compressed, so the choice barely affects output size. |
+| `BATCH_SIZE` | `64` | Shards per phase-1 intermediate. Keep below the per-user `mount_max` (default 1000 on Isambard, but shared with apptainer / other workloads — 64 is a safe ceiling). Larger batches = fewer intermediates = faster phase 2, but more concurrent mounts during phase 1. |
+| `INTERMEDIATES_DIR` | `$OUTPUT_DIR/${OUTPUT_NAME}.intermediates` | Where per-batch `intermediate_NNNN.sqsh` files are written during phase 1. Override if you want them on a different volume. |
+| `KEEP_INTERMEDIATES` | `0` | `1` keeps `$INTERMEDIATES_DIR` after a successful phase 2. Useful for debugging or if you want to redo phase 2 with different merge flags without rebuilding from shards. |
 | `PROCESSORS` | `$SLURM_CPUS_PER_TASK` (16) | `mksquashfs -processors`. |
 | `MOUNT_PARALLEL` | 8 | `xargs -P` for the mount loop. |
-| `MOUNT_ROOT` | `$SLURM_TMPDIR/merge_mounts.$SLURM_JOB_ID` | Where shards get mounted. Default lives on node-local scratch so SLURM cleans it. |
+| `MOUNT_ROOT` | `/tmp/merge_mounts.$SLURM_JOB_ID` | Where shards get mounted. Do NOT point this at `$SLURM_TMPDIR` on Isambard — see "A note on `$SLURM_TMPDIR`" below. |
 | `SKIP_SHA256` | `0` | Set to `1` to skip the post-merge `sha256sum` step. `sha256sum` is single-threaded and dominates wall-clock at ~5 h on a 7.4 TB image (vs. ~1 h for the merge itself, measured at ~2.1 GB/s on Isambard). Compute later out-of-band if needed. |
 
 ### Sidecar container fallback
@@ -529,9 +584,144 @@ the binaries, not lifecycle management.
 | `fusermount: failed to unmount: Device or resource busy` during cleanup | A process inside the mount tree still has open fds. | The trap uses `-uz` (lazy unmount) which sidesteps EBUSY by detaching the mountpoint and letting the kernel finish cleanup when fds close. If you see this, it means the lazy path also failed — investigate manually with `lsof`. |
 | Job hits wall clock before completion | Underestimated throughput, or shared-FS contention. | Output is unusable; mksquashfs has no resume. Delete the partial `.sqsh`, raise `--time=`, resubmit. The USR1 trap should have caught the pre-timeout and unmounted; verify in the log. |
 | `df`-based preflight refuses to start | Less than 1.05× total shard size free in `$OUTPUT_DIR`. | Free space, or set `$OUTPUT_DIR` to a different filesystem with capacity. Don't bypass — running out of space mid-merge wastes hours. |
-| Stale mounts left after SIGKILL | The one signal that cannot be trapped. | `$MOUNT_ROOT` lives under `$SLURM_TMPDIR` by default → SLURM Epilog reclaims it on the next idle. If you overrode `MOUNT_ROOT`, ssh to the compute node and `awk '$2 ~ "^<root>" && $3 ~ /fuse/ {print $2}' /proc/mounts \| sort -r \| xargs -n1 fusermount -uz`. |
+| Stale mounts left after SIGKILL | The one signal that cannot be trapped. | The next job's pre-cleanup (same script, same `MOUNT_ROOT`) will release them. To clean now: ssh to the compute node and `awk '$2 ~ "^<root>" && $3 ~ /fuse/ {print $2}' /proc/mounts \| sort -r \| xargs -r -n1 fusermount -uz`. |
+| `Mounted 0 shards` with no errors in `.err` | `MOUNT_ROOT` was set to `$SLURM_TMPDIR/...` on a site (Isambard) where that path has `PrivateTmp`-style propagation that hides FUSE mounts. | Unset `MOUNT_ROOT`, or set it explicitly to a `/tmp/...` path. See "A note on `$SLURM_TMPDIR`" above. |
+| `fusermount3: too many FUSE filesystems mounted; mount_max=N can be set in /etc/fuse3.conf` | The per-user FUSE mount cap (default 1000) has been hit. Other workloads (apptainer, other users) count against the same cap on shared compute nodes. | Lower `BATCH_SIZE` (e.g. 32) so phase 1 holds fewer concurrent mounts. Verify the cap with `cat /etc/fuse3.conf`. If repeatedly bumping up against it, ask Isambard support to raise `mount_max` system-wide. |
+| Phase 1 timed out partway | Underestimated throughput, or shared-FS contention. | Just resubmit — intermediates already written are kept and skipped on resume. The job continues from the next missing batch. |
+| Phase 2 timed out / produced a broken `$OUTPUT_SQSH` | Phase 2 is one big `mksquashfs` call with no resume. | Delete `$OUTPUT_SQSH` and resubmit. Phase 1 is skipped via the intermediate-exists checks; phase 2 starts fresh. |
 
-## Tunables
+## Testing dataset reads from the combined image
+
+After the smoke-test (or full) merge produces a `combined_*.sqsh`,
+exercise it end-to-end by reading batches through the same dataset
+classes training uses — `LArTPCDataset` / `LArFormerDataset` from
+[pointcept/datasets/lartpc.py](../pointcept/datasets/lartpc.py) and
+[pointcept/datasets/larformer.py](../pointcept/datasets/larformer.py).
+This validates three things at once: the apptainer bind / mount of the
+`.sqsh` works, the HDF5 read path survives FUSE, and `entry_0`
+attributes (`run`, `subrun`, `event`) propagated through the merge.
+
+The driver pair is [test_dataset_read.sh](test_dataset_read.sh) (wrapper
+that handles apptainer + binds + SLURM) and
+[test_dataset_read.py](test_dataset_read.py) (the in-container Python
+that builds the dataset and pulls batches).
+
+### Workflow
+
+**1. Build an Isambard-side data list.** The training-config list files
+(absolute Tufts paths) won't resolve inside the container. Build one
+that points at paths under the in-container mount point (default
+`/data`). Easiest is to mount the combined `.sqsh` with `squashfuse`,
+`find` for `.h5` files, and rewrite the prefix:
+
+```bash
+mkdir -p /tmp/check
+squashfuse /projects/u6jo/datasets/combined_pretrain-sonata-v7-extbnb-larmatch-test.sqsh /tmp/check
+find /tmp/check -name '*.h5' | head -20 \
+    | sed 's|^/tmp/check|/data|' \
+    > /projects/u6jo/datasets/test_list_isambard.txt
+fusermount -u /tmp/check
+wc -l /projects/u6jo/datasets/test_list_isambard.txt
+```
+
+Result: a list whose every line is e.g.
+`/data/ub_on_tufts/hdf5/v3_ext_larmatch/extbnb_run3_G1/000/000/foo.h5`.
+For the full combined image, drop `head -20`.
+
+**2. Smoke-test on the login node** (no allocation, no GPU):
+
+```bash
+cd ~/ubpointcept/pointcept/isambard    # or wherever you cloned pointcept on Isambard
+DATA_LIST_FILE=/projects/u6jo/datasets/test_list_isambard.txt \
+    bash test_dataset_read.sh
+```
+
+You should see: configuration echoed, `entry_0` attributes for the first
+HDF5 file, dataset built, 4 batches read with per-batch tensor shapes,
+and an aggregate summary (samples/sec, MiB/sec, per-batch median / p95
+latency).
+
+Failure modes here flag specific problems:
+
+| Symptom | Likely cause |
+|---|---|
+| `ERROR: first listed file does not exist (mount problem?)` | The bind isn't working or the data list's paths don't match the in-container layout. Re-check `$DATA_ROOT` and the `subdir=` trick used at merge time. |
+| `WARNING: 'entry_0' not in <path>` | H5 file predates the Step-2/3 attribute additions (or merge corrupted things). |
+| `ImportError: No module named pointcept` | `POINTCEPT_DIR` is wrong; the bind to `/pointcept` didn't land on a tree containing `pointcept/pointcept/...`. |
+| Hangs in `build_dataset` | The dataset's `__init__` is recursively scanning the mount because `data_list_file` got ignored. Confirm the override worked by checking the printed `transforms : ...` line — if the dataset built, the list was found. |
+
+**3. Multi-worker scaling sweep.** Once basic reads work, measure where
+the FUSE single-thread bottleneck bites:
+
+```bash
+mkdir -p logs
+for W in 0 1 2 4 8; do
+    DATA_LIST_FILE=/projects/u6jo/datasets/test_list_isambard.txt \
+    NUM_WORKERS=$W NUM_BATCHES=32 \
+        bash test_dataset_read.sh 2>&1 | tee logs/scan-w${W}.log
+done
+grep -H 'samples / sec' logs/scan-w*.log
+```
+
+Expected shape: 0→1 is "free" (workers fork off and stream
+concurrently with the main process), 1→2 near-linear, 2→4 diminishing
+returns, 4→8 flat or worse. The plateau is the per-mount FUSE single-
+thread saturation point. If you need to scale past it, the workaround
+is mounting the same `.sqsh` at multiple mountpoints and splitting
+workers across them (or building the per-shard `--mount` apptainer
+arrangement from earlier as option B) — but only worth the complexity
+if the plateau actually constrains your training step.
+
+**4. Realistic check with transforms.** Once basic reads are healthy,
+flip on the full config transform pipeline to exercise every code path
+training will hit:
+
+```bash
+DATA_LIST_FILE=/projects/u6jo/datasets/test_list_isambard.txt \
+APPLY_TRANSFORMS=1 NUM_BATCHES=8 \
+    bash test_dataset_read.sh
+```
+
+**5. Queued worker run.** Same script works as `sbatch` — the SLURM
+directives are honored:
+
+```bash
+DATA_LIST_FILE=/projects/u6jo/datasets/test_list_isambard.txt \
+    sbatch test_dataset_read.sh
+```
+
+Defaults inside the script: `--time=00:30:00`, `--cpus-per-task=8`,
+`--mem=16G`, `--gres=gpu:1`. Drop the `--gres` if your project's queue
+allows pure-CPU jobs and you want a cheaper / faster-queued test.
+
+### Configuration (env vars)
+
+| Var | Default | Meaning |
+|---|---|---|
+| `DATA_LIST_FILE` | *(required)* | Isambard-side list with paths that resolve under `$DATA_ROOT` inside the container. |
+| `COMBINED_SQSH` | `/projects/u6jo/datasets/combined_pretrain-sonata-v7-extbnb-larmatch-test.sqsh` | The merged image to mount. Default is the smoke-test image; override for the full one. |
+| `CONTAINER` | `/projects/u6jo/containers/pointcept_cuml.sif` | The training container. The test scripts run inside this. |
+| `DATA_ROOT` | `/data` | In-container mount point for `$COMBINED_SQSH`. The list paths must start with this. |
+| `POINTCEPT_DIR` | `$HOME/ubpointcept/pointcept` | Host path to the cloned pointcept repo on Isambard. Bound at `/pointcept` inside the container. |
+| `CONFIG_FILE` | `$POINTCEPT_DIR/configs/lartpc/pretrain-sonata-v7-extbnb-larmatch.py` | Pointcept config; the wrapper translates this to its in-container path. Point at the larformer config to test that dataset instead. |
+| `SPLIT` | `train` | Which `cfg.data.<split>` block to read. |
+| `NUM_BATCHES` | `4` | How many batches to pull. |
+| `BATCH_SIZE` | `2` | Per-batch sample count. |
+| `NUM_WORKERS` | `0` | `DataLoader` worker count. `0` = in-process; use this when debugging an FS issue. |
+| `APPLY_TRANSFORMS` | `0` | Set `1` to apply the config's transform pipeline. Default off so transform failures don't get blamed on the mount. |
+| `GPU` | `auto` | `auto` = enable `--nv` only if `nvidia-smi` is visible (so login-node runs work). `0` = force CPU. `1` = force GPU. |
+
+### A note on FUSE concurrency
+
+`squashfuse` (plain) is single-threaded; `squashfuse_ll` is multi-
+threaded. Apptainer ships its own `squashfuse_ll` for `image-src` bind
+mounts, but a single mount still has one FUSE process per `.sqsh`.
+Multiple DataLoader workers reading the same mount all serialize
+through that process's user-space scheduler. Empirically this means
+the read throughput curve flattens between 2 and 8 workers depending
+on file size and access pattern. The scan in step 3 above tells you
+where it flattens for *your* dataset; once you know that, choose
+`num_worker` in the training config a bit below the plateau.
 
 `submit_build.sh` / `submit_transfer_shards.sh` flags (everything before
 the file list):
