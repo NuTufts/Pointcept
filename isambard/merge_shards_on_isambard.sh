@@ -82,7 +82,15 @@ OUTPUT_SQSH="$OUTPUT_DIR/${OUTPUT_NAME}.sqsh"
 OUTPUT_SHA="$OUTPUT_DIR/${OUTPUT_NAME}.sha256"
 
 mkdir -p "$(dirname "$OUTPUT_SQSH")"
-mkdir -p "$(dirname "${BASH_SOURCE[0]}")/logs"
+# Resolve script dir defensively: under sbatch on Isambard the script is
+# copied to /var/spool/slurmd/job<id>/ where the user can't write, so
+# ${BASH_SOURCE[0]} is unsafe. Prefer $SLURM_SUBMIT_DIR when set.
+if [[ -n "${SLURM_SUBMIT_DIR:-}" ]]; then
+    SCRIPT_DIR="$SLURM_SUBMIT_DIR"
+else
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+fi
+mkdir -p "$SCRIPT_DIR/logs" 2>/dev/null || true
 
 log() { printf '[%s] %s\n' "$(date '+%F %T')" "$*"; }
 
