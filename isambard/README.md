@@ -300,32 +300,57 @@ below for what to do then.
 
 ### What the script does
 
+The merge is split into two phases to stay under Isambard's per-user FUSE
+mount cap (`mount_max=1000` by default in `/etc/fuse3.conf`, but other
+node workloads count against the same total — so we conservatively keep
+concurrent mounts below 100).
+
 1. Reads `$SHARDLIST` (a text file of shard paths on Isambard, e.g.
    [isambard_shardlist.txt](isambard_shardlist.txt)).
-2. Preflights: tools on `$PATH`, every shard exists, output path is free,
-   `df` shows ≥1.05× the total shard byte count available in `$OUTPUT_DIR`.
+2. Preflights: tools on `$PATH`, every shard exists, `df` shows ≥2.2× the
+   total shard byte count available in `$OUTPUT_DIR` (peak disk during
+   phase 2 is intermediates + emerging final).
 3. Sets up cleanup discipline (see [Cleanup discipline](#cleanup-discipline)
    below) and pre-cleans any stale FUSE mounts left under `$MOUNT_ROOT`
    by a prior crashed job.
-4. `squashfuse`-mounts each shard at `$MOUNT_ROOT/<rel>` with
-   `-o subdir=/<rel>`. The `subdir` is load-bearing: each shard's internal
-   layout mirrors its full relative path (because `build_squashfs.py`
-   builds a hardlink staging tree mirroring the source layout before
-   `mksquashfs`), so without `subdir` the unified view would be
-   `$MOUNT_ROOT/<rel>/<rel>/file.h5` — doubled. Pointing `subdir` at the
-   leaf strips the prefix so contents land at `$MOUNT_ROOT/<rel>/file.h5`.
-   Mounts run in parallel (`xargs -P 8`) — 696 mounts complete in ~10–30 s.
-5. Runs `mksquashfs.static $MOUNT_ROOT $OUTPUT_SQSH -comp $COMPRESSOR
-   -noI -noD -b 128K`. The source shards were built with `-comp zstd
+4. **Phase 1.** Processes shards in batches of `$BATCH_SIZE` (default 64):
+   for each batch, `squashfuse`-mounts the batch's shards under
+   `$MOUNT_ROOT/phase1_batch_<N>/<rel>` with `-o subdir=/<rel>` (the
+   `subdir` is load-bearing: each shard's internal layout mirrors its full
+   relative path, so without `subdir` the unified view would be
+   `$MOUNT_ROOT/<rel>/<rel>/file.h5` — doubled). Then runs
+   `mksquashfs.static` on that mount tree, writing
+   `$INTERMEDIATES_DIR/intermediate_<NNNN>.sqsh`, and unmounts the batch.
+   Mounts within a batch run in parallel via `xargs -P 8`. Repeat until
+   all batches done — typically ~12 intermediates of ~620 GB each for 708
+   shards / 7.4 TB.
+5. **Phase 2.** If more than one intermediate was produced,
+   `squashfuse`-mounts every intermediate under
+   `$MOUNT_ROOT/phase2/inter_<NNNN>` and runs `mksquashfs.static` with all
+   mount points as multiple sources (`mksquashfs A B C ... dest.sqsh`).
+   `mksquashfs` merges same-named directories across sources; the
+   intermediates' leaf-dir paths are disjoint by construction, so no
+   filename conflicts arise. If only one intermediate exists, it's
+   `mv`'d into place — no phase 2 needed.
+6. `mksquashfs` flags used in both phases: `-comp $COMPRESSOR -noI -noD
+   -b 128K`. The source shards were built with `-comp zstd
    -Xcompression-level 1`, but Isambard's `mksquashfs.static` only ships
-   `gzip` and `lz4` — so the combined image uses `gzip` by default. With
-   `-noI -noD` only metadata tables are compressed (data blocks stay raw,
-   matching the source shards), so the size difference between the two
-   compressors is negligible.
-6. Writes a `.sha256` and counts `.h5` files in the combined image as a
-   sanity check against the source shard count.
-7. On exit (normal, error, or signal) releases every FUSE mount under
+   `gzip` and `lz4` — so the combined image uses `gzip` by default.
+   With `-noI -noD` only metadata tables are compressed (data blocks stay
+   raw, matching the source shards), so the size difference between the
+   two compressors is negligible.
+7. Optionally writes a `.sha256` (skip with `SKIP_SHA256=1`) and runs the
+   `.h5` file-count sanity check (skipped if `unsquashfs` isn't on PATH).
+8. Deletes `$INTERMEDIATES_DIR` unless `KEEP_INTERMEDIATES=1`. On exit
+   (normal, error, or signal) releases every FUSE mount under
    `$MOUNT_ROOT` and removes the directory.
+
+**Resume support.** If `intermediate_<NNNN>.sqsh` already exists at the
+start of batch N, that batch is skipped. If the final `$OUTPUT_SQSH`
+already exists, phase 2 is skipped entirely. So a job that times out
+partway through phase 1 picks up where it left off on resubmit. To force
+a rebuild of a batch, delete its intermediate; to redo phase 2, delete
+the final and resubmit.
 
 ### Why this is option C, not just "do A/B with one bind"
 
@@ -405,23 +430,32 @@ bookkeeping: read 7.4 TB once through FUSE, write 7.4 TB once. Reads and
 writes overlap, so wall-clock ≈ max(read, write).
 
 Observed on Isambard (5-shard / 27 GB smoke test): mksquashfs averaged
-**2.1 GB/s**, so the merge stage itself on the full 7.4 TB extrapolates to
-~**1 h**. The same smoke test showed `sha256sum` at **380 MB/s**
-(single-threaded), which extrapolates to **~5 h** on the full image —
-dominating the wall clock. Set `SKIP_SHA256=1` to skip if you don't need
-it (and compute it later if you do).
+**2.1 GB/s**. With the two-phase batched merge, total I/O roughly doubles
+(write all intermediates, then read them back during phase 2), so
+extrapolated runtime is ~2 h for the merge itself on 7.4 TB. The same
+smoke test showed `sha256sum` at **380 MB/s** (single-threaded), which
+extrapolates to **~5 h** on the full image — dominating the wall clock if
+enabled. Set `SKIP_SHA256=1` to skip and compute later if needed.
 
-| Stage | Smoke test (27 GB) | Full run (7.4 TB) projected |
+| Stage | Smoke test (27 GB / 5 shards) | Full run (7.4 TB / 708 shards) projected |
 |---|---|---|
-| `squashfuse` mount loop | 0 s | ~30 s |
-| `mksquashfs.static -comp gzip -noI -noD` | 13 s | ~1 h |
+| `squashfuse` mount loop (per batch) | <1 s | ~5 s × 12 batches |
+| `mksquashfs.static` phase 1 (build intermediates) | 13 s | ~1 h total |
+| `mksquashfs.static` phase 2 (merge ~12 intermediates) | 0 s (single-batch shortcut) | ~1 h |
 | `sha256sum` (single-threaded) | 71 s | ~5 h (skippable) |
-| **Total** | 84 s | **~1 h** (SKIP_SHA256=1) / **~6 h** (with sha256) |
+| **Total** | 84 s | **~2 h** (`SKIP_SHA256=1`) / **~7 h** (with sha256) |
+
+Peak disk during phase 2: roughly 2 × the shard total (intermediates +
+emerging final). After phase 2 + cleanup, only the final remains. With
+`KEEP_INTERMEDIATES=1`, steady-state is ~2 × the shard total.
 
 The script defaults to `--time=08:00:00`, `--mem=64G`,
-`--cpus-per-task=16` — the time is deliberately overcommitted because
-mksquashfs cannot resume. With `SKIP_SHA256=1` you could safely drop to
-`--time=02:00:00` if your queue prefers shorter jobs.
+`--cpus-per-task=16` — time is deliberately overcommitted. Phase 1 is
+fully resumable (one intermediate per batch), so a job that times out
+during phase 1 can be re-submitted and will pick up at the next missing
+batch. Phase 2 is one big `mksquashfs` call with no resume; if it times
+out, delete the partial `$OUTPUT_SQSH` and re-run (intermediates are
+preserved).
 
 **Do not run on the Isambard login node.** Sustained 7.4 TB read+write on
 shared storage will get flagged by admins, the ~10–30 GB RAM peak during
@@ -494,6 +528,9 @@ multi-hour run is at risk of being reaped by idle / session timeouts.
 | `UNSQUASHFS` | `unsquashfs.static` | Optional. Only used for the final `.h5` file-count sanity check; if not on `$PATH` the check is skipped (not an error). |
 | `SQUASHFUSE` | `squashfuse` | Mount tool. `squashfuse_ll` works too if available. |
 | `COMPRESSOR` | `gzip` | Compressor passed as `mksquashfs -comp`. Isambard's `mksquashfs.static` only supports `gzip` and `lz4` (no `zstd`). With `-noI -noD` only metadata tables are compressed, so the choice barely affects output size. |
+| `BATCH_SIZE` | `64` | Shards per phase-1 intermediate. Keep below the per-user `mount_max` (default 1000 on Isambard, but shared with apptainer / other workloads — 64 is a safe ceiling). Larger batches = fewer intermediates = faster phase 2, but more concurrent mounts during phase 1. |
+| `INTERMEDIATES_DIR` | `$OUTPUT_DIR/${OUTPUT_NAME}.intermediates` | Where per-batch `intermediate_NNNN.sqsh` files are written during phase 1. Override if you want them on a different volume. |
+| `KEEP_INTERMEDIATES` | `0` | `1` keeps `$INTERMEDIATES_DIR` after a successful phase 2. Useful for debugging or if you want to redo phase 2 with different merge flags without rebuilding from shards. |
 | `PROCESSORS` | `$SLURM_CPUS_PER_TASK` (16) | `mksquashfs -processors`. |
 | `MOUNT_PARALLEL` | 8 | `xargs -P` for the mount loop. |
 | `MOUNT_ROOT` | `/tmp/merge_mounts.$SLURM_JOB_ID` | Where shards get mounted. Do NOT point this at `$SLURM_TMPDIR` on Isambard — see "A note on `$SLURM_TMPDIR`" below. |
@@ -549,6 +586,9 @@ the binaries, not lifecycle management.
 | `df`-based preflight refuses to start | Less than 1.05× total shard size free in `$OUTPUT_DIR`. | Free space, or set `$OUTPUT_DIR` to a different filesystem with capacity. Don't bypass — running out of space mid-merge wastes hours. |
 | Stale mounts left after SIGKILL | The one signal that cannot be trapped. | The next job's pre-cleanup (same script, same `MOUNT_ROOT`) will release them. To clean now: ssh to the compute node and `awk '$2 ~ "^<root>" && $3 ~ /fuse/ {print $2}' /proc/mounts \| sort -r \| xargs -r -n1 fusermount -uz`. |
 | `Mounted 0 shards` with no errors in `.err` | `MOUNT_ROOT` was set to `$SLURM_TMPDIR/...` on a site (Isambard) where that path has `PrivateTmp`-style propagation that hides FUSE mounts. | Unset `MOUNT_ROOT`, or set it explicitly to a `/tmp/...` path. See "A note on `$SLURM_TMPDIR`" above. |
+| `fusermount3: too many FUSE filesystems mounted; mount_max=N can be set in /etc/fuse3.conf` | The per-user FUSE mount cap (default 1000) has been hit. Other workloads (apptainer, other users) count against the same cap on shared compute nodes. | Lower `BATCH_SIZE` (e.g. 32) so phase 1 holds fewer concurrent mounts. Verify the cap with `cat /etc/fuse3.conf`. If repeatedly bumping up against it, ask Isambard support to raise `mount_max` system-wide. |
+| Phase 1 timed out partway | Underestimated throughput, or shared-FS contention. | Just resubmit — intermediates already written are kept and skipped on resume. The job continues from the next missing batch. |
+| Phase 2 timed out / produced a broken `$OUTPUT_SQSH` | Phase 2 is one big `mksquashfs` call with no resume. | Delete `$OUTPUT_SQSH` and resubmit. Phase 1 is skipped via the intermediate-exists checks; phase 2 starts fresh. |
 
 ## Testing dataset reads from the combined image
 
