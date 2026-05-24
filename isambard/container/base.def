@@ -1,0 +1,64 @@
+Bootstrap: docker
+From: nvcr.io/nvidia/pytorch:24.10-py3
+
+%post
+    set -e
+
+    # ---- Verify the base image ----
+    echo "=== Base image verification ==="
+    uname -m                                    # should print aarch64
+    python --version
+    python -c "import torch; print('torch:', torch.__version__, 'cuda:', torch.version.cuda)"
+    nvcc --version || echo "nvcc not in PATH"
+    echo "CUDA_HOME=${CUDA_HOME:-not set}"
+
+    # ---- Common build env (persisted to %environment below) ----
+    export TORCH_CUDA_ARCH_LIST="9.0"
+    export CUMM_CUDA_ARCH_LIST="9.0"
+    export CUMM_CUDA_VERSION="12.4"
+    export CUMM_DISABLE_JIT="1"
+    export MAX_JOBS=16
+
+    # ---- Build tools and Python build-time deps ----
+    # pccm/ccimport/pybind11/fire/numpy/sympy: needed for cumm and spconv setup.py
+    # ninja/packaging/wheel/setuptools: standard modern Python build stack
+    pip install --no-cache-dir \
+        pccm>=0.4.15 \
+        ccimport \
+        pybind11>=2.6.0 \
+        fire \
+        numpy \
+        sympy \
+        ninja \
+        packaging \
+        wheel \
+        setuptools
+
+    # ---- Pointcept Python runtime deps ----
+    # Doing these now so you don't have to redo them per sandbox iteration
+    pip install --no-cache-dir \
+        h5py pyyaml sharedarray tensorboard tensorboardx wandb \
+        yapf addict einops scipy plyfile termcolor timm \
+        ftfy regex tqdm
+
+    # ---- Workspace for source builds ----
+    mkdir -p /opt/wheels
+    mkdir -p /opt/src
+
+    # ---- Quick sanity check that build deps import ----
+    python -c "import pccm, ccimport, pybind11, fire, numpy, sympy; print('build deps OK')"
+
+%environment
+    export TORCH_CUDA_ARCH_LIST="9.0"
+    export CUMM_CUDA_ARCH_LIST="9.0"
+    export CUMM_CUDA_VERSION="12.4"
+    export CUMM_DISABLE_JIT="1"
+    export MAX_JOBS=16
+    export PYTHONUNBUFFERED=1
+
+%runscript
+    exec python "$@"
+
+%labels
+    Description "Pointcept base for GraceHopper — PyTorch + build tooling, ready for cumm/spconv/FA builds"
+    Stage "base / sandbox-iteration"

@@ -1,0 +1,141 @@
+Bootstrap: docker
+From: nvcr.io/nvidia/pytorch:24.10-py3
+
+%post
+    set -e
+    
+    # ---- Common build env ----
+    export SPCONV_DISABLE_JIT="1"
+    export CUMM_CUDA_VERSION="12.4"
+    export CUMM_CUDA_ARCH_LIST="9.0"
+    export CUMM_DISABLE_JIT="1"
+    export TORCH_CUDA_ARCH_LIST="9.0"
+    export MAX_JOBS=16
+    export TMPDIR=/tmp
+
+    # ---- Verify the base image ----
+    echo "=== Base image verification ==="
+    uname -m                                    # should print aarch64
+    python --version
+    python -c "import torch; print('torch:', torch.__version__, 'cuda:', torch.version.cuda)"
+    nvcc --version || echo "nvcc not in PATH"
+    echo "CUDA_HOME=${CUDA_HOME:-not set}"
+
+    # ---- Build tools and Python build-time deps ----
+    # pccm/ccimport/pybind11/fire/numpy/sympy: needed for cumm and spconv setup.py
+    # ninja/packaging/wheel/setuptools: standard modern Python build stack
+    pip install --no-cache-dir \
+        pccm>=0.4.15 \
+        ccimport \
+        pybind11>=2.6.0 \
+        fire \
+        numpy \
+        sympy \
+        ninja \
+        packaging \
+        wheel \
+        setuptools
+
+    # ---- Pointcept Python runtime deps ----
+    # Doing these now so you don't have to redo them per sandbox iteration
+    pip install --no-cache-dir \
+        h5py pyyaml sharedarray tensorboard tensorboardx wandb \
+        yapf addict einops scipy plyfile termcolor timm \
+        ftfy regex tqdm
+
+    # ---- Workspace for source builds ----
+    mkdir -p /opt/wheels
+    mkdir -p /opt/src
+
+    # ---- Quick sanity check that build deps import ----
+    python -c "import pccm, ccimport, pybind11, fire, numpy, sympy; print('build deps OK')"
+
+    # ---- cumm ----
+    cd /opt/src
+    git clone --recursive https://github.com/FindDefinition/cumm.git
+    cd cumm
+    git checkout v0.7.11
+    python setup.py bdist_wheel
+    pip install --no-cache-dir dist/*.whl
+    cp dist/*.whl /opt/wheels/
+
+    # ---- spconv ----
+    cd /opt/src/
+    git clone https://github.com/traveller59/spconv.git
+    cd spconv
+    git checkout v2.3.8
+
+    # Workaround: spconv's pccm-generated build config doesn't include
+    # cumm's header dir on the g++ command line. Force it via env vars
+    # that gcc honors unconditionally.
+    CUMM_INCLUDE=$(python -c "import cumm, os; print(os.path.join(os.path.dirname(cumm.__file__), 'include'))")
+    echo "Will use: $CUMM_INCLUDE"
+    ls "$CUMM_INCLUDE/tensorview/gemm/core/params.h"  # verify it really is there
+
+    export CFLAGS="-I${CUMM_INCLUDE} ${CFLAGS:-}"
+    export CXXFLAGS="-I${CUMM_INCLUDE} ${CXXFLAGS:-}"
+    export CPLUS_INCLUDE_PATH="${CUMM_INCLUDE}:${CPLUS_INCLUDE_PATH:-}"
+    export C_INCLUDE_PATH="${CUMM_INCLUDE}:${C_INCLUDE_PATH:-}"
+    python setup.py bdist_wheel
+    pip install --no-deps --no-cache-dir dist/*.whl
+    cp dist/*.whl /opt/wheels/
+
+    # ---- Functional smoke test (fails the build if broken) ----
+    python <<'PYEOF'
+import torch
+import spconv.pytorch as spconv
+coords = torch.zeros(10, 4, dtype=torch.int32).cuda()
+features = torch.randn(10, 4, device='cuda')
+x = spconv.SparseConvTensor(features, coords, [10, 10, 10], 1)
+conv = spconv.SubMConv3d(4, 8, 3, padding=1).cuda()
+y = conv(x)
+assert y.features.shape == (10, 8), y.features.shape
+print('spconv smoke test PASS:', y.features.shape)
+PYEOF
+
+    # ---- FlashAttention 2 ----
+    # NGC pytorch:24.10-py3 ships flash-attn pre-built for SM 9.0 (Hopper).
+    # No build step needed — saves ~60 min of compile time.
+    # If switching to a different base image, this assumption needs re-checking.
+    python -c "
+import flash_attn
+from flash_attn import flash_attn_varlen_qkvpacked_func
+print('flash-attn version:', flash_attn.__version__)
+" || { echo "flash-attn not in base image; build step required"; exit 1; }
+
+    # ---- CLIP ----
+    pip install --no-cache-dir git+https://github.com/openai/CLIP.git
+    
+    # ---- PyG family ----
+    # These often need source builds on aarch64; check pyg wheel index first
+    export FORCE_CUDA=1
+    pip install --no-cache-dir --no-build-isolation torch-scatter
+    pip install --no-cache-dir --no-build-isolation torch-sparse
+    pip install --no-cache-dir --no-build-isolation torch-cluster
+    pip install --no-cache-dir torch-geometric
+    
+    # ---- Pointcept's local CUDA ops ----
+    # Bind-mount the Pointcept source at runtime, or clone here if you want it baked in:
+    apt-get update -y
+    apt-get install -y libsparsehash-dev
+    apt-get clean -y
+    cd /opt/src && git clone https://github.com/nutfuts/pointcept.git pointcept
+    cd pointcept/libs/pointops
+    python setup.py install
+    cd /opt/src/pointcept/libs/pointgroup_ops
+    python setup.py install
+    cd /opt/src/pointcept/libs/pointseg
+    python setup.py install
+    cd /opt/src/pointcept/libs/pointops2
+    python setup.py install
+
+    # Clean up source folder
+    # ------------------
+    rm -rf /opt/src/*
+
+%environment
+    export TORCH_CUDA_ARCH_LIST="9.0"
+    export PYTHONUNBUFFERED=1
+
+%runscript
+    exec python "$@"
