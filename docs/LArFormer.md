@@ -669,7 +669,94 @@ When `mixed_query_selection` is omitted the model behaves exactly as before (lea
 
 ---
 
-## 18. References
+## 18. Mask Denoising (Phase B)
+
+### Motivation
+
+Even with Phase A (mixed query selection) seeding the K queries from `1 - p(no_object)`-scored anchor tokens, two failure modes remained visible in early training:
+
+- **Slow mask specialization.** Hungarian matching is unstable until the per-query mask logits are sharp enough to be discriminative; in the first few thousand iters, most queries' masks are diffuse and the matcher cost is dominated by random class-logit noise. The result is high-variance assignments — a query "owns" one GT slice this iteration and a different one the next.
+- **Decoder needs an easy task to bootstrap.** Set-prediction with Hungarian is a hard end-to-end task: the gradients only kick in *after* matching, which itself depends on the predictions. A strong auxiliary signal that gives the decoder a "find a mask given approximately where it is and what it is" task — solvable independently of matching — accelerates the regular path indirectly through shared decoder weights.
+
+Mask DINO introduces **mask denoising** for exactly this: take each GT, perturb its position + identity, feed those perturbed copies in as extra "denoising queries," and supervise each one to **directly** reconstruct its original GT (no Hungarian — a fixed index assignment). The denoising queries are kept isolated from the regular ones via attention masking, so they don't pollute the regular query specialization, but the decoder weights they update are shared. The reported gain in image-domain Mask DINO is +1.5–3 mAP on top of mixed query selection.
+
+### Adaptation for LArTPC (Phase B.1, the minimum viable version)
+
+The simplest formulation that captures most of the benefit, scoped to land before any contrastive / mask-domain refinements:
+
+- **Per-GT replication.** For each event with K GT instances, emit `dn_groups × K` DN queries (default `dn_groups = 3`). Each DN query is supervised to its corresponding GT.
+- **Per-event cap.** `max_dn_per_event = 96` upper-bounds the DN query count. Above the cap, a random subset of (group, gt) pairs is kept. With ~20 GT slices per typical event and dn_groups=3 we get ~60 DN queries; the cap kicks in only on cosmic-heavy outliers (e.g. 40+ GT slices).
+- **Anchor noise.** GT `origin_coord_norm` + Gaussian jitter (σ = 0.05 in coord_norm space ≈ 9 cm — one `voxel_8cm` cell). Same jitter sampled independently per query so different DN groups for the same GT see different anchors and aren't trivial copies.
+- **Content init.** A learnable per-class embedding lookup (`nn.Embedding(num_classes, D)`). **Deliberately does NOT depend on which SPs are in the GT slice** — keeps the init from baking GT-mask structure into the content vector, which would make the denoising task suspiciously easy.
+- **Attention isolation.** A `Q_total × Q_total` boolean mask passed to every decoder layer's self-attention: regular ↔ regular allowed, regular ↔ DN blocked both ways, DN cross-group blocked, DN within-group allowed. Cross-attention is untouched — DN queries attend to keys normally.
+
+### Decoder wiring
+
+[`Mask2FormerDecoder.forward`](../pointcept/models/LArFormer/decoder.py) accepts a new optional kwarg `dn_self_attn_mask: (Q_total, Q_total) bool` and tolerates `init_query_content` / `init_anchor_coords` larger than `self.query_content.shape[0]`:
+
+- `queries[:K_reg] = init_query_content[:K_reg] + self.query_content[:K_reg]` (Phase-A delta applies to regular slots).
+- `queries[K_reg:] = init_query_content[K_reg:]` (DN slots pass through the class-embedding init unchanged).
+- `query_pos_dyn[:K_reg] = self.query_pos[:K_reg] + anchor_pe[:K_reg]`; `query_pos_dyn[K_reg:] = 0 + anchor_pe[K_reg:]` (the learnable `query_pos` is zero-padded for DN; DN's positional prior comes from its anchor + optional origin-head refinement).
+
+`_MaskedDecoderLayer.forward` gains a `self_attn_mask` parameter, threaded into `self.self_attn(..., attn_mask=self_attn_mask, ...)`. Cross-attn mask stays untouched.
+
+### Loss wiring
+
+[`LArFormerLoss`](../pointcept/models/LArFormer/losses.py) gains a `compute_dn_loss(decoder_output_dn, per_level_gt_mask, gt_classes, gt_origin, gt_target_idx)` method that:
+
+1. Builds the **direct** assignment `q_idx = arange(Q_dn), k_idx = gt_target_idx` — no Hungarian.
+2. Reuses `_compute_layer_loss` (the existing per-pair sampled BCE + Dice + class CE + origin L1).
+3. Aggregates using the same per-component weights as the regular path (`weight_class`, `weight_mask_primary`, …), then scales the final sum by a single knob `weight_dn_loss` (default `1.0`).
+4. Returns a scalar dict that the model prefixes with `dn_` and merges into the regular loss dict.
+
+In training mode, [`LArFormer.forward`](../pointcept/models/LArFormer/model.py) computes the loss with `return_matching=True` (so `compute_dn_loss` can reuse the already-built `per_level_gt_mask` / `gt_classes` / `gt_origin` rather than recomputing them), strips the non-scalar matching keys before appending to the per-event loss list, and runs `compute_dn_loss` on the DN slice.
+
+### Config knob
+
+`LArFormer.__init__` gains a `mask_denoising: Optional[dict]` kwarg:
+
+```python
+model = dict(
+    type="LArFormer",
+    ...,
+    mixed_query_selection=dict(source_level="voxel_8cm", ...),  # required
+    mask_denoising=dict(
+        dn_groups=3,
+        max_dn_per_event=96,
+        anchor_jitter_std=0.05,
+    ),
+    # loss_kwargs may also set weight_dn_loss (default 1.0)
+)
+```
+
+The ctor enforces that `mixed_query_selection` is also enabled — otherwise `self.decoder.query_content` / `query_pos` aren't zero-init'd and they'd bleed into the DN slots (the decoder zero-pads them past K_reg, but the *learnable* values for the first K_reg slots could still steer the trailing DN content through the residual additions in cross-attn → mask_embed). Cleaner to make Phase A a hard prerequisite.
+
+### Train / eval semantics
+
+- **Train only.** DN queries are built per-event during `model.forward` when `self.training is True`. Eval and inference skip the path entirely — both the decoder forward and the loss avoid the extra Q.
+- **Per-iter cost.** Worst case (96 DN queries on top of the configured K_reg = 128 / 64) ~doubles the decoder's Q. Cross-attn cost stays dominated by keys (~5K–20K SPs per event); self-attn becomes O(Q²) instead of O(K²) but stays small in absolute terms.
+- **`origin_head` interaction.** When `enable_origin_head = False` (the live config setting), DN queries simply don't have an origin loss term (`weight_origin = 0` already disables it for regular queries too). Their anchor still feeds the per-layer `query_pos_dyn` via `anchor_pe`.
+- **Backward fan-in.** DN losses flow into: (a) the decoder's per-layer heads (cls/origin/mask_embed), (b) the cross-attn / self-attn / FFN weights shared with the regular path, (c) the `MaskDenoiser.class_embedding` table, (d) Phase A's `MixedQuerySelector` is NOT in the DN gradient path — its outputs only feed the regular slice. So Phase A and Phase B optimize independent slices of the input space; they share only the decoder body.
+
+### Smoke test
+
+[`tools/smoke_test_larformer_p8_mask_denoising.py`](../tools/smoke_test_larformer_p8_mask_denoising.py) covers, in isolation from the heavy backbone:
+
+1. `MaskDenoiser` direct construction — Q_dn shape, `gt_target_idx` / `group_id` structure, jitter within 4σ, cap enforcement, empty / no_object filtering.
+2. `build_self_attn_mask` structure — regular ↔ regular allowed, regular ↔ DN blocked, DN cross-group blocked.
+3. End-to-end decoder forward + backward with combined `[regular | DN]` queries; verifies the self-attn mask actually changes layer output (re-runs with the mask vs `None` after un-zeroing `self_attn.out_proj` so the change is observable through PyTorch's MHA).
+4. `LArFormerLoss.compute_dn_loss` on synthetic DN decoder output; checks scalar finiteness, backward into `class_logits` / `mask_logits`, and the `Q_dn = 0` empty path.
+
+### What's deliberately NOT in Phase B.1
+
+- **Mask-domain noise (drop + add SPs).** The query content is class-embedding only, not mask-pooled. Mask-domain perturbation would only matter if content depended on which SPs survived noising.
+- **Contrastive denoising (CDN positive/negative pairs).** Mask DINO's CDN doubles DN query count to teach "negative" queries to predict no_object. Deferred — adds a knob that would confuse the diagnosis if B.1 underperforms.
+- **Per-group noise scheduling.** All groups use the same `anchor_jitter_std`. Annealing (e.g., σ → 0 over training) is a Phase B.3 follow-up.
+- **DN aux-mask losses on non-primary levels.** Reusing `_compute_layer_loss` means aux-mask BCE *is* computed at every supervised level — but DN queries are most informative at the primary level (where the actual mask supervision lives). The `weight_aux_mask` override per level still applies, so the user can dial DN aux contribution down without touching the regular path.
+
+---
+
+## 19. References
 
 - Existing model being generalized:
   [`pointcept/models/shower_clustering/`](../pointcept/models/shower_clustering/) — model / tokenizer / decoder / losses / matcher.

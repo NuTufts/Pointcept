@@ -48,7 +48,9 @@ del _larformer_evaluator_module
 # =============================================================================
 # Paths
 # =============================================================================
-_DEFAULT_LIST = "/home/twongjirad/working/larbys/gen2/container_u22/Pointcept/devdata_mergedh5_pi0filter_10files.txt"
+#_DEFAULT_LIST = "/home/twongjirad/working/larbys/gen2/container_u22/Pointcept/devdata_mergedh5_pi0filter_10files.txt"
+_DEFAULT_LIST = "/home/twongjirad/working/larbys/gen2/container_u22/Pointcept/devdata_mergedh5_pi0filter_1event.txt"
+
 
 # Trained SonataLoRADeghostSegmentor checkpoint for Stage 1.
 deghoster_weight = "/home/twongjirad/working/larbys/gen2/container_u22/Pointcept/sonata/lora_deghost_v6_hasmatch/model/epoch_30.pth"
@@ -264,10 +266,26 @@ slicer_cfg = dict(
     freeze_backbone=True,
     unfreeze_decoder=True,             # PTv3 decoder trains from scratch
     capture_decoder_stages=True,       # hooks on dec3/dec2/dec1 (dec1 unused)
+    # Small-mag init for PT-v3m2 decoder Block weights (attn.qkv,
+    # attn.proj, mlp.fc2). std=0.01 is ~6× smaller than the default
+    # Linear init — small enough that the inner decoder starts near-
+    # identity-of-encoder (so sp_feat_all is well-conditioned and
+    # downstream voxel / SP / PTv3-stage tokens are clean), but large
+    # enough to let gradient flow into the QKV weights from iter 1.
+    # cpe.Linear stays exactly zero regardless (it's the actual NaN
+    # source — see _init_ptv3_decoder_blocks docstring).
+    ptv3_decoder_init_scale=0.01,
     enable_origin_head=ENABLE_ORIGIN_HEAD_WITH_CENTROID,
     token_refiner=_token_refiner_cfg,
     decoder_kwargs=dict(
         num_heads=4, mlp_ratio=4.0,
+        # M2F decoder uses random init (zero-init was a known
+        # convergence-rate regression). The PT-v3m2 inner decoder's
+        # small-mag init (ptv3_decoder_init_scale below) is what
+        # keeps the from-scratch cascade stable — once the inner
+        # decoder starts near-identity, sp_feat_all is well-conditioned
+        # and the M2F decoder doesn't need its own zero-init.
+        zero_init_output_proj=False,
         **(dict(pos_emb_kind="sinusoidal") if USE_SINUSOIDAL_POS_EMB else {}),
     ),
     loss_kwargs=dict(
@@ -297,6 +315,21 @@ slicer_cfg = dict(
         selection_mode="top_m_then_fps",
         score_filter_multiplier=4,
     ),
+    #mixed_query_selection=None,
+
+    # Phase B: Mask DINO-style mask denoising. Train-only auxiliary path:
+    # appends `dn_groups × n_gt` denoising queries after the regular K_reg
+    # queries, each anchored at a jittered GT centroid and content-init
+    # to a class embedding. Loss supervises them directly to their GT
+    # (no Hungarian). max_dn_per_event caps total DN queries per event
+    # (most events have ≤20 GT slices → ≤60 DN queries; the cap kicks
+    # in for outlier cosmic-heavy events). See docs/LArFormer.md §18.
+    mask_denoising=dict(
+        dn_groups=3,
+        max_dn_per_event=96,
+        anchor_jitter_std=0.05,
+    ),
+    #mask_denoising=None,
 )
 
 # =============================================================================
@@ -326,7 +359,7 @@ model = dict(
 # =============================================================================
 weight = None
 
-save_path        = "exp/larformer_slicer_v1_cascaded_ptv3hybrid_crosslevel"
+save_path        = "exp/larformer_slicer_v1_cascaded_ptv3hybrid_perlevel"
 epoch            = 1000
 eval_epoch       = 200
 batch_size       = 1
