@@ -29,7 +29,7 @@ SAVE_DIR=${WORKDIR}/${SAVE_REL}
 CKPT=${SAVE_DIR}/model/model_last.pth
 RESUBMIT_MARKER=${SAVE_DIR}/RESUBMIT
 COUNTER_FILE=${SAVE_DIR}/.resubmit_count
-MAX_RESUBMITS=5
+MAX_RESUBMITS=3
 
 # Resume detection: if a checkpoint already exists, override cfg.resume and
 # cfg.weight via --options. On the first launch the file doesn't exist, so the
