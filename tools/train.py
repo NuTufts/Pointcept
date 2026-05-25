@@ -22,6 +22,9 @@ from pointcept.engines.launch import launch
 # (modules are cached in sys.modules).
 import pointcept.models.shower_clustering.trainer  # noqa: F401
 
+#import torch
+#torch.autograd.set_detect_anomaly(True)
+
 
 def main_worker(cfg):
     #import torch

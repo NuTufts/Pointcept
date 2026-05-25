@@ -42,6 +42,8 @@ class IterationTimer(HookBase):
         self._start_time = time.perf_counter()
         _remain_epoch = self.trainer.max_epoch - self.trainer.start_epoch
         self._remain_iter = _remain_epoch * len(self.trainer.train_loader)
+        # Account for mid-epoch resume: skipped iters won't run.
+        self._remain_iter -= getattr(self.trainer, "start_iter", 0)
 
     def before_epoch(self):
         self._iter_timer.reset()
@@ -85,7 +87,12 @@ class InformationWriter(HookBase):
 
     def before_train(self):
         self.trainer.comm_info["iter_info"] = ""
-        self.curr_iter = self.trainer.start_epoch * len(self.trainer.train_loader)
+        # Include mid-epoch start_iter so the global iter counter (used for
+        # tensorboard/wandb x-axis) lines up across resumes.
+        self.curr_iter = (
+            self.trainer.start_epoch * len(self.trainer.train_loader)
+            + getattr(self.trainer, "start_iter", 0)
+        )
         if self.trainer.writer is not None and self.trainer.cfg.enable_wandb:
             wandb.define_metric("params/*", step_metric="Iter")
             wandb.define_metric("train_batch/*", step_metric="Iter")
@@ -317,6 +324,103 @@ class CheckpointSaver(HookBase):
 
 
 @HOOKS.register_module()
+class IterCheckpointSaver(HookBase):
+    """
+    Save a resumable checkpoint every ``save_iter_freq`` dataloader iterations.
+
+    Lets SLURM jobs that get killed mid-epoch resume from the last save instead
+    of restarting the partial epoch. Writes to the same ``model_last.pth`` that
+    :class:`CheckpointSaver` writes at epoch boundaries, with two extra fields
+    so :class:`CheckpointLoader` can pick up mid-epoch:
+
+      - ``iter_in_epoch``: the next dataloader iter to run on resume
+      - ``rng_state``: (optional) torch / cuda / numpy / python RNG snapshots
+
+    The ``epoch`` field is the **current** (in-progress) epoch, NOT ``epoch+1``,
+    because the epoch hasn't finished yet.
+
+    Args:
+        save_iter_freq: save every N dataloader iterations.
+        keep_history: if True, also copy each save to
+            ``model/iter_{global_step}.pth``.
+        save_rng_state: if True, snapshot torch / cuda / numpy / python RNG
+            (rank-0 state only; restored on every rank at resume).
+    """
+
+    def __init__(self, save_iter_freq=500, keep_history=False, save_rng_state=True):
+        self.save_iter_freq = save_iter_freq
+        self.keep_history = keep_history
+        self.save_rng_state = save_rng_state
+
+    def after_step(self):
+        if not is_main_process():
+            return
+        # Only save at optimizer-step boundaries so we don't lose partial
+        # gradients on resume. With gradient_accumulation_steps=1 this is
+        # always true after run_step completes.
+        if getattr(self.trainer, "_gradient_accumulation_counter", 0) != 0:
+            return
+        iter_in_epoch = self.trainer.comm_info["iter"] + 1
+        if iter_in_epoch % self.save_iter_freq != 0:
+            return
+        # Skip the very last iter of the epoch — CheckpointSaver.after_epoch
+        # will write a cleaner record (epoch+1, iter 0) moments later.
+        if iter_in_epoch >= len(self.trainer.train_loader):
+            return
+
+        ckpt = {
+            "epoch": self.trainer.epoch,  # current epoch (NOT +1)
+            "iter_in_epoch": iter_in_epoch,
+            "state_dict": self.trainer.model.state_dict(),
+            "optimizer": self.trainer.optimizer.state_dict(),
+            "scheduler": self.trainer.scheduler.state_dict(),
+            "scaler": (
+                self.trainer.scaler.state_dict()
+                if self.trainer.scaler is not None
+                else None
+            ),
+            "best_metric_value": self.trainer.best_metric_value,
+        }
+        if self.save_rng_state:
+            import random
+            import numpy as np
+
+            ckpt["rng_state"] = {
+                "torch": torch.get_rng_state(),
+                "torch_cuda": (
+                    torch.cuda.get_rng_state_all()
+                    if torch.cuda.is_available()
+                    else None
+                ),
+                "numpy": np.random.get_state(),
+                "python": random.getstate(),
+            }
+
+        filename = os.path.join(
+            self.trainer.cfg.save_path, "model", "model_last.pth"
+        )
+        self.trainer.logger.info(
+            f"[IterCheckpointSaver] Saving mid-epoch checkpoint: "
+            f"epoch={self.trainer.epoch} iter={iter_in_epoch}/"
+            f"{len(self.trainer.train_loader)} -> {filename}"
+        )
+        torch.save(ckpt, filename + ".tmp")
+        os.replace(filename + ".tmp", filename)
+        if self.keep_history:
+            global_step = (
+                self.trainer.epoch * len(self.trainer.train_loader) + iter_in_epoch
+            )
+            shutil.copyfile(
+                filename,
+                os.path.join(
+                    self.trainer.cfg.save_path,
+                    "model",
+                    f"iter_{global_step}.pth",
+                ),
+            )
+
+
+@HOOKS.register_module()
 class CheckpointLoader(HookBase):
     def __init__(self, keywords="", replacement=None, strict=False, extend_scheduler=False):
         """
@@ -366,6 +470,15 @@ class CheckpointLoader(HookBase):
                     f"Resuming train at eval epoch: {checkpoint['epoch']}"
                 )
                 self.trainer.start_epoch = checkpoint["epoch"]
+                # Mid-epoch resume: IterCheckpointSaver writes iter_in_epoch
+                # (the next dataloader iter to run) while CheckpointSaver does
+                # not set it, so it defaults to 0 = clean epoch boundary.
+                self.trainer.start_iter = checkpoint.get("iter_in_epoch", 0)
+                if self.trainer.start_iter > 0:
+                    self.trainer.logger.info(
+                        f"Mid-epoch resume: continuing at iter "
+                        f"{self.trainer.start_iter} of epoch {self.trainer.start_epoch}"
+                    )
                 self.trainer.best_metric_value = checkpoint["best_metric_value"]
 
                 if self.extend_scheduler:
@@ -418,8 +531,32 @@ class CheckpointLoader(HookBase):
 
                 if self.trainer.scaler is not None and checkpoint.get("scaler") is not None:
                     self.trainer.scaler.load_state_dict(checkpoint["scaler"])
+
+                # Restore RNG state if IterCheckpointSaver saved it.
+                _restore_rng_state(checkpoint.get("rng_state"), self.trainer.logger)
         else:
             self.trainer.logger.info(f"No weight found at: {self.trainer.cfg.weight}")
+
+
+def _restore_rng_state(rng_state, logger):
+    """Restore torch / cuda / numpy / python RNG state saved by IterCheckpointSaver."""
+    if rng_state is None:
+        return
+    import random
+    import numpy as np
+
+    try:
+        torch.set_rng_state(rng_state["torch"])
+        if (
+            torch.cuda.is_available()
+            and rng_state.get("torch_cuda") is not None
+        ):
+            torch.cuda.set_rng_state_all(rng_state["torch_cuda"])
+        np.random.set_state(rng_state["numpy"])
+        random.setstate(rng_state["python"])
+        logger.info("Restored RNG state (torch / cuda / numpy / python) from checkpoint")
+    except Exception as e:
+        logger.warning(f"Failed to restore RNG state: {e}")
 
 
 @HOOKS.register_module()
@@ -493,11 +630,18 @@ class SonataCheckpointLoader(HookBase):
                     f"Resuming train at eval epoch: {checkpoint['epoch']}"
                 )
                 self.trainer.start_epoch = checkpoint["epoch"]
+                self.trainer.start_iter = checkpoint.get("iter_in_epoch", 0)
+                if self.trainer.start_iter > 0:
+                    self.trainer.logger.info(
+                        f"Mid-epoch resume: continuing at iter "
+                        f"{self.trainer.start_iter} of epoch {self.trainer.start_epoch}"
+                    )
                 self.trainer.best_metric_value = checkpoint["best_metric_value"]
                 self.trainer.optimizer.load_state_dict(checkpoint["optimizer"])
                 self.trainer.scheduler.load_state_dict(checkpoint["scheduler"])
                 if self.trainer.scaler is not None and checkpoint.get("scaler") is not None:
                     self.trainer.scaler.load_state_dict(checkpoint["scaler"])
+                _restore_rng_state(checkpoint.get("rng_state"), self.trainer.logger)
         else:
             self.trainer.logger.info(f"No weight found at: {self.trainer.cfg.weight}")
 
@@ -838,7 +982,13 @@ class WeightDecaySchedular(HookBase):
         self.scheduler = None
 
     def before_train(self):
-        curr_step = self.trainer.start_epoch * len(self.trainer.train_loader)
+        # Include mid-epoch start_iter: the WD schedule advances once per
+        # before_step, so the iter pointer equals total #before_step calls so
+        # far = start_epoch * len(loader) + start_iter.
+        curr_step = (
+            self.trainer.start_epoch * len(self.trainer.train_loader)
+            + getattr(self.trainer, "start_iter", 0)
+        )
         new_total_steps = self.trainer.cfg.scheduler.total_steps
 
         if self.extend_scheduler and self.original_total_steps:

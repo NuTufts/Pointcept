@@ -7,6 +7,7 @@ Please cite our work if the code is helpful to you.
 
 import os
 import sys
+import itertools
 import weakref
 import wandb
 import torch
@@ -47,6 +48,10 @@ class TrainerBase:
         self.model = None
         self.epoch = 0
         self.start_epoch = 0
+        # Mid-epoch resume offset: number of dataloader iters to skip at the
+        # start of the first resumed epoch. Set by CheckpointLoader from the
+        # checkpoint's ``iter_in_epoch`` field; consumed once by Trainer.train.
+        self.start_iter = 0
         self.max_epoch = 0
         self.max_iter = 0
         self.comm_info = dict()
@@ -127,6 +132,7 @@ class Trainer(TrainerBase):
         super(Trainer, self).__init__()
         self.epoch = 0
         self.start_epoch = 0
+        self.start_iter = 0
         self.max_epoch = cfg.eval_epoch
         self.best_metric_value = -torch.inf
         self.logger = get_root_logger(
@@ -163,7 +169,29 @@ class Trainer(TrainerBase):
                 if comm.get_world_size() > 1:
                     self.train_loader.sampler.set_epoch(self.epoch)
                 self.model.train()
-                self.data_iterator = enumerate(self.train_loader)
+                data_iter = enumerate(self.train_loader)
+                # Mid-epoch resume: skip the first `start_iter` items of the
+                # dataloader on this epoch only. islice over enumerate preserves
+                # the underlying indices, so comm_info["iter"] picks up from
+                # `start_iter` and downstream iter-aware hooks (IterationTimer,
+                # InformationWriter, WeightDecaySchedular) stay aligned.
+                if self.start_iter > 0:
+                    if self.start_iter >= len(self.train_loader):
+                        self.logger.warning(
+                            f"Mid-epoch resume start_iter={self.start_iter} >= "
+                            f"len(train_loader)={len(self.train_loader)}; "
+                            f"skipping rest of resumed epoch {self.epoch}"
+                        )
+                        self.start_iter = 0
+                        continue
+                    self.logger.info(
+                        f"Mid-epoch resume: skipping first {self.start_iter} "
+                        f"iters of epoch {self.epoch} "
+                        f"({len(self.train_loader) - self.start_iter} iters remain)"
+                    )
+                    data_iter = itertools.islice(data_iter, self.start_iter, None)
+                    self.start_iter = 0  # only skip once
+                self.data_iterator = data_iter
                 self.before_epoch()
                 # => run_epoch
                 for (
