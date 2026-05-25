@@ -52,6 +52,10 @@ class TrainerBase:
         # start of the first resumed epoch. Set by CheckpointLoader from the
         # checkpoint's ``iter_in_epoch`` field; consumed once by Trainer.train.
         self.start_iter = 0
+        # Set by SignalCheckpointHook on SIGUSR1 to request a clean stop at
+        # the next safe boundary. The trainer breaks out of both loops without
+        # running after_epoch so the partial-epoch checkpoint isn't clobbered.
+        self._stop_requested = False
         self.max_epoch = 0
         self.max_iter = 0
         self.comm_info = dict()
@@ -133,6 +137,7 @@ class Trainer(TrainerBase):
         self.epoch = 0
         self.start_epoch = 0
         self.start_iter = 0
+        self._stop_requested = False
         self.max_epoch = cfg.eval_epoch
         self.best_metric_value = -torch.inf
         self.logger = get_root_logger(
@@ -204,6 +209,17 @@ class Trainer(TrainerBase):
                     self.run_step()
                     # => after_step
                     self.after_step()
+                    # SignalCheckpointHook sets this on SIGUSR1 after writing
+                    # a mid-epoch checkpoint; break out of both loops without
+                    # running after_epoch (CheckpointSaver.after_epoch would
+                    # otherwise overwrite the partial-epoch state with iter 0).
+                    if self._stop_requested:
+                        break
+                if self._stop_requested:
+                    self.logger.info(
+                        "Stop requested; exiting training loop before after_epoch."
+                    )
+                    break
                 # => after epoch
                 self.after_epoch()
             # => after train

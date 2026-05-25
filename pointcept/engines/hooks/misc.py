@@ -323,6 +323,56 @@ class CheckpointSaver(HookBase):
                 )
 
 
+def _save_resumable_checkpoint(trainer, iter_in_epoch, save_rng_state=True,
+                               keep_history=False, log_prefix="[IterCheckpointSaver]"):
+    """Atomically write a mid-epoch resumable checkpoint on the main process.
+
+    Shared by :class:`IterCheckpointSaver` and :class:`SignalCheckpointHook`.
+    Caller is responsible for the is_main_process() / gradient-accumulation
+    guards — this helper just writes the file.
+    """
+    ckpt = {
+        "epoch": trainer.epoch,  # current epoch (NOT +1)
+        "iter_in_epoch": iter_in_epoch,
+        "state_dict": trainer.model.state_dict(),
+        "optimizer": trainer.optimizer.state_dict(),
+        "scheduler": trainer.scheduler.state_dict(),
+        "scaler": (
+            trainer.scaler.state_dict() if trainer.scaler is not None else None
+        ),
+        "best_metric_value": trainer.best_metric_value,
+    }
+    if save_rng_state:
+        import random
+        import numpy as np
+
+        ckpt["rng_state"] = {
+            "torch": torch.get_rng_state(),
+            "torch_cuda": (
+                torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None
+            ),
+            "numpy": np.random.get_state(),
+            "python": random.getstate(),
+        }
+
+    filename = os.path.join(trainer.cfg.save_path, "model", "model_last.pth")
+    trainer.logger.info(
+        f"{log_prefix} Saving mid-epoch checkpoint: "
+        f"epoch={trainer.epoch} iter={iter_in_epoch}/"
+        f"{len(trainer.train_loader)} -> {filename}"
+    )
+    torch.save(ckpt, filename + ".tmp")
+    os.replace(filename + ".tmp", filename)
+    if keep_history:
+        global_step = trainer.epoch * len(trainer.train_loader) + iter_in_epoch
+        shutil.copyfile(
+            filename,
+            os.path.join(
+                trainer.cfg.save_path, "model", f"iter_{global_step}.pth"
+            ),
+        )
+
+
 @HOOKS.register_module()
 class IterCheckpointSaver(HookBase):
     """
@@ -368,56 +418,109 @@ class IterCheckpointSaver(HookBase):
         if iter_in_epoch >= len(self.trainer.train_loader):
             return
 
-        ckpt = {
-            "epoch": self.trainer.epoch,  # current epoch (NOT +1)
-            "iter_in_epoch": iter_in_epoch,
-            "state_dict": self.trainer.model.state_dict(),
-            "optimizer": self.trainer.optimizer.state_dict(),
-            "scheduler": self.trainer.scheduler.state_dict(),
-            "scaler": (
-                self.trainer.scaler.state_dict()
-                if self.trainer.scaler is not None
-                else None
-            ),
-            "best_metric_value": self.trainer.best_metric_value,
-        }
-        if self.save_rng_state:
-            import random
-            import numpy as np
-
-            ckpt["rng_state"] = {
-                "torch": torch.get_rng_state(),
-                "torch_cuda": (
-                    torch.cuda.get_rng_state_all()
-                    if torch.cuda.is_available()
-                    else None
-                ),
-                "numpy": np.random.get_state(),
-                "python": random.getstate(),
-            }
-
-        filename = os.path.join(
-            self.trainer.cfg.save_path, "model", "model_last.pth"
+        _save_resumable_checkpoint(
+            self.trainer,
+            iter_in_epoch,
+            save_rng_state=self.save_rng_state,
+            keep_history=self.keep_history,
+            log_prefix="[IterCheckpointSaver]",
         )
+
+
+@HOOKS.register_module()
+class SignalCheckpointHook(HookBase):
+    """
+    Catch SIGUSR1 (or configured signal) and save a resumable checkpoint at the
+    next safe boundary, then request a clean stop.
+
+    Designed for SLURM ``--signal=USR1@N``: every rank installs its own handler
+    in ``before_train``; the handler just sets a flag (signal handlers can't
+    safely do CUDA work). ``after_step`` does an all-reduce of the flag every
+    ``check_every_n_iter`` iters so all ranks agree, saves on rank 0, writes a
+    RESUBMIT marker (so the SLURM script can chain the next job), and sets
+    ``trainer._stop_requested`` so the trainer loop exits without running
+    ``after_epoch`` (which would overwrite the partial checkpoint).
+
+    Args:
+        signum: signal number to catch (default SIGUSR1).
+        check_every_n_iter: how often to do the cross-rank flag check.
+        save_rng_state: snapshot RNG state in the saved checkpoint.
+        resubmit_marker_name: filename written to ``cfg.save_path`` on signal.
+    """
+
+    def __init__(self, signum=None, check_every_n_iter=10, save_rng_state=True,
+                 resubmit_marker_name="RESUBMIT"):
+        import signal as _sig
+
+        self.signum = signum if signum is not None else _sig.SIGUSR1
+        self.check_every_n_iter = max(int(check_every_n_iter), 1)
+        self.save_rng_state = save_rng_state
+        self.resubmit_marker_name = resubmit_marker_name
+        self._flag = False
+
+    def before_train(self):
+        import signal as _sig
+
+        _sig.signal(self.signum, self._handler)
         self.trainer.logger.info(
-            f"[IterCheckpointSaver] Saving mid-epoch checkpoint: "
-            f"epoch={self.trainer.epoch} iter={iter_in_epoch}/"
-            f"{len(self.trainer.train_loader)} -> {filename}"
+            f"[SignalCheckpointHook] Installed handler for signal {self.signum} "
+            f"(rank {comm.get_rank()}); check_every_n_iter={self.check_every_n_iter}"
         )
-        torch.save(ckpt, filename + ".tmp")
-        os.replace(filename + ".tmp", filename)
-        if self.keep_history:
-            global_step = (
-                self.trainer.epoch * len(self.trainer.train_loader) + iter_in_epoch
+
+    def _handler(self, signum, frame):
+        # Minimal: just flip the flag. The actual save happens at after_step.
+        self._flag = True
+
+    def after_step(self):
+        # Fast path: skip the cross-rank check most iters when no rank has
+        # received a signal yet. Each rank checks its own flag without any
+        # collective; only on the periodic boundary (or when this rank's flag
+        # is set) do we synchronize.
+        iter_in_epoch = self.trainer.comm_info["iter"] + 1
+        if iter_in_epoch % self.check_every_n_iter != 0 and not self._flag:
+            return
+
+        # Cross-rank agreement: any rank's flag triggers the stop on all ranks.
+        local_flag = 1 if self._flag else 0
+        if comm.get_world_size() > 1:
+            t = torch.tensor(local_flag, device="cuda")
+            torch.distributed.all_reduce(t, op=torch.distributed.ReduceOp.MAX)
+            global_flag = int(t.item())
+        else:
+            global_flag = local_flag
+        if global_flag == 0:
+            return
+
+        # Defer the save when mid-accumulation so we don't drop partial grads.
+        # On the next call the flag is still set, the all-reduce repeats, and
+        # we try again. With gradient_accumulation_steps=1 this never trips.
+        if getattr(self.trainer, "_gradient_accumulation_counter", 0) != 0:
+            return
+
+        if is_main_process():
+            self.trainer.logger.info(
+                f"[SignalCheckpointHook] Signal received; saving and stopping "
+                f"at epoch={self.trainer.epoch} iter={iter_in_epoch}"
             )
-            shutil.copyfile(
-                filename,
-                os.path.join(
-                    self.trainer.cfg.save_path,
-                    "model",
-                    f"iter_{global_step}.pth",
-                ),
+            _save_resumable_checkpoint(
+                self.trainer,
+                iter_in_epoch,
+                save_rng_state=self.save_rng_state,
+                keep_history=False,
+                log_prefix="[SignalCheckpointHook]",
             )
+            marker_path = os.path.join(
+                self.trainer.cfg.save_path, self.resubmit_marker_name
+            )
+            with open(marker_path, "w") as f:
+                f.write(
+                    f"epoch={self.trainer.epoch} iter_in_epoch={iter_in_epoch}\n"
+                )
+            self.trainer.logger.info(
+                f"[SignalCheckpointHook] Wrote resubmit marker: {marker_path}"
+            )
+        comm.synchronize()
+        self.trainer._stop_requested = True
 
 
 @HOOKS.register_module()

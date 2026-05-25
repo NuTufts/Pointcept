@@ -50,8 +50,10 @@ wire_projections = None
 _base_ = ["../_base_/default_runtime.py"]
 
 # misc custom setting
-batch_size = 80      # Adjust based on GPU memory; LArTPC events can be large
-batch_size_val = 8   # Batch size for validation (used by PretrainEvaluator)
+#batch_size = 80      # Adjust based on GPU memory; LArTPC events can be large
+#batch_size_val = 8   # Batch size for validation (used by PretrainEvaluator)
+batch_size = 2      # Adjust based on GPU memory; LArTPC events can be large
+batch_size_val = 2   # Batch size for validation (used by PretrainEvaluator)
 num_worker = 16
 mix_prob = 0
 clip_grad = 1.0
@@ -72,6 +74,8 @@ save_path = "sonata/lartpc_v8_isambard_ghopper_extbnb_mc_combined_larmatch"
 
 TRAIN_FILE_LIST="/home/u6jo/twongj01.u6jo/ubpointcept/pointcept/h5list_v3_combined_extbnb_mc_shuffled.txt"
 VAL_FILE_LIST="/home/u6jo/twongj01.u6jo/ubpointcept/pointcept/h5list_v3_combined_extbnb_mc_shuffled.txt"
+#TRAIN_FILE_LIST="/home/twongjirad/working/larbys/gen2/container_u22/Pointcept/devdata_mergedh5_pi0filter.txt"
+#VAL_FILE_LIST="/home/twongjirad/working/larbys/gen2/container_u22/Pointcept/devdata_mergedh5_pi0filter.txt"
 true_points_only=False
 
 # Larmatch score filtering: each sample draws a threshold uniformly from this range
@@ -464,6 +468,17 @@ hooks = [
     dict(type="IterationTimer", warmup_iter=2),
     dict(type="InformationWriter"),
     dict(type="CheckpointSaver", save_freq=1),
+    # Iteration-level checkpointing so SLURM jobs killed at the 24h wall-clock
+    # cap can resume mid-epoch (epochs are ~9h on the Isambard-AI allocation).
+    # Writes to the same model_last.pth that CheckpointSaver uses, plus
+    # iter_in_epoch + RNG state so CheckpointLoader can pick up mid-epoch.
+    # save_iter_freq=500 ≈ ~9 min between saves at ~30k batches/epoch, so the
+    # worst-case wasted compute on a kill is bounded by that.
+    dict(type="IterCheckpointSaver", save_iter_freq=500, keep_history=False),
+    # Catch SLURM's pre-timeout SIGUSR1 (sent via --signal=USR1@1800), save a
+    # checkpoint, write a RESUBMIT marker so the batch script can chain the
+    # next job, and exit cleanly before SLURM kills the process.
+    dict(type="SignalCheckpointHook", check_every_n_iter=30),
     # === Stability Monitoring ===
     # GradScaler monitor - detect overflow events
     dict(
