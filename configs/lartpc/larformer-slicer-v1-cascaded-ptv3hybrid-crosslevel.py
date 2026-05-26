@@ -49,6 +49,7 @@ del _larformer_evaluator_module
 # Paths
 # =============================================================================
 _DEFAULT_LIST = "/home/twongjirad/working/larbys/gen2/container_u22/Pointcept/devdata_mergedh5_pi0filter_10files.txt"
+#_DEFAULT_LIST = "/home/twongjirad/working/larbys/gen2/container_u22/Pointcept/devdata_mergedh5_pi0filter_1event.txt"
 
 # Trained SonataLoRADeghostSegmentor checkpoint for Stage 1.
 deghoster_weight = "/home/twongjirad/working/larbys/gen2/container_u22/Pointcept/sonata/lora_deghost_v6_hasmatch/model/epoch_30.pth"
@@ -262,10 +263,26 @@ slicer_cfg = dict(
     freeze_backbone=True,
     unfreeze_decoder=True,             # PTv3 decoder trains from scratch
     capture_decoder_stages=True,       # hooks on dec3/dec2/dec1 (dec1 unused)
+    # Small-mag init for PT-v3m2 decoder Block weights (attn.qkv,
+    # attn.proj, mlp.fc2). std=0.01 is ~6× smaller than the default
+    # Linear init — small enough that the inner decoder starts near-
+    # identity-of-encoder (so sp_feat_all is well-conditioned and
+    # downstream voxel / SP / PTv3-stage tokens are clean), but large
+    # enough to let gradient flow into the QKV weights from iter 1.
+    # cpe.Linear stays exactly zero regardless (it's the actual NaN
+    # source — see _init_ptv3_decoder_blocks docstring).
+    ptv3_decoder_init_scale=0.01,
     enable_origin_head=ENABLE_ORIGIN_HEAD_WITH_CENTROID,
     token_refiner=_token_refiner_cfg,
     decoder_kwargs=dict(
         num_heads=4, mlp_ratio=4.0,
+        # M2F decoder uses random init (zero-init was a known
+        # convergence-rate regression). The PT-v3m2 inner decoder's
+        # small-mag init (ptv3_decoder_init_scale below) is what
+        # keeps the from-scratch cascade stable — once the inner
+        # decoder starts near-identity, sp_feat_all is well-conditioned
+        # and the M2F decoder doesn't need its own zero-init.
+        zero_init_output_proj=False,
         **(dict(pos_emb_kind="sinusoidal") if USE_SINUSOIDAL_POS_EMB else {}),
     ),
     loss_kwargs=dict(
@@ -295,6 +312,20 @@ slicer_cfg = dict(
         selection_mode="top_m_then_fps",
         score_filter_multiplier=4,
     ),
+    #mixed_query_selection=None,
+    # Phase B: Mask DINO-style mask denoising. Train-only auxiliary path:
+    # appends `dn_groups × n_gt` denoising queries after the regular K_reg
+    # queries, each anchored at a jittered GT centroid and content-init
+    # to a class embedding. Loss supervises them directly to their GT
+    # (no Hungarian). max_dn_per_event caps total DN queries per event
+    # (most events have ≤20 GT slices → ≤60 DN queries; the cap kicks
+    # in for outlier cosmic-heavy events). See docs/LArFormer.md §18.
+    mask_denoising=dict(
+        dn_groups=3,
+        max_dn_per_event=96,
+        anchor_jitter_std=0.05,
+    ),
+    #mask_denoising=None,
 )
 
 # =============================================================================
@@ -324,9 +355,9 @@ model = dict(
 # =============================================================================
 weight = None
 
-save_path        = "exp/larformer_slicer_v1_cascaded_ptv3hybrid_crosslevel_mixedqsel"
-epoch            = 1000
-eval_epoch       = 200
+save_path        = "exp/larformer_slicer_v1_cascaded_ptv3hybrid_crosslevel_nonzeroinit_maskdn_10event_run2"
+epoch            = 2000
+eval_epoch       = 400
 batch_size       = 1
 batch_size_val   = 1
 num_worker       = 2
@@ -348,16 +379,16 @@ find_unused_parameters = True
 # =============================================================================
 # Optimizer / scheduler
 # =============================================================================
-base_lr = 2e-5
+base_lr = 1.0e-5
 param_dicts = None
 optimizer = dict(type="AdamW", lr=base_lr, weight_decay=0.01)
 scheduler = dict(
     type="FlatWithDecayLR",
     mode="plateau",
     gamma=0.5,
-    min_lr=1e-7,
-    step_period_epochs=200,
-    patience_epochs=12,
+    min_lr=5e-8,
+    step_period_epochs=50,
+    patience_epochs=20,
     min_delta=1e-4,
     cooldown_epochs=2,
     # Linear warmup over the first 500 training iters (~100 epochs on the
@@ -366,7 +397,7 @@ scheduler = dict(
     # first ~50 iters are noisy enough to spike the loss curve, so we
     # don't want the plateau detector touching anything during that
     # phase. step_epoch is a no-op while in warmup (counters frozen).
-    warmup_iters=1000,
+    warmup_iters=200,
     warmup_start_lr=0.0,
     # EMA over the val/loss for plateau detection. A single lucky-low
     # raw val_loss (which fluctuates a few % epoch-to-epoch on this

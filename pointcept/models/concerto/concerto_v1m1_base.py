@@ -327,7 +327,12 @@ class Concerto(PointModel):
     def before_train(self):
         # make ModelHook after CheckPointLoader
         total_steps = self.trainer.cfg.scheduler.total_steps
-        curr_step = self.trainer.start_epoch * len(self.trainer.train_loader)
+        # Mid-epoch resume: honor trainer.start_iter so the mask/temp/momentum
+        # schedulers don't rewind to the previous epoch boundary on resume.
+        curr_step = (
+            self.trainer.start_epoch * len(self.trainer.train_loader)
+            + getattr(self.trainer, "start_iter", 0)
+        )
         # mask size scheduler
         self.mask_size_scheduler = CosineScheduler(
             start_value=self.mask_size_start,

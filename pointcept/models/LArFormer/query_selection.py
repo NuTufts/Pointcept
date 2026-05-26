@@ -150,7 +150,7 @@ class MixedQuerySelector(nn.Module):
         if lvl.n_tokens == 0:
             return (
                 lvl.tokens.new_zeros(K, self.token_dim),
-                lvl.tokens.new_zeros(K, 3),
+                lvl.coords.new_zeros(K, 3),
             )
 
         if self.score_source == "cls_head":
@@ -197,7 +197,7 @@ class MixedQuerySelector(nn.Module):
 
         valid = picks >= 0
         init_q = lvl.tokens.new_zeros(K, self.token_dim)
-        init_anchor = lvl.tokens.new_zeros(K, 3)
+        init_anchor = lvl.coords.new_zeros(K, 3)
         if valid.any():
             v_picks = picks[valid]
             init_q[valid] = lvl.tokens[v_picks]
