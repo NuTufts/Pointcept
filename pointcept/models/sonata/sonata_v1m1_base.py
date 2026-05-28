@@ -214,7 +214,15 @@ class Sonata(PointModel):
     def before_train(self):
         # make ModelHook after CheckPointLoader
         total_steps = self.trainer.cfg.scheduler.total_steps
-        curr_step = self.trainer.start_epoch * len(self.trainer.train_loader)
+        # Mid-epoch resume: CheckpointLoader sets trainer.start_iter to the
+        # next iter to run within start_epoch. Without this, the four model
+        # schedulers (mask_size, mask_ratio, teacher_temp, momentum) rewind
+        # to the previous epoch boundary on resume, producing a visible loss
+        # discontinuity if the resume happens during warmup.
+        curr_step = (
+            self.trainer.start_epoch * len(self.trainer.train_loader)
+            + getattr(self.trainer, "start_iter", 0)
+        )
         # mask size scheduler
         self.mask_size_scheduler = CosineScheduler(
             start_value=self.mask_size_start,
