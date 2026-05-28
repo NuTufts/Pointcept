@@ -18,6 +18,18 @@ container=/cluster/tufts/wongjiradlabnu/larbys/larbys-container/pointcept_cuml.s
 # setup singularity on the node
 module load apptainer
 
-# run job script inside container
-apptainer exec --nv --bind /cluster:/cluster $container bash -c "cd ${WORKDIR} && source run_pretraining_extbnb_pax_h200.sh"
+CONFIG="/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept/configs/lartpc/pretrain-sonata-v7-extbnb-larmatch.py"
 
+# resume checkpoints
+#CHECKPOINT="/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept/sonata/lartpc_v7_h200_extbnb_larmatch_lowerlr/model/epoch_6.pth"
+#CHECKPOINT="/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept/sonata/lartpc_v7_h200_extbnb_larmatch_lowerlr/model/epoch_18.pth"
+#CHECKPOINT="/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept/sonata/lartpc_v7_h200_extbnb_larmatch_lowerlr/model/epoch_24.pth"
+CHECKPOINT="/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept/sonata/lartpc_v7_h200_extbnb_larmatch_lowerlr/model/epoch_24.pth"
+
+
+# run job script inside container
+apptainer exec --nv --bind /cluster:/cluster $container bash -c "cd ${WORKDIR} && \
+  cd /cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/ && \
+  source setenv_pointcept_only.sh && \
+  cd /cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept && \
+  python3 tools/train.py --config ${CONFIG} --num-gpus 2 --options resume=True weight=${CHECKPOINT}"

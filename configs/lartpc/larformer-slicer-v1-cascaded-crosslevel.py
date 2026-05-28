@@ -35,12 +35,24 @@ del _larformer_evaluator_module
 # =============================================================================
 # Paths
 # =============================================================================
-_DEFAULT_LIST = "/home/twongjirad/working/larbys/gen2/container_u22/Pointcept/devdata_mergedh5_pi0filter_10files.txt"
+#_DEFAULT_LIST = "/home/twongjirad/working/larbys/gen2/container_u22/Pointcept/devdata_mergedh5_pi0filter_10files.txt"
 #_DEFAULT_LIST = "/home/twongjirad/working/larbys/gen2/container_u22/Pointcept/devdata_mergedh5_pi0filter_1event.txt"
+TRAIN_FILE_LIST = "/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept/lartpc_data_prep/lantern_scripts/h5lists/h5list_mcall_lantern_train.txt"
+VAL_FILE_LIST   = "/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept/lartpc_data_prep/lantern_scripts/h5lists/h5list_mcall_lantern_val.txt"
 
 # Path to the trained SonataLoRADeghostSegmentor checkpoint. Replace with
 # your actual run path; defaults are placeholders.
-deghoster_weight = "/home/twongjirad/working/larbys/gen2/container_u22/Pointcept/sonata/lora_deghost_v6_hasmatch/model/epoch_30.pth"
+#deghoster_weight = "/home/twongjirad/working/larbys/gen2/container_u22/Pointcept/sonata/lora_deghost_v6_hasmatch/model/epoch_30.pth"
+deghoster_weight = "/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept/sonata/lora_deghost_v6_hasmatch/model/epoch_30.pth"
+
+# slicer_backbone_weight = (
+#     "/home/twongjirad/working/larbys/gen2/container_u22/Pointcept/"
+#     "sonata/lartpc_v6_h200_noghosts_pretrain_logspace_resume/model/epoch_42.pth"
+# )
+slicer_backbone_weight = (
+    "/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept/"
+    "sonata/lartpc_v6_h200_noghosts_pretrain_logspace_resume/model/epoch_42.pth"
+)
 
 # =============================================================================
 # Toggles to combat "mirror-symmetric" slice mergers
@@ -160,6 +172,9 @@ elif TOKEN_REFINER_KIND == "cross_level":
         num_layers=TOKEN_REFINER_LAYERS,
         num_heads=4,
         mlp_ratio=4.0,
+        # When target_levels=None (when commented out), 
+        # CrossLevelAttn selects every level
+        # whose name starts with "voxel" (see cross_level.py:200 )
         # target_levels=["voxel_20cm", "voxel_10cm", "voxel_5cm"],
         # source_levels=None,                  # None = all levels (incl. SP)
         max_source_tokens_per_level=8192,      # cap SP's K/V contribution
@@ -268,11 +283,11 @@ data = dict(
     num_classes=3,
     ignore_index=-1,
     names=["nu", "cosmic", "no_object"],
-    train=dict(split="train", data_root="/", data_list_file=_DEFAULT_LIST,
+    train=dict(split="train", data_root="/", data_list_file=TRAIN_FILE_LIST,
                loop=1, max_spacepoints=100_000, **_dataset_common),
-    val=dict(split="val", data_root="/", data_list_file=_DEFAULT_LIST,
+    val=dict(split="val", data_root="/", data_list_file=VAL_FILE_LIST,
              loop=1, max_spacepoints=150_000, **_dataset_common),
-    test=dict(split="test", data_root="/", data_list_file=_DEFAULT_LIST,
+    test=dict(split="test", data_root="/", data_list_file=VAL_FILE_LIST,
               loop=1, max_spacepoints=None, **_dataset_common),
 )
 
@@ -505,11 +520,11 @@ slicer_cfg = dict(
 # Replace with your vanilla Sonata pretrain path; the keys should look
 # like `{teacher,student}.backbone.*` (the standard Sonata-pretrain
 # layout). Set to None to leave the slicer's backbone at random init.
-slicer_backbone_weight = (
-    #"/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept/"
-    "/home/twongjirad/working/larbys/gen2/container_u22/Pointcept/"
-    "sonata/lartpc_v6_h200_noghosts_pretrain_logspace_resume/model/epoch_42.pth"
-)
+# slicer_backbone_weight = (
+#     #"/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept/"
+#     "/home/twongjirad/working/larbys/gen2/container_u22/Pointcept/"
+#     "sonata/lartpc_v6_h200_noghosts_pretrain_logspace_resume/model/epoch_42.pth"
+# )
 
 model = dict(
     type="CascadedSlicer",
@@ -539,16 +554,17 @@ model = dict(
 # `weight = "exp/.../model/model_last.pth"` + `resume = True`.
 weight = None
 
-save_path        = "exp/larformer_slicer_v1_cascaded_loradeghost_crosslevelrefiner_mixedq_maskdn_nonzeroinit_10event"
-epoch            = 2000
-eval_epoch       = 400
-batch_size       = 2
-batch_size_val   = 2
-num_worker       = 2
-num_worker_val   = 2
+save_path        = "exp/larformer_slicer_v1_cascaded_crosslevelrefiner_mixedq_maskdn"
+epoch            = 20
+eval_epoch       = 20
+batch_size       = 24
+batch_size_val   = 24
+num_worker       = 12
+num_worker_val   = 12
 evaluate         = True          # LArFormerSlicerEvaluator runs after each epoch
 enable_amp       = False
-empty_cache      = True
+amp_dtype        = "bfloat16"
+empty_cache      = False
 enable_wandb     = True
 clip_grad        = 1.0
 wandb_project    = "pointcept-larformer"
@@ -587,8 +603,8 @@ scheduler = dict(
     mode="plateau",
     gamma=0.5,
     min_lr=1e-7,
-    step_period_epochs=400,
-    patience_epochs=500,
+    step_period_epochs=50,
+    patience_epochs=2,
     min_delta=1e-4,
     cooldown_epochs=2,
     # Linear warmup over the first 500 training iters (~100 epochs on the
@@ -597,7 +613,7 @@ scheduler = dict(
     # first ~50 iters are noisy enough to spike the loss curve, so we
     # don't want the plateau detector touching anything during that
     # phase. step_epoch is a no-op while in warmup (counters frozen).
-    warmup_iters=500,
+    warmup_iters=8000, # roughly 0.5 epochs
     warmup_start_lr=0.0,
     # EMA over the val/loss for plateau detection. A single lucky-low
     # raw val_loss (which fluctuates a few % epoch-to-epoch on this
@@ -613,11 +629,12 @@ scheduler = dict(
 )
 
 hooks = [
-    # No CheckpointLoader hook: both deghoster + slicer-backbone weights
+    # both deghoster + slicer-backbone weights
     # are loaded inside CascadedSlicer.__init__ (see deghoster_weight +
     # slicer_backbone_weight on the model config). Add `dict(type=
     # "CheckpointLoader")` here (NOT SonataCheckpointLoader) only when
     # resuming a previous cascaded-training run.
+    dict(type="CheckpointLoader", extend_scheduler=False), #include if resuming
     dict(type="IterationTimer", warmup_iter=2),
     dict(type="InformationWriter"),
     dict(type="LArFormerSlicerEvaluator",
@@ -629,6 +646,17 @@ hooks = [
          log_per_event=False),
     dict(type="LREpochScheduler"),
     dict(type="CheckpointSaver", save_freq=None),
+    # Iteration-level checkpointing so SLURM jobs killed at the 24h wall-clock
+    # cap can resume mid-epoch (epochs are ~9h on the Isambard-AI allocation).
+    # Writes to the same model_last.pth that CheckpointSaver uses, plus
+    # iter_in_epoch + RNG state so CheckpointLoader can pick up mid-epoch.
+    # save_iter_freq=500 ≈ ~9 min between saves at ~30k batches/epoch, so the
+    # worst-case wasted compute on a kill is bounded by that.
+    dict(type="IterCheckpointSaver", save_iter_freq=100, keep_history=False),
+    # Catch SLURM's pre-timeout SIGUSR1 (sent via --signal=USR1@1800), save a
+    # checkpoint, write a RESUBMIT marker so the batch script can chain the
+    # next job, and exit cleanly before SLURM kills the process.
+    dict(type="SignalCheckpointHook", check_every_n_iter=20),
 ]
 
 train = dict(type="LArFormerTrainer")
