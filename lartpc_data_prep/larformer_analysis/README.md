@@ -206,6 +206,55 @@ ROOT lists from Stage 0.
 Use `tools/run_slicer_inference.py` with the val+test merged-h5 list
 and each model checkpoint. No script changes needed.
 
+### Stage 2+3 — SLURM array driver (inference + per-event analysis)
+
+`slurm/submit_valtest.sh` + `slurm/run_valtest_per_fileno.py` package
+Stage 2 (inference) + Stage 3 (analysis) into a SLURM array, one task
+per fileno on the val+test set. Each task: reads its `SLURM_ARRAY_TASK_ID`
+-th line from `rerun_lines/<TAG>.txt`, selects the matching manifest
+rows, runs `run_slicer_inference.py` once for that fileno's events,
+then loops `analyze_event.py` per event.
+
+**Setup**:
+1. Copy `slurm/valtest_pi0_crosslevel.conf` to a per-TAG×model config
+   and edit `WORKDIR`, `MODEL_CONFIG`, `MODEL_WEIGHTS`, `OUTPUT_DIR`,
+   `GAMMA_BEAM` / `GAMMA_COSMIC` (and the SBATCH knobs at the bottom).
+2. From the repo root on a Tufts head node:
+   ```bash
+   sbatch lartpc_data_prep/larformer_analysis/slurm/submit_valtest.sh \
+          lartpc_data_prep/larformer_analysis/slurm/<your>.conf
+   ```
+   The script auto-sizes the SLURM array from the rerun-lines file and
+   re-exec's itself with the right `--array=0-N`, partition, time, etc.
+
+**Outputs per task** (under `${OUTPUT_DIR}`):
+```
+inference/<TAG>/slicerpred_merged_<TAG>_fileno<N>_entry<M>.h5
+analysis/<TAG>/perevent_<run>_<sub>_<evt>.h5
+_inputlists/<TAG>/fileno<N>.txt        # the tiny inputlist per task
+```
+
+**Useful flags on the per-task driver**:
+- `--skip-inference`: run analyzer only (slicerpred_*.h5 must already
+  exist). Lets you re-run analysis with different γ / OOB knobs without
+  re-doing inference.
+- `--skip-analysis`: inference only — useful for one model checkpoint
+  → many analyzer reruns.
+
+**After the array completes**:
+```bash
+# Stage 4: aggregate
+python lartpc_data_prep/larformer_analysis/aggregate_metrics.py \
+    --perevent-dir ${OUTPUT_DIR}/analysis/${TAG} \
+    --output-dir   ${OUTPUT_DIR}/summary
+
+# Stage 5: plot
+python lartpc_data_prep/larformer_analysis/plot_metrics.py \
+    --event-summary    ${OUTPUT_DIR}/summary/event_summary.h5 \
+    --category-summary ${OUTPUT_DIR}/summary/category_summary.h5 \
+    --output-dir       ${OUTPUT_DIR}/plots
+```
+
 ### Stage 3 — Per-event analysis (TODO — Pass 2)
 
 `analyze_event.py` takes `(merged_h5, flashinfo_h5, inference_h5)` →
