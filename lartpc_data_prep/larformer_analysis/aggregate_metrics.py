@@ -46,6 +46,122 @@ import h5py
 import numpy as np
 
 
+# ---------------------------------------------------------------------------
+# Post-hoc gamma override
+# ---------------------------------------------------------------------------
+# The per-event H5 stores `pe_pred` arrays computed at the gamma values
+# the analyzer was invoked with (default 1.0). The chi-2 formula is
+#     chi2 = Σ (pe_obs - γ·pe_pred)² / (pe_obs + (f_sys·pe_obs)² + ε)
+# i.e. pe_pred enters linearly. So at any new γ we can rescale
+# pe_pred_recorded → γ_new·pe_pred_recorded and recompute chi2 + M3 +
+# M4 directly from the stored arrays. M1 IoU and sp_level_* metrics
+# are γ-independent so they pass through unchanged.
+
+def _neyman_chi2(pe_obs, pe_pred, f_sys, eps):
+    """Scalar Neyman chi-2 across all PMTs (no OOB rejection here)."""
+    var = pe_obs + (f_sys * pe_obs) ** 2 + eps
+    return float(((pe_obs - pe_pred) ** 2 / var).sum())
+
+
+def _chi2_oob_sweep(pe_obs, pe_pred_scaled, oob_frac,
+                    oob_thresholds, f_sys, eps):
+    """(T,) chi-2 array; NaN where oob_frac > threshold."""
+    chi2 = _neyman_chi2(pe_obs, pe_pred_scaled, f_sys, eps)
+    return np.where(
+        np.asarray(oob_thresholds, dtype=np.float64) >= float(oob_frac),
+        chi2, np.nan,
+    ).astype(np.float32)
+
+
+def _recompute_event_metrics(f, gamma_beam, gamma_cosmic, f_sys, eps,
+                             nu_class_id=0, default_oob_idx=None):
+    """Recompute M3 + M4 for one event H5 under a new (γ_beam, γ_cosmic).
+
+    Picks γ from the producer of the event's in-time flash (0=beam,
+    1=cosmic). M1, IoU, sp_level_* are γ-independent — left as
+    they were.
+
+    Returns dict with: m3_chi2_gt, m3_chi2_nu, m3_delta_chi2 (T,),
+    m4_rank_all (T,), m4_rank_nu (T,).
+    """
+    oob_thresholds = np.asarray(f.attrs["oob_thresholds"], dtype=np.float32)
+    if default_oob_idx is None:
+        default_oob_idx = int(f.attrs["default_oob_idx"])
+    no_obj = int(f.attrs.get("no_object_class_id", 2))
+
+    producer_id = int(f["in_time_flash"].attrs["producer_id"])
+    gamma = gamma_beam if producer_id == 0 else gamma_cosmic
+
+    pe_obs = f["in_time_flash/pe_obs"][:].astype(np.float64)
+
+    # GT baseline
+    gb = f["gt_baseline"]
+    gt_pe_pred = gb["pe_pred"][:].astype(np.float64)
+    gt_oob_frac = float(gb.attrs["oob_frac"])
+    chi2_gt = _chi2_oob_sweep(
+        pe_obs, gamma * gt_pe_pred, gt_oob_frac,
+        oob_thresholds, f_sys, eps,
+    )
+
+    # Per-slice
+    ps = f["pred_slices"]
+    Q = int(ps.attrs.get("n_pred_slices", 0))
+    out = dict(
+        m3_chi2_gt    = float(chi2_gt[default_oob_idx]),
+        m3_chi2_nu    = float("nan"),
+        m3_delta_chi2 = np.full(len(oob_thresholds), np.nan, dtype=np.float32),
+        m4_rank_all   = np.full(len(oob_thresholds), -1, dtype=np.int32),
+        m4_rank_nu    = np.full(len(oob_thresholds), -1, dtype=np.int32),
+        gt_baseline_chi2 = chi2_gt,
+    )
+    if Q == 0:
+        return out
+
+    iou_arr      = ps["iou_vs_gt_nu"][:]
+    class_argmax = ps["class_argmax"][:]
+    oob_frac_arr = ps["oob_frac"][:]
+    pe_pred_per_slice = ps["pe_pred"][:].astype(np.float64)
+
+    chi2_per_slice = np.full((Q, len(oob_thresholds)), np.nan, dtype=np.float32)
+    for q in range(Q):
+        chi2_per_slice[q, :] = _chi2_oob_sweep(
+            pe_obs, gamma * pe_pred_per_slice[q],
+            float(oob_frac_arr[q]),
+            oob_thresholds, f_sys, eps,
+        )
+
+    is_nu = (class_argmax == nu_class_id)
+    # M1 IoU is γ-independent → reuse it to pick the best-nu-pred slice.
+    if is_nu.any():
+        nu_idx = np.flatnonzero(is_nu)
+        best_in_nu = nu_idx[int(np.argmax(iou_arr[nu_idx]))]
+        if iou_arr[best_in_nu] > 0:
+            out["m3_chi2_nu"] = float(chi2_per_slice[best_in_nu, default_oob_idx])
+            out["m3_delta_chi2"] = (
+                chi2_per_slice[best_in_nu, :] - chi2_gt
+            ).astype(np.float32)
+    # M4 — GT-best-match slice (max IoU across ALL slices) rank by chi2 asc.
+    best_all = int(np.argmax(iou_arr))
+    best_iou_all = float(iou_arr[best_all])
+    for ti in range(len(oob_thresholds)):
+        col = chi2_per_slice[:, ti]
+        if best_iou_all > 0 and not np.isnan(col[best_all]):
+            surv = np.flatnonzero(~np.isnan(col))
+            order = surv[np.argsort(col[surv])]
+            pos = int(np.flatnonzero(order == best_all)[0]) + 1
+            out["m4_rank_all"][ti] = pos
+        if is_nu.any():
+            nu_idxs = np.flatnonzero(is_nu)
+            nu_best_local = nu_idxs[int(np.argmax(iou_arr[nu_idxs]))]
+            if iou_arr[nu_best_local] > 0 and not np.isnan(col[nu_best_local]):
+                nu_surv = nu_idxs[~np.isnan(col[nu_idxs])]
+                if len(nu_surv) > 0:
+                    order = nu_surv[np.argsort(col[nu_surv])]
+                    pos = int(np.flatnonzero(order == nu_best_local)[0]) + 1
+                    out["m4_rank_nu"][ti] = pos
+    return out
+
+
 def _summarize(vals, axis=None):
     """mean/median/p10/p90 over `vals`. Returns dict of float32s. NaN-aware."""
     vals = np.asarray(vals)
@@ -116,7 +232,47 @@ def main():
     ap.add_argument("--model-tag", default=None,
                     help="Override model_tag (default: inferred from the "
                          "first per-event file)")
+    # Post-hoc γ override (no rerun of inference/analyzer needed). When
+    # set, M3 chi-2 (gt + nu) and M4 ranks are recomputed from the
+    # stored pe_obs / pe_pred arrays under the new γ. M1 IoU and
+    # sp_level_nu_recall/precision are γ-independent and pass through
+    # unchanged.
+    ap.add_argument("--gamma-beam",   type=float, default=None,
+                    help="γ for beam-producer flashes (override the value "
+                         "the analyzer ran with). When set with "
+                         "--gamma-cosmic, M3/M4 are recomputed post-hoc "
+                         "from the recorded pe_pred arrays.")
+    ap.add_argument("--gamma-cosmic", type=float, default=None,
+                    help="γ for cosmic-producer flashes. Pairs with "
+                         "--gamma-beam.")
+    ap.add_argument("--f-sys", type=float, default=0.10,
+                    help="Fractional systematic for the Neyman chi-2 "
+                         "variance floor. Only used when γ override is "
+                         "active. Default 0.10 (matches analyze_event.py).")
+    ap.add_argument("--eps",   type=float, default=1.0,
+                    help="Absolute variance floor (PE²). Default 1.0.")
     args = ap.parse_args()
+
+    use_gamma_override = (args.gamma_beam is not None
+                          or args.gamma_cosmic is not None)
+    if use_gamma_override:
+        # Default the other half to 1.0 (i.e. no scaling for that producer)
+        # if the user only set one — but warn so the user knows.
+        if args.gamma_beam is None:
+            sys.stderr.write(
+                "[warn] --gamma-cosmic set without --gamma-beam; "
+                "defaulting γ_beam=1.0\n"
+            )
+            args.gamma_beam = 1.0
+        if args.gamma_cosmic is None:
+            sys.stderr.write(
+                "[warn] --gamma-beam set without --gamma-cosmic; "
+                "defaulting γ_cosmic=1.0\n"
+            )
+            args.gamma_cosmic = 1.0
+        print(f"Post-hoc γ override: γ_beam={args.gamma_beam:.4g}  "
+              f"γ_cosmic={args.gamma_cosmic:.4g}  "
+              f"f_sys={args.f_sys}  eps={args.eps}")
 
     os.makedirs(args.output_dir, exist_ok=True)
     paths = sorted(glob.glob(os.path.join(args.perevent_dir, args.glob)))
@@ -195,11 +351,24 @@ def main():
             m1_slice_id[i]       = int(m.attrs.get("m1_slice_id", -1))
             m1_iou_intent[i]     = float(m.attrs.get("m1_iou_intent", 0.0))
             m1_slice_id_intent[i] = int(m.attrs.get("m1_slice_id_intent", -1))
-            m3_chi2_gt[i]  = float(m.attrs.get("m3_chi2_gt", np.nan))
-            m3_chi2_nu[i]  = float(m.attrs.get("m3_chi2_nu", np.nan))
-            m3_delta_chi2[i, :] = m["m3_delta_chi2"][:]
-            m4_rank_all[i, :]   = m["m4_rank_all"][:]
-            m4_rank_nu[i, :]    = m["m4_rank_nu"][:]
+            if use_gamma_override:
+                rec = _recompute_event_metrics(
+                    f,
+                    gamma_beam=args.gamma_beam,
+                    gamma_cosmic=args.gamma_cosmic,
+                    f_sys=args.f_sys, eps=args.eps,
+                )
+                m3_chi2_gt[i] = rec["m3_chi2_gt"]
+                m3_chi2_nu[i] = rec["m3_chi2_nu"]
+                m3_delta_chi2[i, :] = rec["m3_delta_chi2"]
+                m4_rank_all[i, :]   = rec["m4_rank_all"]
+                m4_rank_nu[i, :]    = rec["m4_rank_nu"]
+            else:
+                m3_chi2_gt[i]  = float(m.attrs.get("m3_chi2_gt", np.nan))
+                m3_chi2_nu[i]  = float(m.attrs.get("m3_chi2_nu", np.nan))
+                m3_delta_chi2[i, :] = m["m3_delta_chi2"][:]
+                m4_rank_all[i, :]   = m["m4_rank_all"][:]
+                m4_rank_nu[i, :]    = m["m4_rank_nu"][:]
             it = f["in_time_flash"]
             in_time_total_pe[i] = float(it["pe_obs"][:].sum())
             gb = f["gt_baseline"]
@@ -238,6 +407,14 @@ def main():
         f.attrs["n_events"]           = int(N)
         f.attrs["nu_class_id"]        = nu_class_id
         f.attrs["no_object_class_id"] = no_object_class_id
+        # γ override stamps (= "1.0 fallthrough" when not overridden;
+        # readers can tell whether a post-hoc rescale was applied).
+        f.attrs["gamma_override_applied"] = bool(use_gamma_override)
+        if use_gamma_override:
+            f.attrs["gamma_beam"]   = float(args.gamma_beam)
+            f.attrs["gamma_cosmic"] = float(args.gamma_cosmic)
+            f.attrs["f_sys"]        = float(args.f_sys)
+            f.attrs["eps"]          = float(args.eps)
         e = f.create_group("events")
         for name, arr in (
             ("run", run), ("subrun", subrun), ("event", event),
