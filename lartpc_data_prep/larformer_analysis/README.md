@@ -262,6 +262,54 @@ python lartpc_data_prep/larformer_analysis/plot_metrics.py \
     --output-dir       ${OUTPUT_DIR}/plots
 ```
 
+### Post-hoc γ tuning (no rerun of inference / analyzer)
+
+The analyzer runs with γ=1.0 by default. Because χ² is linear in γ
+(`pe_pred` enters the residual via `pe_pred · γ` and the variance
+depends only on `pe_obs`), you can recompute M3 + M4 under any new γ
+straight from the recorded `pe_pred` arrays. M1 IoU and `sp_level_*`
+are γ-independent and unchanged.
+
+Two-step workflow:
+
+```bash
+# 1. Estimate γ from the analyzer's already-written perevent_*.h5
+python lartpc_data_prep/larformer_analysis/tune_gamma.py \
+    --perevent-dir ${OUTPUT_DIR}/analysis/${TAG} \
+    --output-dir   ${OUTPUT_DIR}/gamma_tune
+
+# Pick a value from the (B) M1-panoptic-nu view → γ_ratio_of_sums.
+# That's the analyzer-faithful γ (uses what the model predicts, not
+# the truth-side baseline).
+
+# 2. Re-aggregate with the new γ; plots then reflect the rescaled M3/M4.
+python lartpc_data_prep/larformer_analysis/aggregate_metrics.py \
+    --perevent-dir ${OUTPUT_DIR}/analysis/${TAG} \
+    --output-dir   ${OUTPUT_DIR}/summary_gamma237 \
+    --gamma-beam   237  --gamma-cosmic 237
+
+python lartpc_data_prep/larformer_analysis/plot_metrics.py \
+    --event-summary    ${OUTPUT_DIR}/summary_gamma237/event_summary.h5 \
+    --category-summary ${OUTPUT_DIR}/summary_gamma237/category_summary.h5 \
+    --output-dir       ${OUTPUT_DIR}/plots_gamma237
+```
+
+The aggregator stamps `gamma_beam`, `gamma_cosmic`, `f_sys`, `eps`, and
+`gamma_override_applied` on `event_summary.h5.attrs` so downstream
+readers (and a future side-by-side comparison plot) can tell which γ
+the summary was built with.
+
+Per-producer γ: in BNB nu-on-cosmic samples the in-time flash is always
+beam (`producer_id==0`), so `--gamma-cosmic` only matters if you point
+`tune_gamma` / the analyzer at cosmic-only or out-of-time event sets.
+Setting only one of `--gamma-beam` / `--gamma-cosmic` defaults the
+other to 1.0 and warns.
+
+If you want to A/B several γ values, run the aggregator multiple times
+into separate output dirs (`summary_g100/`, `summary_g237/`, etc.) and
+re-plot each. The analyzer + inference outputs (the slow part) are
+written once and reused.
+
 ### Stage 3 — Per-event analysis (TODO — Pass 2)
 
 `analyze_event.py` takes `(merged_h5, flashinfo_h5, inference_h5)` →
