@@ -209,11 +209,18 @@ and each model checkpoint. No script changes needed.
 ### Stage 2+3 — SLURM array driver (inference + per-event analysis)
 
 `slurm/submit_valtest.sh` + `slurm/run_valtest_per_fileno.py` package
-Stage 2 (inference) + Stage 3 (analysis) into a SLURM array, one task
-per fileno on the val+test set. Each task: reads its `SLURM_ARRAY_TASK_ID`
--th line from `rerun_lines/<TAG>.txt`, selects the matching manifest
-rows, runs `run_slicer_inference.py` once for that fileno's events,
-then loops `analyze_event.py` per event.
+Stage 2 (inference) + Stage 3 (analysis) into a SLURM array. Each task
+processes a **chunk of `STRIDE` filenos** (default `STRIDE=50` — set
+in the per-TAG conf, tune to your cluster's `AssocMaxSubmitJobLimit`).
+
+Total array size = `ceil(N_filenos / STRIDE)`. For pi0 (1480 filenos)
+with `STRIDE=50` that's **30 tasks**, well under typical QOS caps.
+
+Per task: reads `linenos[task_id*STRIDE : (task_id+1)*STRIDE]` from
+`rerun_lines/<TAG>.txt`, selects the matching manifest rows,
+runs `run_slicer_inference.py` **once** for the whole chunk (model
+loads once, amortized across all events in the chunk), then loops
+`analyze_event.py` per event.
 
 **Setup**:
 1. Copy `slurm/valtest_pi0_crosslevel.conf` to a per-TAG×model config

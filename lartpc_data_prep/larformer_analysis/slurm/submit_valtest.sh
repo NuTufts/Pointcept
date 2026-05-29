@@ -43,11 +43,18 @@ if [ -z "${SLURM_ARRAY_TASK_ID:-}" ] && [ -z "${VALTEST_RESUBMITTED:-}" ]; then
         echo "ERROR: RERUN_LINES_FILE not found: $RERUN_LINES_FILE" >&2
         exit 1
     fi
-    N_TASKS=$(grep -c '^[^#[:space:]]' "$RERUN_LINES_FILE")
-    if [ "$N_TASKS" -le 0 ]; then
+    N_FILENOS=$(grep -c '^[^#[:space:]]' "$RERUN_LINES_FILE")
+    if [ "$N_FILENOS" -le 0 ]; then
         echo "ERROR: RERUN_LINES_FILE is empty: $RERUN_LINES_FILE" >&2
         exit 1
     fi
+    STRIDE="${STRIDE:-1}"
+    if [ "$STRIDE" -le 0 ]; then
+        echo "ERROR: STRIDE must be a positive integer (got $STRIDE)" >&2
+        exit 1
+    fi
+    # ceil(N_FILENOS / STRIDE) = (N_FILENOS + STRIDE - 1) / STRIDE
+    N_TASKS=$(( (N_FILENOS + STRIDE - 1) / STRIDE ))
     LAST_TASK=$((N_TASKS - 1))
 
     mkdir -p "${SBATCH_LOG_DIR:-./logs}"
@@ -55,6 +62,8 @@ if [ -z "${SLURM_ARRAY_TASK_ID:-}" ] && [ -z "${VALTEST_RESUBMITTED:-}" ]; then
     SCRIPT_ABS="$(readlink -f "${BASH_SOURCE[0]}")"
 
     echo "Launching SLURM array: 0-${LAST_TASK} (=${N_TASKS} tasks)"
+    echo "  N_FILENOS  = ${N_FILENOS}"
+    echo "  STRIDE     = ${STRIDE}  (filenos per task)"
     echo "  conf       = ${CONF_ABS}"
     echo "  log dir    = ${SBATCH_LOG_DIR}"
     echo "  partition  = ${SBATCH_PARTITION}"
@@ -103,6 +112,7 @@ python lartpc_data_prep/larformer_analysis/slurm/run_valtest_per_fileno.py \
     --model-tag ${MODEL_TAG} \
     --output-dir ${OUTPUT_DIR} \
     --task-id ${SLURM_ARRAY_TASK_ID} \
+    --stride ${STRIDE:-1} \
     --gamma-beam ${GAMMA_BEAM} \
     --gamma-cosmic ${GAMMA_COSMIC}"
 

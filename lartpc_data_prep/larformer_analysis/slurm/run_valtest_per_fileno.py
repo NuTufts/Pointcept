@@ -1,13 +1,19 @@
-"""Per-fileno SLURM-array driver: inference + per-event analysis.
+"""SLURM-array driver: inference + per-event analysis on the val+test set.
 
-Picks the SLURM_ARRAY_TASK_ID-th line from a Stage-0 rerun_lines file,
-selects all manifest rows for that fileno, writes a tiny inputlist of
-those merged H5s, runs `tools/run_slicer_inference.py` once for the
-batch, then loops over each output and runs `analyze_event.py`.
+One SLURM task processes a CHUNK of `--stride` consecutive filenos from
+a Stage-0 rerun_lines file:
+  - selects all manifest rows for those filenos
+  - writes a single combined inputlist of merged H5s
+  - runs `tools/run_slicer_inference.py` ONCE for the chunk (amortizes
+    the model-load + warm-up cost across multiple filenos)
+  - loops `analyze_event.py` per surviving event
+
+The chunk this task owns is `rerun_lines[task_id*stride : (task_id+1)*stride]`,
+naturally clipped at the end of the list.
 
 Designed to run INSIDE the pointcept_cuml container; called from the
 bash submit wrapper. Per-task isolation: each task writes its inference
-+ analysis outputs to subdirectories of OUTPUT_DIR, indexed by fileno.
++ analysis outputs to TAG-keyed subdirectories of OUTPUT_DIR.
 
 Inputs (all required, via CLI):
   --tag               <TAG>
@@ -19,7 +25,9 @@ Inputs (all required, via CLI):
   --output-dir        per-task outputs go to
                           OUTPUT_DIR/inference/<TAG>/slicerpred_*.h5
                           OUTPUT_DIR/analysis/<TAG>/perevent_*.h5
-  --task-id           SLURM_ARRAY_TASK_ID (0-indexed; line number in rerun-lines)
+                          OUTPUT_DIR/_inputlists/<TAG>/task<N>.txt
+  --task-id           SLURM_ARRAY_TASK_ID (0-indexed)
+  --stride            filenos per task (default 1)
   [--gamma-beam / --gamma-cosmic] forwarded to analyze_event
   [--skip-inference]  skip step A; assume the slicerpred_*.h5 already exist
                       (useful when re-running just the analyzer)
@@ -86,40 +94,66 @@ def main():
     ap.add_argument("--model-tag",         required=True)
     ap.add_argument("--output-dir",        required=True)
     ap.add_argument("--task-id",           required=True, type=int)
+    ap.add_argument("--stride",            type=int, default=1,
+                    help="Filenos per task (default 1). The chunk this "
+                         "task owns is rerun_lines[task_id*stride : "
+                         "(task_id+1)*stride].")
     ap.add_argument("--gamma-beam",        type=float, default=1.0)
     ap.add_argument("--gamma-cosmic",      type=float, default=1.0)
     ap.add_argument("--skip-inference",    action="store_true")
     ap.add_argument("--skip-analysis",     action="store_true")
     args = ap.parse_args()
 
-    # ---- 1. Resolve which fileno this task owns -----------------------
+    # ---- 1. Resolve which filenos this task owns ---------------------
     linenos = _read_rerun_linenos(args.rerun_lines_file)
-    if args.task_id < 0 or args.task_id >= len(linenos):
+    if args.task_id < 0:
+        sys.exit(f"task-id must be >= 0; got {args.task_id}")
+    if args.stride <= 0:
+        sys.exit(f"--stride must be >= 1; got {args.stride}")
+    start = args.task_id * args.stride
+    end   = min(start + args.stride, len(linenos))
+    if start >= len(linenos):
         sys.exit(
-            f"task-id {args.task_id} out of range "
-            f"[0, {len(linenos)}) for {args.rerun_lines_file}"
+            f"task-id {args.task_id} stride {args.stride} yields start={start} "
+            f">= n_linenos={len(linenos)} — task is out of range for "
+            f"{args.rerun_lines_file}"
         )
-    fileno = linenos[args.task_id]
-    print(f"[task {args.task_id}] tag={args.tag}  fileno={fileno}")
+    chunk_filenos = linenos[start:end]
+    print(f"[task {args.task_id}] tag={args.tag}  stride={args.stride}  "
+          f"chunk=[{start}:{end})  filenos={chunk_filenos}")
 
     by_fn = _read_manifest_by_fileno(args.manifest_csv)
-    rows = by_fn.get(fileno, [])
+    rows = []
+    missing_filenos = []
+    for fn in chunk_filenos:
+        sub = by_fn.get(fn, [])
+        if not sub:
+            missing_filenos.append(fn)
+        else:
+            rows.extend(sub)
+    if missing_filenos:
+        sys.stderr.write(
+            f"[task {args.task_id}] WARNING: no manifest rows for "
+            f"{len(missing_filenos)} filenos in chunk "
+            f"(e.g. {missing_filenos[:5]}) — manifest_csv may be out "
+            f"of sync with rerun-lines file\n"
+        )
     if not rows:
         sys.exit(
-            f"[task {args.task_id}] no manifest rows for fileno={fileno}; "
-            f"manifest_csv {args.manifest_csv} may be out of sync with the "
-            f"rerun-lines file"
+            f"[task {args.task_id}] no events found for any fileno in chunk; "
+            f"nothing to do"
         )
-    print(f"[task {args.task_id}] {len(rows)} events for fileno={fileno}")
+    print(f"[task {args.task_id}] {len(rows)} events across "
+          f"{len(chunk_filenos) - len(missing_filenos)} filenos")
 
-    # ---- 2. Set up per-fileno output dirs + tiny inputlist ------------
+    # ---- 2. Set up output dirs + combined inputlist for this task ----
     infer_dir   = os.path.join(args.output_dir, "inference", args.tag)
     analyze_dir = os.path.join(args.output_dir, "analysis",  args.tag)
     list_dir    = os.path.join(args.output_dir, "_inputlists", args.tag)
     for d in (infer_dir, analyze_dir, list_dir):
         os.makedirs(d, exist_ok=True)
 
-    inputlist_path = os.path.join(list_dir, f"fileno{fileno:05d}.txt")
+    inputlist_path = os.path.join(list_dir, f"task{args.task_id:06d}.txt")
     missing = []
     with open(inputlist_path, "w") as fh:
         for r in rows:
@@ -194,7 +228,8 @@ def main():
     else:
         print(f"[task {args.task_id}] --skip-analysis set; done")
 
-    print(f"[task {args.task_id}] DONE  tag={args.tag} fileno={fileno}")
+    print(f"[task {args.task_id}] DONE  tag={args.tag}  "
+          f"filenos={chunk_filenos}  n_events={len(rows)}")
 
 
 if __name__ == "__main__":
