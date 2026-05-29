@@ -86,11 +86,17 @@ def _per_sp_predicted_slice(
         q_to_k[q_idx_matched] = k_idx_matched
 
     matched_k = q_to_k[pred_q]                       # (N,) GT idx per SP (or -1)
-    pred_slice = np.where(
-        matched_k >= 0,
-        primary_trackid[matched_k.clip(min=0)],       # safe lookup
-        -1,
-    ).astype(np.int64)
+    if primary_trackid.size == 0:
+        # No GT instances → no matched_k can be >= 0 anyway, but
+        # `primary_trackid[matched_k.clip(min=0)]` crashes on the
+        # empty index. Short-circuit to all-unassigned.
+        pred_slice = np.full(N, -1, dtype=np.int64)
+    else:
+        pred_slice = np.where(
+            matched_k >= 0,
+            primary_trackid[matched_k.clip(min=0)],   # safe lookup
+            -1,
+        ).astype(np.int64)
     return pred_q, pred_c, pred_slice
 
 
