@@ -164,6 +164,169 @@ def build_trackid_traj_reco_tick_bounds(ioll):
     return out
 
 
+def extract_mctruth_summary(ioll):
+    """Pull per-event neutrino-truth + primary-particle summary from larlite.
+
+    Reads event_mctruth['generator'] (one mctruth object per neutrino — for
+    BNB samples this is always size 1). Records the neutrino interaction
+    scalars (PDG, energy, CCNC, mode, interaction type) and the list of
+    final-state primaries (StatusCode == 1) with their PDG + KE.
+
+    Returns a dict with:
+        has_neutrino:        bool — was an mctruth + neutrino present
+        nu_pdg:              int  — neutrino PDG (12, -12, 14, -14) or 0
+        nu_energy_MeV:       float
+        nu_vertex_xyz_cm:    (3,) float32
+        ccnc:                int  — 0=CC, 1=NC, -1 if no nu
+        mode:                int  — interaction mode (see larlite mcnu.h)
+        interaction_type:    int  — detailed interaction type
+        primary_pdg:         (N,) int32 — final-state primaries
+        primary_KE_MeV:      (N,) float32
+        primary_status:      (N,) int8
+
+    Designed to be safe on cosmic-only / data files: returns has_neutrino=
+    False with empty arrays when mctruth is absent or empty.
+    """
+    out = {
+        "has_neutrino":     False,
+        "nu_pdg":           0,
+        "nu_energy_MeV":    0.0,
+        "nu_vertex_xyz_cm": np.zeros(3, dtype=np.float32),
+        "ccnc":             -1,
+        "mode":             -1,
+        "interaction_type": -1,
+        "primary_pdg":      np.zeros(0, dtype=np.int32),
+        "primary_KE_MeV":   np.zeros(0, dtype=np.float32),
+        "primary_status":   np.zeros(0, dtype=np.int8),
+    }
+    try:
+        ev_mctruth = ioll.get_data(larlite.data.kMCTruth, "generator")
+    except Exception:
+        return out
+    if ev_mctruth is None or ev_mctruth.size() == 0:
+        return out
+
+    mctruth = ev_mctruth.at(0)
+    try:
+        mcnu = mctruth.GetNeutrino()
+        nu = mcnu.Nu()
+        out["has_neutrino"] = True
+        out["nu_pdg"] = int(nu.PdgCode())
+        out["nu_energy_MeV"] = float(nu.Momentum().E()) * 1000.0
+        try:
+            pos0 = nu.Trajectory().at(0).Position()
+            out["nu_vertex_xyz_cm"] = np.array(
+                [float(pos0.X()), float(pos0.Y()), float(pos0.Z())],
+                dtype=np.float32,
+            )
+        except Exception:
+            pass
+        out["ccnc"] = int(mcnu.CCNC())
+        out["mode"] = int(mcnu.Mode())
+        out["interaction_type"] = int(mcnu.InteractionType())
+    except Exception:
+        # No neutrino on this mctruth (single-particle gun, cosmic-only, etc.)
+        pass
+
+    n_part = int(mctruth.NParticles())
+    pdgs, kes, stats = [], [], []
+    for i in range(n_part):
+        p = mctruth.GetParticle(i)
+        try:
+            stat = int(p.StatusCode())
+        except Exception:
+            stat = -1
+        if stat != 1:
+            continue
+        try:
+            pdg = int(p.PdgCode())
+            E = float(p.Momentum(0).E()) * 1000.0  # GeV → MeV
+            m = float(p.Momentum(0).M()) * 1000.0
+            KE = max(E - m, 0.0)
+        except Exception:
+            continue
+        pdgs.append(pdg)
+        kes.append(KE)
+        stats.append(stat)
+    if pdgs:
+        out["primary_pdg"]    = np.asarray(pdgs, dtype=np.int32)
+        out["primary_KE_MeV"] = np.asarray(kes, dtype=np.float32)
+        out["primary_status"] = np.asarray(stats, dtype=np.int8)
+    return out
+
+
+def extract_nu_shower_summary(ioll):
+    """Per-mcshower summary for showers with Origin() == kNuOrigin.
+
+    These are the photons / electrons from a neutrino interaction (including
+    π0 → γγ daughters). DetProfile().Energy() is the energy that actually
+    reached the active TPC volume — the standard "visible energy" measure
+    used downstream to decide if a shower is detectable.
+
+    Returns a dict with (N_sh,) arrays:
+        pdg:              int32  — PdgCode of the mcshower
+        start_xyz_cm:     (N_sh, 3) float32
+        start_t_ns:       float32
+        detprofile_E_MeV: float32 — DetProfile().Energy(), MeV
+        true_E_MeV:       float32 — Start().E() in MeV (true initial KE)
+        trackid:          int32
+
+    Used by the analysis-side categorizer to count "visible photons"
+    (typically: PDG=22, DetProfile_E > threshold, start in fiducial).
+    """
+    pdgs, xs, ys, zs, ts, deps, tes, tids = [], [], [], [], [], [], [], []
+    try:
+        ev_sh = ioll.get_data(larlite.data.kMCShower, "mcreco")
+    except Exception:
+        ev_sh = None
+    if ev_sh is None:
+        return {
+            "pdg":              np.zeros(0, dtype=np.int32),
+            "start_xyz_cm":     np.zeros((0, 3), dtype=np.float32),
+            "start_t_ns":       np.zeros(0, dtype=np.float32),
+            "detprofile_E_MeV": np.zeros(0, dtype=np.float32),
+            "true_E_MeV":       np.zeros(0, dtype=np.float32),
+            "trackid":          np.zeros(0, dtype=np.int32),
+        }
+    for i in range(ev_sh.size()):
+        sh = ev_sh[i]
+        try:
+            if int(sh.Origin()) != 1:   # kNuOrigin == 1 (cf. larlite/MCTruth.h)
+                continue
+            pdg = int(sh.PdgCode())
+            s = sh.Start()
+            x, y, z, t = float(s.X()), float(s.Y()), float(s.Z()), float(s.T())
+            dE = float(sh.DetProfile().E()) if sh.DetProfile().E() == sh.DetProfile().E() else 0.0
+            tE = float(s.E())
+            tid = int(sh.TrackID())
+        except Exception:
+            continue
+        pdgs.append(pdg)
+        xs.append(x); ys.append(y); zs.append(z); ts.append(t)
+        deps.append(dE)
+        tes.append(tE)
+        tids.append(tid)
+    if not pdgs:
+        return {
+            "pdg":              np.zeros(0, dtype=np.int32),
+            "start_xyz_cm":     np.zeros((0, 3), dtype=np.float32),
+            "start_t_ns":       np.zeros(0, dtype=np.float32),
+            "detprofile_E_MeV": np.zeros(0, dtype=np.float32),
+            "true_E_MeV":       np.zeros(0, dtype=np.float32),
+            "trackid":          np.zeros(0, dtype=np.int32),
+        }
+    return {
+        "pdg":              np.asarray(pdgs, dtype=np.int32),
+        "start_xyz_cm":     np.stack([np.asarray(xs, np.float32),
+                                      np.asarray(ys, np.float32),
+                                      np.asarray(zs, np.float32)], axis=-1),
+        "start_t_ns":       np.asarray(ts, dtype=np.float32),
+        "detprofile_E_MeV": np.asarray(deps, dtype=np.float32),
+        "true_E_MeV":       np.asarray(tes, dtype=np.float32),
+        "trackid":          np.asarray(tids, dtype=np.int32),
+    }
+
+
 def build_channel_to_opdet_map():
     """Return (channel_to_opdet, opdet_positions) where:
         channel_to_opdet : dict {OpChannel -> OpDet} for the 64 channels we read
@@ -319,6 +482,8 @@ def write_flashinfo_h5(
     slice_crosses_boundary,
     flash_matched_slice, flash_match_dtick,
     dtick_threshold,
+    mctruth_summary=None,
+    nu_shower_summary=None,
 ):
     os.makedirs(os.path.dirname(os.path.abspath(out_path)), exist_ok=True)
     with h5py.File(out_path, "w") as f:
@@ -393,6 +558,43 @@ def write_flashinfo_h5(
             if 0 <= idx < F:
                 total_pe[si] = flashes[idx]["total_pe"]
         sl.create_dataset("total_pe_matched", data=total_pe)
+
+        # ---- event_truth (per-event neutrino + primary summary) ------------
+        # Consumed by lartpc_data_prep/larformer_analysis/lib/categorize.py
+        # to assign each event to one or more interaction categories
+        # (CC νμ inclusive / CC νₑ inclusive / π0 / single visible photon).
+        # Optional in the writer: legacy flashinfo files that pre-date this
+        # extension still load by not reading these keys.
+        if mctruth_summary is not None:
+            et = e.create_group("event_truth")
+            et.attrs["has_neutrino"]     = bool(mctruth_summary["has_neutrino"])
+            et.attrs["nu_pdg"]           = int(mctruth_summary["nu_pdg"])
+            et.attrs["nu_energy_MeV"]    = float(mctruth_summary["nu_energy_MeV"])
+            et.attrs["ccnc"]             = int(mctruth_summary["ccnc"])
+            et.attrs["mode"]             = int(mctruth_summary["mode"])
+            et.attrs["interaction_type"] = int(mctruth_summary["interaction_type"])
+            et.create_dataset("nu_vertex_xyz_cm",
+                              data=mctruth_summary["nu_vertex_xyz_cm"].astype(np.float32))
+            et.create_dataset("primary_pdg",
+                              data=mctruth_summary["primary_pdg"].astype(np.int32))
+            et.create_dataset("primary_KE_MeV",
+                              data=mctruth_summary["primary_KE_MeV"].astype(np.float32))
+            et.create_dataset("primary_status",
+                              data=mctruth_summary["primary_status"].astype(np.int8))
+        if nu_shower_summary is not None:
+            ns = e.create_group("nu_showers")
+            ns.create_dataset("pdg",
+                              data=nu_shower_summary["pdg"].astype(np.int32))
+            ns.create_dataset("start_xyz_cm",
+                              data=nu_shower_summary["start_xyz_cm"].astype(np.float32))
+            ns.create_dataset("start_t_ns",
+                              data=nu_shower_summary["start_t_ns"].astype(np.float32))
+            ns.create_dataset("detprofile_E_MeV",
+                              data=nu_shower_summary["detprofile_E_MeV"].astype(np.float32))
+            ns.create_dataset("true_E_MeV",
+                              data=nu_shower_summary["true_E_MeV"].astype(np.float32))
+            ns.create_dataset("trackid",
+                              data=nu_shower_summary["trackid"].astype(np.int32))
 
 
 # ----------------------------------------------------------------------------
@@ -481,6 +683,9 @@ def _process_entry_loaded(
 
     slice_crosses = check_image_boundary_crossing(slice_info, traj_bounds)
 
+    mctruth_summary = extract_mctruth_summary(ioll)
+    nu_shower_summary = extract_nu_shower_summary(ioll)
+
     tmp_path = output_h5 + ".tmp"
     if os.path.exists(tmp_path):
         try:
@@ -496,6 +701,8 @@ def _process_entry_loaded(
         slice_crosses,
         flash_match_slice, flash_match_dtick,
         dtick_threshold,
+        mctruth_summary=mctruth_summary,
+        nu_shower_summary=nu_shower_summary,
     )
     os.replace(tmp_path, output_h5)
 

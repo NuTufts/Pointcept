@@ -1,41 +1,68 @@
-"""Stage 0: build per-config ROOT inputlists + manifests for the val+test set.
+"""Stage 0: build per-TAG rerun-line files + manifests for the val+test set.
 
 Reads the val+test h5 list (lines = absolute paths to
-`merged_<TAG>_filenoNNNNN_entryNNNNNN.h5`), groups entries by TAG, looks up
-the source dlmerged ROOT file for each fileno from each TAG's production
-inputlist, and emits:
+`merged_<TAG>_filenoNNNNN_entryNNNNNN.h5`), groups entries by TAG, and
+emits a per-TAG list of original ROOT-inputlist line numbers needed to
+re-run flashinfo (and any other lineno-keyed stage):
 
-  <output_dir>/rootlists/<TAG>.txt      — one ROOT path per line, deduped
-                                          (drives Stage 1: flashinfo)
+  <output_dir>/rerun_lines/<TAG>.txt    — one ORIGINAL lineno per line
+                                          (= the fileno embedded in the
+                                          merged-H5 name, which the
+                                          production pipeline writes
+                                          based on inputlist lineno).
+                                          Feeds the existing wconfig
+                                          RERUN_LINES_FILE mechanism.
   <output_dir>/manifest/<TAG>.csv       — one row per (fileno, entry):
                                           tag, fileno, entry, root_path,
-                                          merged_h5, flashinfo_h5
-  <output_dir>/summary.txt              — per-TAG counts
+                                          merged_h5, flashinfo_h5.
+                                          Drives Stage 3 (per-event
+                                          analysis). `root_path` filled
+                                          in only when --conf-dir is
+                                          provided AND the inputlist
+                                          contains a ROOT with that
+                                          fileno.
+  <output_dir>/rootlists/<TAG>.txt      — (optional, only when --conf-dir
+                                          is provided) deduped ROOT paths
+                                          for the val+test filenos. Kept
+                                          as a sanity-check artifact;
+                                          NOT used as a flashinfo input
+                                          (the truncate-inputlist approach
+                                          breaks the merged-H5 fileno
+                                          numbering).
+  <output_dir>/summary.txt              — per-TAG counts.
 
-The manifest CSVs drive Stage 3 (the per-event analysis); the rootlists
-drive the flashinfo regen.
+Why rerun lines instead of a truncated inputlist:
+  The merged H5's fileno is assigned from the inputlist lineno at
+  production time, not parsed from the ROOT filename. A truncated
+  inputlist re-numbers everything → the prep script picks the wrong
+  merged H5 to pair with each ROOT entry. The rerun-list mechanism
+  (RERUN_LINES_FILE in the wconfig) re-uses the original numbering by
+  pointing at the same ORIGINAL inputlist + a list of which lineno
+  positions to process.
 
 Filename conventions (from the production pipeline):
   ROOT source:  /.../<TAG_root>/NNN/NNN/dlmerged_*_filenoNNNNNN.root
-                (6-digit fileno; TAG_root may have a name typo like
-                 "coriska" vs "corsika" — DOES NOT have to equal TAG)
+                (6-digit fileno IN THE FILENAME — but the merged-H5's
+                 fileno is the LINENO of this ROOT in the production
+                 inputlist, NOT this number; they happen to match for
+                 sequentially-named files but the wconfig pipeline
+                 doesn't enforce it.)
   merged H5:    /.../<TAG>/merged_h5/NNN/NNN/
                   merged_<TAG>_filenoNNNNN_entryNNNNNN.h5
-                (5-digit fileno; TAG here is the canonical / corrected
-                 spelling used by the pointcept-side pipeline)
-
-The fileno is the only join key — it matches between the ROOT filename
-and the merged H5 filename modulo zero-padding width.
+                (5-digit fileno = original inputlist lineno).
 
 Usage:
   python build_valtest_rootlists.py \\
       --h5-list   /path/to/h5list_mcall_lantern_valtest.txt \\
-      --conf-dir  $POINTCEPT/lartpc_data_prep/lantern_scripts/lantern_configs \\
       --output    $POINTCEPT/lartpc_data_prep/larformer_analysis/valtest \\
+      [--conf-dir $POINTCEPT/lartpc_data_prep/lantern_scripts/lantern_configs] \\
       [--flashinfo-root  /custom/flashinfo/parent]
 
-The conf-dir is scanned for *.conf files; from each we read TAG and
-INPUTLIST. The same {TAG} should match the merged-h5 filename's TAG.
+Then on the cluster, point the wconfig at the rerun_lines file:
+  RERUN_LINES_FILE=<output_dir>/rerun_lines/<TAG>.txt
+  stride=1   # or whatever cadence the SLURM array uses
+  OFFSET=0
+  sbatch --array=0-$((N-1)) scripts/submit_flashinfo.sh configs/<TAG>.conf
 """
 
 import argparse
@@ -180,45 +207,56 @@ def main():
                                  formatter_class=argparse.RawTextHelpFormatter)
     ap.add_argument("--h5-list", required=True,
                     help="val+test h5 list (one merged_h5 path per line)")
-    ap.add_argument("--conf-dir", required=True,
-                    help="Directory containing per-TAG .conf files "
-                         "(typically lartpc_data_prep/lantern_scripts/"
-                         "lantern_configs/)")
     ap.add_argument("--output", required=True,
-                    help="Output directory; writes rootlists/<TAG>.txt + "
-                         "manifest/<TAG>.csv + summary.txt")
+                    help="Output directory; writes rerun_lines/<TAG>.txt + "
+                         "manifest/<TAG>.csv + summary.txt + "
+                         "(optionally) rootlists/<TAG>.txt")
+    ap.add_argument("--conf-dir", default=None,
+                    help="Optional. Directory containing per-TAG .conf files "
+                         "(lartpc_data_prep/lantern_scripts/lantern_configs/). "
+                         "When provided, ROOT paths are looked up from each "
+                         "TAG's inputlist and written to manifest + the "
+                         "(sanity-check) rootlists/. Without it, those "
+                         "columns are blank and only rerun_lines + manifest "
+                         "(without root_path) are produced.")
     ap.add_argument("--flashinfo-root", default=None,
                     help="Override the flashinfo parent dir in the manifest "
                          "(default: derive from merged_h5 path via "
                          "'/merged_h5/' → '/flashinfo_h5/')")
     args = ap.parse_args()
 
-    os.makedirs(os.path.join(args.output, "rootlists"), exist_ok=True)
+    os.makedirs(os.path.join(args.output, "rerun_lines"), exist_ok=True)
     os.makedirs(os.path.join(args.output, "manifest"), exist_ok=True)
+    if args.conf_dir is not None:
+        os.makedirs(os.path.join(args.output, "rootlists"), exist_ok=True)
 
-    # Build {tag: {fileno: root_path}} from the dataset configs.
-    tag_to_inputlist = discover_configs(args.conf_dir)
-    if not tag_to_inputlist:
-        sys.exit(f"no .conf files found in {args.conf_dir!r}")
-    print(f"Found {len(tag_to_inputlist)} dataset configs:")
-    for t, p in sorted(tag_to_inputlist.items()):
-        print(f"  {t:40s}  inputlist={p}")
-
+    # Build {tag: {fileno: root_path}} from the dataset configs (optional).
     tag_fileno_to_root = {}
-    for tag, inp in tag_to_inputlist.items():
-        if not os.path.exists(inp):
+    if args.conf_dir is not None:
+        tag_to_inputlist = discover_configs(args.conf_dir)
+        if tag_to_inputlist:
+            print(f"Found {len(tag_to_inputlist)} dataset configs:")
+            for t, p in sorted(tag_to_inputlist.items()):
+                print(f"  {t:40s}  inputlist={p}")
+            for tag, inp in tag_to_inputlist.items():
+                if not os.path.exists(inp):
+                    sys.stderr.write(
+                        f"[warn] inputlist for tag {tag!r} not found at "
+                        f"{inp!r}; rootlists / manifest.root_path will be "
+                        f"blank for this tag\n"
+                    )
+                    tag_fileno_to_root[tag] = {}
+                    continue
+                tag_fileno_to_root[tag] = load_fileno_to_root(inp)
+        else:
             sys.stderr.write(
-                f"[warn] inputlist for tag {tag!r} not found at {inp!r}; "
-                f"skipping (its h5 entries will be reported as 'unmatched_root')\n"
+                f"[warn] --conf-dir provided but no .conf files found in "
+                f"{args.conf_dir!r}; rerun_lines + manifest still written, "
+                f"rootlists skipped\n"
             )
-            tag_fileno_to_root[tag] = {}
-            continue
-        tag_fileno_to_root[tag] = load_fileno_to_root(inp)
 
     # Walk the val+test h5 list, group by tag.
     by_tag = defaultdict(list)         # tag -> list of (fileno, entry, h5_path)
-    unmatched_tag = []                 # h5s whose tag has no .conf
-    unmatched_root = []                # h5s whose tag has a .conf but no fileno match
     with open(args.h5_list, "r") as f:
         for raw in f:
             p = raw.strip()
@@ -231,44 +269,46 @@ def main():
             tag, fileno, entry = parsed
             by_tag[tag].append((fileno, entry, p))
 
-    # Build rootlists + manifests.
+    # Build rerun_lines + manifest (+ rootlists if conf-dir provided).
     summary_lines = []
+    total_unmatched_roots = 0
     for tag in sorted(by_tag.keys()):
         events = by_tag[tag]
-        if tag not in tag_fileno_to_root:
-            sys.stderr.write(
-                f"[warn] no .conf for tag {tag!r}; {len(events)} entries skipped\n"
-            )
-            unmatched_tag.extend(events)
-            continue
-        fn_to_root = tag_fileno_to_root[tag]
-        if not fn_to_root:
-            unmatched_root.extend([(tag, *e) for e in events])
-            continue
+        events.sort()                       # stable order: by fileno, then entry
 
-        # Stable order: by fileno then entry.
-        events.sort()
+        # Distinct filenos for this tag — one entry per unique fileno
+        # goes into the rerun_lines file. The fileno from the merged-H5
+        # name IS the original inputlist lineno (because production
+        # named the H5 from the lineno at job time).
+        unique_filenos = sorted({fileno for fileno, _, _ in events})
 
-        # Dedup ROOT paths; track which filenos were resolved.
+        # rerun_lines/<TAG>.txt — primary Stage-1 driver.
+        rr_path = os.path.join(args.output, "rerun_lines", f"{tag}.txt")
+        with open(rr_path, "w") as f:
+            for fn in unique_filenos:
+                f.write(f"{fn}\n")
+
+        # Optional ROOT-path resolution + rootlists/<TAG>.txt.
+        fn_to_root = tag_fileno_to_root.get(tag, {})
         roots_in_order = []
         seen_roots = set()
-        n_resolved = 0
-        manifest_rows = []
         n_unmatched_local = 0
+
+        # manifest/<TAG>.csv (always written; root_path blank when not
+        # resolvable).
+        manifest_rows = []
         for fileno, entry, merged_p in events:
-            root_p = fn_to_root.get(fileno)
+            root_p = fn_to_root.get(fileno, "") if fn_to_root else ""
+            if fn_to_root:
+                if root_p:
+                    if root_p not in seen_roots:
+                        roots_in_order.append(root_p)
+                        seen_roots.add(root_p)
+                else:
+                    n_unmatched_local += 1
             flashinfo_p = derive_flashinfo_path(
                 merged_p, flashinfo_root_override=args.flashinfo_root,
             )
-            if root_p is None:
-                n_unmatched_local += 1
-                unmatched_root.append((tag, fileno, entry, merged_p))
-                root_p = ""
-            else:
-                n_resolved += 1
-                if root_p not in seen_roots:
-                    roots_in_order.append(root_p)
-                    seen_roots.add(root_p)
             manifest_rows.append(dict(
                 tag=tag, fileno=fileno, entry=entry,
                 root_path=root_p,
@@ -276,13 +316,6 @@ def main():
                 flashinfo_h5=flashinfo_p,
             ))
 
-        # rootlists/<TAG>.txt
-        rl_path = os.path.join(args.output, "rootlists", f"{tag}.txt")
-        with open(rl_path, "w") as f:
-            for rp in roots_in_order:
-                f.write(rp + "\n")
-
-        # manifest/<TAG>.csv
         mf_path = os.path.join(args.output, "manifest", f"{tag}.csv")
         with open(mf_path, "w", newline="") as f:
             w = csv.DictWriter(
@@ -292,13 +325,21 @@ def main():
             w.writeheader()
             w.writerows(manifest_rows)
 
+        if args.conf_dir is not None and fn_to_root:
+            rl_path = os.path.join(args.output, "rootlists", f"{tag}.txt")
+            with open(rl_path, "w") as f:
+                for rp in roots_in_order:
+                    f.write(rp + "\n")
+
+        total_unmatched_roots += n_unmatched_local
         summary_lines.append(
             f"{tag:40s}  n_events={len(events):6d}  "
-            f"n_roots={len(roots_in_order):5d}  "
-            f"n_unresolved={n_unmatched_local}"
+            f"n_filenos={len(unique_filenos):5d}  "
+            f"n_unresolved_roots={n_unmatched_local}"
         )
         print(f"[ok]  {tag}: {len(events)} events → "
-              f"{len(roots_in_order)} ROOTs ({n_unmatched_local} unresolved)")
+              f"{len(unique_filenos)} unique filenos "
+              f"({n_unmatched_local} ROOT paths unresolved)")
 
     # summary.txt
     summary_path = os.path.join(args.output, "summary.txt")
@@ -306,13 +347,16 @@ def main():
         f.write(f"val+test h5 list: {args.h5_list}\n")
         f.write(f"conf dir:         {args.conf_dir}\n")
         f.write(f"output dir:       {args.output}\n\n")
+        f.write("Stage-1 invocation pattern (per TAG):\n")
+        f.write("  RERUN_LINES_FILE=<output_dir>/rerun_lines/<TAG>.txt\n")
+        f.write("  stride=1  OFFSET=0\n")
+        f.write("  sbatch --array=0-$((N_filenos-1)) "
+                "scripts/submit_flashinfo.sh configs/<TAG>.conf\n\n")
         f.write("Per-tag summary:\n")
         for line in summary_lines:
             f.write("  " + line + "\n")
-        f.write(f"\nUnmatched (no .conf for tag): "
-                f"{len(unmatched_tag)} entries\n")
-        f.write(f"Unmatched (no ROOT for fileno): "
-                f"{len(unmatched_root)} entries\n")
+        f.write(f"\nTotal ROOT-path lookups that failed (ok if "
+                f"--conf-dir omitted): {total_unmatched_roots}\n")
     print(f"\nSummary written to {summary_path}")
 
 

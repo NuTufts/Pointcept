@@ -125,22 +125,59 @@ larformer_analysis/
 └── slurm/                             (SLURM array drivers — TODO)
 ```
 
-### Stage 0 — Build val+test ROOT lists + manifest
+### Stage 0 — Build val+test rerun-line files + manifest
 
-`build_valtest_rootlists.py` takes the val+test merged-h5 list, groups
-entries by TAG, locates each TAG's production inputlist via the
-`lantern_configs/*.conf` files, and emits per TAG:
-- `rootlists/<TAG>.txt`: deduped ROOT paths the flashinfo step needs.
-- `manifest/<TAG>.csv`: one row per `(fileno, entry)` with full paths
-  (root + merged_h5 + flashinfo_h5). Drives Stage 3 directly.
+**Why not just truncate the inputlist?** The production pipeline writes
+the merged-H5's fileno from the **lineno** at job time, not from the
+fileno embedded in the ROOT filename. A truncated inputlist re-numbers
+everything → the flashinfo prep grabs the wrong merged H5 to pair with
+each ROOT entry. Use the existing `RERUN_LINES_FILE` mechanism in the
+wconfig: keep the original inputlist, point at a list of which
+original linenos to process.
+
+`build_valtest_rootlists.py` parses the val+test merged-h5 list,
+extracts the unique filenos per TAG (each fileno IS the original
+inputlist lineno), and emits per TAG:
+
+- **`rerun_lines/<TAG>.txt`** — one original lineno per line. Plug
+  directly into the wconfig's `RERUN_LINES_FILE`.
+- `manifest/<TAG>.csv` — one row per `(fileno, entry)` with full paths
+  (root + merged_h5 + flashinfo_h5). Drives Stage 3 directly. The
+  `root_path` column is filled only when `--conf-dir` is provided AND
+  the ROOT inputlist has a file matching that fileno.
+- `rootlists/<TAG>.txt` *(optional)* — deduped ROOT paths for the
+  val+test filenos. **Sanity-check artifact only** — NOT a flashinfo
+  input (truncating breaks the fileno numbering as explained above).
+- `summary.txt` — per-TAG counts.
+
+`--conf-dir` is **optional**. Without it you still get
+`rerun_lines/` + `manifest/` (with empty `root_path`); with it you
+also get `rootlists/` + the `manifest.root_path` filled in.
 
 **Usage**:
 ```bash
 python build_valtest_rootlists.py \
     --h5-list  /cluster/.../h5list_mcall_lantern_valtest.txt \
-    --conf-dir $POINTCEPT/lartpc_data_prep/lantern_scripts/lantern_configs \
-    --output   $POINTCEPT/lartpc_data_prep/larformer_analysis/valtest
+    --output   $POINTCEPT/lartpc_data_prep/larformer_analysis/valtest \
+    [--conf-dir $POINTCEPT/lartpc_data_prep/lantern_scripts/lantern_configs]
 ```
+
+**Then drive Stage 1 (flashinfo regen) per TAG via rerun mode**:
+```bash
+# In the .conf file (or as env overrides):
+RERUN_LINES_FILE=$POINTCEPT/lartpc_data_prep/larformer_analysis/valtest/rerun_lines/<TAG>.txt
+stride=1
+OFFSET=0
+
+N_FILENOS=$(wc -l < $RERUN_LINES_FILE)
+sbatch --array=0-$((N_FILENOS-1)) scripts/submit_flashinfo.sh \
+       configs/<TAG>.conf
+```
+
+The wconfig's existing rerun branch uses `$SLURM_ARRAY_TASK_ID`-th
+line of the rerun file as the lineno → reads ROOT entry `lineno-1` of
+the ORIGINAL inputlist → preserves the production fileno numbering →
+pairs correctly with `merged_<TAG>_fileno<lineno>_entry*.h5`.
 
 ### Stage 1 — Flashinfo (extended)
 
