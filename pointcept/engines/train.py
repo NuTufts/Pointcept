@@ -26,7 +26,12 @@ from tensorboardX import SummaryWriter
 from .defaults import create_ddp_model, worker_init_fn
 from .hooks import HookBase, build_hooks
 import pointcept.utils.comm as comm
-from pointcept.datasets import build_dataset, point_collate_fn, collate_fn
+from pointcept.datasets import (
+    build_dataset,
+    point_collate_fn,
+    collate_fn,
+    FastForwardSampler,
+)
 from pointcept.models import build_model
 from pointcept.utils.logger import get_root_logger
 from pointcept.utils.optimizer import build_optimizer
@@ -174,28 +179,54 @@ class Trainer(TrainerBase):
                 if comm.get_world_size() > 1:
                     self.train_loader.sampler.set_epoch(self.epoch)
                 self.model.train()
-                data_iter = enumerate(self.train_loader)
-                # Mid-epoch resume: skip the first `start_iter` items of the
-                # dataloader on this epoch only. islice over enumerate preserves
-                # the underlying indices, so comm_info["iter"] picks up from
-                # `start_iter` and downstream iter-aware hooks (IterationTimer,
-                # InformationWriter, WeightDecaySchedular) stay aligned.
-                if self.start_iter > 0:
-                    if self.start_iter >= len(self.train_loader):
-                        self.logger.warning(
-                            f"Mid-epoch resume start_iter={self.start_iter} >= "
-                            f"len(train_loader)={len(self.train_loader)}; "
-                            f"skipping rest of resumed epoch {self.epoch}"
-                        )
-                        self.start_iter = 0
-                        continue
+                # Mid-epoch resume path. Two strategies:
+                #   - Fast-skip (cfg.skip_dataloader_on_resume=True):
+                #       Activate FastForwardSampler on the train_loader so the
+                #       underlying sampler yields only kept indices. Workers
+                #       never run the skipped batches' transforms. Augmentations
+                #       on kept batches differ from the un-resumed counterfactual
+                #       (acceptable for SSL); see configs/.../v8 config docs.
+                #   - islice (default):
+                #       Drive the dataloader through start_iter batches and drop
+                #       them. Slow (~hour at ~5k skipped batches with heavy
+                #       SONATA transforms) but preserves the original sequence's
+                #       augmentation state on the kept batches.
+                if self.start_iter > 0 and self.start_iter >= len(self.train_loader):
+                    self.logger.warning(
+                        f"Mid-epoch resume start_iter={self.start_iter} >= "
+                        f"len(train_loader)={len(self.train_loader)}; "
+                        f"running resumed epoch {self.epoch} with no new iters "
+                        f"(after_epoch hooks like eval will still fire)."
+                    )
+                    self.start_iter = 0
+                    data_iter = iter([])
+                elif self.start_iter > 0 and getattr(
+                    self.cfg, "skip_dataloader_on_resume", False
+                ):
+                    skip_samples = self.start_iter * self.cfg.batch_size_per_gpu
+                    sampler = self.train_loader.sampler
+                    sampler.skip_indices = skip_samples
+                    sampler._consumed = False
                     self.logger.info(
-                        f"Mid-epoch resume: skipping first {self.start_iter} "
-                        f"iters of epoch {self.epoch} "
+                        f"Mid-epoch resume (fast-skip): jumping to iter "
+                        f"{self.start_iter}/{len(self.train_loader)} of epoch "
+                        f"{self.epoch} via FastForwardSampler "
+                        f"(skip {skip_samples} samples per rank)"
+                    )
+                    data_iter = enumerate(self.train_loader, start=self.start_iter)
+                    self.start_iter = 0
+                elif self.start_iter > 0:
+                    self.logger.info(
+                        f"Mid-epoch resume (islice): skipping first "
+                        f"{self.start_iter} iters of epoch {self.epoch} "
                         f"({len(self.train_loader) - self.start_iter} iters remain)"
                     )
-                    data_iter = itertools.islice(data_iter, self.start_iter, None)
-                    self.start_iter = 0  # only skip once
+                    data_iter = itertools.islice(
+                        enumerate(self.train_loader), self.start_iter, None
+                    )
+                    self.start_iter = 0
+                else:
+                    data_iter = enumerate(self.train_loader)
                 self.data_iterator = data_iter
                 self.before_epoch()
                 # => run_epoch
@@ -424,10 +455,15 @@ class Trainer(TrainerBase):
     def build_train_loader(self):
         train_data = build_dataset(self.cfg.data.train)
 
+        # Always wrap the underlying sampler in FastForwardSampler so the
+        # trainer can later activate it (skip_indices > 0) for mid-epoch
+        # fast-resume without rebuilding the loader. With skip_indices=0 it
+        # is transparent — yields exactly what the wrapped sampler yields.
         if comm.get_world_size() > 1:
-            train_sampler = torch.utils.data.distributed.DistributedSampler(train_data)
+            base_sampler = torch.utils.data.distributed.DistributedSampler(train_data)
         else:
-            train_sampler = None
+            base_sampler = torch.utils.data.RandomSampler(train_data)
+        train_sampler = FastForwardSampler(base_sampler, skip_indices=0)
 
         init_fn = (
             partial(
@@ -443,7 +479,8 @@ class Trainer(TrainerBase):
         train_loader = torch.utils.data.DataLoader(
             train_data,
             batch_size=self.cfg.batch_size_per_gpu,
-            shuffle=(train_sampler is None),
+            # Sampler controls order, so DataLoader's own shuffle is off.
+            shuffle=False,
             num_workers=self.cfg.num_worker_per_gpu,
             sampler=train_sampler,
             collate_fn=partial(point_collate_fn, mix_prob=self.cfg.mix_prob),

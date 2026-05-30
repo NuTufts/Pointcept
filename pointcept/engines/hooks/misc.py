@@ -582,6 +582,7 @@ class CheckpointLoader(HookBase):
                         f"Mid-epoch resume: continuing at iter "
                         f"{self.trainer.start_iter} of epoch {self.trainer.start_epoch}"
                     )
+                    _maybe_reseed_workers_for_resume(self.trainer, checkpoint)
                 self.trainer.best_metric_value = checkpoint["best_metric_value"]
 
                 if self.extend_scheduler:
@@ -639,6 +640,55 @@ class CheckpointLoader(HookBase):
                 _restore_rng_state(checkpoint.get("rng_state"), self.trainer.logger)
         else:
             self.trainer.logger.info(f"No weight found at: {self.trainer.cfg.weight}")
+
+
+def _maybe_reseed_workers_for_resume(trainer, checkpoint):
+    """When mid-epoch resume uses the fast-skip path (FastForwardSampler), the
+    DataLoader workers never advance through the skipped batches' RNG, so the
+    kept batches get transforms drawn from the workers' INITIAL RNG state — the
+    same draws they would have made on the first batches of a fresh epoch.
+
+    When ``cfg.resume_seed_strategy == "per_resume"``, swap the train_loader's
+    ``worker_init_fn`` to a fresh seed derived from the checkpoint's epoch and
+    iter_in_epoch so multiple resumes from the same checkpoint don't keep
+    reproducing the same augmentation patterns. With ``persistent_workers=True``
+    workers spawn on the first ``iter(loader)`` call (which happens later in
+    ``Trainer.train``), so swapping ``worker_init_fn`` here is in time.
+    """
+    cfg = trainer.cfg
+    strategy = getattr(cfg, "resume_seed_strategy", "deterministic")
+    if strategy != "per_resume":
+        return
+    if not getattr(cfg, "skip_dataloader_on_resume", False):
+        trainer.logger.info(
+            "resume_seed_strategy=per_resume has no effect when "
+            "skip_dataloader_on_resume=False (islice already advances worker RNG)."
+        )
+        return
+    if cfg.seed is None:
+        trainer.logger.warning(
+            "resume_seed_strategy=per_resume requested but cfg.seed is None; "
+            "cannot derive a new seed. Leaving worker_init_fn unchanged."
+        )
+        return
+    from functools import partial
+    from pointcept.engines.defaults import worker_init_fn as _worker_init_fn
+
+    new_seed = (
+        cfg.seed
+        + 1_000_003 * int(checkpoint.get("epoch", 0))
+        + int(checkpoint.get("iter_in_epoch", 0))
+    )
+    trainer.train_loader.worker_init_fn = partial(
+        _worker_init_fn,
+        num_workers=cfg.num_worker_per_gpu,
+        rank=comm.get_rank(),
+        seed=new_seed,
+    )
+    trainer.logger.info(
+        f"resume_seed_strategy=per_resume: swapped worker_init_fn to use "
+        f"derived seed {new_seed} (base {cfg.seed} + epoch/iter offset)."
+    )
 
 
 def _restore_rng_state(rng_state, logger):
@@ -739,6 +789,7 @@ class SonataCheckpointLoader(HookBase):
                         f"Mid-epoch resume: continuing at iter "
                         f"{self.trainer.start_iter} of epoch {self.trainer.start_epoch}"
                     )
+                    _maybe_reseed_workers_for_resume(self.trainer, checkpoint)
                 self.trainer.best_metric_value = checkpoint["best_metric_value"]
                 self.trainer.optimizer.load_state_dict(checkpoint["optimizer"])
                 self.trainer.scheduler.load_state_dict(checkpoint["scheduler"])
