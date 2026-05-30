@@ -464,6 +464,7 @@ hooks = [
     dict(type="IterationTimer", warmup_iter=2),
     dict(type="InformationWriter"),
     dict(type="CheckpointSaver", save_freq=1),
+    dict(type="IterCheckpointSaver", save_iter_freq=50, keep_history=False),
     # === Stability Monitoring ===
     # GradScaler monitor - detect overflow events
     dict(

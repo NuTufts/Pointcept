@@ -447,6 +447,217 @@ def _per_pair_sampled_mask_loss(
     return torch.stack(bce_terms).mean(), torch.stack(dice_terms).mean()
 
 
+def _per_pair_sampled_mask_loss_vectorized(
+    pred_logits: torch.Tensor,       # (Q, M)
+    gt_mask: torch.Tensor,           # (K, M)
+    q_idx: np.ndarray,
+    k_idx: np.ndarray,
+    n_sample: int,
+    pos_fraction: float = 0.5,
+    use_importance_sampling: bool = False,
+    importance_oversample_ratio: float = 3.0,
+    importance_ratio: float = 0.75,
+    importance_hard_neg_ratio: float = 0.0,
+):
+    """Batched-across-pairs version of `_per_pair_sampled_mask_loss`.
+
+    Same per-pair semantics, but eliminates the Python loop. All P pairs
+    share a single (P, M) sort/topk for positive selection, a single
+    sort/topk for negative selection (with the same importance/hard-neg
+    branching), one batched `binary_cross_entropy_with_logits`, and one
+    batched Dice. With P × num_levels × dn_groups commonly in the
+    hundreds, this replaces ~10k tiny CUDA launches with ~10 large ones.
+
+    Sampling-budget deviation from the loop version: when a pair has
+    fewer than `n_target_pos = pos_fraction * n_sample` positives, the
+    loop version expands its negative budget to fill `n_sample` total
+    tokens; this version leaves the unused positive slots empty and
+    keeps the negative budget at `n_target_neg = n_sample - n_target_pos`.
+    Pairs of that shape produce slightly higher-variance per-pair BCE
+    (fewer samples), but the per-sample expectation is the same and the
+    Dice numerator/denominator are computed over only valid samples. In
+    practice, with `n_sample=16392` and typical LArTPC GT instance sizes
+    well above 8k positives, this corner is hit rarely (degenerate small
+    slices only).
+    """
+    device = pred_logits.device
+    P = len(q_idx)
+    if P == 0:
+        z = pred_logits.new_zeros(())
+        return z, z
+    M = pred_logits.shape[1]
+    if M == 0:
+        z = pred_logits.new_zeros(())
+        return z, z
+
+    n_target_pos = max(int(round(pos_fraction * n_sample)), 1)
+    n_target_neg = n_sample - n_target_pos
+
+    q_t = torch.as_tensor(q_idx, dtype=torch.long, device=device)
+    k_t = torch.as_tensor(k_idx, dtype=torch.long, device=device)
+
+    is_pos = gt_mask[k_t] > 0                                # (P, M)
+    n_pos_per_pair = is_pos.sum(dim=1)                       # (P,) long
+    n_bg_per_pair = M - n_pos_per_pair                        # (P,) long
+
+    # Positive sampling.
+    # Slice to min(M, n_target_pos), then pad with index 0 (invalid). The
+    # slot-validity mask `pos_valid` marks the leading n_pos_take[i] entries
+    # as real positives; the rest (negatives picked because the sort ran out
+    # of real positives, plus any padded zeros) are False.
+    n_pos_slots = min(n_target_pos, M)
+    pos_rand = torch.rand(P, M, device=device)
+    pos_score = torch.where(is_pos, pos_rand, pos_rand + 2.0)
+    pos_sample_idx = pos_score.argsort(dim=1)[:, :n_pos_slots]
+    if n_pos_slots < n_target_pos:
+        pos_sample_idx = torch.cat(
+            [pos_sample_idx, pos_sample_idx.new_zeros(P, n_target_pos - n_pos_slots)],
+            dim=1,
+        )                                                     # (P, n_target_pos)
+    n_pos_take = torch.minimum(
+        n_pos_per_pair,
+        torch.full_like(n_pos_per_pair, n_pos_slots),
+    )
+    pos_col = torch.arange(n_target_pos, device=device).unsqueeze(0)
+    pos_valid = pos_col < n_pos_take.unsqueeze(1)             # (P, n_target_pos)
+
+    # Negative sampling. Each chunk produces (P, chunk_size) indices and a
+    # matching (P, chunk_size) validity mask. Chunks are padded with index 0
+    # to their target size when M is too small.
+    if use_importance_sampling and n_target_neg > 0:
+        imp_r = importance_ratio
+        hard_r = importance_hard_neg_ratio
+        if imp_r + hard_r > 1.0:
+            s = 1.0 / (imp_r + hard_r)
+            imp_r = imp_r * s
+            hard_r = hard_r * s
+        n_imp = max(int(round(imp_r * n_target_neg)), 0)
+        n_hard = max(int(round(hard_r * n_target_neg)), 0)
+        if n_imp + n_hard > n_target_neg:
+            n_hard = max(n_target_neg - n_imp, 0)
+        n_rand = max(n_target_neg - n_imp - n_hard, 0)
+
+        n_over_target = max(int(round(importance_oversample_ratio * n_target_neg)), 1)
+        n_over = min(n_over_target, M)
+        bg_rand = torch.rand(P, M, device=device)
+        bg_score = torch.where(~is_pos, bg_rand, bg_rand + 2.0)
+        cand_idx = bg_score.argsort(dim=1)[:, :n_over]        # (P, n_over)
+        cand_valid = ~is_pos.gather(1, cand_idx)              # (P, n_over)
+
+        with torch.no_grad():
+            sigm_cand = pred_logits[q_t].gather(1, cand_idx).sigmoid()
+
+        neg_chunks_idx = []
+        neg_chunks_valid = []
+
+        if n_imp > 0:
+            n_imp_eff = min(n_imp, n_over)
+            unc = (sigm_cand - 0.5).abs()
+            unc_masked = torch.where(cand_valid, unc, torch.full_like(unc, 2.0))
+            _, imp_rel = unc_masked.topk(n_imp_eff, dim=1, largest=False)
+            imp_abs = cand_idx.gather(1, imp_rel)
+            imp_valid = cand_valid.gather(1, imp_rel)
+            if n_imp_eff < n_imp:
+                imp_abs = torch.cat(
+                    [imp_abs, imp_abs.new_zeros(P, n_imp - n_imp_eff)], dim=1,
+                )
+                imp_valid = torch.cat(
+                    [imp_valid,
+                     torch.zeros(P, n_imp - n_imp_eff, dtype=torch.bool, device=device)],
+                    dim=1,
+                )
+            neg_chunks_idx.append(imp_abs)
+            neg_chunks_valid.append(imp_valid)
+
+        if n_hard > 0:
+            n_hard_eff = min(n_hard, n_over)
+            sigm_masked = torch.where(
+                cand_valid, sigm_cand, torch.full_like(sigm_cand, -1.0),
+            )
+            _, hard_rel = sigm_masked.topk(n_hard_eff, dim=1, largest=True)
+            hard_abs = cand_idx.gather(1, hard_rel)
+            hard_valid = cand_valid.gather(1, hard_rel)
+            if n_hard_eff < n_hard:
+                hard_abs = torch.cat(
+                    [hard_abs, hard_abs.new_zeros(P, n_hard - n_hard_eff)], dim=1,
+                )
+                hard_valid = torch.cat(
+                    [hard_valid,
+                     torch.zeros(P, n_hard - n_hard_eff, dtype=torch.bool, device=device)],
+                    dim=1,
+                )
+            neg_chunks_idx.append(hard_abs)
+            neg_chunks_valid.append(hard_valid)
+
+        if n_rand > 0:
+            n_rand_eff = min(n_rand, M)
+            rand_rand = torch.rand(P, M, device=device)
+            rand_score = torch.where(~is_pos, rand_rand, rand_rand + 2.0)
+            rand_abs = rand_score.argsort(dim=1)[:, :n_rand_eff]
+            rand_valid = ~is_pos.gather(1, rand_abs)
+            if n_rand_eff < n_rand:
+                rand_abs = torch.cat(
+                    [rand_abs, rand_abs.new_zeros(P, n_rand - n_rand_eff)], dim=1,
+                )
+                rand_valid = torch.cat(
+                    [rand_valid,
+                     torch.zeros(P, n_rand - n_rand_eff, dtype=torch.bool, device=device)],
+                    dim=1,
+                )
+            neg_chunks_idx.append(rand_abs)
+            neg_chunks_valid.append(rand_valid)
+
+        if neg_chunks_idx:
+            neg_sample_idx = torch.cat(neg_chunks_idx, dim=1)
+            neg_valid = torch.cat(neg_chunks_valid, dim=1)
+        else:
+            neg_sample_idx = q_t.new_zeros(P, 0)
+            neg_valid = torch.zeros(P, 0, dtype=torch.bool, device=device)
+    elif n_target_neg > 0:
+        n_neg_slots = min(n_target_neg, M)
+        neg_rand = torch.rand(P, M, device=device)
+        neg_score = torch.where(~is_pos, neg_rand, neg_rand + 2.0)
+        neg_sample_idx = neg_score.argsort(dim=1)[:, :n_neg_slots]
+        if n_neg_slots < n_target_neg:
+            neg_sample_idx = torch.cat(
+                [neg_sample_idx,
+                 neg_sample_idx.new_zeros(P, n_target_neg - n_neg_slots)],
+                dim=1,
+            )
+        n_neg_take = torch.minimum(
+            n_bg_per_pair,
+            torch.full_like(n_bg_per_pair, n_neg_slots),
+        )
+        neg_col = torch.arange(n_target_neg, device=device).unsqueeze(0)
+        neg_valid = neg_col < n_neg_take.unsqueeze(1)
+    else:
+        neg_sample_idx = q_t.new_zeros(P, 0)
+        neg_valid = torch.zeros(P, 0, dtype=torch.bool, device=device)
+
+    sampled = torch.cat([pos_sample_idx, neg_sample_idx], dim=1)  # (P, n_sample)
+    valid_mask = torch.cat([pos_valid, neg_valid], dim=1).to(pred_logits.dtype)
+
+    gt_labels = torch.zeros_like(sampled, dtype=pred_logits.dtype)
+    gt_labels[:, :n_target_pos] = pos_valid.to(pred_logits.dtype)
+
+    logits = pred_logits[q_t].gather(1, sampled)                  # (P, n_sample)
+
+    bce_per = F.binary_cross_entropy_with_logits(
+        logits, gt_labels, reduction="none",
+    ) * valid_mask
+    n_valid = valid_mask.sum(dim=1).clamp(min=1.0)
+    bce_per_pair = bce_per.sum(dim=1) / n_valid
+    bce_loss = bce_per_pair.mean()
+
+    sigm = logits.sigmoid() * valid_mask
+    num = 2.0 * (sigm * gt_labels).sum(dim=1)
+    denom = sigm.sum(dim=1) + gt_labels.sum(dim=1)
+    dice_per_pair = 1.0 - (num + 1.0) / (denom + 1.0)
+    dice_loss = dice_per_pair.mean()
+
+    return bce_loss, dice_loss
+
+
 # ---------------------------------------------------------------------------
 # Main loss
 # ---------------------------------------------------------------------------
@@ -517,6 +728,13 @@ class LArFormerLoss(nn.Module):
         # regular path uses. Default 1.0 = DN losses contribute at the
         # SAME magnitude as the matched losses; lower to 0.5 to halve.
         weight_dn_loss: float = 1.0,
+        # When True, route per-pair sampled BCE/Dice through the batched
+        # `_per_pair_sampled_mask_loss_vectorized` instead of the per-pair
+        # Python loop. Same semantics modulo the small under-fill of
+        # negatives when a pair has fewer than n_target_pos positives
+        # (see that function's docstring). Off by default to preserve
+        # legacy behavior; enable from config via loss_kwargs.
+        use_vectorized_pair_loss: bool = False,
     ):
         super().__init__()
         if match_layer not in ("final", "init"):
@@ -541,6 +759,12 @@ class LArFormerLoss(nn.Module):
         self.importance_ratio = float(importance_ratio)
         self.importance_hard_neg_ratio = float(importance_hard_neg_ratio)
         self.weight_dn_loss = float(weight_dn_loss)
+        self.use_vectorized_pair_loss = bool(use_vectorized_pair_loss)
+        self._pair_loss_fn = (
+            _per_pair_sampled_mask_loss_vectorized
+            if self.use_vectorized_pair_loss
+            else _per_pair_sampled_mask_loss
+        )
 
         ce_weights = torch.ones(self.num_classes)
         ce_weights[self.no_object_class_id] = float(no_object_weight)
@@ -590,7 +814,7 @@ class LArFormerLoss(nn.Module):
                 pred_logits[q_t], gt_mask[k_t], reduction="mean",
             )
         # Token count exceeds the aux cap — fall back to per-pair sampled BCE.
-        bce, _ = _per_pair_sampled_mask_loss(
+        bce, _ = self._pair_loss_fn(
             pred_logits, gt_mask, q_idx, k_idx,
             n_sample=self.num_sample_points,
             use_importance_sampling=self.use_importance_sampling,
@@ -642,7 +866,7 @@ class LArFormerLoss(nn.Module):
         if self.primary_level is not None:
             primary_pred = layer_pred["mask_logits"][self.primary_level]
             primary_gt = per_level_gt_mask[self.primary_level]
-            bce, dice = _per_pair_sampled_mask_loss(
+            bce, dice = self._pair_loss_fn(
                 primary_pred, primary_gt, q_idx, k_idx,
                 n_sample=self.num_sample_points,
                 use_importance_sampling=self.use_importance_sampling,

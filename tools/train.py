@@ -21,6 +21,8 @@ from pointcept.engines.launch import launch
 # Each module's @TRAINERS.register_module() decorator runs exactly once
 # (modules are cached in sys.modules).
 import pointcept.models.shower_clustering.trainer  # noqa: F401
+import pointcept.models.LArFormer.trainer  # noqa: F401
+import pointcept.models.LArFormer.evaluator  # noqa: F401
 
 #import torch
 #torch.autograd.set_detect_anomaly(True)

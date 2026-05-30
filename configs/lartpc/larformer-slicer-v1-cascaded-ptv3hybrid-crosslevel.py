@@ -48,11 +48,23 @@ del _larformer_evaluator_module
 # =============================================================================
 # Paths
 # =============================================================================
-_DEFAULT_LIST = "/home/twongjirad/working/larbys/gen2/container_u22/Pointcept/devdata_mergedh5_pi0filter_10files.txt"
+#_DEFAULT_LIST = "/home/twongjirad/working/larbys/gen2/container_u22/Pointcept/devdata_mergedh5_pi0filter_10files.txt"
 #_DEFAULT_LIST = "/home/twongjirad/working/larbys/gen2/container_u22/Pointcept/devdata_mergedh5_pi0filter_1event.txt"
+TRAIN_FILE_LIST = "/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept/lartpc_data_prep/lantern_scripts/h5lists/h5list_mcall_lantern_train.txt"
+VAL_FILE_LIST   = "/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept/lartpc_data_prep/lantern_scripts/h5lists/h5list_mcall_lantern_val.txt"
 
 # Trained SonataLoRADeghostSegmentor checkpoint for Stage 1.
-deghoster_weight = "/home/twongjirad/working/larbys/gen2/container_u22/Pointcept/sonata/lora_deghost_v6_hasmatch/model/epoch_30.pth"
+#deghoster_weight = "/home/twongjirad/working/larbys/gen2/container_u22/Pointcept/sonata/lora_deghost_v6_hasmatch/model/epoch_30.pth"
+deghoster_weight = "/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept/sonata/lora_deghost_v6_hasmatch/model/epoch_30.pth"
+
+# slicer_backbone_weight = (
+#     "/home/twongjirad/working/larbys/gen2/container_u22/Pointcept/"
+#     "sonata/lartpc_v6_h200_noghosts_pretrain_logspace_resume/model/epoch_42.pth"
+# )
+slicer_backbone_weight = (
+    "/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept/"
+    "sonata/lartpc_v6_h200_noghosts_pretrain_logspace_resume/model/epoch_42.pth"
+)
 
 # =============================================================================
 # Toggles (kept here so this hybrid config is independently reproducible
@@ -117,11 +129,11 @@ data = dict(
     num_classes=3,
     ignore_index=-1,
     names=["nu", "cosmic", "no_object"],
-    train=dict(split="train", data_root="/", data_list_file=_DEFAULT_LIST,
+    train=dict(split="train", data_root="/", data_list_file=TRAIN_FILE_LIST,
                loop=1, max_spacepoints=100_000, **_dataset_common),
-    val=dict(split="val", data_root="/", data_list_file=_DEFAULT_LIST,
+    val=dict(split="val", data_root="/", data_list_file=VAL_FILE_LIST,
              loop=1, max_spacepoints=150_000, **_dataset_common),
-    test=dict(split="test", data_root="/", data_list_file=_DEFAULT_LIST,
+    test=dict(split="test", data_root="/", data_list_file=VAL_FILE_LIST,
               loop=1, max_spacepoints=None, **_dataset_common),
 )
 
@@ -331,10 +343,6 @@ slicer_cfg = dict(
 # =============================================================================
 # CascadedSlicer
 # =============================================================================
-slicer_backbone_weight = (
-    "/home/twongjirad/working/larbys/gen2/container_u22/Pointcept/"
-    "sonata/lartpc_v6_h200_noghosts_pretrain_logspace_resume/model/epoch_42.pth"
-)
 
 model = dict(
     type="CascadedSlicer",
@@ -355,16 +363,17 @@ model = dict(
 # =============================================================================
 weight = None
 
-save_path        = "exp/larformer_slicer_v1_cascaded_ptv3hybrid_crosslevel_nonzeroinit_maskdn_10event_run2"
-epoch            = 2000
-eval_epoch       = 400
-batch_size       = 1
-batch_size_val   = 1
-num_worker       = 2
-num_worker_val   = 2
+save_path        = "exp/larformer_slicer_v1_cascaded_ptv3hybrid_crosslevel_nonzeroinit_maskdn_noamp"
+epoch            = 50
+eval_epoch       = 50
+batch_size       = 16
+batch_size_val   = 16
+num_worker       = 12
+num_worker_val   = 12
 evaluate         = True
 enable_amp       = False
-empty_cache      = True
+amp_dtype        = "bfloat16" # use this for default 'flash_attn' backend
+empty_cache      = False
 # Gradient clipping — important for this config because the PTv3 decoder
 # + refiner + Mask2Former decoder all initialize from random and can
 # produce extreme activations / gradients in the first ~hundred iters.
@@ -388,7 +397,7 @@ scheduler = dict(
     gamma=0.5,
     min_lr=5e-8,
     step_period_epochs=50,
-    patience_epochs=20,
+    patience_epochs=4,
     min_delta=1e-4,
     cooldown_epochs=2,
     # Linear warmup over the first 500 training iters (~100 epochs on the
@@ -397,7 +406,7 @@ scheduler = dict(
     # first ~50 iters are noisy enough to spike the loss curve, so we
     # don't want the plateau detector touching anything during that
     # phase. step_epoch is a no-op while in warmup (counters frozen).
-    warmup_iters=200,
+    warmup_iters=16250, # 1 epoch of warm up
     warmup_start_lr=0.0,
     # EMA over the val/loss for plateau detection. A single lucky-low
     # raw val_loss (which fluctuates a few % epoch-to-epoch on this
@@ -413,6 +422,12 @@ scheduler = dict(
 )
 
 hooks = [
+    # extend_scheduler=True: When resuming, creates a new scheduler with the updated
+    # total_steps (based on eval_epoch=200) and advances it to the current step.
+    # This allows extending training beyond the original epoch count while
+    # preserving optimizer state (Adam momentum, etc.)
+    # CRITICAL: This also restores the scheduler's LR values after loading optimizer state.
+    dict(type="CheckpointLoader", extend_scheduler=False),
     dict(type="IterationTimer", warmup_iter=2),
     dict(type="InformationWriter"),
     dict(type="LArFormerSlicerEvaluator",
@@ -424,6 +439,17 @@ hooks = [
          log_per_event=False),
     dict(type="LREpochScheduler"),
     dict(type="CheckpointSaver", save_freq=None),
+    # Iteration-level checkpointing so SLURM jobs killed at the 24h wall-clock
+    # cap can resume mid-epoch (epochs are ~9h on the Isambard-AI allocation).
+    # Writes to the same model_last.pth that CheckpointSaver uses, plus
+    # iter_in_epoch + RNG state so CheckpointLoader can pick up mid-epoch.
+    # save_iter_freq=500 ≈ ~9 min between saves at ~30k batches/epoch, so the
+    # worst-case wasted compute on a kill is bounded by that.
+    dict(type="IterCheckpointSaver", save_iter_freq=500, keep_history=False),
+    # Catch SLURM's pre-timeout SIGUSR1 (sent via --signal=USR1@1800), save a
+    # checkpoint, write a RESUBMIT marker so the batch script can chain the
+    # next job, and exit cleanly before SLURM kills the process.
+    dict(type="SignalCheckpointHook", check_every_n_iter=300),
 ]
 
 train = dict(type="LArFormerTrainer")
