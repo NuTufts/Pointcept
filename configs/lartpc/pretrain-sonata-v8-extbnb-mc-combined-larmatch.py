@@ -78,7 +78,7 @@ true_points_only=False
 
 # Larmatch score filtering: each sample draws a threshold uniformly from this range
 filter_larmatch=True
-larmatch_threshold_range=(0.15, 0.75)
+larmatch_threshold_range=(0.20, 0.75)
 
 max_points_per_view=20480
 max_points_spherecrop=20480

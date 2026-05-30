@@ -26,7 +26,8 @@ container=/projects/u6jo/containers/pointcept-sandbox/
 # because that's where `python tools/train.py` is launched from below.
 SAVE_REL=sonata/lartpc_v8_isambard_ghopper_extbnb_mc_combined_larmatch
 SAVE_DIR=${WORKDIR}/${SAVE_REL}
-CKPT=${SAVE_DIR}/model/model_last.pth
+CKPT=${SAVE_DIR}/model/model_last.pth # last resume copied from model_iter_31722.pth
+#CKPT=${SAVE_DIR}/model_iter_31722.pth
 RESUBMIT_MARKER=${SAVE_DIR}/RESUBMIT
 COUNTER_FILE=${SAVE_DIR}/.resubmit_count
 MAX_RESUBMITS=3
