@@ -28,3 +28,4 @@ from .larformer import LArFormerDataset, larformer_collate
 
 # dataloader
 from .dataloader import MultiDatasetDataloader
+from .fast_forward_sampler import FastForwardSampler
