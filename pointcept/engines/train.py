@@ -203,8 +203,24 @@ class Trainer(TrainerBase):
                 elif self.start_iter > 0 and getattr(
                     self.cfg, "skip_dataloader_on_resume", False
                 ):
-                    skip_samples = self.start_iter * self.cfg.batch_size_per_gpu
                     sampler = self.train_loader.sampler
+                    # Hard-fail loudly if the loader's sampler isn't wrapped.
+                    # Without this check, setting `skip_indices` on a plain
+                    # DistributedSampler silently creates a stray attribute,
+                    # the full epoch runs, AND enumerate(start=N) inflates
+                    # comm_info["iter"] past len(train_loader) — corrupting
+                    # all iter-keyed accounting (we hit this with
+                    # LArFormerTrainer / ShowerClusteringTrainer subclasses
+                    # that overrode build_train_loader without wrapping).
+                    if not isinstance(sampler, FastForwardSampler):
+                        raise RuntimeError(
+                            f"skip_dataloader_on_resume=True but train_loader.sampler "
+                            f"is {type(sampler).__name__}, not FastForwardSampler. "
+                            f"Custom build_train_loader overrides must wrap the "
+                            f"underlying sampler via self._build_train_sampler(...). "
+                            f"Set skip_dataloader_on_resume=False to fall back to islice."
+                        )
+                    skip_samples = self.start_iter * self.cfg.batch_size_per_gpu
                     sampler.skip_indices = skip_samples
                     sampler._consumed = False
                     self.logger.info(
@@ -452,18 +468,22 @@ class Trainer(TrainerBase):
             )
         return writer
 
-    def build_train_loader(self):
-        train_data = build_dataset(self.cfg.data.train)
+    def _build_train_sampler(self, train_data):
+        """Build the train sampler, always wrapped in FastForwardSampler.
 
-        # Always wrap the underlying sampler in FastForwardSampler so the
-        # trainer can later activate it (skip_indices > 0) for mid-epoch
-        # fast-resume without rebuilding the loader. With skip_indices=0 it
-        # is transparent — yields exactly what the wrapped sampler yields.
+        Subclasses with custom build_train_loader (LArFormerTrainer,
+        ShowerClusteringTrainer) should call this so mid-epoch fast-resume
+        works for them too. With skip_indices=0 the wrapper is transparent.
+        """
         if comm.get_world_size() > 1:
             base_sampler = torch.utils.data.distributed.DistributedSampler(train_data)
         else:
             base_sampler = torch.utils.data.RandomSampler(train_data)
-        train_sampler = FastForwardSampler(base_sampler, skip_indices=0)
+        return FastForwardSampler(base_sampler, skip_indices=0)
+
+    def build_train_loader(self):
+        train_data = build_dataset(self.cfg.data.train)
+        train_sampler = self._build_train_sampler(train_data)
 
         init_fn = (
             partial(
