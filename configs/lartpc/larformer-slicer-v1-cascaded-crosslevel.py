@@ -570,6 +570,19 @@ clip_grad        = 1.0
 wandb_project    = "pointcept-larformer"
 find_unused_parameters = True
 
+# Mid-epoch resume strategy:
+#   skip_dataloader_on_resume=True: when resuming mid-epoch, activate
+#     FastForwardSampler so the dataloader jumps straight to the resumed iter
+#     instead of driving workers through the skipped batches' transforms.
+#     Trades reproducibility-of-augmentations on kept batches for ~1h of
+#     startup time at typical mid-epoch resume points.
+#   resume_seed_strategy="per_resume": derive a fresh worker seed from the
+#     checkpoint's (epoch, iter_in_epoch) on each resume, so retried jobs
+#     don't reproduce identical augmentation sequences on the kept batches.
+#     Only takes effect when skip_dataloader_on_resume=True.
+skip_dataloader_on_resume = True
+resume_seed_strategy = "per_resume"
+
 # =============================================================================
 # Optimizer / scheduler
 # =============================================================================
@@ -624,7 +637,7 @@ scheduler = dict(
     # smoothing (raw val_loss tracked, current pre-EMA behavior).
     ema_alpha=0.3,
     # No reset_lr by default — set on resume only.
-    reset_lr=None,
+    reset_lr=1.0e-5,
     reset_counters=False,
 )
 
@@ -645,7 +658,7 @@ hooks = [
          empty_cache=True,
          log_per_event=False),
     dict(type="LREpochScheduler"),
-    dict(type="CheckpointSaver", save_freq=None),
+    dict(type="CheckpointSaver", save_freq=1),
     # Iteration-level checkpointing so SLURM jobs killed at the 24h wall-clock
     # cap can resume mid-epoch (epochs are ~9h on the Isambard-AI allocation).
     # Writes to the same model_last.pth that CheckpointSaver uses, plus

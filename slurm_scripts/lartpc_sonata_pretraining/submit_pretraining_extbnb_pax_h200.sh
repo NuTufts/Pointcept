@@ -24,8 +24,7 @@ CONFIG="/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept/configs/l
 #CHECKPOINT="/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept/sonata/lartpc_v7_h200_extbnb_larmatch_lowerlr/model/epoch_6.pth"
 #CHECKPOINT="/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept/sonata/lartpc_v7_h200_extbnb_larmatch_lowerlr/model/epoch_18.pth"
 #CHECKPOINT="/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept/sonata/lartpc_v7_h200_extbnb_larmatch_lowerlr/model/epoch_24.pth"
-CHECKPOINT="/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept/sonata/lartpc_v7_h200_extbnb_larmatch_lowerlr/model/epoch_24.pth"
-
+CHECKPOINT="/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept/sonata/lartpc_v7_h200_extbnb_larmatch_lowerlr/model/epoch_30.pth"
 
 # run job script inside container
 apptainer exec --nv --bind /cluster:/cluster $container bash -c "cd ${WORKDIR} && \

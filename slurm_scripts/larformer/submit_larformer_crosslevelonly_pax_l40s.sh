@@ -32,6 +32,7 @@ module load apptainer
 #   python3 tools/train.py --config ${CONFIG} --num-gpus 2"
 
 CHECKPOINT="${WORKDIR}/exp/larformer_slicer_v1_cascaded_crosslevelrefiner_mixedq_maskdn/model/model_last.pth"
+#CHECKPOINT="${WORKDIR}/exp/larformer_slicer_v1_cascaded_crosslevelrefiner_mixedq_maskdn/model_iter_24183.pth"
 
 # resume job script inside container
 apptainer exec --nv --bind /cluster:/cluster $container bash -c "cd ${WORKDIR} && \
