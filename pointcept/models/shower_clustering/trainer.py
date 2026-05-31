@@ -25,12 +25,10 @@ class ShowerClusteringTrainer(Trainer):
 
     def build_train_loader(self):
         train_data = build_dataset(self.cfg.data.train)
-
-        if comm.get_world_size() > 1:
-            train_sampler = torch.utils.data.distributed.DistributedSampler(
-                train_data)
-        else:
-            train_sampler = None
+        # Use the base Trainer's wrapped-sampler helper so mid-epoch fast-resume
+        # (FastForwardSampler) works for this trainer too. Sampler controls
+        # ordering, so DataLoader's own shuffle is off.
+        train_sampler = self._build_train_sampler(train_data)
 
         init_fn = (
             partial(
@@ -46,7 +44,7 @@ class ShowerClusteringTrainer(Trainer):
         train_loader = torch.utils.data.DataLoader(
             train_data,
             batch_size=self.cfg.batch_size_per_gpu,
-            shuffle=(train_sampler is None),
+            shuffle=False,
             num_workers=self.cfg.num_worker_per_gpu,
             sampler=train_sampler,
             collate_fn=shower_clustering_collate,
