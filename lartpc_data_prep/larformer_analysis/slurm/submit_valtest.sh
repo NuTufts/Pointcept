@@ -98,7 +98,8 @@ echo "OUTPUT_DIR=${OUTPUT_DIR}"
 echo "Started: $(date)"
 echo "======================================"
 
-module load apptainer
+module load apptainer # use this for production cluster
+#module load apptainer/1.2.4-suid # use this on old cluster
 
 # In-container per-task command.
 INNER_CMD="\
