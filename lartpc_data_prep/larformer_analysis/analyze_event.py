@@ -6,7 +6,9 @@ Inputs (per event):
   --inference-h5   slicerpred_*.h5 from tools/run_slicer_inference.py
   --output-h5      Where to write the per-event metrics H5
 
-Output: a single `perevent_<run>_<sub>_<evt>.h5` with the schema below.
+Output: a single `perevent_<run>_<sub>_<evt>.h5` (or, when `--fileno` and
+`--entry` are also given, `perevent_fileno<NNNNN>_entry<NNNNNN>_run<R>_sub<S>_evt<E>.h5`)
+with the schema below.
 The aggregator (`aggregate_metrics.py`) reads N of these and emits the
 flat `event_summary.h5`.
 
@@ -564,18 +566,64 @@ def _compute_gt_baseline(
 # Writer
 # ---------------------------------------------------------------------------
 
-def _resolve_output_path(out_path, run, subrun, event):
-    """If `out_path` points at a directory (or ends in '/'), append the
-    canonical `perevent_<run>_<sub>_<evt>.h5` filename inside it. Lets
-    callers pass either a directory ('--output-h5 out/') or a full path
-    ('--output-h5 out/perevent_1_0_20.h5')."""
+def _sentinel_path_for(output_h5):
+    """Derive the skip-sentinel path for a would-be perevent output path.
+    Replaces the `perevent_` basename prefix with `skipped_` so the
+    sentinel is excluded by `aggregate_metrics.py`'s default
+    `perevent_*.h5` glob. If the basename doesn't start with `perevent_`,
+    inserts `.skipped` before the extension."""
+    d, b = os.path.split(output_h5)
+    if b.startswith("perevent_"):
+        new_b = "skipped_" + b[len("perevent_"):]
+    else:
+        stem, ext = os.path.splitext(b)
+        new_b = stem + ".skipped" + ext
+    return os.path.join(d, new_b)
+
+
+def _write_skip_sentinel(path, run, subrun, event, fileno, entry,
+                         model_tag, reason):
+    """Write a tiny H5 marker recording that this event was skipped.
+    The aggregator's default glob (`perevent_*.h5`) ignores these so
+    skipped events don't poison the summary. The driver's skip-if-exists
+    check looks for these alongside the real perevent outputs to avoid
+    re-attempting events that have already been classified as skips."""
+    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+    tmp = path + ".tmp"
+    with h5py.File(tmp, "w") as f:
+        f.attrs["skipped"]  = True
+        f.attrs["reason"]   = str(reason)
+        f.attrs["run"]      = int(run)
+        f.attrs["subrun"]   = int(subrun)
+        f.attrs["event"]    = int(event)
+        if fileno is not None:
+            f.attrs["fileno"] = int(fileno)
+        if entry is not None:
+            f.attrs["entry"]  = int(entry)
+        f.attrs["model_tag"] = str(model_tag)
+    os.replace(tmp, path)
+
+
+def _resolve_output_path(out_path, run, subrun, event, fileno=None, entry=None):
+    """If `out_path` points at a directory (or ends in '/'), append a
+    canonical filename inside it. When `fileno` and `entry` are both
+    given, the filename includes them so the output can be matched 1:1
+    with the manifest row:
+        perevent_fileno<NNNNN>_entry<NNNNNN>_run<R>_sub<S>_evt<E>.h5
+    Otherwise the older `perevent_<run>_<sub>_<evt>.h5` form is used."""
     is_dir_like = (
         out_path.endswith(os.sep)
         or out_path.endswith("/")
         or os.path.isdir(out_path)
     )
     if is_dir_like:
-        canonical = f"perevent_{int(run)}_{int(subrun)}_{int(event)}.h5"
+        if fileno is not None and entry is not None:
+            canonical = (
+                f"perevent_fileno{int(fileno):05d}_entry{int(entry):06d}"
+                f"_run{int(run)}_sub{int(subrun)}_evt{int(event)}.h5"
+            )
+        else:
+            canonical = f"perevent_{int(run)}_{int(subrun)}_{int(event)}.h5"
         return os.path.join(out_path.rstrip("/"), canonical)
     return out_path
 
@@ -693,6 +741,12 @@ def main():
     ap.add_argument("--output-h5",    required=True)
     ap.add_argument("--model-tag", default="unknown",
                     help="String tag attached to the per-event H5.")
+    ap.add_argument("--fileno", type=int, default=None,
+                    help="Optional manifest fileno; when given with --entry, "
+                         "the auto-derived output filename includes both so "
+                         "the perevent H5 maps 1:1 to its manifest row.")
+    ap.add_argument("--entry", type=int, default=None,
+                    help="Optional manifest entry; see --fileno.")
 
     # PhotonLib + γ + readout-factor.
     ap.add_argument("--photonlib-cache", default=None,
@@ -761,8 +815,11 @@ def main():
     run, subrun, event = inf["run"], inf["subrun"], inf["event"]
 
     # Allow --output-h5 to be a directory; if so, fill in the canonical
-    # perevent_<run>_<sub>_<evt>.h5 filename inside it.
-    args.output_h5 = _resolve_output_path(args.output_h5, run, subrun, event)
+    # filename inside it (includes fileno/entry when both are provided).
+    args.output_h5 = _resolve_output_path(
+        args.output_h5, run, subrun, event,
+        fileno=args.fileno, entry=args.entry,
+    )
     if args.verbose:
         print(f"resolved output_h5: {args.output_h5}")
     if (run, subrun, event) != (fi["run"], fi["subrun"], fi["event"]):
@@ -778,8 +835,20 @@ def main():
     # Identify in-time flash + GT-nu union mask.
     in_time = _find_in_time_flash(fi)
     if in_time is None:
-        sys.exit(f"event ({run},{subrun},{event}): no flashes at all "
-                 f"in flashinfo — cannot compute chi-2")
+        sentinel = _sentinel_path_for(args.output_h5)
+        _write_skip_sentinel(
+            sentinel,
+            run=run, subrun=subrun, event=event,
+            fileno=args.fileno, entry=args.entry,
+            model_tag=args.model_tag,
+            reason="no_flashes_in_flashinfo",
+        )
+        sys.stderr.write(
+            f"event ({run},{subrun},{event}): no flashes at all in "
+            f"flashinfo — cannot compute chi-2; wrote skip sentinel "
+            f"{sentinel} and exiting 0\n"
+        )
+        return
     if args.verbose:
         print(f"in-time flash idx={in_time['flash_idx']} "
               f"t0={in_time['t0_us']:.3f}us "

@@ -43,9 +43,11 @@ Once running, open http://<host>:8050 in a browser.
 """
 
 import argparse
+import atexit
 import colorsys
 import os
 import sys
+import tempfile
 
 import numpy as np
 import torch
@@ -1484,6 +1486,12 @@ def main():
                          "Falls back to the dataset's lm_score filter only.")
     ap.add_argument("--split", default="val", choices=("train", "val", "test"),
                     help="Which dataset split to read")
+    ap.add_argument("--h5-file", default=None,
+                    help="Optional: visualize a single H5 file. Writes a "
+                         "1-line tempfile and overrides "
+                         "data.<split>.data_list_file with its path; "
+                         "everything else (augmentations, levels, filters) "
+                         "still comes from --config's data.<split> block.")
     ap.add_argument("--entry", type=int, default=0,
                     help="Initial event index")
     ap.add_argument("--max-spacepoints", type=int, default=None,
@@ -1508,6 +1516,26 @@ def main():
     ds_cfg = dict(cfg.data[args.split])
     if args.max_spacepoints is not None:
         ds_cfg["max_spacepoints"] = args.max_spacepoints
+    if args.h5_file is not None:
+        # Single-file override: write a 1-line filelist tempfile and patch
+        # `data_list_file`. The dataset (LArFormerDataset.get_data_list)
+        # treats absolute paths in the list as-is, so data_root is moot —
+        # we set it to "/" defensively so a future reader inspecting
+        # ds_cfg isn't misled into thinking files are looked up under the
+        # original data_root.
+        h5_abs = os.path.abspath(args.h5_file)
+        if not os.path.exists(h5_abs):
+            raise FileNotFoundError(f"--h5-file not found: {h5_abs}")
+        tmp = tempfile.NamedTemporaryFile(
+            mode="w", suffix=".txt", prefix="viz_single_", delete=False,
+        )
+        tmp.write(h5_abs + "\n")
+        tmp.close()
+        atexit.register(lambda p=tmp.name: os.path.exists(p) and os.unlink(p))
+        ds_cfg["data_list_file"] = tmp.name
+        ds_cfg["data_root"] = "/"
+        print(f"[viz] single-file override: {h5_abs}")
+        print(f"[viz]   tempfile: {tmp.name}")
     dataset = build_dataset(ds_cfg)
     print(f"Loaded {args.split} dataset: {len(dataset)} events")
 

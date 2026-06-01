@@ -505,9 +505,15 @@ def process_event(
 
 def write_event_h5(path: str, event_data: dict) -> None:
     """Write one event's predictions to HDF5. Group structure mirrors the
-    dict's key prefixes (pre/, post/, queries/, gt/, meta/)."""
+    dict's key prefixes (pre/, post/, queries/, gt/, meta/).
+
+    Written atomically (tmp + os.replace) so a killed job never leaves a
+    half-written file behind — important for skip-if-exists logic in
+    callers that treat the file's presence as "this event is done."
+    """
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-    with h5py.File(path, "w") as f:
+    tmp = path + ".tmp"
+    with h5py.File(tmp, "w") as f:
         for key, val in event_data.items():
             if isinstance(val, np.ndarray):
                 f.create_dataset(key, data=val, compression="gzip",
@@ -523,6 +529,7 @@ def write_event_h5(path: str, event_data: dict) -> None:
             else:
                 # Skip unhandled types (or could log a warning)
                 pass
+    os.replace(tmp, path)
 
 
 # ---------------------------------------------------------------------------

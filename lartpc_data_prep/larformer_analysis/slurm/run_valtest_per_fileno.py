@@ -36,6 +36,7 @@ Inputs (all required, via CLI):
 
 import argparse
 import csv
+import glob
 import os
 import subprocess
 import sys
@@ -153,36 +154,55 @@ def main():
     for d in (infer_dir, analyze_dir, list_dir):
         os.makedirs(d, exist_ok=True)
 
+    # Inputlist for inference: skip rows whose slicerpred_*.h5 already
+    # exists so a partial rerun doesn't redo work that's already on disk.
+    # `inputlist_path` is what we hand to run_slicer_inference.py — only
+    # the still-pending files end up in it.
     inputlist_path = os.path.join(list_dir, f"task{args.task_id:06d}.txt")
     missing = []
+    n_already_infer = 0
+    n_pending_infer = 0
     with open(inputlist_path, "w") as fh:
         for r in rows:
             p = r["merged_h5"]
             if not os.path.exists(p):
                 missing.append(p)
                 continue
+            stem = os.path.splitext(os.path.basename(p))[0]
+            slicerpred = os.path.join(infer_dir, f"slicerpred_{stem}.h5")
+            if os.path.exists(slicerpred):
+                n_already_infer += 1
+                continue
             fh.write(p + "\n")
+            n_pending_infer += 1
     if missing:
         sys.stderr.write(
             f"[task {args.task_id}] WARNING: {len(missing)} merged H5 files "
             f"not on disk; first: {missing[0]}\n"
         )
-    print(f"[task {args.task_id}] wrote inputlist {inputlist_path} "
-          f"({len(rows) - len(missing)} files)")
+    print(f"[task {args.task_id}] inputlist {inputlist_path}: "
+          f"{n_pending_infer} pending inference, "
+          f"{n_already_infer} already done, "
+          f"{len(missing)} missing on disk "
+          f"(total {len(rows)})")
 
     # ---- 3. Inference ------------------------------------------------
     if not args.skip_inference:
-        infer_script = os.path.join(REPO_ROOT, "tools", "run_slicer_inference.py")
-        if not os.path.exists(infer_script):
-            sys.exit(f"missing inference script: {infer_script}")
-        _run([
-            sys.executable, infer_script,
-            "--config",     args.model_config,
-            "--weights",    args.model_weights,
-            "--input-list", inputlist_path,
-            "--output-dir", infer_dir,
-            "--split",      "val",
-        ], log_prefix=f"[task {args.task_id}][infer] ")
+        if n_pending_infer == 0:
+            print(f"[task {args.task_id}] no pending inference files; "
+                  f"skipping inference step")
+        else:
+            infer_script = os.path.join(REPO_ROOT, "tools", "run_slicer_inference.py")
+            if not os.path.exists(infer_script):
+                sys.exit(f"missing inference script: {infer_script}")
+            _run([
+                sys.executable, infer_script,
+                "--config",     args.model_config,
+                "--weights",    args.model_weights,
+                "--input-list", inputlist_path,
+                "--output-dir", infer_dir,
+                "--split",      "val",
+            ], log_prefix=f"[task {args.task_id}][infer] ")
     else:
         print(f"[task {args.task_id}] --skip-inference set; expecting "
               f"slicerpred_*.h5 to already exist under {infer_dir}")
@@ -195,10 +215,12 @@ def main():
         )
         if not os.path.exists(analyze_script):
             sys.exit(f"missing analyzer: {analyze_script}")
+        n_already_analysis = 0
         for r in rows:
             merged_p  = r["merged_h5"]
             flash_p   = r["flashinfo_h5"]
             entry     = int(r["entry"])
+            fileno    = int(r["fileno"])
             # Inference writes `slicerpred_<merged_basename>.h5`.
             base = os.path.basename(merged_p)
             stem, _ = os.path.splitext(base)
@@ -215,6 +237,27 @@ def main():
                     f"entry {entry}: {flash_p}\n"
                 )
                 continue
+            # Skip if a perevent output or a skip sentinel already exists
+            # for this (fileno, entry). Delete the matching files to force
+            # a re-run.
+            existing = (
+                glob.glob(os.path.join(
+                    analyze_dir,
+                    f"perevent_fileno{fileno:05d}_entry{entry:06d}_*.h5",
+                ))
+                + glob.glob(os.path.join(
+                    analyze_dir,
+                    f"skipped_fileno{fileno:05d}_entry{entry:06d}_*.h5",
+                ))
+            )
+            if existing:
+                n_already_analysis += 1
+                print(
+                    f"[task {args.task_id}][analyze entry={entry}] "
+                    f"already done ({os.path.basename(existing[0])}); "
+                    f"skipping"
+                )
+                continue
             _run([
                 sys.executable, analyze_script,
                 "--merged-h5",    merged_p,
@@ -222,9 +265,15 @@ def main():
                 "--inference-h5", slicerpred_p,
                 "--output-h5",    analyze_dir + os.sep,   # auto-derives filename
                 "--model-tag",    args.model_tag,
+                "--fileno",       str(fileno),
+                "--entry",        str(entry),
                 "--gamma-beam",   str(args.gamma_beam),
                 "--gamma-cosmic", str(args.gamma_cosmic),
             ], log_prefix=f"[task {args.task_id}][analyze entry={entry}] ")
+        print(
+            f"[task {args.task_id}] analysis: {n_already_analysis} of "
+            f"{len(rows)} events were already done and skipped"
+        )
     else:
         print(f"[task {args.task_id}] --skip-analysis set; done")
 
