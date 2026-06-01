@@ -640,3 +640,53 @@ to key off `post/pred_query` (the actual query id).
 7. Side-by-side comparison plots across (model, γ) combinations
    in `plot_metrics.py` — currently each summary is plotted on its
    own.
+
+
+## Early Results
+
+### CrossLevelRefiner-only, Iteration 24183
+
+```
+twongj01@pax001:/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept$ python lartpc_data_prep/larformer_analysis/aggregate_metrics.py --perevent-dir exp/larformer_slicer_v1_cascaded_crosslevelrefiner_mixedq_maskdn/valtest_iter_24183/analysis/bnb_nu_pi0filter_corsika/ --output-dir exp/larformer_slicer_v1_cascaded_crosslevelrefiner_mixedq_maskdn/valtest_iter_24183/ --gamma-beam 225.0 --gamma-cosmic 225.0 --f-sys 0.1 
+Post-hoc γ override: γ_beam=225  γ_cosmic=225  f_sys=0.1  eps=1.0
+Found 1581 per-event H5 files.
+wrote exp/larformer_slicer_v1_cascaded_crosslevelrefiner_mixedq_maskdn/valtest_iter_24183/event_summary.h5  (N=1581)
+wrote exp/larformer_slicer_v1_cascaded_crosslevelrefiner_mixedq_maskdn/valtest_iter_24183/category_summary.h5
+
+=== crosslevelrefiner_mixedq_maskdn: 1581 events ===
+  has_nu_prediction frac: 98.36%
+  m1_iou (panoptic): mean=0.568, med=0.604
+  m1_iou (intent):   mean=0.559, med=0.643
+  sp_level_nu_recall:    mean=0.906
+  sp_level_nu_precision: mean=0.610
+  frac_nu_match_survived_panoptic: 99.94% (1546/1547)
+  oob<=0.00: delta_chi2 mean=+118500.03  rank1_all=81.87%  rank1_nu=97.28%
+  oob<=0.05: delta_chi2 mean=+107143.68  rank1_all=75.71%  rank1_nu=97.52%
+  oob<=0.10: delta_chi2 mean=+106103.69  rank1_all=75.38%  rank1_nu=97.48%
+  oob<=0.20: delta_chi2 mean=+105506.23  rank1_all=74.60%  rank1_nu=97.43%
+  oob<=0.50: delta_chi2 mean=+105438.37  rank1_all=73.18%  rank1_nu=97.36%
+```
+
+### PTv3 Hybrid + CrossLevelRefiner, Iteration 56600
+
+```
+twongj01@pax001:/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept$ python lartpc_data_prep/larformer_analysis/aggregate_metrics.py --perevent-dir exp/larformer_slicer_v1_cascaded_ptv3hybrid_crosslevel_nonzeroinit_maskdn_noamp/valtest_iter_56600/analysis/bnb_nu_pi0filter_corsika/ --output-dir exp/larformer_slicer_v1_cascaded_ptv3hybrid_crosslevel_nonzeroinit_maskdn_noamp/valtest_iter_56600/ --gamma-beam 225.0 --gamma-cosmic 225.0 --f-sys 0.
+1 
+Post-hoc γ override: γ_beam=225  γ_cosmic=225  f_sys=0.1  eps=1.0
+Found 1384 per-event H5 files.
+wrote exp/larformer_slicer_v1_cascaded_ptv3hybrid_crosslevel_nonzeroinit_maskdn_noamp/valtest_iter_56600/event_summary.h5  (N=1384)
+wrote exp/larformer_slicer_v1_cascaded_ptv3hybrid_crosslevel_nonzeroinit_maskdn_noamp/valtest_iter_56600/category_summary.h5
+
+=== ptv3hybrid_crosslevel_maskdn: 1384 events ===
+  has_nu_prediction frac: 94.65%
+  m1_iou (panoptic): mean=0.556, med=0.601
+  m1_iou (intent):   mean=0.578, med=0.668
+  sp_level_nu_recall:    mean=0.902
+  sp_level_nu_precision: mean=0.600
+  frac_nu_match_survived_panoptic: 99.92% (1292/1293)
+  oob<=0.00: delta_chi2 mean=+49283.53  rank1_all=84.67%  rank1_nu=99.34%
+  oob<=0.05: delta_chi2 mean=+136647.94  rank1_all=73.33%  rank1_nu=98.97%
+  oob<=0.10: delta_chi2 mean=+136183.30  rank1_all=72.82%  rank1_nu=98.99%
+  oob<=0.20: delta_chi2 mean=+137137.45  rank1_all=71.91%  rank1_nu=98.85%
+  oob<=0.50: delta_chi2 mean=+136827.33  rank1_all=69.16%  rank1_nu=98.85%
+  ```
