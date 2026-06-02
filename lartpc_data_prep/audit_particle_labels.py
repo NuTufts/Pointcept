@@ -76,6 +76,21 @@ def _pdg_name(p):
     return PDG_NAMES.get(int(p), f"PDG:{int(p)}")
 
 
+# Active-TPC bounds (MicroBooNE) used to flag out-of-FV nu events.
+TPC_X_MIN, TPC_X_MAX = 0.0,   256.35
+TPC_Y_MIN, TPC_Y_MAX = -116.5, 116.5
+TPC_Z_MIN, TPC_Z_MAX = 0.0,   1036.8
+
+
+def _vertex_in_active_tpc(xyz):
+    if xyz is None or len(xyz) == 0 or not np.isfinite(xyz).all():
+        return False
+    x, y, z = float(xyz[0]), float(xyz[1]), float(xyz[2])
+    return (TPC_X_MIN <= x <= TPC_X_MAX
+            and TPC_Y_MIN <= y <= TPC_Y_MAX
+            and TPC_Z_MIN <= z <= TPC_Z_MAX)
+
+
 # ----------------------------------------------------------------------------
 # Per-event analysis
 # ----------------------------------------------------------------------------
@@ -106,6 +121,15 @@ def analyze_one(merged_h5,
             mc_origin_arr = mpt["origin"][:].astype(np.int64)
             mc_ke   = mpt["energy_mev"][:].astype(np.float32)
             tid_to_idx = {int(t): i for i, t in enumerate(mc_tids)}
+            # Nu vertex (for the Pattern-2 in/out-of-TPC check). Pick the
+            # first vertex when there are multiple (rare for MicroBooNE).
+            if "nu_vertices" in mpt:
+                nu_verts_arr = mpt["nu_vertices"][:]
+                nu_vertex = (nu_verts_arr[0]
+                             if nu_verts_arr.shape[0] > 0
+                             else np.array([np.nan]*3, dtype=np.float32))
+            else:
+                nu_vertex = np.array([np.nan]*3, dtype=np.float32)
             pi = compute_particle_labels(
                 mpt, sp_trackid, sp_hasmatch,
                 nu_origin=nu_origin,
@@ -134,14 +158,25 @@ def analyze_one(merged_h5,
     n_mc_tracks      = int(mc_tids.shape[0])
     n_mc_nu_tracks   = int((mc_origin_arr == nu_origin).sum())
 
-    # Per-class counts
+    # Per-class counts (using the RELABELED pdg the model will see).
     pdg_count = Counter(int(p) for p in pi["primary_pid"])
+    # Track how many surviving particles got relabeled by the n→p rule
+    # (or any future relabel) — useful for understanding pattern 1.
+    has_pid_raw = "primary_pid_raw" in pi
+    n_relabeled = (int((pi["primary_pid"] != pi["primary_pid_raw"]).sum())
+                   if has_pid_raw else 0)
+    relabel_pair_counts = Counter()
+    if has_pid_raw:
+        for raw, new in zip(pi["primary_pid_raw"], pi["primary_pid"]):
+            if int(raw) != int(new):
+                relabel_pair_counts[(int(raw), int(new))] += 1
 
     # Per-particle rows
     per_particle_rows = []
     for k, sid in enumerate(pi["primary_trackid"]):
         members = pi["slice_member_trackids"][k]
-        pdg = int(pi["primary_pid"][k])
+        pdg     = int(pi["primary_pid"][k])
+        pdg_raw = int(pi["primary_pid_raw"][k]) if has_pid_raw else pdg
         ke  = float(pi["primary_ke_MeV"][k])
         n_sp_slice = int(pi["primary_n_spacepoints"][k])
         per_particle_rows.append(dict(
@@ -151,6 +186,9 @@ def analyze_one(merged_h5,
             host_tid=int(sid),
             pdg=pdg,
             pdg_name=_pdg_name(pdg),
+            pdg_raw=pdg_raw,
+            pdg_raw_name=_pdg_name(pdg_raw),
+            was_relabeled=int(pdg != pdg_raw),
             host_ke_MeV=ke,
             n_sp=n_sp_slice,
             n_member=len(members),
@@ -192,6 +230,10 @@ def analyze_one(merged_h5,
     per_event = dict(
         run=run, subrun=subrun, event=event,
         file=os.path.basename(merged_h5),
+        nu_vertex_x=float(nu_vertex[0]),
+        nu_vertex_y=float(nu_vertex[1]),
+        nu_vertex_z=float(nu_vertex[2]),
+        nu_vertex_in_active_tpc=int(_vertex_in_active_tpc(nu_vertex)),
         n_sp_total=n_sp_total,
         n_sp_real=n_sp_real,
         n_sp_nu=n_sp_nu,
@@ -201,6 +243,7 @@ def analyze_one(merged_h5,
         nu_sp_coverage_frac=nu_sp_coverage,
         n_unique_sp_trackids_nu=n_unique_sp_tids_nu,
         n_particles=n_particles,
+        n_particles_relabeled=n_relabeled,
         n_mc_tracks=n_mc_tracks,
         n_mc_nu_tracks=n_mc_nu_tracks,
         n_slices_with_merge=n_slices_with_merge,
@@ -319,6 +362,18 @@ def _summarize(per_events, per_particles, merges, out_path,
                      "merge logic is a safety net.)")
     lines.append("")
 
+    # Relabel breakdown
+    if any(r.get("n_particles_relabeled", 0) > 0 for r in per_events):
+        n_relabel_total = sum(r["n_particles_relabeled"] for r in per_events)
+        n_relabel_events = sum(1 for r in per_events
+                               if r["n_particles_relabeled"] > 0)
+        lines.append(f"  PDG-relabeled instances "
+                     f"(default rule: 2112 → 2212, n → p): "
+                     f"{n_relabel_total} particles across "
+                     f"{n_relabel_events} events "
+                     f"({n_relabel_events/n_events:.2%} of events)")
+    lines.append("")
+
     lines.append("== Check (2): GT instance topology + coverage ==")
     if len(finite_cov):
         lines.append(f"  nu_sp_coverage (= n_sp_nu_assigned / n_sp_nu): "
@@ -335,6 +390,28 @@ def _summarize(per_events, per_particles, merges, out_path,
                  f"({n_zero_part_evt/n_events:.2%})")
     lines.append(f"  events with 1 particle:  {n_one_part_evt} "
                  f"({n_one_part_evt/n_events:.2%})")
+    lines.append("")
+
+    # Pattern-2 breakdown: of 0-particle events, how many have the nu
+    # vertex outside the active TPC (= legitimate out-of-FV) vs inside
+    # (= our algorithm dropped everything despite vertex being detectable).
+    if n_zero_part_evt > 0:
+        zero_in_tpc = sum(1 for r in per_events
+                          if r["n_particles"] == 0
+                          and r["nu_vertex_in_active_tpc"] == 1)
+        zero_out_tpc = n_zero_part_evt - zero_in_tpc
+        lines.append("  Pattern-2 breakdown of 0-particle events:")
+        lines.append(f"    vertex OUTSIDE active TPC (legitimate): "
+                     f"{zero_out_tpc} ({zero_out_tpc/n_zero_part_evt:.2%})")
+        lines.append(f"    vertex INSIDE active TPC  (investigate):  "
+                     f"{zero_in_tpc} ({zero_in_tpc/n_zero_part_evt:.2%})")
+        lines.append("")
+    # Same breakdown for context: ALL events
+    n_in_tpc  = sum(1 for r in per_events if r["nu_vertex_in_active_tpc"] == 1)
+    n_out_tpc = n_events - n_in_tpc
+    lines.append(f"  nu vertex location (all events): "
+                 f"in-TPC={n_in_tpc} ({n_in_tpc/n_events:.2%})  "
+                 f"out-of-TPC={n_out_tpc} ({n_out_tpc/n_events:.2%})")
     lines.append("")
 
     # Per-PDG instance stats
@@ -389,13 +466,35 @@ def _summarize(per_events, per_particles, merges, out_path,
         lines.append("")
 
     lines.append("== Outlier events (flagged for inspection) ==")
-    # 0-particle
+    # 0-particle with vertex INSIDE TPC — these are the ones that matter
+    # for tuning (the out-of-TPC ones are legitimate). Show those first.
     if n_zero_part_evt > 0:
-        flagged = [r for r in per_events if r["n_particles"] == 0]
-        lines.append(f"  events with 0 surviving particles (first 10 of {len(flagged)}):")
-        for r in flagged[:10]:
-            lines.append(f"    {r['file']}  run/sub/evt=({r['run']},{r['subrun']},{r['event']})  "
-                         f"n_sp_nu={r['n_sp_nu']}  n_mc_nu_tracks={r['n_mc_nu_tracks']}")
+        zero_in = [r for r in per_events
+                   if r["n_particles"] == 0
+                   and r["nu_vertex_in_active_tpc"] == 1]
+        if zero_in:
+            lines.append(f"  ** 0-particle events with nu vertex INSIDE TPC "
+                         f"(investigate; first 10 of {len(zero_in)}) **:")
+            for r in zero_in[:10]:
+                lines.append(f"    {r['file']}  "
+                             f"run/sub/evt=({r['run']},{r['subrun']},{r['event']})  "
+                             f"vtx=({r['nu_vertex_x']:.1f},"
+                             f"{r['nu_vertex_y']:.1f},"
+                             f"{r['nu_vertex_z']:.1f})  "
+                             f"n_sp_nu={r['n_sp_nu']}  "
+                             f"n_mc_nu_tracks={r['n_mc_nu_tracks']}")
+        zero_out = [r for r in per_events
+                    if r["n_particles"] == 0
+                    and r["nu_vertex_in_active_tpc"] == 0]
+        if zero_out:
+            lines.append(f"  0-particle events with vertex OUTSIDE TPC "
+                         f"(expected; first 5 of {len(zero_out)}):")
+            for r in zero_out[:5]:
+                lines.append(f"    {r['file']}  "
+                             f"run/sub/evt=({r['run']},{r['subrun']},{r['event']})  "
+                             f"vtx=({r['nu_vertex_x']:.1f},"
+                             f"{r['nu_vertex_y']:.1f},"
+                             f"{r['nu_vertex_z']:.1f})")
     # Low coverage
     low_cov_thresh = 0.50
     low_cov = [r for r in per_events
@@ -506,16 +605,18 @@ def main():
     # Write outputs
     per_event_fields = [
         "run","subrun","event","file",
+        "nu_vertex_x","nu_vertex_y","nu_vertex_z","nu_vertex_in_active_tpc",
         "n_sp_total","n_sp_real","n_sp_nu","n_sp_cosmic",
         "n_sp_nu_assigned_to_particle","n_sp_nu_ghost","nu_sp_coverage_frac",
-        "n_unique_sp_trackids_nu","n_particles",
+        "n_unique_sp_trackids_nu","n_particles","n_particles_relabeled",
         "n_mc_tracks","n_mc_nu_tracks",
         "n_slices_with_merge","n_total_merged_subtracks",
         "n_e","n_gamma","n_mu","n_pi_charged","n_proton","n_neutron","n_other",
     ]
     per_particle_fields = [
         "run","subrun","event","file","qid",
-        "host_tid","pdg","pdg_name","host_ke_MeV","n_sp","n_member",
+        "host_tid","pdg","pdg_name","pdg_raw","pdg_raw_name","was_relabeled",
+        "host_ke_MeV","n_sp","n_member",
     ]
     merge_fields = [
         "run","subrun","event","file",
