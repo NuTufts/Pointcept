@@ -80,6 +80,18 @@ DEFAULT_COORD_SCALE = 179.55
 DEFAULT_BACKBONE_GRID_SIZE_CM = 0.25
 DEFAULT_SLICE_CLASS_MAP = {1: 0, 2: 1}  # primary_origin → origin_type
 
+# gt_source="particle" default taxonomy. abs(PDG) → class_id in the 7-class
+# Stage-3 taxonomy {e: 0, γ: 1, μ: 2, π: 3, p: 4, other_track: 5}; the matcher's
+# no_object slot is index 7 (set by `LArFormer.num_classes - 1`).
+DEFAULT_PARTICLE_CLASS_MAP = {
+    11:   0,   # e±
+    22:   1,   # γ
+    13:   2,   # μ±
+    211:  3,   # π±
+    2212: 4,   # p   (compute_particle_labels relabels n → p by default,
+               #      so 2112 lands here too)
+}
+
 
 @DATASETS.register_module()
 class LArFormerDataset(DefaultDataset):
@@ -128,6 +140,15 @@ class LArFormerDataset(DefaultDataset):
         slice_origin_kind="primary_start_pos",
         merge_nu_slices=True,
         shower_trunk_label_source="truth",
+        # ---- gt_source="particle" knobs --------------------------------
+        particle_ke_thresholds=None,
+        particle_other_ke_threshold=None,
+        particle_never_visible_pdgs=None,
+        particle_pdg_relabel=None,
+        particle_nu_origin=1,
+        particle_class_map=None,
+        particle_other_class_id=5,
+        min_particle_points_post_filter=0,
         transform=None,
         loop=1,
         test_mode=False,
@@ -182,11 +203,9 @@ class LArFormerDataset(DefaultDataset):
                 f"('shower_trunk', 'slice', 'deghost', 'particle'); "
                 f"got {gt_source!r}"
             )
-        if gt_source == "particle":
-            raise NotImplementedError(
-                "gt_source='particle' is reserved for Stage-3 particle "
-                "clustering; not implemented in P4."
-            )
+        # S3.0: gt_source="particle" wires lartpc_data_prep.slice_labels.
+        # compute_particle_labels into the per-event GT pipeline. See
+        # `_gt_from_particles` and `docs/LArFormer_particlesegment_stage.md`.
         if shower_trunk_label_source not in ("truth", "fragment", "union"):
             raise ValueError(
                 f"shower_trunk_label_source must be 'truth' / 'fragment' "
@@ -219,6 +238,32 @@ class LArFormerDataset(DefaultDataset):
         self.slice_origin_kind = slice_origin_kind
         self.merge_nu_slices = bool(merge_nu_slices)
         self.shower_trunk_label_source = shower_trunk_label_source
+        # gt_source="particle" knobs — None falls through to
+        # compute_particle_labels' own defaults; the class-id map defaults
+        # to the 7-class taxonomy used by the Stage-3 LArFormer config.
+        self.particle_ke_thresholds = (
+            dict(particle_ke_thresholds)
+            if particle_ke_thresholds is not None else None)
+        self.particle_other_ke_threshold = (
+            float(particle_other_ke_threshold)
+            if particle_other_ke_threshold is not None else None)
+        self.particle_never_visible_pdgs = (
+            frozenset(int(p) for p in particle_never_visible_pdgs)
+            if particle_never_visible_pdgs is not None else None)
+        self.particle_pdg_relabel = (
+            dict(particle_pdg_relabel)
+            if particle_pdg_relabel is not None else None)
+        self.particle_nu_origin = int(particle_nu_origin)
+        # abs(PDG) → class id. Default: {e:0, γ:1, μ:2, π:3, p:4}; everything
+        # else falls through to `particle_other_class_id` (default 5 =
+        # "other_track" in the Stage-3 taxonomy).
+        self.particle_class_map = (
+            {int(k): int(v) for k, v in particle_class_map.items()}
+            if particle_class_map is not None
+            else dict(DEFAULT_PARTICLE_CLASS_MAP))
+        self.particle_other_class_id = int(particle_other_class_id)
+        self.min_particle_points_post_filter = int(
+            min_particle_points_post_filter)
         self.data_list_file = data_list_file
         super().__init__(
             split=split,
@@ -440,6 +485,10 @@ class LArFormerDataset(DefaultDataset):
             )
         elif self.gt_source == "slice":
             gt_instances = self._gt_from_slices(slice_info, n_keep, coord_norm)
+        elif self.gt_source == "particle":
+            gt_instances = self._gt_from_particles(
+                mpt, sp_trackid_k, sp_hasmatch_k, n_keep,
+            )
         elif self.gt_source == "deghost":
             gt_instances = []
         else:  # pragma: no cover — already validated in __init__
@@ -632,6 +681,80 @@ class LArFormerDataset(DefaultDataset):
                 "origin_coord_norm": origin_norm.astype(np.float32),
                 "truth_indices": truth_idx,
                 "n_truth_points": int(primary_n[k]),
+            })
+        return gt_instances
+
+    def _gt_from_particles(self, mpt, sp_trackid_k, sp_hasmatch_k, n_keep):
+        """Per-particle GT instances for Stage-3 particle clustering.
+
+        Each instance corresponds to a single visible nu-origin particle
+        (post-KE-threshold + post-blacklist + parent-walk merging into
+        the nearest visible ancestor). Truth indices index into the
+        post-filter SP array (length `n_keep`). PDGs are POST-relabel
+        (e.g. n → p) per `compute_particle_labels`.
+        """
+        if mpt is None:
+            return []
+        from lartpc_data_prep.slice_labels import compute_particle_labels
+        kwargs = dict(nu_origin=self.particle_nu_origin)
+        if self.particle_ke_thresholds is not None:
+            kwargs["ke_thresholds"] = self.particle_ke_thresholds
+        if self.particle_other_ke_threshold is not None:
+            kwargs["other_ke_threshold"] = self.particle_other_ke_threshold
+        if self.particle_never_visible_pdgs is not None:
+            kwargs["never_visible_pdgs"] = self.particle_never_visible_pdgs
+        if self.particle_pdg_relabel is not None:
+            kwargs["pdg_relabel"] = self.particle_pdg_relabel
+        pinfo = compute_particle_labels(
+            mpt, sp_trackid_k, sp_hasmatch=sp_hasmatch_k, **kwargs,
+        )
+        slice_id = pinfo["slice_id"]                    # (N_keep,)
+        primary_trackid = pinfo["primary_trackid"]      # (S,)
+        primary_pid = pinfo["primary_pid"]              # post-relabel
+        primary_pid_raw = pinfo["primary_pid_raw"]
+        primary_ke_MeV = pinfo["primary_ke_MeV"]
+        primary_start_pos = pinfo["primary_start_pos"]        # raw truth (cm)
+        # SCE-applied start position — aligns with reco SP frame. Falls back
+        # to raw start_pos inside compute_particle_labels if start_pos_sce
+        # isn't in the H5, so this field is always present.
+        primary_start_pos_sce = pinfo["primary_start_pos_sce"]
+        primary_n = pinfo["primary_n_spacepoints"]
+        gt_instances = []
+        for k, tid in enumerate(primary_trackid):
+            tid = int(tid)
+            truth_idx = np.where(slice_id == tid)[0].astype(np.int64)
+            if truth_idx.size < self.min_particle_points_post_filter:
+                continue
+            pdg = int(primary_pid[k])
+            class_id = int(self.particle_class_map.get(
+                abs(pdg), self.particle_other_class_id))
+            origin_cm = primary_start_pos_sce[k].astype(np.float32)
+            origin_cm_truth = primary_start_pos[k].astype(np.float32)
+            origin_norm = (
+                (origin_cm - self.coord_center) / self.coord_scale
+            ).astype(np.float32)
+            gt_instances.append({
+                "primary_trackid": tid,
+                "pid": pdg,
+                "pid_raw": int(primary_pid_raw[k]),
+                # LArFormerLoss reads `origin_type` as the per-instance
+                # class slot for the matcher (legacy name from the slicer
+                # GT schema, where origin_type ∈ {0=nu, 1=cosmic}). For
+                # the particle taxonomy we map it to class_id; the
+                # original "always nu-origin" flag is implicit since
+                # compute_particle_labels only walks nu-origin tracks.
+                "origin_type": class_id,
+                "class_id": class_id,
+                # origin_cm / origin_coord_norm are the SCE-applied (reco-
+                # frame) birth point — this is what the origin head should
+                # predict and what the visualizer plots. The raw-truth
+                # birth point is kept separately for analysis only.
+                "origin_coord_norm": origin_norm,
+                "origin_cm": origin_cm,
+                "origin_cm_truth": origin_cm_truth,
+                "ke_mev": float(primary_ke_MeV[k]),
+                "truth_indices": truth_idx,
+                "n_truth_points": int(truth_idx.size),
             })
         return gt_instances
 

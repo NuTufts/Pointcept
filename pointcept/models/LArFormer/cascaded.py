@@ -176,13 +176,41 @@ class CascadedSlicer(nn.Module):
               for k, v in sd.items()}
         if sd and all(k.startswith("backbone.") for k in sd.keys()):
             sd = {k[len("backbone."):]: v for k, v in sd.items()}
-        missing, unexpected = target_module.load_state_dict(sd, strict=False)
+        # Filter out shape-mismatched keys BEFORE load_state_dict — the
+        # PyTorch loader raises on shape conflicts even with strict=False.
+        # This lets a checkpoint partially populate a different-sized
+        # scaffold (e.g. loading a token_dim=256 slicer ckpt into a
+        # token_dim=64 smoke-test config). Mismatched + unexpected keys
+        # are counted and reported.
+        target_shapes = {k: tuple(v.shape) for k, v
+                         in target_module.state_dict().items()}
+        filtered_sd = {}
+        n_shape_mismatch = 0
+        first_mismatches = []
+        for k, v in sd.items():
+            if k not in target_shapes:
+                filtered_sd[k] = v
+                continue
+            if tuple(v.shape) == target_shapes[k]:
+                filtered_sd[k] = v
+            else:
+                n_shape_mismatch += 1
+                if len(first_mismatches) < 5:
+                    first_mismatches.append(
+                        f"{k}: ckpt {tuple(v.shape)} vs model {target_shapes[k]}"
+                    )
+        missing, unexpected = target_module.load_state_dict(
+            filtered_sd, strict=False,
+        )
         print(f"[CascadedSlicer] Loaded {log_name} weight: {weight_path}")
-        print(f"  missing={len(missing)}  unexpected={len(unexpected)}")
+        print(f"  missing={len(missing)}  unexpected={len(unexpected)}  "
+              f"shape_mismatch_dropped={n_shape_mismatch}")
         if missing[:5]:
             print(f"  first missing: {missing[:5]}")
         if unexpected[:5]:
             print(f"  first unexpected: {unexpected[:5]}")
+        if first_mismatches:
+            print(f"  first shape-mismatch: {first_mismatches}")
 
     def _load_deghoster_weight(self, weight_path: str) -> None:
         self._load_state_dict_into(self.deghoster, weight_path, "deghoster")
@@ -348,11 +376,18 @@ class CascadedSlicer(nn.Module):
         # from there. We also pass through the post-filter per-event
         # identity lists so the evaluator can correlate predictions with
         # input events (drop_empty_events may have shrunk the batch).
+        #
+        # `filtered_batch` carries the FULL post-deghoster collated batch
+        # (per-SP tensors + offset + gt_instances) so downstream wrappers
+        # (e.g. CascadedParticleSegmenter) can build their own follow-on
+        # masks without re-running stages 1+2. Cheap to surface — same
+        # tensors that were just consumed by the slicer.
         return {
             "predictions": slicer_out["predictions"],
             "deghost_tau": tau,
             "deghost_keep_frac": keep_frac,
             "deghost_p_real": p_real.detach(),
+            "filtered_batch": filtered,
             "filtered_names": filtered.get("names", []),
             "filtered_runs": filtered.get("runs", []),
             "filtered_subruns": filtered.get("subruns", []),

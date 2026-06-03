@@ -168,6 +168,10 @@ class LArFormerSlicerEvaluator(HookBase):
         model = getattr(self.trainer.model, "module", self.trainer.model)
         no_object_class_id = self._infer_no_object_id(model)
 
+        # Subclass extension state (no-op in this base; particle eval
+        # populates origin-error buckets here).
+        self._init_extra_state()
+
         # Bookkeeping
         loss_acc: dict = {}
         n_loss_events = 0
@@ -304,6 +308,16 @@ class LArFormerSlicerEvaluator(HookBase):
                         int((pred_classes_all != no_object_class_id).sum().item())
                     )
 
+                    # Subclass hook — receives the per-event prediction +
+                    # matched (q, k) pairs and may bucket extra metrics
+                    # into self.* state (no-op in the base class).
+                    self._on_event_processed(
+                        ev_pred=ev_pred,
+                        eval_loss=eval_loss,
+                        q_idx=q_idx, k_idx=k_idx,
+                        no_object_class_id=no_object_class_id,
+                    )
+
                     # Per-level cls accuracy (e.g. voxel_10cm cls head)
                     per_level_cls = ev_pred.get("per_level_cls", {})
                     per_level_gt = eval_loss.get("per_level_gt_mask")  # not target
@@ -341,6 +355,25 @@ class LArFormerSlicerEvaluator(HookBase):
             deghost_keep_fracs=deghost_keep_fracs,
         )
         self._log_and_publish(scalars)
+
+    # ------------------------------------------------------------------
+    # Subclass extension points (no-op defaults)
+    # ------------------------------------------------------------------
+
+    def _init_extra_state(self) -> None:
+        """Called at the start of `eval()` so subclasses can clear per-
+        epoch accumulators. Default no-op."""
+        pass
+
+    def _on_event_processed(self, *, ev_pred: dict, eval_loss: dict,
+                            q_idx, k_idx,
+                            no_object_class_id: int) -> None:
+        """Called once per validation event AFTER the base class's
+        per-event metrics (mask IoU, cls accuracy, active-query count,
+        nu_purity) are computed. Subclasses can record additional
+        per-event records into `self.*` state and use them in
+        `_aggregate(...)`. Default no-op."""
+        pass
 
     def _infer_no_object_id(self, model) -> int:
         """Resolve no_object class id from the model's loss config.

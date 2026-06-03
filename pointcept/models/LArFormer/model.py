@@ -111,9 +111,15 @@ class LArFormer(nn.Module):
         mixed_query_selection: Optional[dict] = None,
         mask_denoising: Optional[dict] = None,
         ptv3_decoder_init_scale: float = 0.0,
+        backbone_weight: Optional[str] = None,
     ):
         super().__init__()
         self.backbone = build_model(backbone)
+        if backbone_weight is not None:
+            # Load before applying requires_grad — load_state_dict only
+            # writes tensor data, not requires_grad. Frozen modules can
+            # still be loaded.
+            self._load_backbone_weight(backbone_weight)
         self.freeze_backbone = bool(freeze_backbone)
         self.unfreeze_decoder = bool(unfreeze_decoder)
         if self.freeze_backbone:
@@ -295,6 +301,68 @@ class LArFormer(nn.Module):
     @staticmethod
     def _nan_safe_grad_hook(g: torch.Tensor) -> torch.Tensor:
         return torch.nan_to_num(g, nan=0.0, posinf=0.0, neginf=0.0)
+
+    def _load_backbone_weight(self, weight_path: str) -> None:
+        """Load a Sonata pretrain (or similar) into self.backbone.
+
+        Uses the same prefix-stripping + shape-aware filter as the cascade
+        wrappers (CascadedSlicer._load_state_dict_into). Lets a standalone
+        LArFormer config that doesn't sit under a cascade still pick up
+        the trained backbone weights via:
+
+            model = dict(
+                type="LArFormer",
+                backbone=...,
+                backbone_weight="path/to/sonata_pretrain.pth",
+                ...,
+            )
+
+        Mismatched keys (shape conflict between ckpt and current
+        backbone — typically the `mask_token` slots that depend on
+        `mask_token=True` in the PT-v3 config) are dropped with a
+        printed count rather than raising.
+        """
+        ckpt = torch.load(weight_path, map_location="cpu",
+                          weights_only=False)
+        if "state_dict" not in ckpt:
+            raise KeyError(
+                f"{weight_path}: no 'state_dict' key; got "
+                f"{list(ckpt.keys())[:10]}"
+            )
+        sd = ckpt["state_dict"]
+        sd = {(k[7:] if k.startswith("module.") else k): v
+              for k, v in sd.items()}
+        if sd and all(k.startswith("backbone.") for k in sd.keys()):
+            sd = {k[len("backbone."):]: v for k, v in sd.items()}
+        target_shapes = {k: tuple(v.shape) for k, v
+                         in self.backbone.state_dict().items()}
+        filtered_sd: dict = {}
+        n_shape_mismatch = 0
+        first_mismatches: list = []
+        for k, v in sd.items():
+            if k not in target_shapes:
+                filtered_sd[k] = v
+                continue
+            if tuple(v.shape) == target_shapes[k]:
+                filtered_sd[k] = v
+            else:
+                n_shape_mismatch += 1
+                if len(first_mismatches) < 5:
+                    first_mismatches.append(
+                        f"{k}: ckpt {tuple(v.shape)} vs model {target_shapes[k]}"
+                    )
+        missing, unexpected = self.backbone.load_state_dict(
+            filtered_sd, strict=False,
+        )
+        print(f"[LArFormer] Loaded backbone weight: {weight_path}")
+        print(f"  missing={len(missing)}  unexpected={len(unexpected)}  "
+              f"shape_mismatch_dropped={n_shape_mismatch}")
+        if missing[:5]:
+            print(f"  first missing: {missing[:5]}")
+        if unexpected[:5]:
+            print(f"  first unexpected: {unexpected[:5]}")
+        if first_mismatches:
+            print(f"  first shape-mismatch: {first_mismatches}")
 
     @staticmethod
     def _slice_decoder_output(decoder_out: dict, start: int, end: int) -> dict:

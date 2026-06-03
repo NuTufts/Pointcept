@@ -22,7 +22,13 @@ from .losses import (
     build_per_level_instance_mask,
 )
 from .cascade_filter import drop_empty_events, filter_batch_by_keep_mask
+from .cascade_particle_filter import (
+    build_nu_keep_mask,
+    filter_batch_for_particle_segmenter,
+    recenter_coord_norm_to_per_event_centroid,
+)
 from .cascaded import CascadedSlicer
+from .cascaded_particle import CascadedParticleSegmenter
 from .matcher import HungarianMatcher
 from .model import LArFormer
 from .tokenizer import CompositeTokenizer
@@ -51,6 +57,11 @@ __all__ = [
     "CascadedSlicer",
     "filter_batch_by_keep_mask",
     "drop_empty_events",
+    # Cascade (Stage-3 particle segmenter wrapping CascadedSlicer)
+    "CascadedParticleSegmenter",
+    "build_nu_keep_mask",
+    "filter_batch_for_particle_segmenter",
+    "recenter_coord_norm_to_per_event_centroid",
     # Top-level
     "LArFormer",
 ]

@@ -25,6 +25,7 @@ from .lartpc import LArTPCDataset, LArTPCInstanceDataset
 from .shower_origin import ShowerOriginDataset, ShowerOriginDatasetSimple
 from .shower_clustering import ShowerClusteringDataset, shower_clustering_collate
 from .larformer import LArFormerDataset, larformer_collate
+from .larformer_stage12_cache import LArFormerStage12CacheDataset
 
 # dataloader
 from .dataloader import MultiDatasetDataloader
