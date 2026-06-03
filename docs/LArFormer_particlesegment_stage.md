@@ -368,4 +368,382 @@ Most of the design choices are now decided. What's still open:
   - Phasing: S3.0–S3.9 reflecting model-side-first plus the noise-calibration + DN sub-phases.
 - **Rev 3 (2026-05-30)**: coordinate system decision:
   - Recenter pos_emb input to slice centroid for v1 (§1f); backbone features already carry absolute-position context, so pos_emb's job is to add slice-internal "where am I" information orthogonal to that.
+- **Rev 4 (2026-06-03)**: implementation status — S3.0 through S3.3+S3.6 plumbing landed. See §13 for the as-built design.
+
+---
+
+## 13. Implementation status (as built through 2026-06-03)
+
+This section documents what actually shipped for each phase of §9, the
+files involved, and any deltas from the original plan.
+
+### 13.1 S3.0 — Particle GT extraction ✅
+
+- [`lartpc_data_prep/slice_labels.py`](../lartpc_data_prep/slice_labels.py):
+  `compute_particle_labels(mpt_group, sp_trackid, sp_hasmatch, ...)`
+  with constants `DEFAULT_PARTICLE_KE_THRESH_MeV = {11: 10, 22: 10,
+  13: 30, 211: 30, 2112: 60, 2212: 60, 321: 60}`,
+  `NEVER_VISIBLE_PARTICLE_PDGS = {111, 130, 310}` (π⁰, K⁰L, K⁰S),
+  `PARTICLE_PDG_RELABEL = {2112: 2212, -2112: -2212}` (neutron → proton).
+- The parent walk collapses each Geant4 track up to its nearest
+  *visible* nu-origin ancestor; orphans / cosmic primaries → GHOST.
+- Output `primary_pid` is post-relabel; `primary_pid_raw` carries the
+  original PDG for analysis.
+- **SCE-corrected origin** (rev 4): `compute_particle_labels` now also
+  reads `mc_particle_tree/start_pos_sce` and returns
+  `primary_start_pos_sce` alongside the raw `primary_start_pos`.
+  Falls back to the raw start_pos when the H5 lacks the SCE field, so
+  older files still load.
+- Audit: [`lartpc_data_prep/audit_particle_labels.py`](../lartpc_data_prep/audit_particle_labels.py).
+- Dataset plug: `gt_source="particle"` in
+  [`pointcept/datasets/larformer.py`](../pointcept/datasets/larformer.py)
+  (method `_gt_from_particles`). Knobs:
+  `particle_class_map` (defaults to `{11: 0, 22: 1, 13: 2, 211: 3,
+  2212: 4}` with everything else → class 5 = `other_track`),
+  `particle_other_class_id`, `particle_ke_thresholds`,
+  `particle_other_ke_threshold`, `particle_never_visible_pdgs`,
+  `particle_pdg_relabel`, `particle_nu_origin`,
+  `min_particle_points_post_filter`.
+- Per-instance GT fields:
+  ```
+  pid, pid_raw, class_id,
+  origin_type     # alias of class_id (legacy field name LArFormerLoss reads)
+  primary_trackid, ke_mev,
+  origin_coord_norm,  origin_cm,         # SCE-applied (what the
+                                          #   origin head should predict)
+  origin_cm_truth,                       # raw truth (analysis only)
+  truth_indices, n_truth_points,
+  ```
+
+  **Bug fixed mid-implementation**: `LArFormerLoss` reads
+  `g["origin_type"]` as the per-instance class slot (legacy slicer
+  schema). An initial version set `origin_type=0` for every particle
+  GT, which would have trained Stage 3 to predict everything as class
+  0 (electron). Now `origin_type = class_id`, so the matcher sees the
+  correct 7-class target.
+
+### 13.2 S3.1 — Model-side cascade ✅
+
+- [`pointcept/models/LArFormer/cascaded_particle.py`](../pointcept/models/LArFormer/cascaded_particle.py):
+  `CascadedParticleSegmenter` wraps `CascadedSlicer` + a Stage-3
+  `LArFormer`. Cascade composition (per §1b / §3):
+
+  1. Run frozen `cascaded_slicer` in eval/no-grad → slicer per-event
+     predictions + `filtered_batch` (post-deghoster).
+  2. `build_nu_keep_mask(...)` (in
+     [`cascade_particle_filter.py`](../pointcept/models/LArFormer/cascade_particle_filter.py))
+     OR-reduces per-SP nu mask probabilities over the slicer's nu
+     queries and thresholds at `τ_loose`.
+  3. `filter_batch_for_particle_segmenter(...)` slices per-SP fields,
+     remaps `truth_indices` for each GT instance, optionally recenters
+     `coord_norm` to the per-event nu-SP centroid (§1f).
+  4. Run `particle_segmenter` on the filtered batch (the only training-
+     mode forward).
+
+- Shape-aware weight loading for all three checkpoints (LoRA deghoster,
+  slicer ckpt, Sonata pretrain for both backbones). Mismatched keys
+  are reported and dropped, not raised.
+
+- **Particle GT must be stripped before the slicer call**: the slicer's
+  eval-with-GT path would try to compute a 3-class CE against a
+  7-class target and CUDA-assert. Both
+  `CascadedParticleSegmenter.forward` and the cache builder do this:
+  ```python
+  slicer_input = {k: v for k, v in data_dict.items()
+                  if k not in ("gt_instances_per_event", "n_gt_instances")}
+  ```
+
+- Standalone `LArFormer` gained a `backbone_weight` kwarg with the
+  same shape-aware loader, so the cached config (§13.4) can load the
+  Sonata pretrain into the standalone particle segmenter without a
+  wrapper.
+
+### 13.3 S3.2 — Benchmark + caching decision ✅
+
+- [`tools/benchmark_larformer_s3_cascade.py`](../tools/benchmark_larformer_s3_cascade.py):
+  config-driven benchmark with two modes:
+  - **full**: end-to-end `CascadedParticleSegmenter` per iter.
+  - **cached**: precompute Stage 1+2 once per sample, time only
+    `particle_segmenter(ps_batch)`.
+
+  Reports forward / backward / total wall-clock + peak
+  `torch.cuda.max_memory_allocated`.
+
+- **Result on RTX 3080 16 GiB** (batch=1, 60K SPs, real checkpoints):
+  | Mode | Forward | Backward | Peak alloc |
+  |---|---|---|---|
+  | Full cascade | 1745 ms | 25 ms | 2.93 GiB |
+  | Cached Stage-3 only | 78 ms | 24 ms | 2.17 GiB |
+
+  Caching speedup ≈ **17×**. Stage 1+2 dominates 94 % of full-mode
+  forward. ⇒ Decision: build a precomputed Stage 1+2 cache (§7a is
+  ON for v1).
+
+### 13.4 S3.3 — Pure-cascade training (from cache) ✅
+
+The **cache** is the Stage-3-only training format. Schema (per
+[`tools/build_stage12_cache_event.py`](../tools/build_stage12_cache_event.py)
+format_version=2):
+
+```
+event_<id>.h5
+attrs:
+  format_version=2, source_h5, run, subrun, event, nu_class_id,
+  spacepoint_level, coord_center, coord_scale, deghost_tau (= 0.5),
+  tau_loose_floor, tau_loose_nominal, tau_loose_delta,
+  n_raw_spacepoints, n_after_dataset_filter, n_after_deghost,
+  n_in_cache, n_passes_tau_loose, n_gt_nu_in_cache,
+  n_particle_instances, n_queries, n_queries_with_per_sp_data,
+  cascade_skipped, ...
+
+entry_0/
+  # Per-SP tensors (mirrors merged_h5 conventions)
+  coord, coord_norm, feat, lm_score, wire,
+  trackid, pid, origin_label, hasmatch, ssnet_label, slice_id,
+  deghost_p_real, stage2_nu_mask_prob, stage2_nu_mask_prob_sum,
+  source_mask                  # uint8 bitmask (see below)
+
+  particle_instances/
+    instance_<k>/
+      truth_indices, n_truth_points, n_truth_points_orig, n_truth_points_in_cache,
+      pid, pid_raw, class_id, origin_type (= class_id),
+      origin_coord_norm, origin_cm, origin_cm_truth, ke_mev,
+      primary_trackid
+
+  slicer/
+    query_class_argmax, query_class_max_prob, query_nu_prob,
+    query_is_nu, query_ids_with_per_sp_data,
+    per_query_mask_prob          # (Q_kept, N_cache), gzip-compressed
+```
+
+**Inclusion rule** for the cached SP set (per §3 + the dual-purpose
+"matcher / mask denoising" requirement):
+
+> deghost-kept AND (`stage2_nu_mask_prob > τ_loose_floor` OR
+> SP belongs to a GT nu-origin particle)
+
+So the cache stores the UNION of Stage 2's "plausibly nu" prediction
+and the ground-truth nu SPs. The trainer picks the subset per
+iteration.
+
+**`source_mask` bits** (uint8):
+
+| Bit | Meaning |
+|---|---|
+| 0 (=1) | SP passes Stage 2 nu-mask at the cache's *nominal* τ_loose (default 0.5). Inference-realistic predicted-pass set. |
+| 1 (=2) | SP belongs to a GT nu-origin particle. Truth anchor for mask denoising. |
+| 2 (=4) | SP passes at τ_loose − δ (default δ=0.2, ⇒ τ=0.3). Curriculum / lower-τ headroom. |
+
+A SP with `source_mask = 1` is impossible (nominal-pass implies
+delta-pass), so values in practice are {0, 2, 4, 5, 6, 7}.
+
+**Build pipeline**:
+
+- [`tools/build_stage12_cache_event.py`](../tools/build_stage12_cache_event.py):
+  single-event entry. CLI takes config + inputlist + sample_idx +
+  output path. The importable `build_cache_event(...)` is what shard
+  drivers call.
+- [`tools/build_stage12_cache_shard.py`](../tools/build_stage12_cache_shard.py):
+  SLURM-array driver. Stride layout `indices = range(shard_id, N,
+  n_shards)`. Output path
+  `<cache_root>/<split>/<idx//1000>/<idx//100>/<basename>__event<idx>.h5`
+  (3-level hash, same convention as the production driver). Idempotent
+  — skips events that already have an `.h5` or a `.skipped` marker.
+  Failed-empty events get a `.skipped` marker rather than no file, so
+  re-runs don't keep retrying.
+- [`tools/visualize_stage12_cache.py`](../tools/visualize_stage12_cache.py):
+  3-panel Plotly HTML viewer (cached SPs by `source_mask`, by particle
+  GT instance, by `stage2_nu_mask_prob` with false-negative rings).
+
+**Cache-reader dataset**:
+
+[`pointcept/datasets/larformer_stage12_cache.py`](../pointcept/datasets/larformer_stage12_cache.py):
+`LArFormerStage12CacheDataset` reads the cache and emits dicts in the
+same shape as `LArFormerDataset` (so `larformer_collate` and the
+existing trainer plumbing work unchanged). Key knobs:
+
+| Knob | Default | Purpose |
+|---|---|---|
+| `source_set_filter` | `"stage2_pass"` | Picks the SP subset. See table below. |
+| `tau_loose_range` | `(0.3, 0.7)` | For `stage2_random_tau` mode. |
+| `random_tau_include_gt` | `True` | OR with GT-nu SPs when augmenting τ. |
+| `gt_keep_prob` | `0.5` | For `stage2_plus_gt_dropout` curriculum mode. |
+| `recenter_to_centroid` | `False` | Subtract per-event coord_norm centroid (config-on for production). |
+| `backbone_grid_size_cm` | `0.25` | For recomputing `grid_coord` (the cache doesn't store it). |
+
+`source_set_filter` modes:
+
+| Mode | Selection rule | Use case |
+|---|---|---|
+| `stage2_pass` | `source_mask & 1` | Inference-realistic (default) |
+| `gt_nu` | `source_mask & 2` | Truth-anchored — denoising warm-up / ablation |
+| `stage2_delta` | `source_mask & 4` | Lower-τ predicted-pass set |
+| `union` | any bit set | Most signal — matcher sees both predicted and GT |
+| `all` | every cached SP | Includes floor-only noise SPs |
+| `stage2_random_tau` | sample τ ~ U(`tau_loose_range`), filter by mask_prob > τ, optionally OR with GT | τ-augmentation |
+| `stage2_plus_gt_dropout` | stage2_pass ∪ random fraction of GT-only SPs | Curriculum from truth-anchor to pure-prediction |
+
+**Trainer**:
+
+- [`pointcept/models/LArFormer/trainer.py`](../pointcept/models/LArFormer/trainer.py):
+  `LArFormerTrainer` already drove `larformer_collate`. Added
+  `build_train_dn_loader()` + `_dual_run_step()` (§13.6).
+
+- [`pointcept/models/LArFormer/particle_evaluator.py`](../pointcept/models/LArFormer/particle_evaluator.py):
+  `LArFormerParticleEvaluator` subclasses
+  `LArFormerSlicerEvaluator`. Defaults to the 7-class taxonomy and
+  `best_metric = "mask_iou_mean"`. Drops `nu_recall` / `nu_purity` /
+  `nu_mIoU` (no leading-class semantics for Stage 3). Reports
+  per-class mask IoU and per-matched-pair origin Euclidean error.
+
+- **Evaluator extension points** (added to
+  `LArFormerSlicerEvaluator` so subclasses can plug in without
+  duplicating the eval loop):
+  ```
+  _init_extra_state()                       # called at start of eval()
+  _on_event_processed(ev_pred, eval_loss,   # called per val event
+                      q_idx, k_idx,           after the standard
+                      no_object_class_id)     metrics are computed
+  ```
+  The base implementations are no-ops; the particle evaluator overrides
+  both to bucket origin L2 by class.
+
+**Production config**:
+
+[`configs/lartpc/larformer-particle-v1-cached.py`](../configs/lartpc/larformer-particle-v1-cached.py):
+
+- `model = dict(type="LArFormer", backbone_weight=sonata_pretrain, ...)`
+  — standalone particle segmenter (no cascade wrapper at train time).
+- `data.train` / `data.val`: `LArFormerStage12CacheDataset` with
+  `source_set_filter="stage2_pass"`, `recenter_to_centroid=True`.
+- Commented `data.train_dn` block for the dual-forward path (§13.6).
+- `hooks` include `LArFormerParticleEvaluator(best_metric=
+  "mask_iou_mean", coord_scale=179.55)`.
+
+### 13.5 S3.4 — Per-particle origin head ✅ (folded into S3.3 config)
+
+The Stage-3 `LArFormer` config sets `enable_origin_head=True` and
+`weight_origin=0.5`, so the origin head trains alongside the matcher
+from the start. Targets come from the GT's `origin_coord_norm` field
+(SCE-applied, per §13.1). The evaluator (§13.4) reports
+`val/origin_l2_cm_mean` and per-class breakdowns
+`val/origin_l2_cm_{e, gamma, mu, pi, p, other}` in detector cm.
+
+### 13.6 S3.6 — Mask denoising decoupling ✅ (architecture only)
+
+The §5 mask-denoising machinery itself is unchanged — it's the same
+`MaskDenoiser` Stage 2 uses, configured via `mask_denoising=dict(
+dn_groups=3, max_dn_per_event=64, anchor_jitter_std=0.05)` in the
+Stage-3 config. What's new is the input-side decoupling so the
+matcher and the DN path can see different SP subsets per iter.
+
+**Optional dual-forward**: when `cfg.data.train_dn` is set (alongside
+the standard `cfg.data.train`), `LArFormerTrainer._dual_run_step`
+runs TWO forwards per iter:
+
+| Forward | Input | Contribution to loss |
+|---|---|---|
+| A (matcher) | `cfg.data.train` (default `source_set_filter="stage2_pass"`) | All `loss_*` MINUS `loss_dn_*` |
+| B (DN) | `cfg.data.train_dn` (e.g. `"union"`) | Only `loss_dn_*` |
+
+Combined loss = (A − dn_in_A) + (dn_in_B). The DN path uses the full
+GT-anchored SP set so mask perturbation has real truth to perturb;
+the matcher path stays inference-realistic.
+
+Cost: 2× per-iter wall-clock vs single-forward. The S3.2 cache
+speedup (17×) absorbs it.
+
+Cfg activation:
+```python
+data = dict(
+    train    = dict(..., source_set_filter="stage2_pass"),
+    train_dn = dict(..., source_set_filter="union"),    # uncomment to enable
+    val      = dict(..., source_set_filter="stage2_pass"),
+)
+```
+
+The `train_dn` stanza is commented out by default in
+`larformer-particle-v1-cached.py`. Recommended order: first train
+with the stanza disabled (single-forward, verify the model learns),
+then enable for production quality runs.
+
+### 13.7 As-built deltas from §9
+
+- **Caching is in v1**, not deferred (§7a). S3.2 measured 17× speedup,
+  so it earned its way in. Cache lives at
+  `<cache_root>/<split>/<3-level-hash>/`, one event per `.h5`.
+- **`origin_cm` is SCE-applied**, with `origin_cm_truth` kept separately
+  for analysis. Drove by visualizer verification — without SCE, the GT
+  origin diamonds didn't land on the reco SP clusters (~3 cm off,
+  mostly in X = drift direction).
+- **Standalone-`LArFormer` `backbone_weight` kwarg** added so the cached
+  config doesn't need to wrap the model in a cascade just to load the
+  Sonata pretrain.
+- **Evaluator extension hooks** were added preemptively for §13.6's
+  origin metric; future Stage-3 metrics (per-class topology recovery,
+  vertex-distance error) plug in the same way.
+
+### 13.8 Operator checklist
+
+To run Stage 3 from a freshly-built training set:
+
+```bash
+# 1) Build cache shards (one SLURM array task per shard, GPU each).
+#    Per-event cost ≈ 2 s (single forward of the cascade in eval).
+#SBATCH --array=0-127
+python tools/build_stage12_cache_shard.py \
+    --config configs/lartpc/larformer-particle-v1.py \
+    --inputlist /path/to/h5list_train.txt \
+    --cache-root /path/to/stage12_cache_v2 \
+    --split train --shard-id $SLURM_ARRAY_TASK_ID --n-shards 128
+#    Repeat for split=val with the val list.
+
+# 2) Edit configs/lartpc/larformer-particle-v1-cached.py:
+#    set CACHE_ROOT to the cluster path above.
+#    Optionally uncomment the `train_dn` stanza (§13.6).
+
+# 3) Train.
+python tools/train.py --config configs/lartpc/larformer-particle-v1-cached.py
+```
+
+**Eyeball-test a cached event** (recommended before kicking off the
+full training run):
+
+```bash
+python tools/visualize_stage12_cache.py \
+    --cache /path/to/stage12_cache_v2/train/.../event_000000.h5 \
+    --output /tmp/cache.html --browser
+```
+
+**Sanity metrics** to watch in the per-epoch log:
+
+| Scalar | "Is it learning?" |
+|---|---|
+| `val/loss` | drops monotonically (~140 → <50 in ~5 epochs of devdata) |
+| `val/mask_iou_mean` | rises from ~0 to >0.4 |
+| `val/origin_l2_cm_mean` | drops from ~80 cm (random init) to <30 cm |
+| `val/cls_accuracy` | rises from ~1/(num_classes) to >0.5 |
+
+Per-class breakdowns (`val/mask_iou_{e, gamma, mu, pi, p, other}`,
+`val/origin_l2_cm_{...}`) tell you which classes are easy / hard.
+
+### 13.9 What's still open (vs §9 phasing)
+
+- **S3.5 (noise calibration)** — not started. The mask-denoising in
+  v1 uses fixed `anchor_jitter_std=0.05` (5 % of slice scale) per
+  Stage 2's default. The per-class calibration from running Stage 2
+  over the training set is still on the to-do list.
+- **S3.7 (noised-truth alternative)** — depends on S3.5.
+- **S3.8 (full cascade eval tool)** — depends on a first trained
+  Stage-3 checkpoint.
+- **S3.9 (ablations)** — most are parameterized cleanly:
+  - τ_loose sweep: change `mask_prob_threshold` in
+    `CascadedParticleSegmenter` config + rebuild cache OR sample
+    via `source_set_filter="stage2_random_tau"`.
+  - Class taxonomy: change `particle_class_map` in the dataset
+    and the `num_classes` in the model config.
+  - Aux absolute-position feature (§1g): add a per-SP "absolute coord
+    before recentering" channel in the cache (one extra `feat`
+    column) + extend the dataset reader. Not yet wired.
+
   - Auxiliary absolute-position feature (drift-x, boundary distances) deferred as S3.9 ablation (§1g) — doubles as a probe of what the frozen backbone encodes.
