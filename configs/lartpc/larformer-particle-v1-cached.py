@@ -41,7 +41,7 @@ del _larformer_particle_evaluator_module
 # Stage-1+2 cache locations. Update these to your cluster paths or
 # override on the command line. The shard driver writes per-event H5s
 # under `<cache_root>/<split>/<idx//1000>/<idx//100>/...`.
-CACHE_ROOT  = "/cluster/tufts/wongjiradlabnu/twongj01/stage12_cache_v2"
+CACHE_ROOT  = "/home/twongjirad/working/larbys/gen2/container_u22/Pointcept/exp/cache_stage12_devdata/"
 TRAIN_ROOT  = f"{CACHE_ROOT}/train"
 VAL_ROOT    = f"{CACHE_ROOT}/val"
 
@@ -277,19 +277,19 @@ hooks = [
 # =============================================================================
 weight = None
 save_path        = "exp/larformer_particle_v1_cached"
-epoch            = 50
-eval_epoch       = 50
-batch_size       = 8          # Stage-3 input is small (~1K SPs/event)
-batch_size_val   = 8
-num_worker       = 8
-num_worker_val   = 8
+epoch            = 1000
+eval_epoch       = 1000
+batch_size       = 10          # Stage-3 input is small (~1K SPs/event)
+batch_size_val   = 10
+num_worker       = 2
+num_worker_val   = 2
 evaluate         = True
 enable_amp       = False
 amp_dtype        = "bfloat16"
 empty_cache      = False
 clip_grad        = 1.0
 enable_wandb     = False
-wandb_project    = "pointcept-larformer"
+wandb_project    = "pointcept-larformer-stage3"
 find_unused_parameters = True
 
 # Mid-epoch resume strategy — same convention as the slicer config.
@@ -302,12 +302,12 @@ resume_seed_strategy = "per_resume"
 # Conservative defaults; tune in follow-up runs. AdamW with cosine to a
 # fixed minimum is the same default used by the slicer training.
 optimizer = dict(
-    type="AdamW", lr=2e-4, weight_decay=0.05,
+    type="AdamW", lr=1e-5, weight_decay=0.05,
     betas=(0.9, 0.95),
 )
 scheduler = dict(
     type="OneCycleLR",
-    max_lr=2e-4,
+    max_lr=1e-5,
     pct_start=0.05,
     anneal_strategy="cos",
     div_factor=10.0,
