@@ -178,15 +178,36 @@ class LArFormerParticleEvaluator(LArFormerSlicerEvaluator):
         for ln in lines:
             self.trainer.logger.info(ln)
 
+        # Publish to TensorBoard + (optionally) wandb. Mirrors the slicer
+        # evaluator's pattern so val/* lands in the same dashboard group
+        # without epoch-step alignment surprises.
+        current_epoch = self.trainer.epoch + 1
         if self.trainer.writer is not None:
             for k, v in scalars.items():
+                if isinstance(v, float) and v != v:  # NaN
+                    continue
                 try:
-                    if isinstance(v, float) and (v != v):  # NaN
-                        continue
                     self.trainer.writer.add_scalar(k, float(v),
-                                                   self.trainer.epoch + 1)
+                                                   current_epoch)
                 except Exception:
                     pass
+            if getattr(self.trainer.cfg, "enable_wandb", False):
+                try:
+                    import wandb
+                    payload = {"Epoch": current_epoch}
+                    for k, v in scalars.items():
+                        if isinstance(v, float) and v != v:  # NaN
+                            continue
+                        payload[k] = float(v)
+                    wandb.log(payload, step=wandb.run.step)
+                except ImportError:
+                    pass
+
+        # Park val/loss so LR plateau schedulers / other epoch-level hooks
+        # can read it from comm_info.
+        self.trainer.comm_info["val_loss"] = float(
+            scalars.get("val/loss", float("nan"))
+        )
 
         best = scalars.get(f"val/{self.best_metric}",
                            scalars.get(self.best_metric))
@@ -198,3 +219,7 @@ class LArFormerParticleEvaluator(LArFormerSlicerEvaluator):
         else:
             self.trainer.comm_info["current_metric_value"] = float(best)
             self.trainer.comm_info["current_metric_name"] = self.best_metric
+
+        self.trainer.logger.info(
+            "<<<<<<<<<<<<<<<< End LArFormerParticle Evaluation <<<<<<<<<<<<<<<<"
+        )
