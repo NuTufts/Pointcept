@@ -231,26 +231,58 @@ DEFAULT_PARTICLE_KE_THRESH_MeV = {
     13:   30.0,   # μ±
     211:  30.0,   # π±
     2212: 60.0,   # p
-    2112: 60.0,   # n
+    2112: 60.0,   # n  (relabel-on-output target: see PARTICLE_PDG_RELABEL)
     321:  60.0,   # K±
 }
 DEFAULT_PARTICLE_OTHER_KE_THRESH_MeV = 60.0
+
+# Particles that physically can't be a GT instance because they either
+# don't ionize directly (neutrals) or decay too fast to propagate before
+# their daughters take over. The walker treats them as "transparent":
+# never visible at their own trackid, so any sub-threshold descendant
+# whose chain reaches one of these walks *past* it and continues looking
+# upward. In practice this means a π0 → γγ decay yields two γ instances
+# (both visible) and never a single "π0" instance, even if SPs were
+# mis-tagged to the π0 trackid by the data prep.
+NEVER_VISIBLE_PARTICLE_PDGS = frozenset({
+    111,    # π0   — decays in ~0 ps before propagating
+    130,    # K0L
+    310,    # K0S
+})
+
+# On output, remap surviving primary PDGs. The data prep sometimes
+# assigns ionization SPs to a neutron's trackid rather than the secondary
+# proton that actually deposited the charge; relabeling neutron → proton
+# is the physically-correct interpretation. (Pure neutrons don't ionize,
+# so any "visible neutron instance" is almost certainly proton recoils.)
+PARTICLE_PDG_RELABEL = {
+    2112:  2212,   # n  → p
+    -2112: -2212,  # n̄  → p̄ (rare in BNB but kept for symmetry)
+}
 
 
 def compute_particle_labels(
     mpt_group, sp_trackid, sp_hasmatch=None,
     ke_thresholds=None,
     other_ke_threshold=DEFAULT_PARTICLE_OTHER_KE_THRESH_MeV,
+    never_visible_pdgs=NEVER_VISIBLE_PARTICLE_PDGS,
+    pdg_relabel=None,
     nu_origin=1,
 ):
     """Per-spacepoint particle slice IDs for the Stage 3 particle segmenter.
 
     Walks `mc_particle_tree` for tracks with ``origin == nu_origin``. Each
-    track is "visible" iff ``energy_mev >= ke_thresholds[abs(pid)]`` (or
-    ``other_ke_threshold`` for PDGs not in the table). A track that is not
-    visible is collapsed into its nearest visible ancestor by walking up
-    ``parent_trackid``. SPs whose chain finds no visible nu-origin
+    track is "visible" iff ``abs(pid)`` is NOT in ``never_visible_pdgs``
+    AND ``energy_mev >= ke_thresholds[abs(pid)]`` (or
+    ``other_ke_threshold`` for PDGs not in the table). A track that is
+    not visible is collapsed into its nearest visible ancestor by walking
+    up ``parent_trackid``. SPs whose chain finds no visible nu-origin
     ancestor (orphans, cosmic primaries, etc.) get ``GHOST_SLICE_ID``.
+
+    Output PDGs of surviving particles are remapped via ``pdg_relabel``
+    (default ``PARTICLE_PDG_RELABEL`` — currently 2112 → 2212 because
+    SPs assigned to neutron trackids are nearly always from secondary
+    proton recoils that the data prep mistakenly tagged to the neutron).
 
     Parameters
     ----------
@@ -263,13 +295,19 @@ def compute_particle_labels(
         Ghost flag; ``hasmatch == 0`` forces ``GHOST_SLICE_ID``.
     ke_thresholds : dict, optional
         Mapping ``abs(pid) -> KE_threshold_MeV``. Defaults to
-        ``DEFAULT_PARTICLE_KE_THRESH_MeV`` (10 MeV e±/γ; 30 MeV μ±/π±;
-        60 MeV p/n/K).
+        ``DEFAULT_PARTICLE_KE_THRESH_MeV``.
     other_ke_threshold : float
         Threshold for PDGs not in ``ke_thresholds``.
+    never_visible_pdgs : set of int
+        ``abs(pid)`` values that are NEVER considered visible regardless
+        of KE — neutrals that don't ionize / decay too fast to propagate.
+        Default ``NEVER_VISIBLE_PARTICLE_PDGS``.
+    pdg_relabel : dict, optional
+        Mapping ``primary_pid -> output_pid`` applied at output construction.
+        Use ``{}`` to disable; ``None`` uses the default
+        ``PARTICLE_PDG_RELABEL`` (n → p).
     nu_origin : int, default 1
-        Which ``origin`` value counts as "nu-origin". Cosmics
-        (``origin == 2``) are dropped (-> ``GHOST_SLICE_ID``).
+        Which ``origin`` value counts as "nu-origin".
 
     Returns
     -------
@@ -277,23 +315,47 @@ def compute_particle_labels(
         slice_id              (N,) int64       particle slice id per SP
         primary_trackid       (S,) int64       sorted unique slice keys
         primary_pid           (S,) int64       PDG of each surviving particle
+                                                (after `pdg_relabel`)
+        primary_pid_raw       (S,) int64       PDG before relabel — useful
+                                                for telling relabeled
+                                                neutrons from real protons
         primary_ke_MeV        (S,) float32     KE of each surviving particle
         primary_origin        (S,) int64       always ``nu_origin`` here
-        primary_start_pos     (S, 3) float32
+        primary_start_pos     (S, 3) float32   truth Geant4 birth point
+        primary_start_pos_sce (S, 3) float32   SCE-applied birth point — this
+                                                is what aligns with reco SPs
+                                                and what origin-head losses
+                                                should target. Falls back to
+                                                ``primary_start_pos`` if the
+                                                H5 lacks ``start_pos_sce``.
         primary_n_spacepoints (S,) int64
         slice_member_trackids list[ list[int] ]  trackids merged into each
                                                   surviving particle
         ke_thresholds         dict             the thresholds actually used
         other_ke_threshold    float            ditto
+        never_visible_pdgs    set              the blacklist actually used
+        pdg_relabel           dict             the relabel actually used
     """
     if ke_thresholds is None:
         ke_thresholds = dict(DEFAULT_PARTICLE_KE_THRESH_MeV)
+    if pdg_relabel is None:
+        pdg_relabel = dict(PARTICLE_PDG_RELABEL)
+    never_visible_pdgs = set(never_visible_pdgs)
 
     mc_tids    = np.asarray(mpt_group["trackid"][:]).astype(np.int64)
     mc_parents = np.asarray(mpt_group["parent_trackid"][:]).astype(np.int64)
     mc_pids    = np.asarray(mpt_group["pid"][:]).astype(np.int64)
     mc_origin  = np.asarray(mpt_group["origin"][:]).astype(np.int64)
     mc_start   = np.asarray(mpt_group["start_pos"][:]).astype(np.float32)
+    # Space-charge-shifted truth start position. The reco spacepoints LArMatch
+    # produces are in the as-observed (SCE-affected) frame, so origin GT
+    # must use start_pos_sce to align with them. Falls back to the raw
+    # start_pos if the field is missing in older H5 files — emit a copy so
+    # downstream callers can always read `primary_start_pos_sce`.
+    if "start_pos_sce" in mpt_group:
+        mc_start_sce = np.asarray(mpt_group["start_pos_sce"][:]).astype(np.float32)
+    else:
+        mc_start_sce = mc_start.copy()
     mc_ke      = np.asarray(mpt_group["energy_mev"][:]).astype(np.float32)
 
     tid_to_idx = {int(t): i for i, t in enumerate(mc_tids)}
@@ -303,6 +365,8 @@ def compute_particle_labels(
         if int(mc_origin[idx]) != int(nu_origin):
             return False
         pdg = abs(int(mc_pids[idx]))
+        if pdg in never_visible_pdgs:
+            return False
         ke  = float(mc_ke[idx])
         thresh = float(ke_thresholds.get(pdg, other_ke_threshold))
         return ke >= thresh
@@ -358,32 +422,41 @@ def compute_particle_labels(
         if sid != GHOST_SLICE_ID:
             inv[int(sid)].append(int(tid))
 
-    primary_pid       = np.zeros(len(unique_slices), dtype=np.int64)
-    primary_origin    = np.full (len(unique_slices), int(nu_origin), dtype=np.int64)
-    primary_ke_MeV    = np.zeros(len(unique_slices), dtype=np.float32)
-    primary_start_pos = np.zeros((len(unique_slices), 3), dtype=np.float32)
-    primary_n         = np.zeros(len(unique_slices), dtype=np.int64)
+    primary_pid          = np.zeros(len(unique_slices), dtype=np.int64)
+    primary_pid_raw      = np.zeros(len(unique_slices), dtype=np.int64)
+    primary_origin       = np.full (len(unique_slices), int(nu_origin), dtype=np.int64)
+    primary_ke_MeV       = np.zeros(len(unique_slices), dtype=np.float32)
+    primary_start_pos    = np.zeros((len(unique_slices), 3), dtype=np.float32)
+    primary_start_pos_sce = np.zeros((len(unique_slices), 3), dtype=np.float32)
+    primary_n            = np.zeros(len(unique_slices), dtype=np.int64)
     slice_member_trackids = [[] for _ in unique_slices]
     for k, s in enumerate(unique_slices):
         si = int(s)
         idx = tid_to_idx[si]
-        primary_pid[k]       = int(mc_pids[idx])
-        primary_ke_MeV[k]    = float(mc_ke[idx])
-        primary_start_pos[k] = mc_start[idx]
-        primary_n[k]         = int((slice_id == si).sum())
+        raw_pid = int(mc_pids[idx])
+        primary_pid_raw[k]       = raw_pid
+        primary_pid[k]           = int(pdg_relabel.get(raw_pid, raw_pid))
+        primary_ke_MeV[k]        = float(mc_ke[idx])
+        primary_start_pos[k]     = mc_start[idx]
+        primary_start_pos_sce[k] = mc_start_sce[idx]
+        primary_n[k]             = int((slice_id == si).sum())
         slice_member_trackids[k] = sorted(inv[si])
 
     return {
         "slice_id":              slice_id,
         "primary_trackid":       unique_slices,
         "primary_pid":           primary_pid,
+        "primary_pid_raw":       primary_pid_raw,
         "primary_origin":        primary_origin,
         "primary_ke_MeV":        primary_ke_MeV,
         "primary_start_pos":     primary_start_pos,
+        "primary_start_pos_sce": primary_start_pos_sce,
         "primary_n_spacepoints": primary_n,
         "slice_member_trackids": slice_member_trackids,
         "ke_thresholds":         dict(ke_thresholds),
         "other_ke_threshold":    float(other_ke_threshold),
+        "never_visible_pdgs":    set(never_visible_pdgs),
+        "pdg_relabel":           dict(pdg_relabel),
     }
 
 
