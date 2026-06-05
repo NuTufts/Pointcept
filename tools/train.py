@@ -23,6 +23,7 @@ from pointcept.engines.launch import launch
 import pointcept.models.shower_clustering.trainer  # noqa: F401
 import pointcept.models.LArFormer.trainer  # noqa: F401
 import pointcept.models.LArFormer.evaluator  # noqa: F401
+import pointcept.models.LArFormer.particle_evaluator  # noqa: F401
 
 #import torch
 #torch.autograd.set_detect_anomaly(True)
