@@ -381,7 +381,7 @@ hooks = [
 # Training loop knobs
 # =============================================================================
 weight = None
-save_path        = "exp/larformer_particle_v1_cached_ptv3crosslevel_smallbatch_lr1e4"
+save_path        = "exp/larformer_particle_v1_cached_ptv3crosslevel_smallbatch_lr1e4_bugfixed"
 epoch            = 20
 eval_epoch       = 20
 # delta vs v1-cached: PT-v3 decoder is now trained and consumes more
