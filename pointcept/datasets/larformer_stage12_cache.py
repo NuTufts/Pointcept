@@ -312,6 +312,17 @@ class LArFormerStage12CacheDataset(DefaultDataset):
             slice_id = e0["slice_id"][:].astype(np.int64)
             source_mask = e0["source_mask"][:].astype(np.uint8)
             stage2_prob = e0["stage2_nu_mask_prob"][:].astype(np.float32)
+            # Per-SP particle class id, added by
+            # `tools/augment_stage12_cache_particle_class_id.py`. Older
+            # caches (built before the augment tool ran) lack this field
+            # — fall back to all -1 (= cls loss ignore_index) so the
+            # dataset still loads. If the user runs a config that needs
+            # `particle_class_id` as a label_src, they must augment the
+            # cache first.
+            if "particle_class_id" in e0:
+                particle_class_id = e0["particle_class_id"][:].astype(np.int64)
+            else:
+                particle_class_id = np.full(coord.shape[0], -1, dtype=np.int64)
 
             particles = (_read_particle_instances(e0["particle_instances"])
                          if "particle_instances" in e0 else [])
@@ -337,6 +348,7 @@ class LArFormerStage12CacheDataset(DefaultDataset):
         hasmatch = hasmatch[keep]
         ssnet_label = ssnet_label[keep]
         slice_id = slice_id[keep]
+        particle_class_id = particle_class_id[keep]
         stage2_prob_kept = stage2_prob[keep]
 
         # ---- 2. Remap truth_indices for each particle -----------------
@@ -394,6 +406,10 @@ class LArFormerStage12CacheDataset(DefaultDataset):
             "hasmatch": hasmatch,
             "ssnet_label": ssnet_label,
             "slice_id": slice_id,
+            # Per-SP particle class id (0..5 visible classes, -1 = no GT).
+            # Added by augment_stage12_cache_particle_class_id.py; falls
+            # back to all -1 if the cache wasn't augmented yet.
+            "particle_class_id": particle_class_id,
             # Stage-2 telemetry — useful for ablation / per-SP weighting.
             "stage2_nu_mask_prob": stage2_prob_kept,
             "source_mask_kept": source_mask[keep],

@@ -1,42 +1,53 @@
-"""LArFormer Stage-3 training — HYBRID PTv3-decoder + crosslevel refiner.
+"""LArFormer Stage-3 training — v1.1 HYBRID: PTv3-decoder + crosslevel refiner.
 
 Companion / sibling to `larformer-particle-v1-cached.py`. Same Stage-3
 particle-segmenter targets (per-particle masks + per-query 7-class +
 origin head), same `LArFormerStage12CacheDataset` cache reader, same
-trainer + evaluator hooks. The DELTA from the v1 cached config is the
-backbone + level pyramid:
+trainer + evaluator hooks.
 
+Deltas from `larformer-particle-v1-cached-ptv3crosslevel.py` (v1.0):
+
+  - **Level pyramid pruned + extended one stage deeper.** v1.0 had two
+    voxel levels (voxel_16cm, voxel_8cm) plus dec3 / dec2 / spacepoint.
+    v1.1 drops both voxel levels in favor of a single voxel_4cm + adds
+    PT-v3's dec1 (~0.5 cm) so the cross-level refiner sees decoder-
+    refined features at four scales (~4 / 2 / 1 / 0.5 cm). The model
+    now gets all its medium-to-coarse spatial context from the PT-v3
+    decoder stages rather than a separate user-defined voxel pyramid.
+  - **Per-token cls supervision is now grounded in particle truth.**
+    v1.0's cls block read `origin_label` (per-SP nu/cosmic) and ran
+    `reduce="amax"` with a label_remap that pushed everything to
+    no_object — a degenerate signal. v1.1 reads `particle_class_id`
+    (the per-SP class label written to caches by
+    `tools/augment_stage12_cache_particle_class_id.py`) and uses
+    `reduce="soft_presence"`, which produces a per-voxel uniform-over-
+    present-classes target. Easier to learn than the count-proportional
+    `soft_distribution` variant; doesn't ask the model to memorize the
+    exact SP-count mix per voxel.
+  - **`mixed_query_selection.source_level` aligned with the cls block.**
+    v1.0 had `source_level="voxel_8cm"` but the cls supervision was on
+    voxel_4cm — the query selector was scoring queries against an
+    untrained cls head. v1.1 puts both at voxel_4cm.
+
+Backbone shape unchanged from v1.0:
   - PT-v3m2 NATIVE DECODER turned on (`enc_mode=False` +
     `up_cast_level=0`). The Sonata pretrain only contains encoder
     weights, so the decoder trains from scratch (small-mag init via
     `ptv3_decoder_init_scale=0.01`, see
     `LArFormer._init_ptv3_decoder_blocks`).
-  - Two USER-DEFINED COARSE VOXEL LEVELS (voxel_8cm, voxel_4cm) pooled
-    off the PTv3 decoder's per-SP dec0 output (64 ch). Voxel coverage
-    extends past PTv3's natural pyramid (which only reaches ~2 cm at
-    dec3 given the 0.25 cm input grid).
-  - Two PTv3 NATIVE DECODER STAGES (dec3 @ ~2 cm, dec2 @ ~1 cm)
-    consumed via `PTv3DecoderStageLevel`. These give queries
-    transformer-refined features at the fine end of the pyramid
-    (representations the PTv3 decoder Blocks actually processed at
-    that scale, vs. averaged dec0 features the voxel levels carry).
-  - The SPACEPOINT level reads dec0 (= the final per-SP output now
-    that `up_cast_level=0`).
-  - The CrossLevelAttn refiner now also runs over the two PTv3
-    decoder stages, not just the voxel levels.
+  - dec0 (~0.25 cm) is the per-SP output (read by the SPACEPOINT level).
+  - dec1 / dec2 / dec3 are exposed as level tokens via
+    `PTv3DecoderStageLevel` builders.
+  - voxel_4cm pools off the per-SP dec0 output (64 ch).
 
-6-layer scale_pattern (coarse → fine):
-    voxel_8cm → voxel_4cm → ptv3_dec3 → ptv3_dec2 → spacepoint → spacepoint
-
-This mirrors `larformer-slicer-v1-cascaded-ptv3hybrid-crosslevel.py`'s
-structure on the Stage-3 side, so head-to-head ablations of Stage 2
-vs Stage 3 use the same backbone / refiner geometry.
+5 levels, 6-layer scale_pattern (coarse → fine):
+    voxel_4cm → ptv3_dec3 → ptv3_dec2 → ptv3_dec1 → spacepoint → spacepoint
 
 For inference deployment, the trained weights load back into the
 `particle_segmenter` slot of a `CascadedParticleSegmenter` configured
 with the same `levels` / `scale_pattern` / `enc_mode=False`.
 
-Notes vs the simpler cached config:
+Notes:
 
   - `param_dicts` is set to `None` (NOT `keyword="backbone"`) because
     `unfreeze_decoder=True` makes the PT-v3 decoder trainable. The
@@ -50,6 +61,10 @@ Notes vs the simpler cached config:
     config): the PTv3 decoder, the cross-level refiner, and the M2F
     decoder all start random, so gradients can spike in the first
     ~hundred iters.
+  - Caches MUST be augmented with `entry_0/particle_class_id` (run
+    `tools/augment_stage12_cache_particle_class_id.py` on the cache
+    root) before training. Without that, the dataset emits all -1 for
+    `particle_class_id` and the cls supervision becomes a no-op.
 """
 
 _base_ = ["../_base_/default_runtime.py"]
@@ -66,20 +81,16 @@ del _larformer_particle_evaluator_module
 # Stage-1+2 cache locations. Update these to your cluster paths or
 # override on the command line. The shard driver writes per-event H5s
 # under `<cache_root>/<split>/<idx//1000>/<idx//100>/...`.
-#CACHE_ROOT  = "/home/twongjirad/working/larbys/gen2/container_u22/Pointcept/exp/cache_stage12_devdata/"
-#CACHE_ROOT  = "/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept/exp/cache_stage12_devdata"
-CACHE_ROOT  = "/cluster/tufts/wongjiradlab/larbys/data/ub_on_tufts/hdf5/larformer_cache_stage12__ptv3crosslevelslicer_iter_75750/"
+CACHE_ROOT  = "/home/twongjirad/working/larbys/gen2/container_u22/Pointcept/exp/cache_stage12_devdata/"
 TRAIN_ROOT  = f"{CACHE_ROOT}/train"
 VAL_ROOT    = f"{CACHE_ROOT}/val"
-#VAL_ROOT    = f"{CACHE_ROOT}/val_train_copy"
 
 # Sonata pretrain for the Stage-3 backbone. Loaded via the LArFormer's
 # own `backbone_weight` knob. NOTE: the Sonata pretrain was saved with
 # enc_mode=True, so it only contains encoder weights — the PT-v3
 # decoder trains from scratch in this config.
 sonata_pretrain_weight = (
-    #"/home/twongjirad/working/larbys/gen2/container_u22/Pointcept/"
-    "/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept/"
+    "/home/twongjirad/working/larbys/gen2/container_u22/Pointcept/"
     "sonata/lartpc_v6_h200_noghosts_pretrain_logspace_resume/model/epoch_42.pth"
 )
 
@@ -111,9 +122,9 @@ STAGE3_TOKEN_DIM        = 256
 #
 # With dec_channels = (64, 64, 128, 256):
 #   - dec0 @ stride 1   → 64 ch  → per-SP feature width = backbone_out_channels
-#   - dec1 @ stride 2   → 64 ch  (~0.5 cm grid; not used as a level)
-#   - dec2 @ stride 4   → 128 ch (~1 cm grid)  → ptv3_dec2 level
-#   - dec3 @ stride 8   → 256 ch (~2 cm grid)  → ptv3_dec3 level
+#   - dec1 @ stride 2   → 64 ch  (~0.5 cm grid)  → ptv3_dec1 level
+#   - dec2 @ stride 4   → 128 ch (~1 cm grid)    → ptv3_dec2 level
+#   - dec3 @ stride 8   → 256 ch (~2 cm grid)    → ptv3_dec3 level
 _PTV3_DEC_CHANNELS    = (64, 64, 128, 256)
 STAGE3_BACKBONE_OUT_CH = _PTV3_DEC_CHANNELS[0]   # 64 = dec0 width
 
@@ -123,7 +134,6 @@ STAGE3_BACKBONE_OUT_CH = _PTV3_DEC_CHANNELS[0]   # 64 = dec0 width
 coord_center = (125.0, 0.0, 518.0)
 coord_scale  = 179.55
 flash_backend = "flash_attn"
-#flash_backend = "xformers"
 
 # =============================================================================
 # Dataset (cache reader) — identical to the v1-cached config.
@@ -140,7 +150,6 @@ data = dict(
         recenter_to_centroid=True,
         coord_center=coord_center,
         coord_scale=coord_scale,
-        min_spacepoints=20,
         loop=1,
     ),
     # ---- Optional: dual-loader mask denoising path -------------------
@@ -154,7 +163,6 @@ data = dict(
     #     recenter_to_centroid=True,
     #     coord_center=coord_center,
     #     coord_scale=coord_scale,
-    #     min_spacepoints=20,
     #     loop=1,
     # ),
     val=dict(
@@ -175,7 +183,6 @@ data = dict(
         recenter_to_centroid=True,
         coord_center=coord_center,
         coord_scale=coord_scale,
-        min_spacepoints=20,
         loop=1,
     ),
 )
@@ -183,56 +190,67 @@ data = dict(
 # =============================================================================
 # Stage-3 particle segmenter — HYBRID levels (the delta vs v1-cached).
 # =============================================================================
-# Five levels, six decoder layers. The voxel pyramid (16 cm, 8 cm) covers
-# the coarse end; the PTv3 decoder stages (dec3 @ ~2 cm, dec2 @ ~1 cm)
-# cover the fine end with decoder-refined features; the spacepoint level
-# carries the per-SP primary mask supervision.
+# Five levels, six decoder layers. The voxel_4cm level covers the coarse
+# end (~4 cm tokens for the M2F decoder's query-anchor selection); the
+# PTv3 decoder stages (dec3 @ ~2 cm, dec2 @ ~1 cm, dec1 @ ~0.5 cm) cover
+# the medium-to-fine end with decoder-refined features the queries can
+# cross-attend to; the spacepoint level (dec0 @ ~0.25 cm) carries the
+# per-SP primary mask supervision.
 particle_levels = [
-    dict(name="voxel_8cm",
-         builder="VoxelBuilder",
-         builder_cfg=dict(voxel_size_cm=8.0, coord_scale=coord_scale),
-         supervision=dict(mask=dict(weight=1.0, mode="aux"))),
     dict(name="voxel_4cm",
          builder="VoxelBuilder",
          builder_cfg=dict(voxel_size_cm=4.0, coord_scale=coord_scale),
          supervision=dict(
-             mask=dict(weight=1.0, mode="aux"),
-             # Per-token cls aux supervision at 4 cm voxels.
-             #
-             #   label_src: per-SP `particle_class_id` (0..5 visible
-             #     classes, -1 = SP not in any GT particle = Stage-2
-             #     false positive). Must be present in the cache —
-             #     run `tools/augment_stage12_cache_particle_class_id.py`
-             #     to write it.
-             #
-             #   reduce: "soft_presence" produces a per-voxel uniform-
-             #     over-present-classes distribution. A voxel with γ
-             #     SPs + p SPs + some -1 FPs → target [γ=1/3, p=1/3,
-             #     no_object=1/3]. The -1 SPs are mapped to the
-             #     no_object slot (=7) so FP-heavy voxels learn high
-             #     p(no_object), which `mixed_query_selection`'s
-             #     `1 - p(no_object)` scoring needs.
-             #
-             #   Soft-presence is the recommended supervision: it
-             #     captures "which classes are here" without asking
-             #     the model to memorize the exact SP-count mix
-             #     (which depends on voxel boundary placement and is
-             #     essentially unpredictable from voxel appearance).
-             #     If you want count-proportional supervision, switch
-             #     to reduce="soft_distribution".
-             cls=dict(num_classes=STAGE3_NUM_CLASSES,
-                      label_src="particle_class_id",
-                      reduce="soft_presence",
-                      weight=0.3, loss="ce",
-                      ignore_index=-1),
-         )),
+            mask=dict(weight=1.0, mode="aux"),
+            # Per-token cls aux supervision at 4 cm voxels.
+            #
+            #   label_src: per-SP `particle_class_id` (0..5 visible
+            #     classes, -1 = SP not in any GT particle = Stage-2
+            #     false positive). Must be present in the cache —
+            #     run `tools/augment_stage12_cache_particle_class_id.py`
+            #     to write it.
+            #
+            #   reduce: "soft_presence" produces a per-voxel uniform-
+            #     over-present-classes distribution. A voxel with γ
+            #     SPs + p SPs + some -1 FPs → target [γ=1/3, p=1/3,
+            #     no_object=1/3]. The -1 SPs are mapped to the
+            #     no_object slot (=7) so FP-heavy voxels learn high
+            #     p(no_object), which `mixed_query_selection`'s
+            #     `1 - p(no_object)` scoring needs.
+            #
+            #   Soft-presence is the recommended supervision: it
+            #     captures "which classes are here" without asking
+            #     the model to memorize the exact SP-count mix
+            #     (which depends on voxel boundary placement and is
+            #     essentially unpredictable from voxel appearance).
+            #     If you want count-proportional supervision, switch
+            #     to reduce="soft_distribution".
+            #cls=dict(num_classes=STAGE3_NUM_CLASSES,
+            #         label_src="particle_class_id",
+            #         reduce="soft_presence",
+            #         weight=0.3, loss="ce",
+            #         ignore_index=-1),
+        ),
+    ),
     dict(name="ptv3_dec3",
          builder="PTv3DecoderStageLevel",
          builder_cfg=dict(stage_key="dec3", in_dim=_PTV3_DEC_CHANNELS[3]),
-         supervision=dict(mask=dict(weight=1.0, mode="aux"))),
+         supervision=dict(
+            mask=dict(weight=1.0, mode="aux"),
+            cls=dict(num_classes=STAGE3_NUM_CLASSES,
+                     label_src="particle_class_id",
+                     reduce="soft_presence",
+                     weight=0.3, loss="ce",
+                     ignore_index=-1),
+         ),
+    ),
     dict(name="ptv3_dec2",
          builder="PTv3DecoderStageLevel",
          builder_cfg=dict(stage_key="dec2", in_dim=_PTV3_DEC_CHANNELS[2]),
+         supervision=dict(mask=dict(weight=1.0, mode="aux"))),
+    dict(name="ptv3_dec1",
+         builder="PTv3DecoderStageLevel",
+         builder_cfg=dict(stage_key="dec1", in_dim=_PTV3_DEC_CHANNELS[1]),
          supervision=dict(mask=dict(weight=1.0, mode="aux"))),
     dict(name="spacepoint",
          builder="SpacepointBuilder",
@@ -240,21 +258,30 @@ particle_levels = [
 ]
 # 6 layers, coarse → fine. Same depth as the slicer hybrid config.
 particle_scale_pattern = [
-    "voxel_8cm", "voxel_4cm",
-    "ptv3_dec3",  "ptv3_dec2",
-    "spacepoint", "spacepoint",
+    "voxel_4cm",  # 4.0   cm
+    "ptv3_dec3",  # 2.0   cm
+    "ptv3_dec2",  # 1.0   cm
+    "ptv3_dec1",  # 0.50  cm
+    "spacepoint", # 0.25  cm
+    "spacepoint", # 0.25  cm
 ]
 
-# Cross-level refiner now also covers the two PTv3 decoder stages.
-# `max_source_tokens_per_level` is bumped from 4096 → 8192 because the
-# PTv3 stages and the SP level can both carry more tokens than the 16
-# / 8 cm voxel levels did when the refiner was voxel-only.
+# Cross-level refiner runs over the voxel_4cm level + all three PT-v3
+# decoder stages (dec3 / dec2 / dec1). The spacepoint level is excluded
+# from the refiner's target_levels — it has the most tokens (one per
+# input SP) and contributes via the primary mask supervision, not the
+# refiner's cross-level attention.
+#
+# `max_source_tokens_per_level=8192` caps the K/V contribution from any
+# single source level. The finer PT-v3 stages (dec1 @ ~0.5 cm) can
+# easily exceed a few thousand tokens for a dense nu slice; the cap
+# keeps memory bounded.
 _particle_token_refiner_cfg = dict(
     type="CrossLevelAttn",
     num_layers=2,
     num_heads=4,
     mlp_ratio=4.0,
-    target_levels=["voxel_8cm", "voxel_4cm", "ptv3_dec3", "ptv3_dec2"],
+    target_levels=["voxel_4cm", "ptv3_dec3", "ptv3_dec2", "ptv3_dec1"],
     max_source_tokens_per_level=8192,
 )
 
@@ -335,7 +362,8 @@ model = dict(
         weight_dn_loss=1.0,
     ),
     mixed_query_selection=dict(
-        source_level="voxel_4cm",
+        #source_level="voxel_4cm",
+        source_level="ptv3_dec3",
         score_source="cls_head",
         selection_mode="top_m_then_fps",
         score_filter_multiplier=4,
@@ -345,7 +373,6 @@ model = dict(
         max_dn_per_event=64,
         anchor_jitter_std=0.05,
     ),
-    #mask_denoising=None,
 )
 
 # =============================================================================
@@ -362,18 +389,7 @@ hooks = [
          class_names=["e", "gamma", "mu", "pi", "p", "other",
                       "(unused)", "no_object"],
          coord_scale=coord_scale),
-    dict(type="CheckpointSaver", save_freq=1),
-    # Iteration-level checkpointing so SLURM jobs killed at the 24h wall-clock
-    # cap can resume mid-epoch (epochs are ~9h on the Isambard-AI allocation).
-    # Writes to the same model_last.pth that CheckpointSaver uses, plus
-    # iter_in_epoch + RNG state so CheckpointLoader can pick up mid-epoch.
-    # save_iter_freq=500 ≈ ~9 min between saves at ~30k batches/epoch, so the
-    # worst-case wasted compute on a kill is bounded by that.
-    dict(type="IterCheckpointSaver", save_iter_freq=50, keep_history=False),
-    # Catch SLURM's pre-timeout SIGUSR1 (sent via --signal=USR1@1800), save a
-    # checkpoint, write a RESUBMIT marker so the batch script can chain the
-    # next job, and exit cleanly before SLURM kills the process.
-    dict(type="SignalCheckpointHook", check_every_n_iter=30),
+    dict(type="CheckpointSaver", save_freq=None),
     dict(type="PreciseEvaluator", test_last=False),
 ]
 
@@ -381,18 +397,18 @@ hooks = [
 # Training loop knobs
 # =============================================================================
 weight = None
-save_path        = "exp/larformer_particle_v1_cached_ptv3crosslevel_smallbatch_lr1e4"
-epoch            = 20
-eval_epoch       = 20
+save_path        = "exp/larformer_particle_v1.1_cached_ptv3crosslevel_10eventtest"
+epoch            = 1000
+eval_epoch       = 1000
 # delta vs v1-cached: PT-v3 decoder is now trained and consumes more
 # memory/compute, so the default batch_size is halved. Bump it back up
 # if your GPU has the headroom.
-batch_size       = 16
-batch_size_val   = 40
-num_worker       = 12
-num_worker_val   = 8
+batch_size       = 10
+batch_size_val   = 10
+num_worker       = 2
+num_worker_val   = 2
 evaluate         = True
-enable_amp       = False    
+enable_amp       = False
 amp_dtype        = "bfloat16"
 empty_cache      = False
 # Same convention as the slicer hybrid config: the PT-v3 decoder, the
@@ -417,53 +433,16 @@ resume_seed_strategy = "per_resume"
 # would silently zero its lr. `freeze_backbone=True` + `unfreeze_decoder=
 # True` set requires_grad correctly per-param, and the optimizer skips
 # params with requires_grad=False; no param_dicts override needed.
-# =============================================================================
-# Optimizer / scheduler
-# =============================================================================
-base_lr = 1.0e-4
-param_dicts = None
-optimizer = dict(type="AdamW", lr=base_lr, weight_decay=0.01)
-scheduler = dict(
-    type="FlatWithDecayLR",
-    mode="plateau",
-    gamma=0.5,
-    min_lr=5e-8,
-    step_period_epochs=50,
-    patience_epochs=2,
-    min_delta=1e-4,
-    cooldown_epochs=1,
-    # Linear warmup over the first 500 training iters (~100 epochs on the
-    # 10-event dev sample at batch_size=2). PTv3 decoder + refiner +
-    # Mask2Former decoder all initialize randomly here — gradients in the
-    # first ~50 iters are noisy enough to spike the loss curve, so we
-    # don't want the plateau detector touching anything during that
-    # phase. step_epoch is a no-op while in warmup (counters frozen).
-    warmup_iters=25625, # 1 epoch of warm up: 410k/16
-    warmup_start_lr=0.0,
-    # EMA over the val/loss for plateau detection. A single lucky-low
-    # raw val_loss (which fluctuates a few % epoch-to-epoch on this
-    # small dev sample) was pinning best_val_loss too tight, collapsing
-    # the LR prematurely. alpha=0.3 means each new val_loss contributes
-    # 30% to the smoothed signal; one outlier moves the EMA by at most
-    # 30% of the gap, not the full distance. Set None to disable
-    # smoothing (raw val_loss tracked, current pre-EMA behavior).
-    ema_alpha=0.3,
-    # No reset_lr by default — set on resume only.
-    reset_lr=None,
-    reset_counters=False,
+optimizer = dict(
+    type="AdamW", lr=1e-5, weight_decay=0.05,
+    betas=(0.9, 0.95),
 )
-
-# base_lr=2.0e-5
-# optimizer = dict(
-#     type="AdamW", lr=base_lr, weight_decay=0.05,
-#     betas=(0.9, 0.95),
-# )
-# scheduler = dict(
-#     type="OneCycleLR",
-#     max_lr=base_lr,
-#     pct_start=0.1,
-#     anneal_strategy="cos",
-#     div_factor=10.0,
-#     final_div_factor=100.0,
-# )
-#param_dicts = None
+scheduler = dict(
+    type="OneCycleLR",
+    max_lr=1e-5,
+    pct_start=0.05,
+    anneal_strategy="cos",
+    div_factor=10.0,
+    final_div_factor=100.0,
+)
+param_dicts = None

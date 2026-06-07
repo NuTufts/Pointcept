@@ -528,10 +528,14 @@ def build_event_gt(model_levels_cfg, token_dim, dataset, idx,
     levels = tok(sp_feat, coord_norm, event_dict)
 
     # Per-SP labels — pull every per-SP int field the dataset emits so any
-    # level with supervision.cls can find its label_src.
+    # level with supervision.cls can find its label_src. Keep this list
+    # in sync with `LArFormer._per_sp_labels_for_event`: every field
+    # the model exposes as a label_src needs to be available here for
+    # the visualizer's GT path to render against the same labels the
+    # trainer used.
     per_sp_labels = {}
     for k in ("hasmatch", "origin_label", "ssnet_label",
-              "trackid", "pid", "slice_id"):
+              "trackid", "pid", "slice_id", "particle_class_id"):
         if k in sample:
             per_sp_labels[k] = torch.from_numpy(sample[k]).to(torch.long)
 
@@ -707,7 +711,19 @@ def figure_for_event(event_data, level_name, color_by):
                 name=f"{level_name}: no cls supervision",
             ))
         else:
-            cls_np = cls.cpu().numpy()
+            # Soft-label cls_target is (M, C) float — argmax for display
+            # (shows the dominant class per voxel; the mixed nature is
+            # represented in the loss but not visualized here).
+            if cls.dim() == 2:
+                row_sum = cls.sum(dim=-1)
+                cls_np = cls.argmax(dim=-1).cpu().numpy()
+                # Voxels with all-zero distribution (no SPs in coverage)
+                # get -1 so they show as "ignored".
+                cls_np[(row_sum == 0).cpu().numpy()] = -1
+                soft_suffix = " (argmax of soft distribution)"
+            else:
+                cls_np = cls.cpu().numpy()
+                soft_suffix = ""
             for c in sorted(set(int(x) for x in cls_np)):
                 m = (cls_np == c)
                 pts = coords_plot[m]
@@ -716,7 +732,7 @@ def figure_for_event(event_data, level_name, color_by):
                     x=pts[:, 2], y=pts[:, 0], z=pts[:, 1],
                     mode="markers",
                     marker=dict(size=4, color=clr),
-                    name=f"cls={c} ({int(m.sum())})",
+                    name=f"cls={c} ({int(m.sum())}){soft_suffix}",
                 ))
     elif color_by == "sp_to_level_id":
         # Recolor spacepoints by which level token they map to. Useful
