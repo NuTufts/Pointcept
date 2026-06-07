@@ -43,22 +43,28 @@ TRAIN_FILE_LIST = "/home/twongjirad/working/larbys/gen2/container_u22/Pointcept/
 VAL_FILE_LIST   = "/home/twongjirad/working/larbys/gen2/container_u22/Pointcept/exp/cache_stage12_devdata/val/"
 
 # Stage-1 LoRA deghoster checkpoint (BOTH backbone + LoRA adapter weights).
-deghoster_weight = "/home/twongjirad/working/larbys/gen2/container_u22/Pointcept/sonata/lora_deghost_v6_hasmatch/model/epoch_30.pth"
+deghoster_weight = (
+    "/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept/"
+#    "/home/twongjirad/working/larbys/gen2/container_u22/Pointcept/"
+    "sonata/lora_deghost_v6_hasmatch/model/epoch_30.pth"
+)
 
 # Sonata-v1m1 pretrain used by:
 #   - the slicer's frozen backbone (Stage 2)
 #   - the particle segmenter's frozen backbone (Stage 3)
 sonata_pretrain_weight = (
-    "/home/twongjirad/working/larbys/gen2/container_u22/Pointcept/"
+    "/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept/"
+#    "/home/twongjirad/working/larbys/gen2/container_u22/Pointcept/"
     "sonata/lartpc_v6_h200_noghosts_pretrain_logspace_resume/model/epoch_42.pth"
 )
 
 # Stage-2 (CascadedSlicer) trained checkpoint — the user's most recent
 # ptv3hybrid crosslevel slicer with mixed query + mask denoising.
 cascaded_slicer_weight = (
-    "/home/twongjirad/working/larbys/gen2/container_u22/Pointcept/"
+    "/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept/"
+#    "/home/twongjirad/working/larbys/gen2/container_u22/Pointcept/"
     "exp/larformer_slicer_v1_cascaded_ptv3hybrid_crosslevel_nonzeroinit_maskdn_noamp/"
-    "model/model_ptv3crosslevel_iter_37625.pth"
+    "model/model_ptv3crosslevel_iter_75750.pth"
 )
 
 # =============================================================================

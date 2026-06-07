@@ -110,6 +110,14 @@ class LArFormerStage12CacheDataset(DefaultDataset):
                                   also include (random per __getitem__).
         recenter_to_centroid:    subtract per-event SP-centroid from
                                   coord_norm (post-filter).
+        min_spacepoints:         minimum SPs that must survive
+                                  `source_set_filter` for the event to be
+                                  usable. Events below this are SKIPPED
+                                  (the loader resamples another index)
+                                  rather than raising. Default 1 (only
+                                  filter-wiped, zero-SP events are skipped).
+        max_resample_attempts:   how many alternate indices to try before
+                                  giving up and raising. Default 20.
         coord_center, coord_scale:
                                   detector-frame normalization (must
                                   match the cache's). The cache writes
@@ -130,6 +138,8 @@ class LArFormerStage12CacheDataset(DefaultDataset):
         random_tau_include_gt: bool = True,
         gt_keep_prob: float = 0.5,
         recenter_to_centroid: bool = False,
+        min_spacepoints: int = 1,
+        max_resample_attempts: int = 20,
         coord_center=DEFAULT_COORD_CENTER,
         coord_scale=DEFAULT_COORD_SCALE,
         backbone_grid_size_cm: float = DEFAULT_BACKBONE_GRID_SIZE_CM,
@@ -151,6 +161,8 @@ class LArFormerStage12CacheDataset(DefaultDataset):
         self.random_tau_include_gt = bool(random_tau_include_gt)
         self.gt_keep_prob = float(gt_keep_prob)
         self.recenter_to_centroid = bool(recenter_to_centroid)
+        self.min_spacepoints = int(min_spacepoints)
+        self.max_resample_attempts = int(max_resample_attempts)
         self.coord_center = np.asarray(coord_center, dtype=np.float32)
         self.coord_scale = float(coord_scale)
         self.backbone_grid_size_cm = float(backbone_grid_size_cm)
@@ -192,15 +204,30 @@ class LArFormerStage12CacheDataset(DefaultDataset):
     def __len__(self) -> int:
         return len(self.data_list) * self.loop
 
-    def get_data(self, idx: int) -> dict:
+    def get_data(self, idx: int) -> Optional[dict]:
+        """Load one cache event. Returns None if fewer than
+        `min_spacepoints` survive the source_set filter (caller resamples)."""
         path = self.data_list[idx % len(self.data_list)]
         return self._load_cache(path)
 
     def __getitem__(self, idx: int) -> dict:
-        data = self.get_data(idx)
-        if self.transform is not None:
-            data = self.transform(data)
-        return data
+        # Resample on under-populated events (filter wiped the slice below
+        # min_spacepoints). Deterministic forward scan so val/test stay
+        # reproducible and DDP ranks stay consistent; train shuffling is
+        # handled by the sampler, not here.
+        n = len(self.data_list)
+        for attempt in range(self.max_resample_attempts):
+            data = self.get_data(idx + attempt)
+            if data is not None:
+                if self.transform is not None:
+                    data = self.transform(data)
+                return data
+        raise ValueError(
+            f"{type(self).__name__}: no event with >= {self.min_spacepoints} "
+            f"SPs under source_set_filter={self.source_set_filter!r} within "
+            f"{self.max_resample_attempts} consecutive indices starting at "
+            f"idx={idx % n}."
+        )
 
     # ------------------------------------------------------------------
     # Cache reading
@@ -259,7 +286,7 @@ class LArFormerStage12CacheDataset(DefaultDataset):
             return keep
         raise RuntimeError(self.source_set_filter)
 
-    def _load_cache(self, path: str) -> dict:
+    def _load_cache(self, path: str) -> Optional[dict]:
         with h5py.File(path, "r") as f:
             top_attrs = {k: _read_attr(v) for k, v in f.attrs.items()}
             self._validate_cache_attrs(top_attrs, path)
@@ -292,16 +319,12 @@ class LArFormerStage12CacheDataset(DefaultDataset):
         # ---- 1. Apply the source_set filter ---------------------------
         keep = self._select_keep_mask(source_mask, stage2_prob)
         n_kept = int(keep.sum())
-        if n_kept == 0:
-            # Pathological: filter wiped the event. Don't raise — return
-            # a 1-SP placeholder so the collate / trainer can downscale
-            # gracefully. (Mirrors LArFormerDataset's empty-event policy
-            # of erroring; the cache filter generally shouldn't be this
-            # tight in practice.)
-            raise ValueError(
-                f"source_set_filter={self.source_set_filter} kept 0 SPs in "
-                f"{path}"
-            )
+        if n_kept < self.min_spacepoints:
+            # The source_set filter left too few SPs for this event to be
+            # trainable (commonly 0 — the slice was wiped). Signal "skip"
+            # to __getitem__, which resamples another index, instead of
+            # crashing the whole DataLoader worker.
+            return None
 
         coord = coord[keep]
         coord_norm = coord_norm[keep]

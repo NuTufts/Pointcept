@@ -66,16 +66,20 @@ del _larformer_particle_evaluator_module
 # Stage-1+2 cache locations. Update these to your cluster paths or
 # override on the command line. The shard driver writes per-event H5s
 # under `<cache_root>/<split>/<idx//1000>/<idx//100>/...`.
-CACHE_ROOT  = "/home/twongjirad/working/larbys/gen2/container_u22/Pointcept/exp/cache_stage12_devdata/"
+#CACHE_ROOT  = "/home/twongjirad/working/larbys/gen2/container_u22/Pointcept/exp/cache_stage12_devdata/"
+#CACHE_ROOT  = "/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept/exp/cache_stage12_devdata"
+CACHE_ROOT  = "/cluster/tufts/wongjiradlab/larbys/data/ub_on_tufts/hdf5/larformer_cache_stage12__ptv3crosslevelslicer_iter_75750/"
 TRAIN_ROOT  = f"{CACHE_ROOT}/train"
 VAL_ROOT    = f"{CACHE_ROOT}/val"
+#VAL_ROOT    = f"{CACHE_ROOT}/val_train_copy"
 
 # Sonata pretrain for the Stage-3 backbone. Loaded via the LArFormer's
 # own `backbone_weight` knob. NOTE: the Sonata pretrain was saved with
 # enc_mode=True, so it only contains encoder weights — the PT-v3
 # decoder trains from scratch in this config.
 sonata_pretrain_weight = (
-    "/home/twongjirad/working/larbys/gen2/container_u22/Pointcept/"
+    #"/home/twongjirad/working/larbys/gen2/container_u22/Pointcept/"
+    "/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept/"
     "sonata/lartpc_v6_h200_noghosts_pretrain_logspace_resume/model/epoch_42.pth"
 )
 
@@ -119,6 +123,7 @@ STAGE3_BACKBONE_OUT_CH = _PTV3_DEC_CHANNELS[0]   # 64 = dec0 width
 coord_center = (125.0, 0.0, 518.0)
 coord_scale  = 179.55
 flash_backend = "flash_attn"
+#flash_backend = "xformers"
 
 # =============================================================================
 # Dataset (cache reader) — identical to the v1-cached config.
@@ -135,6 +140,7 @@ data = dict(
         recenter_to_centroid=True,
         coord_center=coord_center,
         coord_scale=coord_scale,
+        min_spacepoints=20,
         loop=1,
     ),
     # ---- Optional: dual-loader mask denoising path -------------------
@@ -148,6 +154,7 @@ data = dict(
     #     recenter_to_centroid=True,
     #     coord_center=coord_center,
     #     coord_scale=coord_scale,
+    #     min_spacepoints=20,
     #     loop=1,
     # ),
     val=dict(
@@ -168,6 +175,7 @@ data = dict(
         recenter_to_centroid=True,
         coord_center=coord_center,
         coord_scale=coord_scale,
+        min_spacepoints=20,
         loop=1,
     ),
 )
@@ -320,6 +328,7 @@ model = dict(
         max_dn_per_event=64,
         anchor_jitter_std=0.05,
     ),
+    #mask_denoising=None,
 )
 
 # =============================================================================
@@ -336,7 +345,18 @@ hooks = [
          class_names=["e", "gamma", "mu", "pi", "p", "other",
                       "(unused)", "no_object"],
          coord_scale=coord_scale),
-    dict(type="CheckpointSaver", save_freq=None),
+    dict(type="CheckpointSaver", save_freq=1),
+    # Iteration-level checkpointing so SLURM jobs killed at the 24h wall-clock
+    # cap can resume mid-epoch (epochs are ~9h on the Isambard-AI allocation).
+    # Writes to the same model_last.pth that CheckpointSaver uses, plus
+    # iter_in_epoch + RNG state so CheckpointLoader can pick up mid-epoch.
+    # save_iter_freq=500 ≈ ~9 min between saves at ~30k batches/epoch, so the
+    # worst-case wasted compute on a kill is bounded by that.
+    dict(type="IterCheckpointSaver", save_iter_freq=50, keep_history=False),
+    # Catch SLURM's pre-timeout SIGUSR1 (sent via --signal=USR1@1800), save a
+    # checkpoint, write a RESUBMIT marker so the batch script can chain the
+    # next job, and exit cleanly before SLURM kills the process.
+    dict(type="SignalCheckpointHook", check_every_n_iter=30),
     dict(type="PreciseEvaluator", test_last=False),
 ]
 
@@ -344,18 +364,18 @@ hooks = [
 # Training loop knobs
 # =============================================================================
 weight = None
-save_path        = "exp/larformer_particle_v1_cached_ptv3crosslevel_10eventtest"
-epoch            = 1000
-eval_epoch       = 1000
+save_path        = "exp/larformer_particle_v1_cached_ptv3crosslevel_smallbatch_lr1e4"
+epoch            = 20
+eval_epoch       = 20
 # delta vs v1-cached: PT-v3 decoder is now trained and consumes more
 # memory/compute, so the default batch_size is halved. Bump it back up
 # if your GPU has the headroom.
-batch_size       = 10
-batch_size_val   = 10
-num_worker       = 2
-num_worker_val   = 2
+batch_size       = 16
+batch_size_val   = 40
+num_worker       = 12
+num_worker_val   = 8
 evaluate         = True
-enable_amp       = False
+enable_amp       = False    
 amp_dtype        = "bfloat16"
 empty_cache      = False
 # Same convention as the slicer hybrid config: the PT-v3 decoder, the
@@ -380,16 +400,53 @@ resume_seed_strategy = "per_resume"
 # would silently zero its lr. `freeze_backbone=True` + `unfreeze_decoder=
 # True` set requires_grad correctly per-param, and the optimizer skips
 # params with requires_grad=False; no param_dicts override needed.
-optimizer = dict(
-    type="AdamW", lr=1e-5, weight_decay=0.05,
-    betas=(0.9, 0.95),
-)
-scheduler = dict(
-    type="OneCycleLR",
-    max_lr=1e-5,
-    pct_start=0.05,
-    anneal_strategy="cos",
-    div_factor=10.0,
-    final_div_factor=100.0,
-)
+# =============================================================================
+# Optimizer / scheduler
+# =============================================================================
+base_lr = 1.0e-4
 param_dicts = None
+optimizer = dict(type="AdamW", lr=base_lr, weight_decay=0.01)
+scheduler = dict(
+    type="FlatWithDecayLR",
+    mode="plateau",
+    gamma=0.5,
+    min_lr=5e-8,
+    step_period_epochs=50,
+    patience_epochs=2,
+    min_delta=1e-4,
+    cooldown_epochs=1,
+    # Linear warmup over the first 500 training iters (~100 epochs on the
+    # 10-event dev sample at batch_size=2). PTv3 decoder + refiner +
+    # Mask2Former decoder all initialize randomly here — gradients in the
+    # first ~50 iters are noisy enough to spike the loss curve, so we
+    # don't want the plateau detector touching anything during that
+    # phase. step_epoch is a no-op while in warmup (counters frozen).
+    warmup_iters=25625, # 1 epoch of warm up: 410k/16
+    warmup_start_lr=0.0,
+    # EMA over the val/loss for plateau detection. A single lucky-low
+    # raw val_loss (which fluctuates a few % epoch-to-epoch on this
+    # small dev sample) was pinning best_val_loss too tight, collapsing
+    # the LR prematurely. alpha=0.3 means each new val_loss contributes
+    # 30% to the smoothed signal; one outlier moves the EMA by at most
+    # 30% of the gap, not the full distance. Set None to disable
+    # smoothing (raw val_loss tracked, current pre-EMA behavior).
+    ema_alpha=0.3,
+    # No reset_lr by default — set on resume only.
+    reset_lr=None,
+    reset_counters=False,
+)
+
+# base_lr=2.0e-5
+# optimizer = dict(
+#     type="AdamW", lr=base_lr, weight_decay=0.05,
+#     betas=(0.9, 0.95),
+# )
+# scheduler = dict(
+#     type="OneCycleLR",
+#     max_lr=base_lr,
+#     pct_start=0.1,
+#     anneal_strategy="cos",
+#     div_factor=10.0,
+#     final_div_factor=100.0,
+# )
+#param_dicts = None
