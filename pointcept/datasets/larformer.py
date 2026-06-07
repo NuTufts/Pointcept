@@ -791,10 +791,18 @@ def larformer_collate(batch):
     keys_flat = ("coord", "coord_norm", "grid_coord", "feat", "lm_score",
                  "wire", "trackid", "pid", "origin_label", "hasmatch",
                  "ssnet_label", "slice_id")
+    # Optional per-SP fields — concatenated only when every sample in the
+    # batch has them. Lets `LArFormerStage12CacheDataset` emit extra fields
+    # (e.g. `particle_class_id`) without breaking legacy datasets.
+    optional_flat_keys = ("particle_class_id",)
     out = {}
     for k in keys_flat:
         arrs = [s[k] for s in batch]
         out[k] = torch.from_numpy(np.concatenate(arrs, axis=0))
+    for k in optional_flat_keys:
+        if all(k in s for s in batch):
+            arrs = [s[k] for s in batch]
+            out[k] = torch.from_numpy(np.concatenate(arrs, axis=0))
 
     n_per_event = np.array([s["n_spacepoints"] for s in batch], dtype=np.int64)
     out["offset"] = torch.from_numpy(np.cumsum(n_per_event))

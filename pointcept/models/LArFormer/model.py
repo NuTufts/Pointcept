@@ -657,8 +657,13 @@ class LArFormer(nn.Module):
         """
         sp = ev["sp_slice"]
         out: Dict[str, torch.Tensor] = {}
+        # `particle_class_id` is the per-SP particle-class label produced
+        # by `LArFormerStage12CacheDataset` (= dataset emits 0..5 for
+        # visible particles, -1 = no GT). Available only on caches that
+        # have been processed by
+        # `tools/augment_stage12_cache_particle_class_id.py`.
         for k in ("hasmatch", "origin_label", "ssnet_label",
-                  "trackid", "pid", "slice_id"):
+                  "trackid", "pid", "slice_id", "particle_class_id"):
             if k in batched_dict:
                 out[k] = batched_dict[k][sp]
         return out

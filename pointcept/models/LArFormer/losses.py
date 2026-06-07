@@ -90,6 +90,7 @@ def build_per_level_cls_target(
     reduce: str = "plurality",
     ignore_index: int = -1,
     label_remap: Optional[Dict[int, int]] = None,
+    num_classes: Optional[int] = None,
 ) -> torch.Tensor:
     """Reduce a per-spacepoint integer label down to one label per level token.
 
@@ -97,10 +98,44 @@ def build_per_level_cls_target(
         level_out:        LevelOutput for this level
         per_sp_label:     (N,) long — per-spacepoint label, with `ignore_index`
                           marking points to be excluded from the vote
-        reduce:           "plurality" — most common non-ignore label per token
-                          "amax"      — max non-ignore label per token (cheap,
-                                         right for binary; combine with
-                                         `label_remap` to do priority pooling)
+        reduce:           "plurality"          — most common non-ignore label
+                                                  per token (int target)
+                          "amax"               — max non-ignore label per token
+                                                  (cheap, right for binary;
+                                                   combine with `label_remap`
+                                                   to do priority pooling)
+                                                  (int target)
+                          "soft_distribution"  — per-token COUNT-PROPORTIONAL
+                                                  class-frequency distribution.
+                                                  Example: 7 γ + 3 p SPs in a
+                                                  voxel → [0, 0.7, 0, 0, 0.3, …].
+                                                  Asks the model to predict the
+                                                  exact mix, which depends on
+                                                  voxel-boundary placement,
+                                                  per-particle SP density, etc.
+                                                  — essentially memorization
+                                                  signal. Use only when the
+                                                  proportions are physically
+                                                  meaningful for your task.
+                                                  (M, num_classes) float.
+                          "soft_presence"      — per-token UNIFORM-OVER-PRESENT
+                                                  distribution. Example: same
+                                                  voxel above → [0, 0.5, 0, 0,
+                                                  0.5, …]. Encodes "γ and p
+                                                  are both present" without
+                                                  committing to a weighting.
+                                                  Recommended over
+                                                  soft_distribution: easier
+                                                  to predict from voxel
+                                                  appearance, less
+                                                  memorization burden.
+                                                  (M, num_classes) float.
+
+                          For both soft modes, ignore_index SPs (Stage-2
+                          false positives with no GT) are remapped to the
+                          no_object slot (= last class) so voxels heavy
+                          with FPs learn high p(no_object), aligning with
+                          mixed-query selection's `1 - p(no_obj)` scoring.
         ignore_index:     label value to skip when voting (default −1)
         label_remap:      optional dict {old → new} applied to each per-SP
                           label before the reduce. Use this together with
@@ -110,14 +145,78 @@ def build_per_level_cls_target(
                           {1=nu, 2=cosmic} convention so amax favors nu).
                           Inputs not present in the dict are passed through
                           unchanged. ignore_index entries are never remapped.
+                          IGNORED when reduce="soft_distribution" (the
+                          ignore-to-no_object mapping is canonical there).
+        num_classes:      REQUIRED for reduce="soft_distribution"; ignored
+                          for the int-target reduces.
     Returns:
-        (M,) long. Tokens with no valid spacepoints get `ignore_index`.
+        For "plurality" / "amax":     (M,) long. Tokens with no valid
+                                       spacepoints get `ignore_index`.
+        For "soft_distribution":      (M, num_classes) float, each row
+                                       a probability distribution. Tokens
+                                       with no SPs in their coverage get
+                                       an all-zero row (the loss treats
+                                       those as "ignore").
     """
     M = level_out.n_tokens
     device = per_sp_label.device
+    sp_to_level = level_out.sp_to_level_id
+
+    # ---- Soft-target paths (return (M, C) float) -------------------------
+    if reduce in ("soft_distribution", "soft_presence"):
+        if num_classes is None:
+            raise ValueError(
+                f"reduce={reduce!r} requires num_classes (pass via "
+                "build_per_level_gt → cls_cfg['num_classes'])"
+            )
+        C = int(num_classes)
+        if M == 0:
+            return torch.zeros(0, C, dtype=torch.float32, device=device)
+        in_level = sp_to_level >= 0
+        sp_tok = sp_to_level[in_level]
+        sp_lab = per_sp_label[in_level].to(torch.long)
+        # Map `ignore_index` SPs (Stage-2 false positives that don't belong
+        # to any GT particle) to the no_object slot (= C - 1). This trains
+        # the per-token cls head to predict high p(no_object) on
+        # false-positive-heavy voxels, which is what mixed_query_selection's
+        # `1 - p(no_object)` scoring needs.
+        sp_lab = torch.where(
+            sp_lab == ignore_index,
+            torch.full_like(sp_lab, C - 1),
+            sp_lab,
+        )
+        in_range = (sp_lab >= 0) & (sp_lab < C)
+        sp_tok = sp_tok[in_range]
+        sp_lab = sp_lab[in_range]
+        counts = torch.zeros(M, C, dtype=torch.float32, device=device)
+        if sp_tok.numel() > 0:
+            ones = torch.ones(sp_tok.shape[0], dtype=torch.float32,
+                              device=device)
+            counts.view(-1).scatter_add_(
+                0, sp_tok * C + sp_lab, ones,
+            )
+        if reduce == "soft_distribution":
+            # Count-proportional target. Each voxel asks the model to
+            # predict the exact mix of classes by SP count.
+            weights = counts
+        else:  # soft_presence
+            # Uniform-over-present target. Each voxel asks the model to
+            # predict "which classes are here" without committing to a
+            # specific weighting between them. Easier to learn from
+            # voxel appearance; doesn't penalize the model for getting
+            # the relative proportions of present classes wrong.
+            weights = (counts > 0).float()
+        row_sum = weights.sum(dim=1, keepdim=True)
+        soft = torch.where(
+            row_sum > 0,
+            weights / row_sum.clamp(min=1.0),
+            weights,
+        )
+        return soft
+
+    # ---- int-target paths (plurality / amax) -----------------------------
     if M == 0:
         return torch.zeros(0, dtype=torch.long, device=device)
-    sp_to_level = level_out.sp_to_level_id
     valid = (sp_to_level >= 0) & (per_sp_label != ignore_index)
 
     out = torch.full((M,), ignore_index, dtype=torch.long, device=device)
@@ -218,6 +317,7 @@ def build_per_level_gt(
                 reduce=cls_cfg.get("reduce", "plurality"),
                 ignore_index=int(cls_cfg.get("ignore_index", -1)),
                 label_remap=cls_cfg.get("label_remap"),
+                num_classes=cls_cfg.get("num_classes"),
             )
 
         out[name] = entry
@@ -912,9 +1012,21 @@ class LArFormerLoss(nn.Module):
             ignore_index = int(cls_cfg.get("ignore_index", -1))
             loss_kind = cls_cfg.get("loss", "ce")
             if loss_kind == "ce":
-                cls_terms[name] = F.cross_entropy(
-                    logits, target, ignore_index=ignore_index,
-                )
+                if target.dim() == 2:
+                    # Soft-label path (target is (M, C) class distribution
+                    # built by reduce="soft_distribution"). Voxels with NO
+                    # SPs in their coverage are encoded as all-zero rows;
+                    # skip them so they don't contribute uniform-prior CE
+                    # to the loss.
+                    valid = target.sum(dim=-1) > 0
+                    if valid.any():
+                        cls_terms[name] = F.cross_entropy(
+                            logits[valid], target[valid],
+                        )
+                else:
+                    cls_terms[name] = F.cross_entropy(
+                        logits, target, ignore_index=ignore_index,
+                    )
             elif loss_kind == "bce_with_logits":
                 if logits.dim() == 2 and logits.shape[1] == 1:
                     logits = logits.squeeze(-1)
