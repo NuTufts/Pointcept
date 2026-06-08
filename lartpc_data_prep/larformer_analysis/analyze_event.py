@@ -90,6 +90,7 @@ def _load_inference(p):
     """Slice the inference H5 into a single per-event dict."""
     with h5py.File(p, "r") as f:
         out = dict(
+            pre_coord        = f["pre/coord"][:].astype(np.float32),
             post_coord       = f["post/coord"][:].astype(np.float32),
             post_pred_query  = f["post/pred_query"][:].astype(np.int64),
             post_pred_class  = f["post/pred_class"][:].astype(np.int64),
@@ -153,6 +154,90 @@ def _load_flashinfo(p):
                 ccnc=-1, mode=-1, interaction_type=-1,
             )
     return out
+
+
+# ---------------------------------------------------------------------------
+# Merged-H5 per-point join + pixel-share normalization
+# ---------------------------------------------------------------------------
+#
+# The charge fed to the flash predictor must be the RAW Y-plane ADC (linear
+# in deposited charge) — NOT the inference H5's `pre/pixval`, which is the
+# log10-transformed, [-1,1]-normalized backbone feature. The raw ADC, plus
+# the per-SP wire/tick image coordinates needed to detect when several SPs
+# project into the same wire pixel, live only in the merged H5. We recover
+# them by joining the inference `pre/coord` (exact detector cm — a pure
+# row-subset of the merged triplet `pos`) back to the merged rows, then
+# index by `pre/keep` to align with the post-SPs.
+
+def _load_merged_perpoint(merged_path, inf):
+    """Recover raw-ADC pixval + (tick, u/v/y wire) per post-SP.
+
+    Joins inference `pre/coord` → merged-H5 triplet rows by exact float
+    coordinate, then applies `pre/keep` to align with the post-SP order.
+
+    Returns a dict of post-SP-aligned arrays, or None if any pre-SP fails
+    to match (caller then falls back to the log-normalized `pre/pixval`
+    charge and disables share-normalization).
+    """
+    with h5py.File(merged_path, "r") as f:
+        td = f["entry_0"]["triplet_data"]
+        pos    = td["pos"][:].astype(np.float32)
+        rawpix = td["pixval"][:].astype(np.float32)
+        uwire  = td["uwire"][:].astype(np.int32)
+        vwire  = td["vwire"][:].astype(np.int32)
+        ywire  = td["ywire"][:].astype(np.int32)
+        tick   = td["tick"][:].astype(np.int32)
+
+    # Exact-float coordinate join. `post/coord` is affine-reconstructed and
+    # does NOT match exactly — must go through `pre/coord` + `pre/keep`.
+    row_of = {}
+    for i in range(pos.shape[0]):
+        kb = pos[i].tobytes()
+        if kb not in row_of:
+            row_of[kb] = i
+    pre_coord = inf["pre_coord"]
+    pre_idx = np.fromiter(
+        (row_of.get(pre_coord[i].tobytes(), -1)
+         for i in range(pre_coord.shape[0])),
+        dtype=np.int64, count=pre_coord.shape[0],
+    )
+    if (pre_idx < 0).any():
+        return None
+    post_idx = pre_idx[inf["pre_keep"]]
+    return dict(
+        post_rawpix = rawpix[post_idx],
+        post_uwire  = uwire[post_idx],
+        post_vwire  = vwire[post_idx],
+        post_ywire  = ywire[post_idx],
+        post_tick   = tick[post_idx],
+    )
+
+
+def _pixel_share_counts(rawpix, tick, uwire, ywire, cluster_id):
+    """Per-SP count of SPs sharing the same source wire-pixel within the
+    same cluster.
+
+    The 'source pixel' is the plane that supplied the SP's charge in
+    `select_charge_y_with_uv_fallback_np`: (tick, ywire) for Y-selected
+    SPs, (tick, uwire) for the (rare, dead-Y) UV-fallback SPs. The
+    `used_uv` flag is part of the key so Y and UV groups never merge.
+
+    Dividing the selected charge by this count keeps each wire pixel's
+    ADC integral constant within the cluster — so absorbing ghost SPs
+    that land on already-lit pixels does not inflate the slice's total
+    charge.
+    """
+    used_uv = rawpix[:, 2] <= 0
+    wire = np.where(used_uv, uwire, ywire).astype(np.int64)
+    keys = np.stack([
+        cluster_id.astype(np.int64),
+        used_uv.astype(np.int64),
+        tick.astype(np.int64),
+        wire,
+    ], axis=1)
+    _, inv, counts = np.unique(keys, axis=0, return_inverse=True,
+                               return_counts=True)
+    return counts[inv]
 
 
 # ---------------------------------------------------------------------------
@@ -227,7 +312,7 @@ def _compute_pred_slices(
     inf, in_time, gt_nu_mask,
     gamma_by_producer, readout_factor_by_producer,
     photonlib_cache, oob_thresholds, f_sys, eps,
-    v_drift,
+    v_drift, charge_source="raw_adc", share_norm="none",
 ):
     """Returns a dict of (Q,) arrays describing every non-empty predicted
     slice in the event, sorted by query_id ascending.
@@ -261,8 +346,9 @@ def _compute_pred_slices(
     uniq_q = np.sort(np.unique(pred_query[valid_sp_mask]))
     n_q = len(uniq_q)
 
+    have_raw = (charge_source == "raw_adc" and "post_rawpix" in inf)
     pos_all = inf["post_coord"]
-    px_all  = inf["post_pixval"]
+    px_all  = inf["post_rawpix"] if have_raw else inf["post_pixval"]
 
     # Build per-cluster cluster_id for batched PhotonLib call:
     # global SP-level cluster_id mapping uniq_q → [0, n_q).
@@ -274,6 +360,16 @@ def _compute_pred_slices(
     sp_gt_nu  = gt_nu_mask[valid_sp_mask]
     sp_cid    = np.array([q_to_cid[int(q)] for q in sp_pred_q], dtype=np.int64)
     sp_charge = flash_predict.select_charge_y_with_uv_fallback_np(sp_px)
+    # Per-slice pixel-share normalization: divide each SP's charge by the
+    # number of SPs in the SAME slice sharing its source wire pixel, so the
+    # slice's total charge equals its 2D pixel-footprint integral.
+    if share_norm == "per-slice" and have_raw:
+        share = _pixel_share_counts(
+            sp_px, inf["post_tick"][valid_sp_mask],
+            inf["post_uwire"][valid_sp_mask], inf["post_ywire"][valid_sp_mask],
+            sp_cid,
+        )
+        sp_charge = sp_charge / share.astype(np.float32)
 
     # Batched PE prediction.
     pe_pred_all = flash_predict.predict_many_slices_pe(
@@ -526,11 +622,12 @@ def _compute_gt_baseline(
     inf, in_time, gt_nu_mask,
     gamma_by_producer, readout_factor_by_producer,
     photonlib_cache, oob_thresholds, f_sys, eps,
-    v_drift,
+    v_drift, charge_source="raw_adc", share_norm="none",
 ):
     """Predicted PE + chi-2 sweep for the GT-nu union mask."""
+    have_raw = (charge_source == "raw_adc" and "post_rawpix" in inf)
     pos = inf["post_coord"][gt_nu_mask]
-    px  = inf["post_pixval"][gt_nu_mask]
+    px  = (inf["post_rawpix"] if have_raw else inf["post_pixval"])[gt_nu_mask]
     n_sp = int(gt_nu_mask.sum())
     n_pmts = flash_chi2.N_PMTS
     if n_sp == 0:
@@ -540,6 +637,16 @@ def _compute_gt_baseline(
             chi2=np.full(len(oob_thresholds), np.nan, dtype=np.float32),
         )
     charge = flash_predict.select_charge_y_with_uv_fallback_np(px)
+    # Same per-slice pixel-share normalization as the predicted slices, with
+    # the GT-nu union treated as a single cluster — keeps GT baseline and
+    # predicted slices apples-to-apples.
+    if share_norm == "per-slice" and have_raw:
+        share = _pixel_share_counts(
+            px, inf["post_tick"][gt_nu_mask],
+            inf["post_uwire"][gt_nu_mask], inf["post_ywire"][gt_nu_mask],
+            np.zeros(n_sp, dtype=np.int64),
+        )
+        charge = charge / share.astype(np.float32)
     pe_pred = flash_predict.predict_slice_pe(
         pos_cm=pos, charge=charge,
         flash_t0_us=in_time["t0_us"],
@@ -631,7 +738,7 @@ def _resolve_output_path(out_path, run, subrun, event, fileno=None, entry=None):
 def _write_perevent_h5(out_path, run, subrun, event, model_tag,
                        oob_thresholds, default_idx,
                        fi, inf, in_time, gt_baseline, pred, metrics,
-                       overclaim):
+                       overclaim, charge_source="raw_adc", share_norm="none"):
     """Write the per-event H5 with the documented schema."""
     os.makedirs(os.path.dirname(os.path.abspath(out_path)), exist_ok=True)
     tmp = out_path + ".tmp"
@@ -648,6 +755,8 @@ def _write_perevent_h5(out_path, run, subrun, event, model_tag,
         )
         f.attrs["nu_class_id"]        = 0
         f.attrs["no_object_class_id"] = int(inf["no_object_class_id"])
+        f.attrs["charge_source"]      = str(charge_source)
+        f.attrs["charge_share_norm"]  = str(share_norm)
 
         # truth/
         tr = f.create_group("truth")
@@ -764,6 +873,23 @@ def main():
     ap.add_argument("--v-drift-cm-per-us", type=float,
                     default=flash_predict.DEFAULT_V_DRIFT_CM_PER_US)
 
+    # Charge source + pixel-share normalization.
+    ap.add_argument("--charge-source", choices=["raw_adc", "pre_pixval"],
+                    default="raw_adc",
+                    help="Per-SP charge for the flash prediction. 'raw_adc' "
+                         "(default) joins the merged H5 for the linear Y-plane "
+                         "ADC; 'pre_pixval' uses the inference H5's "
+                         "log-normalized backbone feature (legacy, back-compat).")
+    ap.add_argument("--charge-share-norm", choices=["none", "per-slice"],
+                    default="per-slice",
+                    help="Divide each SP's charge by the number of SPs in the "
+                         "same slice sharing its source wire pixel (conserves "
+                         "the 2D pixel-footprint integral; mitigates "
+                         "ghost-driven over-counting). Requires "
+                         "--charge-source raw_adc. Pass 'none' to reproduce "
+                         "the legacy (no-share) behavior of existing perevent "
+                         "sets.")
+
     # Chi-2 + OOB knobs.
     ap.add_argument("--f-sys", type=float, default=0.10)
     ap.add_argument("--eps",   type=float, default=1.0)
@@ -861,12 +987,36 @@ def main():
         print(f"GT-nu mask: {int(gt_nu_mask.sum())} / "
               f"{len(gt_nu_mask)} post-SPs")
 
+    # Recover raw-ADC charge + wire/tick per post-SP from the merged H5.
+    charge_source = args.charge_source
+    share_norm = args.charge_share_norm
+    if charge_source == "raw_adc":
+        mp = _load_merged_perpoint(args.merged_h5, inf)
+        if mp is None:
+            sys.stderr.write(
+                "[warn] merged-H5 coordinate join failed (unmatched SPs); "
+                "falling back to log-normalized pre/pixval charge and "
+                "disabling pixel-share normalization\n"
+            )
+            charge_source = "pre_pixval"
+            share_norm = "none"
+        else:
+            inf.update(mp)
+    elif share_norm == "per-slice":
+        sys.stderr.write(
+            "[warn] --charge-share-norm per-slice requires "
+            "--charge-source raw_adc; disabling share normalization\n"
+        )
+        share_norm = "none"
+    if args.verbose:
+        print(f"charge_source={charge_source}  share_norm={share_norm}")
+
     # GT-baseline.
     gt_baseline = _compute_gt_baseline(
         inf, in_time, gt_nu_mask,
         gamma_by_producer, readout_factor_by_producer,
         args.photonlib_cache, oob_thresholds, args.f_sys, args.eps,
-        args.v_drift_cm_per_us,
+        args.v_drift_cm_per_us, charge_source, share_norm,
     )
 
     # Per-pred-slice.
@@ -874,7 +1024,7 @@ def main():
         inf, in_time, gt_nu_mask,
         gamma_by_producer, readout_factor_by_producer,
         args.photonlib_cache, oob_thresholds, args.f_sys, args.eps,
-        args.v_drift_cm_per_us,
+        args.v_drift_cm_per_us, charge_source, share_norm,
     )
     if args.verbose:
         print(f"n_pred_slices={pred['query_id'].shape[0]}  "
@@ -912,6 +1062,7 @@ def main():
         args.output_h5, run, subrun, event, args.model_tag,
         oob_thresholds, args.default_oob_idx,
         fi, inf, in_time, gt_baseline, pred, metrics, overclaim,
+        charge_source, share_norm,
     )
     if args.verbose:
         print(f"wrote {args.output_h5}")

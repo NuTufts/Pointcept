@@ -294,6 +294,36 @@ python analyze_event.py \
 OR keep γ=1.0 here and use the post-hoc γ override in Stage 4 (preferred
 when iterating, since Stage 4 is fast).
 
+#### Charge source + pixel-share normalization
+
+The per-SP charge fed to the flash predictor is controlled by two flags:
+
+- `--charge-source {raw_adc, pre_pixval}` (default `raw_adc`). `raw_adc`
+  joins the merged H5 (via the already-required `--merged-h5`) back to
+  the inference post-SPs by exact `pre/coord` match and uses the **linear
+  Y-plane ADC** (UV-mean fallback on dead Y). `pre_pixval` (legacy) uses
+  the inference H5's `pre/pixval`, which is the **log10-transformed,
+  [-1,1]-normalized backbone feature** — non-linear in deposited charge,
+  so a single γ can't reconcile predicted vs observed light, and the
+  dead-channel fallback misfires. Prefer `raw_adc`. If the coordinate
+  join fails (any unmatched SP), the analyzer warns and falls back to
+  `pre_pixval` for that event.
+- `--charge-share-norm {none, per-slice}` (default `per-slice`). With
+  `per-slice`, each SP's charge is divided by the number of SPs **in the
+  same slice** sharing its source wire pixel `(tick, ywire)` — so the
+  slice's total charge equals its 2D pixel-footprint integral and does
+  not grow as the slice absorbs ghost SPs onto already-lit pixels. The
+  GT-nu baseline uses the identical rule (one cluster) to stay
+  apples-to-apples. Requires `--charge-source raw_adc`. Pass `none` to
+  reproduce the legacy (no-share) behavior of existing perevent sets.
+  Measured pixel-sharing is large (~3.5× over all SPs, ~5–6× inside a
+  slice), so this changes `pe_pred` magnitudes substantially.
+
+Because `pe_pred` magnitudes change under these flags, **re-tune γ**
+(`tune_gamma.py`) after switching them, then re-aggregate (Stage 4) and
+re-plot (Stage 5). Both flags are stamped onto the perevent H5 attrs
+(`charge_source`, `charge_share_norm`) for provenance.
+
 ### Stage 4 — Aggregate (`aggregate_metrics.py`)
 
 Reads N per-event H5s → emits `event_summary.h5` (one row per event)
@@ -335,6 +365,8 @@ attrs:
   run, subrun, event, model_tag, has_nu_prediction
   oob_thresholds (T,), default_oob_idx
   category_names (S32 array), nu_class_id, no_object_class_id
+  charge_source ("raw_adc" | "pre_pixval")
+  charge_share_norm ("none" | "per-slice")
 
 truth/                       (attrs only)
   category_mask (uint8), n_visible_nu_gammas, n_primary_pi0
