@@ -369,10 +369,11 @@ Most of the design choices are now decided. What's still open:
 - **Rev 3 (2026-05-30)**: coordinate system decision:
   - Recenter pos_emb input to slice centroid for v1 (§1f); backbone features already carry absolute-position context, so pos_emb's job is to add slice-internal "where am I" information orthogonal to that.
 - **Rev 4 (2026-06-03)**: implementation status — S3.0 through S3.3+S3.6 plumbing landed. See §13 for the as-built design.
+- **Rev 5 (2026-06-08)**: S3.8 inference dump + visualization landed (§13.10). Shared per-event extractor module (`pointcept/models/LArFormer/inference.py`) ensures the slicer's output schema is byte-identical between standalone slicer inference and the slicer half of a full-cascade Stage-3 run. The Stage-3 visualizer (`tools/visualize_stage3_larformer_from_cached.py`) gained a prediction overlay panel with byte-identical color matching to the GT panel, camera sync, side-by-side layout toggle, particle-symbol legend labels, and rich hover text including per-SP query id + full per-class probability distribution.
 
 ---
 
-## 13. Implementation status (as built through 2026-06-03)
+## 13. Implementation status (as built through 2026-06-08)
 
 This section documents what actually shipped for each phase of §9, the
 files involved, and any deltas from the original plan.
@@ -734,8 +735,11 @@ Per-class breakdowns (`val/mask_iou_{e, gamma, mu, pi, p, other}`,
   Stage 2's default. The per-class calibration from running Stage 2
   over the training set is still on the to-do list.
 - **S3.7 (noised-truth alternative)** — depends on S3.5.
-- **S3.8 (full cascade eval tool)** — depends on a first trained
-  Stage-3 checkpoint.
+- **S3.8 (full cascade eval tool)** — **inference dump + visualization
+  landed in §13.10.** The analyzer-side per-event metric harness
+  (per-particle topology recovery, vertex distance, confusion
+  breakdowns) is still TODO and best built on top of the
+  `stage3pred_*.h5` schema that §13.10 defines.
 - **S3.9 (ablations)** — most are parameterized cleanly:
   - τ_loose sweep: change `mask_prob_threshold` in
     `CascadedParticleSegmenter` config + rebuild cache OR sample
@@ -747,3 +751,232 @@ Per-class breakdowns (`val/mask_iou_{e, gamma, mu, pi, p, other}`,
     column) + extend the dataset reader. Not yet wired.
 
   - Auxiliary absolute-position feature (drift-x, boundary distances) deferred as S3.9 ablation (§1g) — doubles as a probe of what the frozen backbone encodes.
+
+### 13.10 S3.8 — Inference dump + visualization ✅
+
+The inference and visualization halves of S3.8 (§8c) landed together:
+two CLI tools share a single helper module so the slicer's per-event
+output schema is byte-identical between standalone slicer inference and
+the slicer half of a full-cascade Stage-3 inference run.
+
+#### Shared helpers — `pointcept/models/LArFormer/inference.py`
+
+Single source of truth for per-event prediction extraction. All paths
+that produce `slicerpred_*.h5` / `stage3pred_*.h5` files call into this
+module. Exports:
+
+- `slicer_predict_event(model, sample, batched, no_object_class_id)` —
+  runs the cascade forward and returns the canonical slicerpred dict.
+  Extracted from the pre-refactor `tools/run_slicer_inference.py`
+  verbatim. Schema-regression-tested (46 canonical keys).
+- `slicer_predict_event_from_out(out, sample, no_object_class_id)` —
+  same body but accepts an already-computed cascade output dict, so the
+  full-cascade Stage-3 CLI can reuse the slicer forward instead of
+  re-running it.
+- `stage3_predict_event(model, sample, batched, no_object_class_id, *,
+  class_prob_threshold=0.0, coord_scale=179.55)` and
+  `stage3_predict_event_from_out(...)` — Stage-3 analog. Uses the same
+  panoptic-argmax SP-assignment rule as the slicer (so
+  `pointcept/models/LArFormer/inference.py:per_sp_predicted_slice` is
+  shared between both stages), plus particle-level extras: origin
+  prediction, origin-error stats, per-SP `particle_class_id` GT
+  lookup, per-SP `source_mask` and `stage2_nu_mask_prob` carried from
+  the cache.
+- `write_event_h5(path, event_data)` / `load_event_h5(path)` — atomic
+  writes (`tmp + os.replace`) plus a reader keyed by `group/.../leaf`
+  paths. Single-source loader: both visualizers go through the same
+  loader so they can't disagree about the schema.
+
+The Stage-3 confidence-floor (`class_prob_threshold`) is the
+operationalization of question Q3 from the design discussion: queries
+whose max softmax cls probability falls below the floor are demoted to
+`no_object` for the per-SP panoptic assignment, while
+`stage3_queries/class_argmax` still records their raw argmax for
+diagnostics.
+
+#### Slicer CLI — `tools/run_slicer_inference.py`
+
+Refactored to be a thin CLI (~150 lines, down from ~650). Imports
+`slicer_predict_event` from the helpers module; no behavioral change.
+Output naming and schema are unchanged so existing slicer-side
+analysis scripts continue to work.
+
+#### Stage-3 CLI — `tools/run_larformer_stage3_inference.py`
+
+Two input modes:
+
+- **`--input-mode cached`** (default — the production training path).
+  Reads cached events via `LArFormerStage12CacheDataset`, runs the
+  Stage-3 `LArFormer` on each, writes `stage3pred_<cache_basename>.h5`
+  with `stage3*/...` keys. Output filename derives from the
+  cache file's `__event<idx>` basename for guaranteed uniqueness.
+  Auto-detects when the config's `model` is a
+  `CascadedParticleSegmenter` wrapper and uses its inner
+  `particle_segmenter`.
+
+- **`--input-mode full-cascade`**. Reads raw merged_h5 events via
+  `LArFormerDataset`, builds the whole `CascadedParticleSegmenter`,
+  runs the slicer (with GT if available) for slicerpred-shaped
+  output, then applies the Stage-2 → Stage-3 boundary helpers
+  (`build_nu_keep_mask`, `filter_batch_for_particle_segmenter`) and
+  runs the particle segmenter, appending `stage3*/...` keys.
+  Output is one combined `stage3pred_*.h5` per event whose top-level
+  `pre/`, `post/`, `queries/`, `gt/`, `meta/`, `levels/` keys form a
+  valid slicerpred file — so the existing slicer viz works on the
+  Stage-2 half directly via its `--slicerpred-dir` flag.
+
+- **`--no-gt`** disables `gt_source="particle"` on the dataset for
+  the real-data inference use case where no GT is available. The
+  schema's `gt/`, `stage3_gt/`, matching, and IoU fields populate
+  with empty arrays / NaNs; `meta/has_gt = 0`. Predictions still
+  populate.
+
+Operator commands:
+
+```bash
+# Cached-mode (production training-loop iteration)
+python tools/run_larformer_stage3_inference.py \
+    --config configs/lartpc/larformer-particle-v1-cached-ptv3crosslevel.py \
+    --weights exp/.../model/model_last.pth \
+    --cache-dir exp/cache_stage12_ptv3crosslevelslicer_iter_75750/val \
+    --output-dir exp/.../inference \
+    --class-prob-threshold 0.3 \
+    --split val
+
+# Full-cascade on real data with no GT (Q8 use case)
+python tools/run_larformer_stage3_inference.py \
+    --input-mode full-cascade \
+    --config configs/lartpc/larformer-particle-v1.py \
+    --weights exp/.../model/model_last.pth \
+    --input-list inputlists/realdata_run3b.txt \
+    --output-dir exp/.../inference_realdata \
+    --class-prob-threshold 0.3 \
+    --no-gt
+```
+
+#### Output schema — `stage3pred_<basename>.h5`
+
+Per-event HDF5. Top-level groups (slicer half + Stage-3 half are
+disjoint namespaces so analysis scripts can pick whichever they need):
+
+| group | populated in |
+|---|---|
+| `pre/...` `post/...` `queries/...` `gt/...` `meta/...` `levels/...` | full-cascade mode only — schema-identical to `slicerpred_*.h5` |
+| `stage3/...` per-SP fields | always |
+| `stage3_queries/...` per-query | always |
+| `stage3_gt/...` per-particle | always (empty arrays when `--no-gt`) |
+| `stage3_levels/<name>/...` per-voxel-level | always (one block per Stage-3 voxel level the model uses) |
+| `stage3_meta/...` flat attrs | always |
+
+Stage-3 per-SP fields (`stage3/`): `coord`, `coord_norm`,
+`particle_class_id_gt`, `source_mask`, `stage2_nu_mask_prob`,
+`pred_query` (the panoptic-argmax winner — directly addresses the
+query→SP mapping the visualizer needs), `pred_class`,
+`pred_particle_idx` (K-index into GT), `pred_particle_trackid`
+(physical Geant4 trackid — used by the visualizer for color
+matching), `pred_mask_prob`.
+
+Stage-3 per-query fields (`stage3_queries/`): `class_logits`,
+`class_probs`, `class_argmax`, `class_max_prob`, `is_active`,
+`origin_coord_norm`, `matched_gt_idx`.
+
+Stage-3 per-GT fields (`stage3_gt/`): `primary_trackid`, `class_id`,
+`pid`, `ke_mev`, `n_truth_points`, `origin_cm`, `origin_coord_norm`,
+`matched_query`, `pair_iou`, `pair_cls_correct`, `pair_origin_l2_cm`
+(in cm; -1 where unmatched).
+
+Stage-3 meta (`stage3_meta/`): identity + summary counters +
+`class_prob_threshold` + `coord_scale` (so the visualizer can scale
+predicted origins to cm without round-tripping the config) +
+`has_gt`.
+
+#### Visualization — `tools/visualize_stage3_larformer_from_cached.py`
+
+Extended with two flags:
+
+- `--stage3pred-dir <DIR>`: directory of `stage3pred_*.h5` produced
+  by the inference CLI. When set, a second 3D Plotly scene appears
+  alongside the GT scene. File matching: the viz looks for
+  `stage3pred_<cache_basename>.h5` for each event index — the cache
+  filename's `__event<idx>` suffix guarantees uniqueness.
+- `--min-mask-prob <float>`: confidence-floor for the panoptic
+  assignment in the pred panel (SPs whose assigned-query sigm < floor
+  are demoted to no_object). Adjustable live via a number input in
+  the top bar.
+
+The prediction panel's figure builders live in
+`pointcept/models/LArFormer/viz_inference.py` (color/threshold/symbol
+helpers + `figure_for_stage3_prediction`) — the tool itself is a
+thin Dash app.
+
+**Color matching between GT and prediction panels.** The viz's
+`pointcept/models/LArFormer/viz_inference.py:track_id_color` is
+byte-identical to `tools/visualize_larformer_gt.py:_track_id_color`
+when alpha = 1 (`abs(int(tid))` hash, saturation 0.80, value 0.95,
+`{:g}` alpha format suppresses the `.0` so `rgba(...,1)` matches
+exactly). In the pred panel's `pred_particle_idx` color mode, each
+matched-query trace is colored by `track_id_color(pred_particle_trackid)`
+of its assigned GT — so the predicted-particle SP cluster wears the
+SAME COLOR as that physical track's instance in the GT panel.
+Legend entries read `particle idx N (trackid TID)` to make the
+cross-reference explicit.
+
+**Talk-shot UX.** Three checkboxes (all on by default):
+
+- `show pred↔GT origin lines` — connects each matched query's
+  predicted-origin diamond to its GT origin (length = L2 error).
+- `sync rotation/zoom` — server-side `Patch` callbacks in both
+  directions mirror `scene.camera` between the two panels. Reads
+  `relayoutData["scene.camera"]`; falls back to reassembling the dict
+  from individual axis updates. Programmatic camera updates don't
+  re-fire `relayoutData`, so no feedback loop.
+- `side-by-side panels` — toggles the scene container between
+  `display: flex; flexDirection: row` (78 vh each) and stacked
+  (42 vh each). Panel widths auto-balance via `flex: 1 1 0`.
+
+**Hover text** (per SP). 14-column mixed-dtype customdata holds:
+mask_prob, pred class symbol, pred_query (matches the origin
+diamonds' `q=N`), pred_particle_idx, pred_particle_trackid, GT class
+symbol, then the full per-class softmax probability of the
+assigned query (8 floats). Renders as:
+
+```
+x=125.4 y=10.2 z=400.1
+mask_prob=0.534  pred=μ±  GT=p
+query=12  pred_particle_idx=4  trackid=1595065
+class probs (assigned query):
+  e±=0.09  γ=0.06  μ±=0.12  π±=0.17
+  p=0.05  other=0.19  ∅=0.13
+```
+
+Particle symbols (`PARTICLE_CLASS_SYMBOLS`): `("e±", "γ", "μ±", "π±",
+"p", "other", "—", "∅")` — used in legend labels (`pred_class`,
+`particle_class_id_gt` modes) AND in hover text. The Unicode `∅`
+specifically signals the `no_object` slot.
+
+**Origin diamond hover** (per active query). Each diamond hover shows
+the query id (bold), predicted class symbol + max prob, origin in
+cm, and the full per-class probability distribution. Matches the
+per-SP hover schema so the visual cross-reference (SP → diamond)
+also reads consistently in tooltips.
+
+**Color-by modes** (8): `pred_particle_idx` (GT-color-matched —
+default), `pred_class` (by particle taxonomy), `pred_query` (by query
+id), `pred_mask_prob` (continuous Plasma colorbar), `particle_class_id_gt`
+(per-SP GT class), `pred_class_correct` (correct/wrong/no-GT),
+`stage2_nu_mask_prob` (cache telemetry — Viridis), `source_mask`
+(cache provenance bitmask).
+
+#### Slicer-viz reuse path
+
+The full-cascade `stage3pred_*.h5` files carry the slicer half at the
+top level (`pre/`, `post/`, `queries/`, `gt/`, `meta/`, `levels/`)
+with the slicer's canonical schema. So
+`tools/visualize_larformer_gt.py --slicerpred-dir <dir>` works on a
+full-cascade output directory unchanged — the slicer viz's
+prediction-panel callbacks find files matching its
+`slicerpred_<basename>.h5` pattern, but because the schema is also
+exposed under the `stage3pred_<basename>.h5` files, a small alias
+(symlink the stage3pred to slicerpred names, or extend the slicer
+viz's filename matcher) is all that's needed if you want
+panoptic-slicer diagnostics on the same events.
