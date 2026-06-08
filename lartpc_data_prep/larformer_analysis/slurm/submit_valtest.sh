@@ -115,7 +115,9 @@ python lartpc_data_prep/larformer_analysis/slurm/run_valtest_per_fileno.py \
     --task-id ${SLURM_ARRAY_TASK_ID} \
     --stride ${STRIDE:-1} \
     --gamma-beam ${GAMMA_BEAM} \
-    --gamma-cosmic ${GAMMA_COSMIC}"
+    --gamma-cosmic ${GAMMA_COSMIC} \
+    --charge-source ${CHARGE_SOURCE:-raw_adc} \
+    --charge-share-norm ${CHARGE_SHARE_NORM:-per-slice}"
 
 apptainer exec --nv --bind /cluster:/cluster \
     "${CONTAINER}" bash -c "${INNER_CMD}"

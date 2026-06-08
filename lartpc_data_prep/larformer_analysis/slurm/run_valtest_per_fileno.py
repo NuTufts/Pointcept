@@ -101,6 +101,18 @@ def main():
                          "(task_id+1)*stride].")
     ap.add_argument("--gamma-beam",        type=float, default=1.0)
     ap.add_argument("--gamma-cosmic",      type=float, default=1.0)
+    # Charge source + pixel-share normalization (forwarded to analyze_event;
+    # defaults match analyze_event.py). `raw_adc` joins the merged H5 for
+    # linear Y-plane ADC; `per-slice` divides each SP's charge by the number
+    # of same-slice SPs sharing its source wire pixel (ghost mitigation).
+    # NOTE: this is analysis-side only — inference outputs are reused as-is.
+    # Existing perevent_*.h5 BLOCK regeneration (the skip-if-exists check
+    # below ignores the charge scheme), so to switch schemes point at a
+    # fresh --output-dir or delete the old perevent_*/skipped_* files.
+    ap.add_argument("--charge-source",     choices=["raw_adc", "pre_pixval"],
+                    default="raw_adc")
+    ap.add_argument("--charge-share-norm", choices=["none", "per-slice"],
+                    default="per-slice")
     ap.add_argument("--skip-inference",    action="store_true")
     ap.add_argument("--skip-analysis",     action="store_true")
     args = ap.parse_args()
@@ -231,6 +243,17 @@ def main():
                     f"output for entry {entry}: {slicerpred_p}\n"
                 )
                 continue
+            # With --charge-source raw_adc the analyzer opens the merged H5
+            # for the raw-ADC + wire/tick join, so a missing merged file is
+            # now fatal to the call (it was unused before). Skip the event
+            # with a warning instead of crashing the whole task.
+            if args.charge_source == "raw_adc" and not os.path.exists(merged_p):
+                sys.stderr.write(
+                    f"[task {args.task_id}][analyze] missing merged H5 for "
+                    f"entry {entry} (needed by --charge-source raw_adc): "
+                    f"{merged_p}\n"
+                )
+                continue
             if not os.path.exists(flash_p):
                 sys.stderr.write(
                     f"[task {args.task_id}][analyze] missing flashinfo for "
@@ -265,10 +288,12 @@ def main():
                 "--inference-h5", slicerpred_p,
                 "--output-h5",    analyze_dir + os.sep,   # auto-derives filename
                 "--model-tag",    args.model_tag,
-                "--fileno",       str(fileno),
-                "--entry",        str(entry),
-                "--gamma-beam",   str(args.gamma_beam),
-                "--gamma-cosmic", str(args.gamma_cosmic),
+                "--fileno",          str(fileno),
+                "--entry",           str(entry),
+                "--gamma-beam",      str(args.gamma_beam),
+                "--gamma-cosmic",    str(args.gamma_cosmic),
+                "--charge-source",   args.charge_source,
+                "--charge-share-norm", args.charge_share_norm,
             ], log_prefix=f"[task {args.task_id}][analyze entry={entry}] ")
         print(
             f"[task {args.task_id}] analysis: {n_already_analysis} of "
