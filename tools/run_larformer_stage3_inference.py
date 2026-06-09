@@ -221,6 +221,11 @@ def run_cached_mode(args):
     if args.cache_dir is not None:
         ds_cfg["data_root"] = os.path.abspath(args.cache_dir)
         ds_cfg.pop("data_list_file", None)
+    if args.cache_file_list is not None:
+        # Explicit list of cache files (one per line). Overrides the
+        # dataset's auto-discovery so the SLURM driver can hand each
+        # task its own subset of val events.
+        ds_cfg["data_list_file"] = os.path.abspath(args.cache_file_list)
     dataset = build_dataset(ds_cfg)
     n_events = len(dataset)
     if args.max_events is not None:
@@ -521,6 +526,13 @@ def main():
     ap.add_argument("--cache-dir", default=None,
                     help="(cached mode) Root of cache events. Overrides "
                          "cfg.data.<split>.data_root.")
+    ap.add_argument("--cache-file-list", default=None,
+                    help="(cached mode) Text file with one cache event "
+                         "path per line. Overrides the dataset's "
+                         "auto-discovery — used by the SLURM driver to "
+                         "hand each task its own subset of cache events. "
+                         "Paths in the file are absolute, or relative to "
+                         "--cache-dir if set.")
     ap.add_argument("--input-list", default=None,
                     help="(full-cascade mode) Text file with one "
                          "merged_h5 path per line.")
