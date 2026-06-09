@@ -525,7 +525,8 @@ class SignalCheckpointHook(HookBase):
 
 @HOOKS.register_module()
 class CheckpointLoader(HookBase):
-    def __init__(self, keywords="", replacement=None, strict=False, extend_scheduler=False):
+    def __init__(self, keywords="", replacement=None, strict=False,
+                 extend_scheduler=False, reset_optimizer=False):
         """
         Args:
             keywords: Keywords to match in layer names for weight loading
@@ -535,11 +536,21 @@ class CheckpointLoader(HookBase):
                 Instead, use the new scheduler (with potentially extended total_steps)
                 and advance it to the current step. This allows extending training
                 beyond the original epoch count while preserving optimizer state.
+            reset_optimizer: If True, when resuming, do NOT load the optimizer state
+                (Adam first/second moments, step count). Model weights, scheduler,
+                epoch counter, best metric, and RNG all still restore. Use this to
+                recover when train loss starts rising mid-run and the suspect is
+                that Adam's `v_t` is mis-scaled (e.g. after a mid-run LR cut).
+                Expect a brief transient (~500-1000 iters) where per-param steps
+                are larger than usual due to v_t=0 + bias correction restart.
+                REMEMBER TO REMOVE THIS FLAG ONCE THE NEXT CHECKPOINT SAVES,
+                otherwise every subsequent resume keeps wiping Adam moments.
         """
         self.keywords = keywords
         self.replacement = replacement if replacement is not None else keywords
         self.strict = strict
         self.extend_scheduler = extend_scheduler
+        self.reset_optimizer = reset_optimizer
 
     def before_train(self):
         self.trainer.logger.info("=> Loading checkpoint & weight ...")
@@ -597,7 +608,13 @@ class CheckpointLoader(HookBase):
                         })
 
                     # Now load optimizer state (this overwrites initial_lr and max_lr in param_groups)
-                    self.trainer.optimizer.load_state_dict(checkpoint["optimizer"])
+                    if not self.reset_optimizer:
+                        self.trainer.optimizer.load_state_dict(checkpoint["optimizer"])
+                    else:
+                        self.trainer.logger.info(
+                            "=> reset_optimizer=True: skipping optimizer state load "
+                            "(Adam moments start at zero; expect ~500-1000 iter transient)"
+                        )
 
                     # Do NOT load old scheduler state - use new scheduler with extended total_steps
                     # Set the scheduler's step counter to where we left off
@@ -630,7 +647,13 @@ class CheckpointLoader(HookBase):
                     current_lr = scheduler.get_last_lr()[0]
                     self.trainer.logger.info(f"  Extended scheduler LR at resume: {current_lr:.6f}")
                 else:
-                    self.trainer.optimizer.load_state_dict(checkpoint["optimizer"])
+                    if not self.reset_optimizer:
+                        self.trainer.optimizer.load_state_dict(checkpoint["optimizer"])
+                    else:
+                        self.trainer.logger.info(
+                            "=> reset_optimizer=True: skipping optimizer state load "
+                            "(Adam moments start at zero; expect ~500-1000 iter transient)"
+                        )
                     self.trainer.scheduler.load_state_dict(checkpoint["scheduler"])
 
                 if self.trainer.scaler is not None and checkpoint.get("scaler") is not None:
