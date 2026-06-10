@@ -617,8 +617,15 @@ class CheckpointLoader(HookBase):
                         )
 
                     # Do NOT load old scheduler state - use new scheduler with extended total_steps
-                    # Set the scheduler's step counter to where we left off
-                    steps_completed = checkpoint["epoch"] * len(self.trainer.train_loader) // self.trainer.cfg.gradient_accumulation_steps
+                    # Set the scheduler's step counter to where we left off.
+                    # Include iter_in_epoch so mid-epoch checkpoints written by
+                    # IterCheckpointSaver fast-forward to the TRUE optimizer-step
+                    # count (epoch-boundary checkpoints have iter_in_epoch=0, so
+                    # the original behavior is unchanged for them).
+                    steps_completed = (
+                        checkpoint["epoch"] * len(self.trainer.train_loader)
+                        + checkpoint.get("iter_in_epoch", 0)
+                    ) // self.trainer.cfg.gradient_accumulation_steps
                     self.trainer.logger.info(
                         f"Extending scheduler: setting step counter to {steps_completed} "
                         f"(new total_steps: {self.trainer.cfg.scheduler.total_steps})"

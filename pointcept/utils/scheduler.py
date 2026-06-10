@@ -117,6 +117,73 @@ class CosineAnnealingLR(lr_scheduler.CosineAnnealingLR):
 
 
 @SCHEDULERS.register_module()
+class DelayedCosineLR(lr_scheduler.LambdaLR):
+    """Hold the base LR until ``decay_start_step``, then cosine-decay to
+    ``final_lr_scale * base_lr`` at ``total_steps``.
+
+    Built for MID-RUN SCHEDULE SWAPS via ``CheckpointLoader(extend_scheduler=
+    True)``: the loader skips loading the old scheduler's state, builds this
+    one from the new config, and fast-forwards ``last_epoch`` to the
+    checkpoint's optimizer-step count. Because the LR here is a pure function
+    of the step counter (LambdaLR), the fast-forward lands on exactly the
+    intended LR — set ``decay_start_step`` to the resume step and the cosine
+    begins fresh from the checkpoint at the optimizer's configured base LR
+    (no upward jump, no re-warmup).
+
+    Steps before ``decay_start_step`` hold the base LR, so a small mismatch
+    between ``decay_start_step`` and the actual resume step just delays the
+    decay by the difference. Steps past ``total_steps`` hold
+    ``final_lr_scale * base_lr``.
+
+    Args:
+        total_steps:      injected by ``Trainer.build_scheduler``
+                          (= len(train_loader) * eval_epoch // grad_accum).
+        decay_start_step: optimizer step at which the cosine begins. For a
+                          mid-epoch resume this is
+                          ``epoch * iters_per_epoch + iter_in_epoch``.
+        final_lr_scale:   LR floor as a fraction of the base LR
+                          (e.g. 0.02: 5e-5 -> 1e-6).
+    """
+
+    def __init__(
+        self,
+        optimizer,
+        total_steps,
+        decay_start_step=0,
+        final_lr_scale=0.02,
+        last_epoch=-1,
+    ):
+        decay_start_step = int(decay_start_step)
+        final_lr_scale = float(final_lr_scale)
+        if not (0.0 <= final_lr_scale <= 1.0):
+            raise ValueError(
+                f"DelayedCosineLR: final_lr_scale must be in [0, 1]; "
+                f"got {final_lr_scale}"
+            )
+        if decay_start_step >= int(total_steps):
+            raise ValueError(
+                f"DelayedCosineLR: decay_start_step ({decay_start_step}) must "
+                f"be < total_steps ({total_steps}) — nothing left to decay. "
+                f"Check eval_epoch / the resume step."
+            )
+        decay_span = int(total_steps) - decay_start_step
+
+        def factor(s):
+            if s < decay_start_step:
+                return 1.0
+            t = min(s - decay_start_step, decay_span) / decay_span
+            return final_lr_scale + (1.0 - final_lr_scale) * 0.5 * (
+                1.0 + np.cos(np.pi * t)
+            )
+
+        super().__init__(
+            optimizer=optimizer,
+            lr_lambda=factor,
+            last_epoch=last_epoch,
+        )
+
+
+@SCHEDULERS.register_module()
 class FlatWithDecayLR(lr_scheduler._LRScheduler):
     """
     Flat learning rate with optional linear warmup + explicit, epoch-driven

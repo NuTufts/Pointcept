@@ -276,6 +276,14 @@ def main():
                     style={"width": "80px", "marginRight": "16px"},
                 ),
                 dcc.Checklist(
+                    id="show_origin_diamonds",
+                    options=[{"label": " show pred-origin diamonds",
+                              "value": "on"}],
+                    value=["on"],
+                    style={"display": "inline-block",
+                           "marginRight": "16px"},
+                ),
+                dcc.Checklist(
                     id="show_origin_lines",
                     options=[{"label": " show pred↔GT origin lines",
                               "value": "on"}],
@@ -467,11 +475,12 @@ def main():
             Input("pred_color", "value"),
             Input("min_mask_prob", "value"),
             Input("show_origin_lines", "value"),
+            Input("show_origin_diamonds", "value"),
             Input("src", "value"),
             Input("reload", "n_clicks"),
         )
         def update_pred(entry_val, color_val, min_prob, lines_val,
-                        src_val, _n):
+                        diamonds_val, src_val, _n):
             idx = int(entry_val or 0)
             idx = max(0, min(idx, n_events - 1))
             # Mirror update_gt's source-set mutation so the indices align
@@ -485,12 +494,13 @@ def main():
             except (TypeError, ValueError):
                 mp = 0.0
             show_lines = bool(lines_val and "on" in lines_val)
+            show_diamonds = bool(diamonds_val and "on" in diamonds_val)
             return figure_for_stage3_prediction(
                 pred,
                 color_by=color_val or "pred_particle_idx",
                 min_mask_prob=mp,
                 show_origin_lines=show_lines,
-                show_origin_diamonds=True,
+                show_origin_diamonds=show_diamonds,
                 title_suffix=(f"  —  {os.path.basename(pred_path)}"
                               if pred_path else ""),
             )

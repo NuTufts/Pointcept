@@ -835,6 +835,36 @@ class LArFormerLoss(nn.Module):
         # (see that function's docstring). Off by default to preserve
         # legacy behavior; enable from config via loss_kwargs.
         use_vectorized_pair_loss: bool = False,
+        # When True, compute LOG-ONLY diagnostic scalars per event (final
+        # layer only, under no_grad — they never contribute to "total"):
+        #
+        #   diag_mask_bce_rand / diag_dice_rand
+        #       per-pair sampled BCE/Dice with PURE RANDOM negatives — the
+        #       stationary-sampler control for the training mask loss. The
+        #       trained loss uses importance/hard-neg sampling, which gets
+        #       adversarially harder as the model improves, so its value is
+        #       not comparable across training; this one is.
+        #   diag_mask_iou_matched
+        #       full-mask hard IoU (sigmoid>0.5 over ALL primary tokens) of
+        #       Hungarian-matched pairs — train-time twin of val/mask_iou.
+        #   diag_mask_logit_p95
+        #       95th-percentile |logit| over matched queries' primary mask
+        #       logits — tracks confidence sharpening.
+        #   diag_frac_confident_fp
+        #       fraction of bg tokens with sigmoid>0.9 per matched pair —
+        #       the pool the hard-neg sampler feeds on; should shrink even
+        #       while its per-point loss grows.
+        #   diag_match_agreement
+        #       fraction of GT instances assigned to the SAME query when
+        #       the Hungarian match is re-run on the other end of the
+        #       decoder stack (init vs final) — within-iteration proxy for
+        #       assignment stability.
+        #
+        # See docs/LArFormer_Stage3_TrainingStability.md §6. The model
+        # prefixes these with "loss_", so they log as
+        # train_batch/loss_diag_* (and, via the evaluator's eval_loss
+        # accumulation, val/loss_diag_*).
+        log_diagnostics: bool = False,
     ):
         super().__init__()
         if match_layer not in ("final", "init"):
@@ -859,6 +889,7 @@ class LArFormerLoss(nn.Module):
         self.importance_ratio = float(importance_ratio)
         self.importance_hard_neg_ratio = float(importance_hard_neg_ratio)
         self.weight_dn_loss = float(weight_dn_loss)
+        self.log_diagnostics = bool(log_diagnostics)
         self.use_vectorized_pair_loss = bool(use_vectorized_pair_loss)
         self._pair_loss_fn = (
             _per_pair_sampled_mask_loss_vectorized
@@ -1172,6 +1203,89 @@ class LArFormerLoss(nn.Module):
 
     # ------------------------------------------------------------------
 
+    # sigmoid(x) > 0.9  <=>  x > ln(0.9 / 0.1)
+    _CONFIDENT_FP_LOGIT = 2.1972246
+
+    @torch.no_grad()
+    def _compute_diagnostics(
+        self,
+        decoder_output: dict,
+        per_level_gt_mask: "OrderedDict[str, torch.Tensor]",
+        gt_classes: torch.Tensor,
+        gt_origin: Optional[torch.Tensor],
+        q_idx: np.ndarray,
+        k_idx: np.ndarray,
+        sampled: torch.Tensor,
+        gt_sampled: torch.Tensor,
+    ) -> Dict[str, torch.Tensor]:
+        """Log-only diagnostic scalars (see the `log_diagnostics` ctor
+        docstring). Final layer only; never contributes to the loss.
+        Caller guarantees: primary level exists and len(q_idx) > 0.
+        """
+        final_pred = decoder_output["final"]
+        pred_logits = final_pred["mask_logits"][self.primary_level]   # (Q, M)
+        gt_mask = per_level_gt_mask[self.primary_level]               # (K, M)
+        device = pred_logits.device
+        out: Dict[str, torch.Tensor] = {}
+        if pred_logits.shape[1] == 0:
+            return out
+
+        # (1) Probe BCE/Dice — same per-pair sampler, PURE RANDOM negatives.
+        bce, dice = self._pair_loss_fn(
+            pred_logits, gt_mask, q_idx, k_idx,
+            n_sample=self.num_sample_points,
+            use_importance_sampling=False,
+        )
+        out["diag_mask_bce_rand"] = bce
+        out["diag_dice_rand"] = dice
+
+        # (2) Full-mask hard IoU of matched pairs; (3) logit saturation;
+        # (4) confident-false-positive fraction. All on the matched rows.
+        q_t = torch.as_tensor(q_idx, dtype=torch.long, device=device)
+        k_t = torch.as_tensor(k_idx, dtype=torch.long, device=device)
+        pair_logits = pred_logits[q_t]                                # (P, M)
+        gt_bin = gt_mask[k_t] > 0                                     # (P, M)
+        pred_bin = pair_logits > 0.0                # sigmoid > 0.5
+        inter = (pred_bin & gt_bin).sum(dim=1).float()
+        union = (pred_bin | gt_bin).sum(dim=1).float().clamp(min=1.0)
+        out["diag_mask_iou_matched"] = (inter / union).mean()
+
+        out["diag_mask_logit_p95"] = torch.quantile(
+            pair_logits.abs().float().flatten(), 0.95,
+        )
+
+        bg = ~gt_bin
+        n_bg = bg.sum(dim=1).float().clamp(min=1.0)
+        conf_fp = ((pair_logits > self._CONFIDENT_FP_LOGIT) & bg).sum(dim=1)
+        out["diag_frac_confident_fp"] = (conf_fp.float() / n_bg).mean()
+
+        # (5) Match agreement: re-run the Hungarian match on the OTHER end
+        # of the decoder stack (init when match_layer == "final" and vice
+        # versa), on the SAME sampled cost points, and report the fraction
+        # of GT instances bound to the same query.
+        other = "init" if self.match_layer == "final" else "final"
+        other_pred = decoder_output[other]
+        q2, k2 = self.matcher(
+            class_logits=other_pred["class_logits"],
+            primary_mask_logits=other_pred["mask_logits"][self.primary_level],
+            gt_classes=gt_classes,
+            gt_masks_sampled=gt_sampled,
+            sampled_indices=sampled,
+            origin_pred=other_pred.get("origin"),
+            gt_origin=gt_origin,
+        )
+        assign_other = {int(k): int(q) for q, k in zip(q2, k2)}
+        n_agree = sum(
+            1 for q, k in zip(q_idx, k_idx)
+            if assign_other.get(int(k), -1) == int(q)
+        )
+        out["diag_match_agreement"] = torch.tensor(
+            n_agree / len(q_idx), dtype=torch.float32, device=device,
+        )
+        return out
+
+    # ------------------------------------------------------------------
+
     def forward(
         self,
         decoder_output: Optional[dict],
@@ -1345,6 +1459,20 @@ class LArFormerLoss(nn.Module):
             out[f"cls_{name}"] = term
         out["n_matched"] = torch.tensor(len(q_idx), dtype=torch.long, device=device)
         out["n_gt_instances"] = torch.tensor(K, dtype=torch.long, device=device)
+
+        # Log-only diagnostics (no_grad, final layer only; see ctor doc).
+        # len(q_idx) > 0 implies K > 0 and the match branch above ran, so
+        # `sampled` / `gt_sampled` are defined.
+        if (self.log_diagnostics and self.primary_level is not None
+                and len(q_idx) > 0):
+            out.update(self._compute_diagnostics(
+                decoder_output=decoder_output,
+                per_level_gt_mask=per_level_gt_mask,
+                gt_classes=gt_classes,
+                gt_origin=gt_origin,
+                q_idx=q_idx, k_idx=k_idx,
+                sampled=sampled, gt_sampled=gt_sampled,
+            ))
 
         if return_matching:
             # GT truth_indices as device LongTensors (gt_instances may

@@ -260,9 +260,11 @@ class LArFormerTrainer(Trainer):
             if self.cfg.clip_grad is not None:
                 if self.cfg.enable_amp and self.scaler is not None:
                     self.scaler.unscale_(self.optimizer)
-                torch.nn.utils.clip_grad_norm_(
+                # Pre-clip total norm, logged via the merged output dict
+                # below (same convention as the base Trainer.run_step).
+                out_matcher["grad_norm"] = torch.nn.utils.clip_grad_norm_(
                     self.model.parameters(), self.cfg.clip_grad,
-                )
+                ).detach()
             if self.cfg.enable_amp and self.scaler is not None:
                 self.scaler.step(self.optimizer)
                 self.scaler.update()

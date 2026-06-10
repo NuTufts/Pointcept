@@ -378,9 +378,12 @@ class Trainer(TrainerBase):
                         self.logger.error(f"  Batch sample names: {input_dict['name']}")
 
                 if self.cfg.clip_grad is not None:
-                    torch.nn.utils.clip_grad_norm_(
+                    # clip_grad_norm_ returns the PRE-clip total norm; expose
+                    # it as a logged scalar (InformationWriter picks up every
+                    # 0-d tensor in model_output_dict -> train_batch/grad_norm).
+                    output_dict["grad_norm"] = torch.nn.utils.clip_grad_norm_(
                         self.model.parameters(), self.cfg.clip_grad
-                    )
+                    ).detach()
                 # scaler.step automatically skips the optimizer step if inf/nan gradients are present
                 self.scaler.step(self.optimizer)
 
@@ -419,9 +422,11 @@ class Trainer(TrainerBase):
                     self.optimizer.zero_grad()
                 else:
                     if self.cfg.clip_grad is not None:
-                        torch.nn.utils.clip_grad_norm_(
+                        # Pre-clip total norm, exposed as a logged scalar
+                        # (see the AMP branch above).
+                        output_dict["grad_norm"] = torch.nn.utils.clip_grad_norm_(
                             self.model.parameters(), self.cfg.clip_grad
-                        )
+                        ).detach()
                     self.optimizer.step()
                     self.scheduler.step()
 
