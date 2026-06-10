@@ -1,0 +1,1 @@
+/mnt/ddrive/data/ub_on_tufts/bnb_nu_pi0filter_corsika/000/000/dlmerged_coriska_bnb_nu_pi0filter_fileno000001.root

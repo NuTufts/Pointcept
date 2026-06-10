@@ -186,12 +186,21 @@ def apply_pred_threshold(
 # Stage-3 prediction renderer
 # ---------------------------------------------------------------------------
 
+# NOTE on axis labels: per-SP traces plot detector coords as
+#   plotly_x = coord[:, 2] (= detector Z, beam direction)
+#   plotly_y = coord[:, 0] (= detector X, drift)
+#   plotly_z = coord[:, 1] (= detector Y, vertical)
+# The hover labels "x="/"y="/"z=" below refer to DETECTOR axes (matching
+# the scene axis titles and the diamond-hover convention), so the
+# placeholders are remapped: detector_x = plotly_y, detector_y = plotly_z,
+# detector_z = plotly_x.
 _STAGE3_HOVER_TEMPLATE = (
-    "x=%{x:.1f} y=%{y:.1f} z=%{z:.1f}<br>"
+    "x=%{y:.1f} y=%{z:.1f} z=%{x:.1f}<br>"
     "mask_prob=%{customdata[0]:.3f}  "
     "pred=%{customdata[1]}  GT=%{customdata[5]}<br>"
     "query=%{customdata[2]}  "
     "pred_particle_idx=%{customdata[3]}  trackid=%{customdata[4]}<br>"
+    "GT origin target (cm): %{customdata[14]}<br>"
     "<i>class probs (assigned query):</i><br>"
     "&nbsp;&nbsp;e±=%{customdata[6]:.2f}  "
     "γ=%{customdata[7]:.2f}  "
@@ -205,7 +214,7 @@ _STAGE3_HOVER_TEMPLATE = (
 
 
 def _stage3_customdata(pred):
-    """(N, 14) mixed-dtype customdata array for the Stage-3 SP hover.
+    """(N, 15) mixed-dtype customdata array for the Stage-3 SP hover.
 
     Layout (column → field):
         0   mask_prob (float)
@@ -215,6 +224,9 @@ def _stage3_customdata(pred):
         4   pred_particle_trackid (int — physical Geant4 trackid; -1 if none)
         5   particle_class_id_gt as particle symbol (str; '—' if no GT)
         6-13  per-class softmax probability of the assigned query (8 floats)
+        14  GT origin target as a pre-formatted string (det cm); reads
+            "x=… y=… z=…" for matched queries and "(unmatched)" otherwise.
+            Pre-formatted so the hover template stays a single static string.
 
     Plotly accepts object-dtype customdata; each cell serializes as its
     actual type. Strings render literally via `%{customdata[c]}`; floats
@@ -222,7 +234,9 @@ def _stage3_customdata(pred):
     """
     n_classes = len(PARTICLE_CLASS_SYMBOLS)
     n = pred["stage3/coord"].shape[0]
-    out = np.empty((n, 6 + n_classes), dtype=object)
+    # 6 base + n_classes per-class + 1 GT-origin string
+    n_cols = 6 + n_classes + 1
+    out = np.empty((n, n_cols), dtype=object)
 
     pred_mask_prob = np.asarray(
         pred.get("stage3/pred_mask_prob", np.zeros(n)), dtype=np.float64)
@@ -253,6 +267,29 @@ def _stage3_customdata(pred):
     else:
         per_sp_probs = np.zeros((n, n_classes), dtype=np.float64)
 
+    # Per-SP GT origin lookup. Each SP's pred_query maps through
+    # stage3_queries/matched_gt_idx → stage3_gt/origin_cm. Pre-format
+    # so the hover template only has to drop in one string. Origins are
+    # in DETECTOR cm and include the same space-charge + drift-time
+    # corrections that the loss saw at training time.
+    matched_gt = pred.get("stage3_queries/matched_gt_idx", None)
+    gt_origin_cm = pred.get("stage3_gt/origin_cm", None)
+    gt_origin_str = ["(unmatched)"] * n
+    if matched_gt is not None and gt_origin_cm is not None and gt_origin_cm.size > 0:
+        matched_gt = np.asarray(matched_gt).astype(np.int64)
+        Q = matched_gt.shape[0]
+        for i in range(n):
+            pq = int(pred_query[i])
+            if pq < 0 or pq >= Q:
+                continue
+            k = int(matched_gt[pq])
+            if k < 0 or k >= gt_origin_cm.shape[0]:
+                continue
+            gx, gy, gz = (float(gt_origin_cm[k, 0]),
+                          float(gt_origin_cm[k, 1]),
+                          float(gt_origin_cm[k, 2]))
+            gt_origin_str[i] = f"x={gx:.1f} y={gy:.1f} z={gz:.1f}"
+
     out[:, 0] = pred_mask_prob
     out[:, 1] = [_class_symbol(c) for c in pred_class]
     out[:, 2] = pred_query
@@ -263,6 +300,7 @@ def _stage3_customdata(pred):
     ]
     for c in range(n_classes):
         out[:, 6 + c] = per_sp_probs[:, c]
+    out[:, 6 + n_classes] = gt_origin_str
     return out
 
 
@@ -602,9 +640,22 @@ def _add_origin_diamonds(fig: go.Figure, pred: dict,
                     if cls_max_prob is not None else float("nan"))
         hover_lines = [
             f"<b>query {q}</b> &nbsp; pred {sym} (prob {max_prob:.2f})",
-            f"origin (cm): x={float(pt[0]):.1f} "
+            f"pred origin (cm): x={float(pt[0]):.1f} "
             f"y={float(pt[1]):.1f} z={float(pt[2]):.1f}",
         ]
+        # GT origin target line for matched queries (same coords the
+        # loss saw at training time: space-charge + drift-time applied).
+        if (matched_gt is not None and gt_origin_cm is not None
+                and gt_origin_cm.size > 0):
+            k = int(matched_gt[q]) if q < len(matched_gt) else -1
+            if 0 <= k < gt_origin_cm.shape[0]:
+                gpt = gt_origin_cm[k]
+                err = float(np.linalg.norm(pt - gpt))
+                hover_lines.append(
+                    f"GT origin target (cm): x={float(gpt[0]):.1f} "
+                    f"y={float(gpt[1]):.1f} z={float(gpt[2]):.1f}  "
+                    f"(err {err:.1f}cm)"
+                )
         if probs_line:
             hover_lines.append("class probs:")
             hover_lines.append(f"&nbsp;&nbsp;{probs_line}")
@@ -633,7 +684,7 @@ def _add_origin_diamonds(fig: go.Figure, pred: dict,
                 y=[float(pred_pt[0]), float(gt_pt[0])],
                 z=[float(pred_pt[1]), float(gt_pt[1])],
                 mode="lines",
-                line=dict(color="rgba(255,255,255,0.4)", width=1, dash="dot"),
+                line=dict(color="rgba(0,0,0,0.9)", width=2, dash="dot"),
                 name=f"q={q} ↔ gt={k} ({err:.1f}cm)",
                 hoverinfo="skip",
                 showlegend=False,
@@ -655,6 +706,246 @@ def _default_scene_kwargs() -> dict:
         legend=dict(orientation="v", x=1.05, y=1.0, font=dict(size=10)),
         height=720,
     )
+
+
+# ---------------------------------------------------------------------------
+# Full-cascade combined panels (predicted slices + nu-slice particles, and the
+# matching GT). Used by tools/visualize_full_cascade.py.
+#
+# In GT-less inference (the data-pipeline path) `pred_slice_id` /
+# `pred_particle_trackid` are all -1 (they require GT matching), so predicted
+# slices are colored by `pred_query` and particles by `stage3/pred_query` or
+# `stage3/pred_class`.
+# ---------------------------------------------------------------------------
+
+def _scatter_xyz(coord):
+    """detector (x,y,z) cm -> plotly (z, x, y) order used everywhere here."""
+    return coord[:, 2], coord[:, 0], coord[:, 1]
+
+
+def cascade_nu_color_options() -> list[dict]:
+    return [
+        {"label": "nu particles by query/instance", "value": "instance"},
+        {"label": "nu particles by predicted class", "value": "class"},
+    ]
+
+
+def figure_for_cascade_prediction(
+    pred: Optional[dict],
+    *,
+    min_mask_prob: float = 0.0,
+    nu_class_id: int = 0,
+    slicer_no_object_id: int = 2,
+    nu_color_by: str = "instance",
+    show_origin_diamonds: bool = True,
+    sp_marker_size: float = 1.6,
+    nu_marker_size: float = 3.0,
+    title_suffix: str = "",
+) -> go.Figure:
+    """Prediction panel: the slicer's predicted slices (post-deghost SPs
+    colored by `pred_query`) with the nu-candidate slice rendered as the
+    Stage-3 particle segmentation (`stage3` SPs colored by particle
+    query/class).
+
+    `pred` is a stage3pred_*.h5 dict from `inference.load_event_h5`.
+    """
+    fig = go.Figure(data=make_detector_outline_trace())
+    if pred is None or pred.get("post/coord") is None or pred["post/coord"].shape[0] == 0:
+        fig.update_layout(title=f"No cascade prediction{title_suffix}",
+                          **_default_scene_kwargs())
+        return fig
+
+    post_coord = pred["post/coord"].astype(np.float32)
+    post_q = pred.get("post/pred_query",
+                      -np.ones(post_coord.shape[0], np.int64)).astype(np.int64)
+    post_cls = pred.get("post/pred_class",
+                        np.full(post_coord.shape[0], slicer_no_object_id)).astype(np.int64)
+    post_mp = pred.get("post/pred_mask_prob", None)
+
+    # ---- Slice layer: NON-nu post SPs, colored by predicted query (= slice).
+    non_nu = post_cls != int(nu_class_id)
+    if min_mask_prob > 0.0 and post_mp is not None:
+        non_nu = non_nu & (post_mp >= float(min_mask_prob))
+    q_vals = post_q[non_nu]
+    coord_nn = post_coord[non_nu]
+    for qv in sorted(np.unique(q_vals).tolist()):
+        m = q_vals == qv
+        x, y, z = _scatter_xyz(coord_nn[m])
+        fig.add_trace(go.Scatter3d(
+            x=x, y=y, z=z, mode="markers",
+            marker=dict(size=sp_marker_size,
+                        color=(instance_color(int(qv)) if qv >= 0
+                               else "rgba(150,150,150,0.35)")),
+            name=f"slice q{qv} ({int(m.sum())})",
+            hovertemplate=(f"slice query={qv}<br>x=%{{y:.1f}} y=%{{z:.1f}} "
+                           f"z=%{{x:.1f}}<extra></extra>"),
+        ))
+
+    # ---- Particle layer: the nu-candidate slice = Stage-3 SPs ----------
+    s3_coord = pred.get("stage3/coord", None)
+    if s3_coord is not None and s3_coord.shape[0] > 0:
+        s3_coord = s3_coord.astype(np.float32)
+        no_obj3 = int(pred.get("stage3_meta_no_object_class_id",
+                               pred.get("stage3_meta/no_object_class_id", 7)))
+        s3_cls = pred.get("stage3/pred_class",
+                          np.full(s3_coord.shape[0], no_obj3)).astype(np.int64)
+        s3_q = pred.get("stage3/pred_query",
+                        -np.ones(s3_coord.shape[0], np.int64)).astype(np.int64)
+        s3_mp = pred.get("stage3/pred_mask_prob", None)
+        s3_cls_t, s3_q_t, low = apply_pred_threshold(
+            s3_mp, s3_cls, s3_q, no_obj3, min_mask_prob)
+        customdata = _stage3_customdata(pred)
+        if nu_color_by == "class":
+            values = s3_cls_t
+            color_fn = class_color
+            label_fn = lambda v: f"nu {_class_symbol(int(v))}"
+        else:  # instance
+            values = s3_q_t
+            color_fn = lambda v: (instance_color(int(v) % 64) if v >= 0
+                                  else "rgba(170,170,170,0.4)")
+
+            def label_fn(v):
+                if int(v) < 0:
+                    return "nu unassigned"
+                # which class dominates this query?
+                cm = s3_q_t == int(v)
+                cls_here = s3_cls_t[cm]
+                dom = int(np.bincount(cls_here[cls_here >= 0]).argmax()) \
+                    if (cls_here >= 0).any() else -1
+                return f"nu q{int(v)} ({_class_symbol(dom)})"
+        for v in sorted(np.unique(values).tolist()):
+            m = values == v
+            x, y, z = _scatter_xyz(s3_coord[m])
+            fig.add_trace(go.Scatter3d(
+                x=x, y=y, z=z, mode="markers",
+                marker=dict(size=nu_marker_size, color=color_fn(int(v))),
+                customdata=customdata[m],
+                hovertemplate=_STAGE3_HOVER_TEMPLATE,
+                name=f"{label_fn(int(v))} ({int(m.sum())})",
+            ))
+        if show_origin_diamonds:
+            _add_origin_diamonds(fig, pred, no_obj3, show_origin_lines=False)
+
+    fig.update_layout(
+        title=f"PREDICTION — slices (by query) + nu particles{title_suffix}",
+        **_default_scene_kwargs())
+    return fig
+
+
+def figure_for_cascade_gt(
+    gt: Optional[dict],
+    *,
+    nu_color_by: str = "instance",
+    show_ghosts: bool = False,
+    max_ghosts: int = 50000,
+    sp_marker_size: float = 1.6,
+    nu_marker_size: float = 3.0,
+    title_suffix: str = "",
+) -> go.Figure:
+    """GT panel: truth slices (cosmic primaries + nu) with the nu slice
+    rendered as truth particles.
+
+    `gt` is a plain dict built by the tool from `LArFormerDataset`:
+        coord            (N,3)  detector cm
+        slice_id         (N,)   GT slice id (cosmic primary trackid / nu)
+        slice_is_nu      (N,)   bool — SP belongs to the nu slice
+        slice_origin     {slice_id: origin_type}  (0 = nu)
+        hasmatch         (N,)   1 = real, 0 = ghost (optional)
+        nu_coord         (Nn,3) nu-slice SP coords
+        nu_class         (Nn,)  per-SP particle class id
+        nu_instance      (Nn,)  per-SP particle instance id
+
+    Ghosts (hasmatch==0, or slice_id<0 when hasmatch is absent) are hidden
+    by default. When `show_ghosts=True` a random sample of at most
+    `max_ghosts` ghost points is drawn (gray).
+    """
+    fig = go.Figure(data=make_detector_outline_trace())
+    if gt is None or gt.get("coord") is None or len(gt["coord"]) == 0:
+        fig.update_layout(title=f"No GT (no MC truth){title_suffix}",
+                          **_default_scene_kwargs())
+        return fig
+
+    coord = np.asarray(gt["coord"], np.float32)
+    slice_id = np.asarray(gt["slice_id"], np.int64)
+    is_nu = np.asarray(gt.get("slice_is_nu",
+                              np.zeros(len(coord), bool))).astype(bool)
+    slice_origin = gt.get("slice_origin", {})
+
+    # ---- cosmic slices (non-nu) by slice id ----------------------------
+    cosmic = (~is_nu) & (slice_id >= 0)
+    for tid in sorted(np.unique(slice_id[cosmic]).tolist()):
+        m = (slice_id == tid) & cosmic
+        if not m.any():
+            continue
+        ot = int(slice_origin.get(int(tid), 1))
+        x, y, z = _scatter_xyz(coord[m])
+        fig.add_trace(go.Scatter3d(
+            x=x, y=y, z=z, mode="markers",
+            marker=dict(size=sp_marker_size, color=track_id_color(int(tid), ot)),
+            name=f"GT slice tid={tid} ({int(m.sum())})",
+            hovertemplate=(f"GT slice tid={tid}<br>x=%{{y:.1f}} y=%{{z:.1f}} "
+                           f"z=%{{x:.1f}}<extra></extra>"),
+        ))
+    # ghost / unassigned — hidden by default; sampled when shown.
+    hasmatch = gt.get("hasmatch", None)
+    if hasmatch is not None:
+        ghost = np.asarray(hasmatch, np.int64) == 0
+    else:
+        ghost = slice_id < 0
+    if show_ghosts and ghost.any():
+        ghost_idx = np.flatnonzero(ghost)
+        n_ghost = ghost_idx.size
+        if max_ghosts and n_ghost > int(max_ghosts):
+            # deterministic sample so re-renders are stable.
+            rng = np.random.default_rng(0)
+            ghost_idx = np.sort(rng.choice(ghost_idx, int(max_ghosts),
+                                           replace=False))
+        pts = coord[ghost_idx]
+        x, y, z = _scatter_xyz(pts)
+        shown = ghost_idx.size
+        label = (f"ghosts ({shown} of {n_ghost} sampled)"
+                 if shown < n_ghost else f"ghosts ({n_ghost})")
+        fig.add_trace(go.Scatter3d(
+            x=x, y=y, z=z, mode="markers",
+            marker=dict(size=sp_marker_size * 0.8, color="rgba(150,150,150,0.3)"),
+            name=label, hoverinfo="skip"))
+
+    # ---- nu slice as truth particles -----------------------------------
+    nu_coord = gt.get("nu_coord", None)
+    if nu_coord is not None and len(nu_coord) > 0:
+        nu_coord = np.asarray(nu_coord, np.float32)
+        nu_cls = np.asarray(gt.get("nu_class",
+                                   -np.ones(len(nu_coord), np.int64)), np.int64)
+        nu_inst = np.asarray(gt.get("nu_instance",
+                                    -np.ones(len(nu_coord), np.int64)), np.int64)
+        if nu_color_by == "class":
+            values, color_fn = nu_cls, class_color
+            label_fn = lambda v: f"GT nu {_class_symbol(int(v))}"
+        else:
+            values = nu_inst
+            color_fn = lambda v: (instance_color(int(v) % 64) if v >= 0
+                                  else "rgba(170,170,170,0.4)")
+            def label_fn(v):
+                cm = nu_inst == int(v)
+                ch = nu_cls[cm]
+                dom = int(np.bincount(ch[ch >= 0]).argmax()) if (ch >= 0).any() else -1
+                return f"GT nu inst{int(v)} ({_class_symbol(dom)})"
+        for v in sorted(np.unique(values).tolist()):
+            m = values == v
+            x, y, z = _scatter_xyz(nu_coord[m])
+            fig.add_trace(go.Scatter3d(
+                x=x, y=y, z=z, mode="markers",
+                marker=dict(size=nu_marker_size, color=color_fn(int(v))),
+                name=f"{label_fn(int(v))} ({int(m.sum())})",
+                hovertemplate=(f"GT nu class=%{{text}}<br>x=%{{y:.1f}} "
+                               f"y=%{{z:.1f}} z=%{{x:.1f}}<extra></extra>"),
+                text=[_class_symbol(int(c)) for c in nu_cls[m]],
+            ))
+
+    fig.update_layout(
+        title=f"GROUND TRUTH — slices + nu particles{title_suffix}",
+        **_default_scene_kwargs())
+    return fig
 
 
 # ---------------------------------------------------------------------------

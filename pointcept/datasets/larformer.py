@@ -499,6 +499,22 @@ class LArFormerDataset(DefaultDataset):
         subrun = int(entry.attrs.get("subrun", -1))
         event = int(entry.attrs.get("event", -1))
 
+        # Per-SP particle class id. Real when GT instances carry a class_id
+        # (gt_source="particle"); otherwise -1. Emitted so a particle
+        # segmenter whose voxel level declares cls supervision on
+        # `particle_class_id` (e.g. the ptv3crosslevel config used for
+        # full-cascade inference) can build its per-level target. A -1 stub
+        # produces an all-ignore target — the trained cls head still runs
+        # (it feeds mixed_query_selection); only the unused loss target is
+        # masked out. This mirrors the cache's augmented `particle_class_id`
+        # field for the raw-merged_h5 inference path.
+        particle_class_id_k = np.full(n_keep, -1, dtype=np.int64)
+        for g in gt_instances:
+            if "class_id" in g and "truth_indices" in g:
+                ti = np.asarray(g["truth_indices"], dtype=np.int64)
+                if ti.size:
+                    particle_class_id_k[ti] = int(g["class_id"])
+
         out = {
             "coord": pos_k,
             "coord_norm": coord_norm.astype(np.float32),
@@ -512,6 +528,7 @@ class LArFormerDataset(DefaultDataset):
             "hasmatch": sp_hasmatch_k,
             "ssnet_label": sp_ssnet_k,
             "slice_id": slice_id_k,
+            "particle_class_id": particle_class_id_k,
             "gt_instances": gt_instances,
             "n_gt_instances": len(gt_instances),
             "n_spacepoints": int(n_keep),
