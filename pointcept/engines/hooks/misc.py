@@ -631,7 +631,13 @@ class CheckpointLoader(HookBase):
                         f"(new total_steps: {self.trainer.cfg.scheduler.total_steps})"
                     )
 
-                    # Restore the NEW scheduler's initial_lr and max_lr values that were saved
+                    # Restore the NEW scheduler's initial_lr and max_lr values that were saved.
+                    # max_lr only exists for OneCycleLR-family schedulers; for
+                    # LambdaLR-family ones (e.g. DelayedCosineLR) it is absent,
+                    # so format defensively instead of assuming a float.
+                    def _fmt_lr(v):
+                        return f"{v:.6e}" if isinstance(v, (int, float)) else "N/A"
+
                     for idx, group in enumerate(self.trainer.optimizer.param_groups):
                         if idx < len(saved_scheduler_params):
                             if saved_scheduler_params[idx]['initial_lr'] is not None:
@@ -639,8 +645,9 @@ class CheckpointLoader(HookBase):
                             if saved_scheduler_params[idx]['max_lr'] is not None:
                                 group['max_lr'] = saved_scheduler_params[idx]['max_lr']
                         self.trainer.logger.info(
-                            f"  Param group {idx}: initial_lr={group.get('initial_lr', 'N/A'):.6f}, "
-                            f"max_lr={group.get('max_lr', 'N/A'):.6f}"
+                            f"  Param group {idx}: "
+                            f"initial_lr={_fmt_lr(group.get('initial_lr'))}, "
+                            f"max_lr={_fmt_lr(group.get('max_lr'))}"
                         )
 
                     # Directly modify scheduler state to skip ahead efficiently
