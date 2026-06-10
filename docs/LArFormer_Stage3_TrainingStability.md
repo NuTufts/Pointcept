@@ -128,6 +128,7 @@ matcher-sanitization warnings.
 | R5 | Maintain a weight EMA for eval/checkpoint selection | Medium | ☐ |
 | R6 | Stop resetting the optimizer on resume | High (policy) | ☐ adopt |
 | R7 | Note: train total includes DN terms; eval skips DN — don't compare the two `loss` curves directly | Info | — |
+| R8 | Inference-side query dedup (mask-IoU NMS with merge tracking) — fixes the μ/π duplicate-query fragmentation observed in hand scans | High | ☐ planned — §7 |
 
 ---
 
@@ -137,12 +138,55 @@ matcher-sanitization warnings.
 - [x] R1.2 Patch `CheckpointLoader.extend_scheduler` fast-forward to include `iter_in_epoch` (2026-06-10 — **required**, not optional: the resume point is a mid-epoch IterCheckpointSaver checkpoint)
 - [x] R1.3 Create `configs/lartpc/larformer-particle-v1-cached-ptv3crosslevel-decaylrsched.py` (2026-06-10; unit tests in `tests/test_delayed_cosine_lr.py` all pass, incl. validation of the fast-forward formula against a real checkpoint)
 - [ ] R1.4 Launch on cluster + verify resume log lines and `params/lr` trajectory
+  - First launch attempt (2026-06-10) crashed in `CheckpointLoader`'s
+    extend-scheduler logging: it formatted `group.get('max_lr', 'N/A')`
+    with `:.6f`, but `max_lr` only exists for OneCycleLR-family
+    schedulers — absent for LambdaLR-family ones like DelayedCosineLR.
+    Fixed in `hooks/misc.py` (defensive `_fmt_lr`). The crash happened
+    BEFORE the scheduler counter was set, so nothing was corrupted;
+    plain relaunch is safe.
+  - The cluster checkpoint named `model_iter_131140.pth` actually
+    contains the NEXT IterCheckpointSaver save (iter 18250 → step
+    131190, one save_iter_freq=50 later than the log line it was named
+    after). Harmless: 131190 > decay_start_step=131140, so the cosine
+    starts immediately at resume, 50 steps into the window (LR there is
+    still 5.0e-5 to 6 significant figures). No config change needed.
 - [x] R2.1 Add `log_diagnostics` flag + probe losses to `LArFormerLoss` (2026-06-10)
 - [x] R2.2 Add saturation / confident-FP metrics (2026-06-10)
 - [x] R2.3 Add init↔final match-agreement metric (2026-06-10)
 - [x] R2.4 Stamp pre-clip grad norm into the logged output dict (2026-06-10 — both base `Trainer.run_step` clip sites + the LArFormerTrainer dual-DN path)
 - [ ] R2.5 After launch: confirm `train_batch/loss_diag_*`, `val/loss_diag_*`, and `train_batch/grad_norm` appear in wandb; per-iter walltime delta negligible
+  - Train-side CONFIRMED (2026-06-10, `resume3_cosinedecay`, iters
+    131k–134k). First-look readings, all sensible — these are the
+    baseline values for the flat-5e-5 regime (cosine decay not yet
+    perceptible; half-amplitude ~step 291k):
+    - `diag_mask_iou_matched` ≈ 0.72 flat — consistent with
+      `val/mask_iou_mean` ≈ 0.69 / median ≈ 0.74. Probe validated.
+    - `diag_mask_bce_rand` ≈ 0.19, `diag_dice_rand` ≈ 0.20, both flat —
+      vs trained per-layer ≈ 0.21 / ≈ 0.29 (sums/7, incl. weaker early
+      layers). The stationary baselines to compare future loss drift
+      against.
+    - `diag_mask_logit_p95` ≈ 20 — each residual confident-wrong point
+      costs ~20 nats; confirms the §1.2 sharpening mechanism. Not at
+      the ±50 cap (healthy).
+    - `diag_frac_confident_fp` ≈ 0.02 (spikes 0.05–0.09 on hard
+      events) — small residual error pool; should shrink long-term.
+    - `diag_match_agreement` ≈ 0.42 — the decoder stack changes the
+      preferred assignment for >half the GT instances within one
+      forward (init vs final). Consistent with §1.3 near-tie matching.
+      Watch the trend: rising = matches locking in.
+    - `grad_norm` ≈ 150–190 smoothed, spikes to ~1400 — `clip_grad=1.0`
+      is saturated on EVERY iter: training runs on gradient direction
+      with per-batch magnitude equalized, spike batches suppressed ~8×
+      harder. Keep clip at 1.0 (with Adam, the absolute level is
+      nearly moot; saturation here is protective). Watch spike
+      frequency as the LR decays.
+  - Val-side (`val/loss_diag_*`) pending first eval epoch.
 - [ ] R3 / R4 / R5 — design after R1+R2 data is in
+- [x] R8.1 `dedup_queries()` in `pointcept/models/LArFormer/inference.py` + unit tests (2026-06-10 — `tests/test_stage3_dedup.py`: merge semantics + runner-up record, Michel-containment non-merge, no-chain semantics, off-switch/edge cases, H5 roundtrip; all pass)
+- [x] R8.2 Wired into `stage3_predict_event_from_out` (+ `stage3_predict_event` kwarg); §7.4 schema keys emitted; per-level assignments inherit the deduped query set (2026-06-10)
+- [x] R8.3 `--dedup-iou-threshold` CLI knob (default 0.6; 0 disables), forwarded in BOTH cached and full-cascade modes (2026-06-10)
+- [ ] R8.4 Validate on duplicate-rich sample: smoke-tested end-to-end on the laptop dev cache (epoch-4 ckpt, 3 events: runs clean, 0 merges — and an IoU probe over 8 events confirms max active-pair mask IoU ≈ 0.43, i.e. no co-extensive duplicates exist there to merge: correct negative control). REMAINING: cluster run on the chargedpiplus events with the current checkpoint — before/after on fileno00380 entry000000, `dedup_max_pair_iou` distribution to confirm threshold placement, and the same-class two-GT negative control.
 
 ---
 
@@ -361,6 +405,141 @@ new `loss_kwargs` flag `log_diagnostics=True` so other configs are unaffected.
 
 ---
 
-## 7. Revision history
+## 7. Implementation plan — R8: inference-side query dedup
+
+### 7.1 Failure mode (hand-scan, 2026-06-10)
+
+The most common Stage-3 error is one track covered by TWO overlapping
+queries — characteristically a μ-classifying query and a π-classifying
+query over the same true μ or π. The training loss subsidizes this
+configuration: the matcher's class cost always matches the
+correct-class query (low matched CE regardless of which hypothesis is
+right), while the unmatched duplicate pays only `no_object_weight=0.1`
+CE and **zero mask penalty** (mask losses run on matched pairs only).
+So "one query per class hypothesis" is the optimal hedge for the
+irreducible μ/π ambiguity. The damage happens at inference: the
+per-SP panoptic argmax lets the two hypotheses FRAGMENT the track
+(interleaved per-point assignment) instead of one winning the whole
+instance. FPS query seeding guarantees the duplicate candidates exist
+(long tracks always receive several anchors).
+
+### 7.2 Algorithm — greedy mask-IoU NMS over active queries
+
+Runs inside `stage3_predict_event_from_out`, between the existing
+confidence-floor demotion (`effective_argmax`) and the per-SP panoptic
+assignment. Operates on binarized spacepoint-level masks
+(`logit > 0`, same convention as `per_pair_iou`).
+
+```
+inputs:  sp_mask_logits (Q, N), effective_argmax (Q,), cls_max_prob (Q,),
+         no_object_class_id, iou_threshold (default 0.6)
+
+1. active   = effective_argmax != no_object
+2. binmask  = sp_mask_logits > 0                       # (Q, N) bool
+3. score[q] = cls_max_prob[q] * mean(sigmoid(logit) over binmask[q])
+              (Mask2Former panoptic-style: class conf × mask conf;
+               score = 0 for empty masks)
+4. pairwise IoU among active queries via one matmul:
+              inter = binmask_f @ binmask_f.T ;  union = a_i + a_j − inter
+5. greedy, descending score:
+       for q in order:
+           if suppressed[q]: continue            # q survives
+           for r in lower-score active, not yet suppressed:
+               if IoU(q, r) >= iou_threshold:
+                   suppressed[r] = True ; winner[r] = q
+6. demote: effective_argmax[suppressed] = no_object
+7. per-SP assignment re-runs unchanged → the winner inherits the
+   loser's points automatically (their masks overlap by construction,
+   so the winner's logit is the surviving argmax there). No explicit
+   mask union needed.
+```
+
+Design choices and why:
+
+- **IoU (symmetric), not intersection-over-min:** keeps genuinely
+  distinct contained instances (Michel e at a μ endpoint, δ-rays)
+  unmerged — small-in-big has high IoM but low IoU. The μ/π duplicate
+  pair has near-identical full-track masks → IoU typically ≳ 0.8;
+  default threshold 0.6 with a CLI knob.
+- **Class-agnostic merging:** required — the observed duplicates are
+  *different-class* (μ vs π) by construction of the hedge.
+- **Suppress-then-reassign, not mask union:** reuses the existing
+  panoptic argmax; one code path for per-SP and per-level outputs.
+- **Greedy one-level winners (no chains):** losers can't absorb;
+  standard NMS semantics; Q=32 makes cost trivial.
+- **Hungarian/GT diagnostics untouched:** matching, `pair_iou`,
+  `pair_origin_l2_cm` stay raw-model metrics. Dedup affects only the
+  panoptic *assignment* outputs (+ new keys below). A per-query
+  winner-redirect array lets consumers follow a matched-but-suppressed
+  query to its absorber.
+
+### 7.3 Merge tracking (the ambiguity record)
+
+For each surviving query, the absorbed runner-up's class hypothesis is
+preserved — a track tagged "μ 0.6 / π 0.4" is more honest than a
+fragmented pair and is potentially useful in the downstream event
+selection. Recorded per query (arrays length Q; −1/0 where n/a):
+suppression flag, winner index, dedup score, number absorbed,
+runner-up class + prob (highest-prob absorbed query with class ≠
+winner's, else highest absolutely), and max pair IoU at merge (the
+"strength" of the duplication).
+
+### 7.4 Schema integration (new keys only — no existing key changes)
+
+Existing consumers (`visualize_stage3_larformer_from_cached.py`,
+analysis joins) read `stage3/pred_query` etc. and will simply see the
+deduped assignment. Pre-dedup assignment is preserved for A/B.
+
+| Key | Shape | Meaning |
+|---|---|---|
+| `stage3/pred_query_nodedup` | (N,) i64 | pre-dedup per-SP assignment (only written when dedup enabled) |
+| `stage3_queries/dedup_suppressed` | (Q,) bool | query was absorbed |
+| `stage3_queries/dedup_winner_idx` | (Q,) i64 | suppressed → absorber; kept → own idx; inactive → −1 |
+| `stage3_queries/dedup_score` | (Q,) f32 | ranking score (cls conf × mask conf) |
+| `stage3_queries/is_active_postdedup` | (Q,) bool | `is_active & ~suppressed` |
+| `stage3_queries/dedup_n_absorbed` | (Q,) i64 | duplicates merged into this query |
+| `stage3_queries/dedup_runnerup_class` | (Q,) i64 | absorbed runner-up class (−1 none) |
+| `stage3_queries/dedup_runnerup_prob` | (Q,) f32 | its class confidence |
+| `stage3_queries/dedup_max_pair_iou` | (Q,) f32 | max mask IoU among absorbed |
+| `stage3_gt/matched_query_dedup` | (K,) i64 | `matched_query` redirected through winner map |
+| `stage3_meta/dedup_iou_threshold` | attr | 0 = dedup disabled |
+| `stage3_meta/n_dedup_suppressed` | attr | per-event merge count |
+| `stage3_meta/n_active_queries_postdedup` | attr | |
+
+`stage3_levels/*/pred_query` uses the post-dedup `effective_argmax`
+(consistent across levels), no extra per-level keys. Full class
+posteriors of all queries are already stored
+(`stage3_queries/class_probs`), so any recombination of merged
+posteriors can be done offline via `dedup_winner_idx`.
+
+### 7.5 Implementation steps
+
+1. `dedup_queries(...)` as a standalone function in `inference.py`
+   (torch in, numpy-records out), so the visualizer / future ROOT
+   converter can reuse it. Unit tests: two heavy-overlap queries +
+   one distinct (loser suppressed, winner inherits points, records
+   correct); threshold sweep incl. 0=off; Michel-in-muon containment
+   case NOT merged; no-active and empty-mask edge cases.
+2. Call it in `stage3_predict_event_from_out` after the confidence
+   floor; thread `dedup_iou_threshold` kwarg through
+   `stage3_predict_event` as well; emit §7.4 keys.
+3. CLI: `--dedup-iou-threshold` (default 0.6; `0` disables) in
+   `tools/run_larformer_stage3_inference.py`, forwarded in BOTH
+   cached and full-cascade modes; stamp into `stage3_meta`.
+4. Validate on the val cache with the current checkpoint:
+   - before/after visual on the known duplicate events
+     (e.g. `fileno00380 entry000000`, μ/π pairs);
+   - distribution of `dedup_max_pair_iou` (expect a high-IoU peak —
+     confirms threshold placement) and per-event suppression counts;
+   - check no legitimate splits merged: events where two SAME-class
+     GTs share a vertex must keep two queries.
+5. Optional follow-ups: post-dedup assigned-IoU per GT
+   (`stage3_gt/assigned_iou`) as the deliverable-quality metric; a
+   `pred_query_nodedup` color mode in the Stage-3 visualizer; the
+   training-side `diag_duplicate_rate` (count of active query pairs
+   with mask IoU > 0.5) to watch the duplicate rate during training.
+
+## 8. Revision history
 
 - **2026-06-10** — Initial analysis + R1/R2 implementation plans (Claude-assisted review).
+- **2026-06-10** — R1 + R2 implemented and launched (`resume3_cosinedecay`); first-look diagnostic readings recorded (§4 R2.5). Added R8: inference-side query dedup plan (§7) after hand scans showed the dominant error is μ/π duplicate-query pairs fragmenting single tracks.

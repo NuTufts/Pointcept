@@ -131,6 +131,147 @@ def per_pair_iou(
 
 
 # ---------------------------------------------------------------------------
+# Query dedup — greedy mask-IoU NMS with merge tracking
+# (docs/LArFormer_Stage3_TrainingStability.md §7, recommendation R8)
+# ---------------------------------------------------------------------------
+
+def dedup_queries(
+    sp_mask_logits: torch.Tensor,      # (Q, N) spacepoint-level mask logits
+    effective_argmax: torch.Tensor,    # (Q,) long — post-confidence-floor class
+    cls_max_prob: np.ndarray,          # (Q,) float — max softmax prob per query
+    no_object_class_id: int,
+    iou_threshold: float = 0.6,
+):
+    """Greedy mask-IoU NMS over active queries, with merge tracking.
+
+    Why: the training loss makes "one query per class hypothesis" nearly
+    free (the unmatched duplicate pays only the down-weighted no_object
+    CE and ZERO mask penalty), so an ambiguous track — canonically μ±
+    vs π± — ends up covered by two near-identical queries that fragment
+    it under the per-SP panoptic argmax. This pass suppresses the
+    lower-scored co-extensive duplicate; the survivor then inherits the
+    whole track when the panoptic argmax re-runs (their masks overlap
+    by construction). The absorbed query's class hypothesis is kept as
+    a per-query "runner-up" record — a μ/π ambiguity tag for downstream
+    analysis rather than discarded information.
+
+    Criterion is SYMMETRIC mask IoU on binarized masks (logit > 0, same
+    convention as `per_pair_iou`) — deliberately NOT intersection-over-
+    min, so genuinely distinct contained instances (Michel e at a μ
+    endpoint, δ-rays) stay unmerged: small-in-big has high IoM but low
+    IoU. Merging is class-AGNOSTIC — the observed duplicates are
+    different-class pairs by construction of the hedge. Greedy NMS by
+    descending panoptic score (class conf × mean in-mask sigmoid);
+    losers cannot absorb (no chains).
+
+    Args:
+        sp_mask_logits:     (Q, N) spacepoint mask logits.
+        effective_argmax:   (Q,) long — per-query class AFTER the
+                            class_prob_threshold demotion. no_object
+                            queries are excluded from dedup.
+        cls_max_prob:       (Q,) np.float32 max softmax class prob.
+        no_object_class_id: the no_object slot.
+        iou_threshold:      merge when pairwise mask IoU >= this.
+                            <= 0 disables (records become identity).
+
+    Returns:
+        (records, effective_argmax_dedup)
+
+        records — dict of length-Q numpy arrays:
+            suppressed     bool   query was absorbed by a higher-scored one
+            winner_idx     int64  suppressed -> absorber; kept active ->
+                                  own index; inactive -> -1
+            score          float32 panoptic score (all queries, incl.
+                                  inactive — diagnostic)
+            n_absorbed     int64  duplicates merged into this query
+            runnerup_class int64  class of the highest-prob absorbed
+                                  query with class != winner's (falls
+                                  back to highest-prob absorbed); -1 none
+            runnerup_prob  float32 its cls_max_prob; 0 if none
+            max_pair_iou   float32 max merge IoU among absorbed; 0 if none
+
+        effective_argmax_dedup — (Q,) long with suppressed queries
+            demoted to no_object (a clone; input is not mutated). When
+            dedup is disabled / no-op, this is the input tensor itself.
+    """
+    Q = int(sp_mask_logits.shape[0])
+    device = sp_mask_logits.device
+    active_t = (effective_argmax != int(no_object_class_id))
+    active = active_t.cpu().numpy()
+
+    records = {
+        "suppressed":     np.zeros(Q, dtype=bool),
+        "winner_idx":     np.full(Q, -1, dtype=np.int64),
+        "score":          np.zeros(Q, dtype=np.float32),
+        "n_absorbed":     np.zeros(Q, dtype=np.int64),
+        "runnerup_class": np.full(Q, -1, dtype=np.int64),
+        "runnerup_prob":  np.zeros(Q, dtype=np.float32),
+        "max_pair_iou":   np.zeros(Q, dtype=np.float32),
+    }
+    # Kept-active queries point at themselves even in the no-op paths,
+    # so consumers can always follow winner_idx unconditionally.
+    records["winner_idx"][active] = np.where(active)[0]
+
+    N = int(sp_mask_logits.shape[1])
+    if iou_threshold <= 0.0 or N == 0 or not bool(active.any()):
+        return records, effective_argmax
+
+    with torch.no_grad():
+        binmask = sp_mask_logits > 0.0                      # (Q, N)
+        bm_f = binmask.float()
+        areas = bm_f.sum(dim=1)                             # (Q,)
+        inter = bm_f @ bm_f.t()                             # (Q, Q)
+        union = areas.unsqueeze(0) + areas.unsqueeze(1) - inter
+        iou = (inter / union.clamp(min=1.0)).cpu().numpy()
+        # Panoptic score: class confidence × mean sigmoid over the
+        # query's own binarized mask (0 for empty masks).
+        mask_conf = ((torch.sigmoid(sp_mask_logits) * bm_f).sum(dim=1)
+                     / areas.clamp(min=1.0))
+        score = (torch.as_tensor(
+            np.asarray(cls_max_prob, dtype=np.float32), device=device,
+        ) * mask_conf).cpu().numpy().astype(np.float32)
+    records["score"] = score
+
+    suppressed = records["suppressed"]
+    winner = records["winner_idx"]
+    order = [int(q) for q in np.argsort(-score) if active[q]]
+    for i, q in enumerate(order):
+        if suppressed[q]:
+            continue
+        for r in order[i + 1:]:
+            if suppressed[r]:
+                continue
+            if iou[q, r] >= iou_threshold:
+                suppressed[r] = True
+                winner[r] = q
+                records["n_absorbed"][q] += 1
+                if iou[q, r] > records["max_pair_iou"][q]:
+                    records["max_pair_iou"][q] = iou[q, r]
+
+    # Runner-up record per surviving absorber: highest-prob absorbed
+    # query whose class differs from the winner's (the μ-vs-π ambiguity
+    # tag); falls back to the highest-prob absorbed query outright.
+    eff_np = effective_argmax.cpu().numpy()
+    cls_max_prob = np.asarray(cls_max_prob, dtype=np.float32)
+    for q in np.where(records["n_absorbed"] > 0)[0]:
+        absorbed = np.where(suppressed & (winner == q))[0]
+        diff_cls = absorbed[eff_np[absorbed] != eff_np[q]]
+        pool = diff_cls if diff_cls.size > 0 else absorbed
+        ru = int(pool[np.argmax(cls_max_prob[pool])])
+        records["runnerup_class"][q] = int(eff_np[ru])
+        records["runnerup_prob"][q] = float(cls_max_prob[ru])
+
+    if suppressed.any():
+        effective_argmax_dedup = effective_argmax.clone()
+        effective_argmax_dedup[
+            torch.as_tensor(suppressed, device=device)
+        ] = int(no_object_class_id)
+    else:
+        effective_argmax_dedup = effective_argmax
+    return records, effective_argmax_dedup
+
+
+# ---------------------------------------------------------------------------
 # Misc
 # ---------------------------------------------------------------------------
 
@@ -500,6 +641,7 @@ def stage3_predict_event(
     *,
     class_prob_threshold: float = 0.0,
     coord_scale: float = 179.55,
+    dedup_iou_threshold: float = 0.0,
 ) -> dict:
     """Run the Stage-3 particle segmenter on one event; return a dict
     of numpy arrays / scalars ready to write to HDF5.
@@ -523,6 +665,8 @@ def stage3_predict_event(
                               0.0 = strict argmax (no floor).
         coord_scale:         used to convert coord_norm origin predictions
                               into cm for the diagnostics.
+        dedup_iou_threshold: > 0 enables the query-dedup pass (see
+                              `dedup_queries` / `stage3_predict_event_from_out`).
     """
     with torch.no_grad():
         out = model(batched)
@@ -530,6 +674,7 @@ def stage3_predict_event(
         out, sample, no_object_class_id,
         class_prob_threshold=class_prob_threshold,
         coord_scale=coord_scale,
+        dedup_iou_threshold=dedup_iou_threshold,
     )
 
 
@@ -540,12 +685,21 @@ def stage3_predict_event_from_out(
     *,
     class_prob_threshold: float = 0.0,
     coord_scale: float = 179.55,
+    dedup_iou_threshold: float = 0.0,
     pre_coord_for_affine: Optional[np.ndarray] = None,
     pre_coord_norm_for_affine: Optional[np.ndarray] = None,
 ) -> dict:
     """Same as `stage3_predict_event` but accepts an already-computed
     particle-segmenter output dict. Used by the full-cascade path
     where the model forward has already happened.
+
+    `dedup_iou_threshold` > 0 enables the query-dedup pass (see
+    `dedup_queries`): co-extensive duplicate queries (binarized
+    spacepoint-mask IoU >= threshold) are merged before the per-SP /
+    per-level panoptic assignment, with the merge recorded under
+    `stage3_queries/dedup_*` and the pre-dedup assignment preserved in
+    `stage3/pred_query_nodedup`. 0 (default) = off, schema unchanged
+    except the `stage3_meta/dedup_iou_threshold` attr.
 
     `pre_coord_for_affine` / `pre_coord_norm_for_affine` let the caller
     pass detector-frame coords for affine recovery. In cached mode the
@@ -642,6 +796,30 @@ def stage3_predict_event_from_out(
         if "origin_coord_norm" in g:
             origin_coord_norm_gt[i] = np.asarray(
                 g["origin_coord_norm"], dtype=np.float32)
+
+    # Query dedup (R8): merge co-extensive duplicate queries BEFORE the
+    # panoptic assignment. The pre-dedup assignment is kept for A/B.
+    # `effective_argmax` is replaced by the demoted version, so the
+    # per-SP assignment below AND the per-level assignments further
+    # down all see the deduped query set.
+    dedup_enabled = dedup_iou_threshold > 0.0
+    dedup_records = None
+    pred_query_nodedup = None
+    if dedup_enabled:
+        pred_query_nodedup, _, _ = per_sp_predicted_slice(
+            sp_mask_logits=sp_mask,
+            cls_argmax=effective_argmax,
+            no_object_class_id=no_object_class_id,
+            q_idx_matched=q_idx, k_idx_matched=k_idx,
+            primary_trackid=primary_trackid_gt,
+        )
+        dedup_records, effective_argmax = dedup_queries(
+            sp_mask_logits=sp_mask,
+            effective_argmax=effective_argmax,
+            cls_max_prob=cls_max_prob,
+            no_object_class_id=no_object_class_id,
+            iou_threshold=dedup_iou_threshold,
+        )
 
     # Per-SP panoptic assignment (same rule as slicer)
     pred_query, pred_class, pred_particle_tid = per_sp_predicted_slice(
@@ -840,7 +1018,45 @@ def stage3_predict_event_from_out(
         "stage3_meta/class_prob_threshold": float(class_prob_threshold),
         "stage3_meta/coord_scale": float(coord_scale),
         "stage3_meta/has_gt": int(has_gt),
+        "stage3_meta/dedup_iou_threshold": float(dedup_iou_threshold),
     }
+
+    # Dedup outputs (R8). New keys only — written when dedup is enabled.
+    # `stage3/pred_query` (above) is already the POST-dedup assignment
+    # because `effective_argmax` was replaced before the panoptic argmax.
+    if dedup_enabled:
+        suppressed = dedup_records["suppressed"]
+        winner_idx = dedup_records["winner_idx"]
+        is_active_postdedup = is_active_query & ~suppressed
+        # Redirect each GT's matched query through the winner map so a
+        # matched-but-suppressed query points at its absorber.
+        gt_matched_query_dedup = gt_matched_query.copy()
+        m = gt_matched_query_dedup >= 0
+        gt_matched_query_dedup[m] = np.where(
+            suppressed[gt_matched_query_dedup[m]],
+            winner_idx[gt_matched_query_dedup[m]],
+            gt_matched_query_dedup[m],
+        )
+        out_dict.update({
+            "stage3/pred_query_nodedup": pred_query_nodedup,
+            "stage3_queries/dedup_suppressed": suppressed,
+            "stage3_queries/dedup_winner_idx": winner_idx,
+            "stage3_queries/dedup_score": dedup_records["score"],
+            "stage3_queries/is_active_postdedup":
+                is_active_postdedup.astype(bool),
+            "stage3_queries/dedup_n_absorbed": dedup_records["n_absorbed"],
+            "stage3_queries/dedup_runnerup_class":
+                dedup_records["runnerup_class"],
+            "stage3_queries/dedup_runnerup_prob":
+                dedup_records["runnerup_prob"],
+            "stage3_queries/dedup_max_pair_iou":
+                dedup_records["max_pair_iou"],
+            "stage3_gt/matched_query_dedup": gt_matched_query_dedup,
+            "stage3_meta/n_dedup_suppressed": int(suppressed.sum()),
+            "stage3_meta/n_active_queries_postdedup":
+                int(is_active_postdedup.sum()),
+        })
+
     out_dict.update(levels_payload)
     if levels_payload:
         emitted = sorted({k.split("/")[1] for k in levels_payload})

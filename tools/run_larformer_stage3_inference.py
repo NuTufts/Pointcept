@@ -253,6 +253,7 @@ def run_cached_mode(args):
     coord_scale = float(ds_cfg.get("coord_scale", 179.55))
     print(f"[infer] no_object_class_id={no_object_class_id}  "
           f"class_prob_threshold={args.class_prob_threshold}  "
+          f"dedup_iou_threshold={args.dedup_iou_threshold}  "
           f"coord_scale={coord_scale}")
 
     os.makedirs(args.output_dir, exist_ok=True)
@@ -286,6 +287,7 @@ def run_cached_mode(args):
             model, sample, batched, no_object_class_id,
             class_prob_threshold=args.class_prob_threshold,
             coord_scale=coord_scale,
+            dedup_iou_threshold=args.dedup_iou_threshold,
         )
         if event_data.get("stage3_meta/event_dropped"):
             n_dropped += 1
@@ -371,7 +373,8 @@ def run_full_cascade_mode(args):
     print(f"[infer] slicer no_object={slicer_no_object}  "
           f"ps no_object={ps_no_object}  "
           f"nu_class_id={nu_class_id}  "
-          f"τ_loose={mask_prob_threshold}  recenter={recenter}")
+          f"τ_loose={mask_prob_threshold}  recenter={recenter}  "
+          f"dedup_iou_threshold={args.dedup_iou_threshold}")
 
     os.makedirs(args.output_dir, exist_ok=True)
     n_dropped_slicer = 0
@@ -475,6 +478,7 @@ def run_full_cascade_mode(args):
             ps_out, ps_sample, ps_no_object,
             class_prob_threshold=args.class_prob_threshold,
             coord_scale=coord_scale,
+            dedup_iou_threshold=args.dedup_iou_threshold,
         )
 
         # ---- Merge slicer + stage3 halves and write ----
@@ -546,6 +550,14 @@ def main():
                          "probability per query. Queries below the floor "
                          "are demoted to no_object for the per-SP "
                          "panoptic assignment. 0 = strict argmax.")
+    ap.add_argument("--dedup-iou-threshold", type=float, default=0.6,
+                    help="Query dedup (R8): merge co-extensive duplicate "
+                         "queries whose binarized spacepoint-mask IoU is "
+                         ">= this, before the per-SP panoptic assignment "
+                         "(greedy NMS, higher panoptic score wins; the "
+                         "absorbed query's class hypothesis is recorded "
+                         "under stage3_queries/dedup_*). Targets the "
+                         "mu/pi duplicate-pair failure mode. 0 disables.")
     ap.add_argument("--overwrite", action="store_true",
                     help="Recompute and re-write events whose output "
                          "file already exists.")
