@@ -354,7 +354,7 @@ model = dict(
 train = dict(type="LArFormerTrainer")
 
 hooks = [
-    dict(type="CheckpointLoader"),
+    dict(type="CheckpointLoader",reset_optimizer=True),
     dict(type="IterationTimer", warmup_iter=2),
     dict(type="InformationWriter"),
     dict(type="LArFormerParticleEvaluator",
@@ -375,13 +375,22 @@ hooks = [
     # next job, and exit cleanly before SLURM kills the process.
     dict(type="SignalCheckpointHook", check_every_n_iter=30),
     dict(type="PreciseEvaluator", test_last=False),
+    # Adam state monitor - track momentum/variance growth
+    dict(
+        type="AdamStateMonitor",
+        log_frequency=10,        # Every 100 steps (less frequent, more expensive)
+        prefix="adam_state",
+        track_layers=True,        # Group by layer type (attention, mlp, etc.)
+        track_histograms=False,   # Set True for detailed debugging (expensive)
+        histogram_frequency=500,  # If histograms enabled, log every 500 steps
+    ),
 ]
 
 # =============================================================================
 # Training loop knobs
 # =============================================================================
 weight = None
-save_path        = "exp/larformer_particle_v1_cached_ptv3crosslevel_smallbatch_lr1e4_bugfixed"
+save_path        = "exp/larformer_particle_v1_cached_ptv3crosslevel_smallbatch_lr1e4_bugfixed_resume2B_resetoptim"
 epoch            = 20
 eval_epoch       = 20
 # delta vs v1-cached: PT-v3 decoder is now trained and consumes more
@@ -449,8 +458,8 @@ scheduler = dict(
     # smoothing (raw val_loss tracked, current pre-EMA behavior).
     ema_alpha=0.3,
     # No reset_lr by default — set on resume only.
-    reset_lr=None,
-    reset_counters=False,
+    reset_lr=5.0e-5,
+    reset_counters=True,
 )
 
 # base_lr=2.0e-5
