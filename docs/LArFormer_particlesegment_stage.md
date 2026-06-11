@@ -1,6 +1,12 @@
 # LArFormer Stage 3 — Particle segmenter
 
-**Status:** design / planning. Not yet implemented. Revision 2 (2026-05-30).
+**Status:** IMPLEMENTED and in production training (2026-06-11). §§1–11 are
+the design plan (decisions there held up well); **§13 is the as-built
+record** — start there for what actually exists. The active training
+campaign, its loss-stability analysis, the per-batch diagnostics, and the
+inference-side query dedup live in
+[LArFormer_Stage3_TrainingStability.md](LArFormer_Stage3_TrainingStability.md).
+Project hub: [LArFormer.md](LArFormer.md) §0.
 
 **Scope:** instance segmentation of the spacepoints inside a (model-selected) neutrino slice into individual particles. Same architecture pattern as the Stage-2 event slicer; new decoder / refiner / head weights; GT comes from per-particle truth instead of per-slice truth.
 
@@ -370,6 +376,7 @@ Most of the design choices are now decided. What's still open:
   - Recenter pos_emb input to slice centroid for v1 (§1f); backbone features already carry absolute-position context, so pos_emb's job is to add slice-internal "where am I" information orthogonal to that.
 - **Rev 4 (2026-06-03)**: implementation status — S3.0 through S3.3+S3.6 plumbing landed. See §13 for the as-built design.
 - **Rev 5 (2026-06-08)**: S3.8 inference dump + visualization landed (§13.10). Shared per-event extractor module (`pointcept/models/LArFormer/inference.py`) ensures the slicer's output schema is byte-identical between standalone slicer inference and the slicer half of a full-cascade Stage-3 run. The Stage-3 visualizer (`tools/visualize_stage3_larformer_from_cached.py`) gained a prediction overlay panel with byte-identical color matching to the GT panel, camera sync, side-by-side layout toggle, particle-symbol legend labels, and rich hover text including per-SP query id + full per-class probability distribution.
+- **Rev 6 (2026-06-11)**: status flipped to "implemented / in production training". Added §13.11 (training campaign + loss-stability tracker + inference query dedup — details in [LArFormer_Stage3_TrainingStability.md](LArFormer_Stage3_TrainingStability.md)), §13.12 (validation analysis pipeline), §13.13 (production dataprep workflow). Cross-links to the LArFormer.md §0 project hub.
 
 ---
 
@@ -980,3 +987,56 @@ exposed under the `stage3pred_<basename>.h5` files, a small alias
 (symlink the stage3pred to slicerpred names, or extend the slicer
 viz's filename matcher) is all that's needed if you want
 panoptic-slicer diagnostics on the same events.
+
+### 13.11 Production training campaign + loss-stability work (2026-06)
+
+Documented separately in
+[LArFormer_Stage3_TrainingStability.md](LArFormer_Stage3_TrainingStability.md)
+— kept there because it's an active tracker, not settled design. It
+covers:
+
+- the training-run lineage (`lr1e4_bugfixed` → `resume2` →
+  `resume2B_resetoptim` → `resume3_cosinedecay`, ~22.6k iters/epoch on
+  the iter-75750 Stage-1+2 cache) and the diagnosis of the
+  rising/oscillating mask losses (adaptive hard-negative sampling +
+  Hungarian churn — NOT model degradation; val IoU rises throughout);
+- the mid-run LR-schedule swap machinery (`DelayedCosineLR` +
+  `CheckpointLoader(extend_scheduler=True)` with an
+  `iter_in_epoch`-aware fast-forward);
+- log-only per-batch diagnostics in `LArFormerLoss`
+  (`loss_kwargs.log_diagnostics=True` → `train_batch/loss_diag_*` and
+  `val/loss_diag_*`) plus pre-clip `train_batch/grad_norm`;
+- the dominant prediction failure mode — a μ-classifying + a
+  π-classifying query co-covering one true track and fragmenting it
+  under the panoptic argmax — and the **inference-side query dedup**
+  that fixes it: `dedup_queries` in
+  [`pointcept/models/LArFormer/inference.py`](../pointcept/models/LArFormer/inference.py),
+  exposed as `--dedup-iou-threshold` (default 0.6) on
+  `tools/run_larformer_stage3_inference.py`, with merge tracking under
+  new `stage3_queries/dedup_*` H5 keys (new keys only — the §13.10
+  schema is otherwise unchanged; `stage3/pred_query` becomes the
+  post-dedup assignment and `stage3/pred_query_nodedup` preserves the
+  raw one).
+
+### 13.12 Validation analysis pipeline ✅
+
+[`lartpc_data_prep/larformer_particle_analysis/`](../lartpc_data_prep/larformer_particle_analysis/README.md)
+— split-level efficiency/purity validation on SLURM: per-event
+distillation of `stage3pred_*.h5` into per-pair records
+(`analyze_event.py`), aggregation into the
+`LArFormerParticleEvaluator` scalars plus size-stratified stress
+metrics (`aggregate_metrics.py` → JSON + parquet), and an
+auto-sizing sbatch driver supporting both cached and full-cascade
+input modes (`slurm/submit_valtest.sh` +
+`slurm/run_valtest_per_task.py`). See the README there for the
+output schema and usage.
+
+### 13.13 Production data-prep / inference workflow ✅
+
+[`lartpc_data_prep/larformer_scripts/LARFORMER_DATAPREP.md`](../lartpc_data_prep/larformer_scripts/LARFORMER_DATAPREP.md)
+— the config-driven two-stage pipeline that takes raw
+`merged_dlreco.root` (sim or data) to full-cascade `stage3pred_*.h5`
+without LArMatch/SSNet/lantern: Stage A conversion via
+`SimChTripletLabelMaker`, Stage B `CascadedParticleSegmenter`
+inference, plus `tools/visualize_full_cascade.py` for camera-synced
+prediction-vs-truth event displays.

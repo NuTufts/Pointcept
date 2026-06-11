@@ -1,6 +1,20 @@
 # Event Slicer Spec
 
-This discribes background information, model design, and plan for developing an event slicer for MicroBooNE events based
+**Status (2026-06-11):** this is the original pre-implementation spec for
+the Stage-2 event slicer; it remains the reference for the physics
+background, the slice ground-truth definition, the per-entry/flash H5 data
+schemas, and the flash-matching design. **What got built:** the slicer was
+implemented as LArFormer Stage 2 (mask + per-level cls + query CE — see
+[LArFormer.md](LArFormer.md) §0 for the project hub and current state) and
+trained via the `larformer-slicer-v1-cascaded*` config family; the
+ptv3hybrid-crosslevel variant is the production checkpoint feeding Stage 3.
+**What did NOT get built (yet):** the flash-match loss and the
+Sinkhorn/Hungarian cluster↔flash assignment described below — nu-slice
+selection in the trained model comes from the query class head alone. The
+charge-to-flash predictor, PhotonLib cache, and flash H5 prep described
+here exist and remain usable when that loss is picked back up.
+
+This describes background information, model design, and plan for developing an event slicer for MicroBooNE events based
 around the Sonata pre-trained backbone.
 
 At its core, the event slicer is essentially an instance segmentation problem. 

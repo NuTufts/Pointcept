@@ -10,7 +10,11 @@ deghoster (cascade Stage 1) does the deghosting, so the 3D spacepoints come
 straight from the `SimChTripletLabelMaker` triplet proposals.
 
 See the model design in [`../../docs/LArFormer.md`](../../docs/LArFormer.md)
-and [`../../docs/LArFormer_particlesegment_stage.md`](../../docs/LArFormer_particlesegment_stage.md).
+(§0 is the project hub) and
+[`../../docs/LArFormer_particlesegment_stage.md`](../../docs/LArFormer_particlesegment_stage.md).
+For split-level validation metrics on the resulting `stage3pred_*.h5`
+files, see
+[`../larformer_particle_analysis/README.md`](../larformer_particle_analysis/README.md).
 
 ---
 
@@ -60,6 +64,15 @@ stage3_levels/ stage3_meta/`). Visualize with
 
 Config: [`../../configs/lartpc/larformer-particle-fullcascade-ptv3crosslevel.py`](../../configs/lartpc/larformer-particle-fullcascade-ptv3crosslevel.py)
 (derived from the trained cached config `larformer-particle-v1-cached-ptv3crosslevel.py`).
+
+**Query dedup (2026-06-11).** `run_larformer_stage3_inference.py` now
+applies a mask-IoU NMS over the Stage-3 queries by default
+(`--dedup-iou-threshold 0.6`; `0` disables): co-extensive duplicate
+queries — characteristically a μ + π pair hedging one ambiguous track —
+are merged before the per-SP panoptic assignment, with the absorbed
+query's class hypothesis recorded under `stage3_queries/dedup_*` and the
+pre-dedup assignment preserved in `stage3/pred_query_nodedup`. Design +
+schema: [`../../docs/LArFormer_Stage3_TrainingStability.md`](../../docs/LArFormer_Stage3_TrainingStability.md) §7.
 
 ### Visualizing the output
 

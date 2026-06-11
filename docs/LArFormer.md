@@ -1,11 +1,125 @@
-# LArFormer — Design and Implementation Plan
+# LArFormer — Project Hub, Design Notes & History
 
-**Status:** P1–P6 implemented (scaffold → multi-level voxel → fragment builder → `LArFormerDataset` + GT visualizer → Stage-1 deghoster → Stage-2 cascaded slicer). Currently in slicer-debug iteration on a 10-event dev sample; see §15. A **`TokenRefiner`** abstraction (§16) was added to sit between the tokenizer and the decoder so multi-scale feature refinement can be ablated independently of the rest of the pipeline. P7 (particle clusterer) not started.
+**Status (2026-06-11):** all three cascade stages are implemented and trained;
+Stage 3 (particle segmenter) is in an active production training campaign and
+the full deghost → slice → particle-segment cascade runs end-to-end on raw
+detector files. See §0 for the current state, the documentation map, and the
+code map. §§1–14 are the original design reference (still accurate for the
+core abstractions); §§15–18 are dated design-iteration records kept as
+history.
 **Owner:** taritree.wongjirad@tufts.edu
 **Generalizes:** [`ShowerClusteringMask2Former`](../pointcept/models/shower_clustering/model.py) (kept frozen for the trained shower-origin pipeline).
 **Lives at:** `pointcept/models/LArFormer/`.
 
-This document is the living design reference. Update as decisions change or phases complete.
+---
+
+## 0. Current state, documentation map, code map (START HERE)
+
+### 0a. The cascade at a glance
+
+Three independently-trained stages, chained at inference
+(`CascadedParticleSegmenter` = `CascadedSlicer` (deghost + slice) +
+Stage-3 `LArFormer`):
+
+| Stage | Task | Model | Status |
+|---|---|---|---|
+| 1 | Deghost (per-SP real/ghost) | [`SonataLoRADeghostSegmentor`](../pointcept/models/lora_sonata_deghost.py) (LoRA-finetuned Sonata) | **Trained**, frozen in the cascade. (A LArFormer-flavored alternative exists: `larformer-deghost-v0*.py`.) |
+| 2 | Event slicing (cosmic slices + nu slice) | `LArFormer` slicer, ptv3hybrid-crosslevel variant | **Trained.** The iter-75750 checkpoint built the Stage-1+2 training cache for Stage 3 (note: that exact ckpt is not in this tree; see [LARFORMER_DATAPREP.md](../lartpc_data_prep/larformer_scripts/LARFORMER_DATAPREP.md) "checkpoint provenance"). |
+| 3 | Particle instance segmentation of the nu slice (7-class + per-query origin point) | `LArFormer` particle segmenter, ptv3crosslevel variant | **In production training** (active config: [`larformer-particle-v1-cached-ptv3crosslevel-decaylrsched.py`](../configs/lartpc/larformer-particle-v1-cached-ptv3crosslevel-decaylrsched.py), run `resume3_cosinedecay`). val `mask_iou_mean` ≈ 0.69, matched-origin L2 ≈ 10–13 cm and improving. |
+
+Stage-3 training run lineage (all wandb `pointcept-larformer-stage3`):
+`..._lr1e4_bugfixed` (flat 1e-4) → `..._resume2` (LR cut to 5e-5) →
+`..._resume2B_resetoptim` (optimizer reset — shown to be a no-op) →
+`..._resume3_cosinedecay` (**active**: cosine decay 5e-5 → 1e-6 + per-batch
+diagnostic logging). The loss-instability analysis that drove these is in
+[LArFormer_Stage3_TrainingStability.md](LArFormer_Stage3_TrainingStability.md)
+— short version: the rising/oscillating train loss is an artifact of
+adaptive hard-negative sampling + Hungarian-assignment churn, not model
+degradation; val IoU rises throughout. The dominant *prediction* error is a
+μ/π duplicate-query pair fragmenting a single track; an inference-side
+mask-IoU dedup (with merge tracking) addresses it (stability doc §7).
+
+### 0b. Documentation map
+
+| Doc | Covers |
+|---|---|
+| **this file** (`docs/LArFormer.md`) | Core abstractions (levels, builders, scale patterns, supervision, cascade), file/config/tool maps, design history §§15–18 |
+| [`docs/Event_Slicer_Spec.md`](Event_Slicer_Spec.md) | Stage-2 slicer: physics background, data schema, flash-matching design (flash-match loss **not implemented**; mask+cls slicer is) |
+| [`docs/LArFormer_particlesegment_stage.md`](LArFormer_particlesegment_stage.md) | Stage 3: GT definition, cascade conditioning, loss budget, **as-built implementation status (§13)** — the most detailed per-file record |
+| [`docs/LArFormer_Stage3_TrainingStability.md`](LArFormer_Stage3_TrainingStability.md) | Stage-3 training-loss diagnosis; LR-schedule swap (`DelayedCosineLR`); per-batch probe diagnostics (`loss_diag_*`, `grad_norm`); inference query dedup (R8); recommendation tracker |
+| [`lartpc_data_prep/larformer_scripts/LARFORMER_DATAPREP.md`](../lartpc_data_prep/larformer_scripts/LARFORMER_DATAPREP.md) | **Production inference workflow**: `merged_dlreco.root` → per-event H5 → full-cascade `stage3pred_*.h5`, config-driven, SLURM-ready |
+| [`lartpc_data_prep/larformer_particle_analysis/README.md`](../lartpc_data_prep/larformer_particle_analysis/README.md) | Stage-3 val/test analysis: per-event distill + metric aggregation (evaluator scalars + size-stratified extras) on SLURM |
+| [`lartpc_data_prep/larformer_analysis/README.md`](../lartpc_data_prep/larformer_analysis/README.md) | Stage-2 slicer val/test analysis (same pattern) |
+| [`docs/LArTPC_HDF5_Data_Format.md`](LArTPC_HDF5_Data_Format.md) | Per-spacepoint truth fields used as `label_src` values |
+| [`docs/shower_clustering_design.md`](shower_clustering_design.md) | Predecessor architecture LArFormer generalizes |
+
+### 0c. Code map
+
+```
+pointcept/models/LArFormer/
+├── model.py                  # LArFormer top-level: backbone → tokenizer → refiner →
+│                             #   decoder → per-level cls heads → loss; NaN-guard hooks;
+│                             #   PTv3-decoder-stage capture; mixed-query + DN wiring
+├── tokenizer.py              # CompositeTokenizer (one LevelBuilder per level)
+├── decoder.py                # Mask2FormerDecoder (named-scale rotation, masked attn,
+│                             #   per-layer heads incl. origin; sinusoidal/MLP pos-emb)
+├── losses.py                 # LArFormerLoss: Hungarian set loss + per-level aux mask/cls,
+│                             #   importance/hard-neg sampling, DN loss, log_diagnostics probes
+├── matcher.py                # HungarianMatcher (sampled mask+dice+cls+origin cost)
+├── heads.py                  # PerTokenClsHead
+├── query_selection.py        # MixedQuerySelector (top-M-by-cls-score → FPS anchors)
+├── query_denoising.py        # MaskDenoiser (Mask-DINO-style DN queries + attn mask)
+├── trainer.py                # LArFormerTrainer (larformer_collate; optional dual-DN loader)
+├── evaluator.py              # base eval hook (slicer)
+├── particle_evaluator.py     # LArFormerParticleEvaluator (Stage-3 val metrics)
+├── inference.py              # shared per-event extraction + panoptic assignment +
+│                             #   query dedup (dedup_queries) + H5 read/write schema
+├── viz_inference.py          # shared plotly figure/color helpers for the visualizers
+├── cascaded.py               # CascadedSlicer (Stage 1+2 wrapper)
+├── cascade_filter.py         # deghost-threshold batch filtering helpers
+├── cascaded_particle.py      # CascadedParticleSegmenter (Stage 1+2+3 wrapper)
+├── cascade_particle_filter.py# nu-mask keep + Stage-3 batch filtering / recentering
+├── builders/                 # LevelBuilder registry: spacepoint, voxel, fragment,
+│                             #   ptv3_decoder_stage (PTv3DecoderStageLevel)
+└── refiners/                 # TokenRefiner registry: Identity, PerLevelSelfAttn,
+                              #   CrossLevelAttn (+ shared pos-emb builders)
+
+pointcept/datasets/
+├── larformer.py              # LArFormerDataset (gt_source = slice/particle/deghost/
+│                             #   shower_trunk) + larformer_collate
+└── larformer_stage12_cache.py# LArFormerStage12CacheDataset — reads per-event Stage-1+2
+                              #   cache H5s (the Stage-3 production training input)
+
+pointcept/utils/scheduler.py  # incl. FlatWithDecayLR + DelayedCosineLR (mid-run swap)
+pointcept/engines/hooks/misc.py # CheckpointLoader (extend_scheduler, iter_in_epoch-aware
+                              #   fast-forward), IterCheckpointSaver, SignalCheckpointHook,
+                              #   LREpochScheduler, AdamStateMonitor
+```
+
+**Configs** (`configs/lartpc/`): deghoster — `larformer-deghost-v0*.py`,
+`lorafinetune-sonata-*-deghost*.py`; slicer — the
+`larformer-slicer-v1-cascaded*.py` family (refiner/backbone ablations;
+`-ptv3hybrid-crosslevel` is the trained production variant); Stage 3 —
+`larformer-particle-v1.py` (model-side cascade),
+`larformer-particle-v1-cached.py` / `-cached-ptv3crosslevel.py` (cache-fed
+training), **`-cached-ptv3crosslevel-decaylrsched.py` (active run)**,
+`larformer-particle-v1.1-cached-ptv3crosslevel.py` (next iteration: pruned
+level pyramid + dec1, particle-truth `soft_presence` cls supervision, aligned
+query-selection source level), and
+`larformer-particle-fullcascade-ptv3crosslevel.py` (full-cascade inference).
+
+**Tools** (`tools/`): cache building —
+`build_stage12_cache_shard.py` / `build_stage12_cache_event.py`,
+`augment_stage12_cache_particle_class_id.py`; inference —
+`run_slicer_inference.py`, `run_larformer_stage3_inference.py` (cached +
+full-cascade modes, `--dedup-iou-threshold`); visualization —
+`visualize_larformer_gt.py`, `visualize_stage12_cache.py`,
+`visualize_stage3_larformer_from_cached.py`, `visualize_full_cascade.py`;
+diagnostics — `measure_merger_rates.py`, `measure_overclaim.py`,
+`benchmark_larformer_s3_cascade.py`; per-phase smoke tests —
+`smoke_test_larformer_p{2..8}*.py`, `smoke_test_larformer_s3_cascade.py`.
+Unit tests live in `tests/` (`test_delayed_cosine_lr.py`,
+`test_larformer_diagnostics.py`, `test_stage3_dedup.py`).
 
 ---
 
@@ -234,7 +348,7 @@ Open spec, expected to land per-stage as the cascade is built:
 Two cascade variants exist:
 
 - [`larformer-slicer-v1-cascaded.py`](../configs/lartpc/larformer-slicer-v1-cascaded.py) — LArFormer-flavored Stage-1 deghoster (per-token cls on the spacepoint level, class 1 = real). The deghoster is a separately-trained `LArFormer` checkpoint produced from [`larformer-deghost-v0.py`](../configs/lartpc/larformer-deghost-v0.py).
-- [`larformer-slicer-v1-cascaded-loradeghost.py`](../configs/lartpc/larformer-slicer-v1-cascaded-loradeghost.py) — uses the existing trained [`SonataLoRADeghostSegmentor`](../pointcept/models/sonata_lora_deghost.py) as Stage 1 (LoRA-finetuned Sonata-v1m1, class 0 = real via the HasmatchAsGhost convention). `CascadedSlicer._run_deghoster_p_real` accepts either output convention and picks the right softmax column based on `deghoster_class_index_real` on the cascade config. **This is the active variant for the current debug effort** because the LoRA deghoster is already trained and gives `real_recall=0.65` / `ghost_reject=0.83` at τ=0.5 on the dev sample.
+- [`larformer-slicer-v1-cascaded-loradeghost.py`](../configs/lartpc/larformer-slicer-v1-cascaded-loradeghost.py) — uses the existing trained [`SonataLoRADeghostSegmentor`](../pointcept/models/lora_sonata_deghost.py) as Stage 1 (LoRA-finetuned Sonata-v1m1, class 0 = real via the HasmatchAsGhost convention). `CascadedSlicer._run_deghoster_p_real` accepts either output convention and picks the right softmax column based on `deghoster_class_index_real` on the cascade config. **This is the active variant for the current debug effort** because the LoRA deghoster is already trained and gives `real_recall=0.65` / `ghost_reject=0.83` at τ=0.5 on the dev sample.
 
 ---
 
@@ -273,30 +387,16 @@ v1: take the backbone via subconfig and build it through `MODELS.register_module
 
 ## 9. File layout
 
-```
-pointcept/models/LArFormer/
-├── __init__.py
-├── model.py                # LArFormer top-level (analog of ShowerClusteringMask2Former)
-├── tokenizer.py            # CompositeTokenizer: iterates builders, returns Level list
-├── decoder.py              # Mask2FormerDecoder generalized to named levels
-├── losses.py               # LArFormerLoss generalized to per-level supervision
-├── matcher.py              # HungarianMatcher (lifted, parameterized by primary level)
-├── heads.py                # PerTokenClsHead, FlashMatchHead (stub for slicer)
-└── builders/
-    ├── __init__.py         # BUILDERS registry + Level dataclass
-    ├── base.py             # LevelBuilder ABC; Level / LevelOutput dataclasses
-    ├── spacepoint.py       # SpacepointBuilder (identity)
-    ├── voxel.py            # VoxelBuilder (model-side voxelization)
-    └── fragment.py         # FragmentBuilder (reuses FragmentPool/Enricher)
+**Superseded — see §0c for the current, complete code map.** (The module
+grew well past the v1 layout originally listed here: cascade wrappers,
+query selection/denoising, trainer/evaluators, the shared inference module,
+refiners, and the Stage-1+2 cache dataset.)
 
-pointcept/datasets/
-└── larformer.py            # LArFormerDataset + larformer_collate
-
-tools/
-└── visualize_larformer_gt.py   # config-driven GT visualizer (see §11)
-```
-
-Existing `pointcept/models/shower_clustering/` and `pointcept/datasets/shower_clustering.py` are not touched in v1. LArFormer is self-contained — no imports from `shower_clustering/` (the fragment pool / content enricher are copied into `builders/fragment.py`).
+Original v1 design constraint, still honored: `pointcept/models/
+shower_clustering/` and `pointcept/datasets/shower_clustering.py` are not
+touched. LArFormer is self-contained — no imports from `shower_clustering/`
+(the fragment pool / content enricher were copied into
+`builders/fragment.py`).
 
 ---
 
@@ -419,15 +519,22 @@ Each phase ends with a runnable training config and at least one overfit / sanit
 | **P3 — Fragment builder** | Port `FragmentPool` + content enricher into `builders/fragment.py`; reproduce `ShowerClusteringMask2Former` behavior | **Done** | Smoke test in `smoke_test_larformer_p3.py`. |
 | **P4 — `LArFormerDataset`** | Pluggable `gt_source`; slice GT via `slice_labels.py`; collate handles optional fragments | **Done** | `gt_source="slice"` + `"shower_trunk"` + `"deghost"` all working. `gt_source="particle"` (P7) raises `NotImplementedError`. |
 | **P4b — GT visualizer** | Extract `build_levels` + `build_per_level_gt` into pure helpers (§11); wire `tools/visualize_larformer_gt.py` | **Done** | Visualizer at [`tools/visualize_larformer_gt.py`](../tools/visualize_larformer_gt.py), extended in v1 with a prediction-panel mode (see §15). |
-| **P5 — Stage 1: deghoster** | Per-level cls head on the spacepoint level; train on `hasmatch` | **Done (LArFormer flavor); LoRA variant adopted for cascade** | Both [`larformer-deghost-v0.py`](../configs/lartpc/larformer-deghost-v0.py) (LArFormer-flavored) and the LoRA-finetuned [`SonataLoRADeghostSegmentor`](../pointcept/models/sonata_lora_deghost.py) work as Stage 1. v1 cascade defaults to the LoRA variant (see §6 implementation note). |
-| **P6 — Stage 2: slicer** | Slicer config, frozen Stage 1 wired in-model via `CascadedSlicer`, query-set predicts slices | **Done (architecture); in active debug** | Trains end-to-end and reaches `nu_mIoU=0.67 / cosmic_mIoU=0.47 / mIoU=0.48` on a 10-event dev sample before plateauing — see §15 for the open failure mode and the toggles being tried against it. Flash-match loss still not wired (out of v1 scope). |
-| **P7 — Stage 3: particle clusterer** | Particle config, frozen stages 1+2 in the dataset wrapper | **Not started** | Blocked on P6 reaching usable val mIoU. |
+| **P5 — Stage 1: deghoster** | Per-level cls head on the spacepoint level; train on `hasmatch` | **Done (LArFormer flavor); LoRA variant adopted for cascade** | Both [`larformer-deghost-v0.py`](../configs/lartpc/larformer-deghost-v0.py) (LArFormer-flavored) and the LoRA-finetuned [`SonataLoRADeghostSegmentor`](../pointcept/models/lora_sonata_deghost.py) work as Stage 1. v1 cascade defaults to the LoRA variant (see §6 implementation note). |
+| **P6 — Stage 2: slicer** | Slicer config, frozen Stage 1 wired in-model via `CascadedSlicer`, query-set predicts slices | **Done — trained** | Debug history in §15 (the mirror-merge pathology drove §§16–18: TokenRefiner, mixed query selection, mask denoising). Production variant: `larformer-slicer-v1-cascaded-ptv3hybrid-crosslevel.py`; the iter-75750 checkpoint built the Stage-3 training cache. Flash-match loss still not wired (out of v1 scope; see Event_Slicer_Spec.md). |
+| **P7 — Stage 3: particle clusterer** | Particle config, frozen stages 1+2 (model-side cascade + cached training path) | **Done — in production training** | Full design + as-built record: [LArFormer_particlesegment_stage.md](LArFormer_particlesegment_stage.md) §13. Training campaign + open issues: [LArFormer_Stage3_TrainingStability.md](LArFormer_Stage3_TrainingStability.md). See §0a for the run lineage. |
 
 Phases 1–4 are model + dataset plumbing and can be done without committing to any downstream task. Phases 5–7 are the cascade itself and depend on having sufficient training data and the upstream stages working.
 
 ---
 
-## 15. Current state (slicer-debug, 2026-05-21)
+## 15. Slicer-debug snapshot (2026-05-21) — HISTORICAL
+
+> Kept as the record of the debug iteration that motivated §§16–18. The
+> slicer has since been trained to production (see §0a); for *current*
+> status always start at §0. Note for posterity: the duplicate-query
+> failure mode dissected here for the slicer reappeared in Stage 3 as
+> μ/π duplicate pairs — see
+> [LArFormer_Stage3_TrainingStability.md](LArFormer_Stage3_TrainingStability.md) §7.
 
 ### Setup
 
@@ -758,6 +865,9 @@ The ctor enforces that `mixed_query_selection` is also enabled — otherwise `se
 
 ## 19. References
 
+- **Topic docs for this project — see the table in §0b** (slicer spec,
+  Stage-3 design/as-built, training stability, production dataprep
+  workflow, analysis pipelines).
 - Existing model being generalized:
   [`pointcept/models/shower_clustering/`](../pointcept/models/shower_clustering/) — model / tokenizer / decoder / losses / matcher.
 - Existing dataset being extended:
