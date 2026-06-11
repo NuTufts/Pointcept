@@ -1,6 +1,6 @@
 # LArFormer Analysis
 
-The scripts in this folder are meant to evaluate the potential usefulness of the LArFormer model for MicroBooNE analyses.
+The scripts in this folder are meant to evaluate the potential usefulness of the LArFormer Event Slicer model for MicroBooNE analyses.
 
 One of the key steps in the analysis chain is the selection of the neutrino interaction slice.
 

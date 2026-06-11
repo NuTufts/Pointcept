@@ -6,6 +6,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Pointcept is a codebase for point cloud perception research, supporting semantic/instance segmentation and pre-training methods. This fork (nutufts_lartpc branch) extends it for Liquid Argon Time Projection Chamber (LArTPC) particle physics data.
 
+The Primary Models we are developing/training are:
+
+- the Sonata model to learn reusable representations for LArTPC data represented as space points
+- the LArFormer model to find cosmic and neutrino interactions. For neutrino interactions, to also parse the interaction into individual particles. See `docs/LArFormer.md`.
+
 ## Common Commands
 
 ### Training
@@ -121,3 +126,14 @@ data/lartpc/
 - `grid_size` must be consistent across train/val/test transforms
 - `num_classes` must match dataset class count
 - `coord_scale` in LArTPCDataset (0.001 converts mm to m)
+
+## Container Environment
+
+The code in this repository is assumed to be run within a singularity/apptainer container environment.
+
+- When on the Tufts cluster, use `run_in_tufts_pointcept_container.sh`
+- When on the local machine use `run_in_local_pointcept_container.sh`
+
+## Data set Information
+
+- MicroBooNE datasets on the Tufts cluster are described in `docs/MicroBooNE_Datasets_on_Tufts.md`
