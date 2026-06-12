@@ -99,6 +99,7 @@ del _larformer_particle_evaluator_module
 # warmup comment. Verified against the saved scheduler counter:
 # checkpoints store last_epoch == epoch * 22588 + iter_in_epoch exactly.
 RESUME_CHECKPOINT = (
+  "/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept/"
     "exp/larformer_particle_v1_cached_ptv3crosslevel_smallbatch_lr1e4_"
     "bugfixed_resume2/model_iter_131140.pth"
 )

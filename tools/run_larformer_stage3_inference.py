@@ -379,6 +379,7 @@ def run_full_cascade_mode(args):
     os.makedirs(args.output_dir, exist_ok=True)
     n_dropped_slicer = 0
     n_dropped_stage3 = 0
+    n_dropped_oom = 0
     for ev_idx in range(n_events):
         sample = dataset[ev_idx]
         in_name = sample.get("name", f"event{ev_idx:06d}.h5")
@@ -389,12 +390,29 @@ def run_full_cascade_mode(args):
                   f"{os.path.basename(out_path)}")
             continue
 
+        # Proactively release cached blocks between events to limit fragmentation
+        # (the equivalent of Pointcept's Tester empty_cache=True, which this custom
+        # loop does not go through). Cheap insurance against OOM on small GPUs.
+        if args.device == "cuda":
+            torch.cuda.empty_cache()
+
         batched = larformer_collate([sample])
         batched = _move_batch(batched, args.device)
 
         # ---- Stage 1+2 forward (WITH gt for matching diagnostics) ----
-        with torch.no_grad():
-            slicer_out = cascaded_slicer(batched)
+        # Per-event OOM guard: a single large/busy event must not crash the whole
+        # run (esp. on 16 GB P100s). Skip the event, free cache, continue.
+        try:
+            with torch.no_grad():
+                slicer_out = cascaded_slicer(batched)
+        except RuntimeError as ex:
+            if "out of memory" not in str(ex).lower():
+                raise
+            del batched
+            torch.cuda.empty_cache()
+            n_dropped_oom += 1
+            print(f"[{ev_idx+1:4d}/{n_events}] {in_name:50s}  OOM (stage1/2) — skipped")
+            continue
         slicer_event_data = slicer_predict_event_from_out(
             slicer_out, sample, slicer_no_object,
         )
@@ -465,8 +483,17 @@ def run_full_cascade_mode(args):
             continue
 
         # ---- Stage 3 forward ----
-        with torch.no_grad():
-            ps_out = ps_inner(ps_batch)
+        try:
+            with torch.no_grad():
+                ps_out = ps_inner(ps_batch)
+        except RuntimeError as ex:
+            if "out of memory" not in str(ex).lower():
+                raise
+            del batched, ps_batch
+            torch.cuda.empty_cache()
+            n_dropped_oom += 1
+            print(f"[{ev_idx+1:4d}/{n_events}] {in_name:50s}  OOM (stage3) — skipped")
+            continue
         ps_sample = _unpack_ps_sample(ps_batch)
         # Preserve identity info so the per-event H5 records the input
         # event's run/subrun/event/name in BOTH halves.
@@ -503,7 +530,8 @@ def run_full_cascade_mode(args):
 
     print(f"\n[infer] Done. Wrote stage3pred files to {args.output_dir}  "
           f"(slicer-dropped {n_dropped_slicer}, "
-          f"stage3-dropped {n_dropped_stage3} of {n_events})")
+          f"stage3-dropped {n_dropped_stage3}, "
+          f"OOM-skipped {n_dropped_oom} of {n_events})")
 
 
 # ---------------------------------------------------------------------------

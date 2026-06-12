@@ -410,16 +410,16 @@ scheduler = dict(
     gamma=0.5,
     min_lr=5e-8,
     step_period_epochs=50,
-    patience_epochs=4,
+    patience_epochs=2,
     min_delta=1e-4,
-    cooldown_epochs=2,
+    cooldown_epochs=1,
     # Linear warmup over the first 500 training iters (~100 epochs on the
     # 10-event dev sample at batch_size=2). PTv3 decoder + refiner +
     # Mask2Former decoder all initialize randomly here — gradients in the
     # first ~50 iters are noisy enough to spike the loss curve, so we
     # don't want the plateau detector touching anything during that
     # phase. step_epoch is a no-op while in warmup (counters frozen).
-    warmup_iters=16250, # 1 epoch of warm up
+    warmup_iters=25625, # 1 epoch of warm up (410k/16)
     warmup_start_lr=0.0,
     # EMA over the val/loss for plateau detection. A single lucky-low
     # raw val_loss (which fluctuates a few % epoch-to-epoch on this

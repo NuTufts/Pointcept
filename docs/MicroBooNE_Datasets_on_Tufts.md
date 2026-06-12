@@ -185,11 +185,73 @@ We have developed classes to help parse the simulation true information in the M
 
 See the `SimChTripletLabelMaker` class in `ubdl/larflow/larflow/PrepFlowMatchData/SimChTripletLabelMaker.h`.
 
-TODO: Summarize what this class does. List the TTrees it loads and the classes it uses to organize the data.
+**What it does.** `SimChTripletLabelMaker` turns a merged file into the labeled
+**3D spacepoint ("triplet") training data** used throughout this project. A
+"triplet" is a 3-plane-consistent combination of wire-plane pixels that defines
+one 3D point. The class builds those points from the wire images, attaches
+truth (which true particle made each point, its PDG, its origin), and exports
+per-event HDF5. It is the truth maker behind both the shower-origin and LArFormer
+H5 inputs.
+
+**Inputs.** `process(larlite::storage_manager& ioll, larcv::IOManager& iolcv)`
+reads:
+- from **larcv** (`iolcv`): the wire-plane ADC `image2d` (tree set by
+  `set_adc_treename`, default `wiremc`; use `wire` for older/official data).
+- from **larlite** (`ioll`): the **sim channels** (`simch`, true ionization per
+  wire/tick) and the truth particle trees **`mctrack`/`mcshower` (`mcreco`)** and
+  **`mctruth` (`generator`)**.
+
+**Helper algorithms it composes** (members in the header):
+- `PrepMatchTriplets` — builds the 3D points from the three wire images.
+- `MCPixelLabelMaker` — builds truth pixel/point labels from `simch`.
+- `MCParticleGraph` — organizes the true particles into a graph (see below).
+- `MCKeypointMaker` — makes keypoint (vertex/track-end/shower-start) labels.
+- `ShowerFragmentOriginMaker` — shower-fragment + shower-origin training labels.
+
+**Output (HDF5, per event).** `export_as_hdf` / `save_entry*` write a
+`triplet_data` group (`pos`, `pixval`, `uwire/vwire/ywire`, `tick`, `trackid`,
+`pid`, `origin`, `hasmatch` = real(1)/ghost(0), `ssnet_label`, …), an
+`mc_particle_tree` group (the MCParticleGraph), and keypoint/shower-fragment
+labels. See [`LArTPC_HDF5_Data_Format.md`](LArTPC_HDF5_Data_Format.md) and
+[`LArTPC_Dataset_Guide.md`](LArTPC_Dataset_Guide.md) for the on-disk schema, and
+`larformer_scripts/LARFORMER_DATAPREP.md` for the LArFormer variant.
+
+**Mode flags.** `set_is_data()` / `set_is_mc()`; `process_mcc9_sim()` (set for
+the **older official MCC9 files** — gets truth from `PrepMatchTriplets` because
+the simch/format differs); `set_adc_treename("wire"|"wiremc")`.
 
 If interested in the simulation meta data, i.e. the particles in the simulation, and not how they relate to the image or spacepoint data, one can use the class `MCParticleGraph` (header in `ubdl/ublarcvapp/ublarcvapp/MCTools/MCParticleGraph.h`) to collect the various truth information in the larlite data TTrees.
 
-TODO: Provide more information on how to load the truth information using `MCParticleGraph` here.
+**Loading truth with `MCParticleGraph`.** Build the graph from a larlite
+`storage_manager` positioned at an entry, then walk the nodes:
+
+```python
+from ublarcvapp import ublarcvapp
+mcpg = ublarcvapp.mctools.MCParticleGraph()
+mcpg.buildgraph(ioll)              # ioll = larlite storage_manager after go_to(ientry)
+for node in mcpg.node_v:
+    node.pid                       # PDG code
+    node.tid, node.aid, node.mtid  # geant4 trackid, ancestor tid, mother tid
+    node.origin                    # 1 = neutrino, 2 = cosmic, 0/-1 = unassigned
+    node.E_MeV                     # energy (MeV)
+    node.process                   # creating process (e.g. 'primary', 'Decay')
+    node.start                     # (x,y,z,t) true start, before SCE
+    node.first_edep_pos            # first step depositing energy in the cryostat
+    node.first_tpc_pos             # first step inside the TPC (image-visible)
+    node.mom4                      # (E, px, py, pz)
+    node.daughter_v                # child nodes (full decay/interaction tree)
+```
+
+Convenience accessors: `getNeutrinoPrimaryParticles(exclude_neutrons)`,
+`getPrimaryParticles(exclude_neutrons)`, `getParticleID(trackid)`,
+`printGraph(rootnode, visible_only)`. Each `MCPGNode` also has a `type`
+(0=track, 1=shower, 2=nu-vertex, 3=genie final-state).
+
+> The `origin` field (neutrino vs cosmic) is the key advantage of the official
+> files over the flat ntuples: for a **cosmics-included** sample it lets you
+> separate ν-induced from cosmic particles directly. (In an *overlay* sample the
+> flat-ntuple truth arrays already contain only ν particles — see
+> [`Gen2_Flat_Ntuple_Spec.md`](Gen2_Flat_Ntuple_Spec.md).)
 
 ## Flattened Ntuple Datasets
 
@@ -209,6 +271,15 @@ Each file has two TTree objects:
 - potTree: For simulation datasets, this tree contains the simulated livetime of the dataset in terms of protons on target (POT). It has the POT for each file in the simulated dataset. To get the total POT, the `totGoodPOT` branch should be summed across all entries.
 
 The list of branches in the ntuple and their description can be found in the [gen2ntuple repository README](https://github.com/NuTufts/gen2ntuple/blob/main/README.md).
+
+For a practical parsing spec — the event-loop idiom, the `truePrimPart` vs
+`trueSimPart` distinction, unit gotchas (MeV vs GeV), the pre-applied Wire-Cell
+fiducial filter, the overlay→ν-only-truth fact, POT normalization, and how to map
+an ntuple event back to its official file via `(run,subrun,event)` /
+`larlite_id_tree` — see [`Gen2_Flat_Ntuple_Spec.md`](Gen2_Flat_Ntuple_Spec.md).
+
+For submitting/monitoring the cluster jobs that process these datasets, see
+[`Tufts_SLURM_Job_Guide.md`](Tufts_SLURM_Job_Guide.md).
 
 
 

@@ -83,7 +83,10 @@ particle_segmenter_weight = _env(
 # =============================================================================
 coord_center = (125.0, 0.0, 518.0)
 coord_scale  = 179.55
-flash_backend = "flash_attn"
+# Attention backend, env-overridable (same pattern as the checkpoints above).
+# Default "flash_attn" for Ampere+ (A100/H100/H200). P100 (Pascal) has no
+# flash-attn kernel -> set LARFORMER_FLASH_BACKEND=xformers for those nodes.
+flash_backend = _env("LARFORMER_FLASH_BACKEND", "flash_attn")
 
 STAGE3_NUM_QUERIES = 32
 STAGE3_NUM_CLASSES = 8           # e±, γ, μ±, π±, p, other, (unused), no_object
