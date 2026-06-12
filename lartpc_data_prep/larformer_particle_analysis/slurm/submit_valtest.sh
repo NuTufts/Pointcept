@@ -84,11 +84,13 @@ if [ -z "${SLURM_ARRAY_TASK_ID:-}" ] && [ -z "${VALTEST_RESUBMITTED:-}" ]; then
     echo "  partition  = ${SBATCH_PARTITION}"
     echo "  time       = ${SBATCH_TIME}"
 
-    exec sbatch \
-        --job-name="valtest_s3_${TAG}" \
-        --array=0-${LAST_TASK} \
-        --partition="${SBATCH_PARTITION}" \
-        --gres=gpu:1 \
+    if [[ "${SKIP_INFERENCE}" != "true" ]]; then
+        echo "Launching SLURM array for inference + analysis..."
+        exec sbatch \
+            --job-name="valtest_s3_${TAG}" \
+            --array=0-${LAST_TASK} \
+            --partition="${SBATCH_PARTITION}" \
+            --gres=gpu:1 \
         --constraint="${SBATCH_GPU_CONSTRAINT}" \
         --cpus-per-task="${SBATCH_CPUS_PER_TASK}" \
         --mem-per-cpu="${SBATCH_MEM_PER_CPU}" \
@@ -97,6 +99,20 @@ if [ -z "${SLURM_ARRAY_TASK_ID:-}" ] && [ -z "${VALTEST_RESUBMITTED:-}" ]; then
         --error="${SBATCH_LOG_DIR}/task_%A_%a.err" \
         --export=ALL,VALTEST_CONFIG="${CONF_ABS}",VALTEST_RESUBMITTED=1 \
         "${SCRIPT_ABS}"
+    else
+        echo "Launching SLURM array for analysis only..."
+        exec sbatch \
+            --job-name="valtest_s3_${TAG}" \
+            --array=0-${LAST_TASK} \
+            --partition=batch \
+            --cpus-per-task="${SBATCH_CPUS_PER_TASK}" \
+            --mem-per-cpu="${SBATCH_MEM_PER_CPU}" \
+            --time="${SBATCH_TIME}" \
+            --output="${SBATCH_LOG_DIR}/task_%A_%a.out" \
+            --error="${SBATCH_LOG_DIR}/task_%A_%a.err" \
+            --export=ALL,VALTEST_CONFIG="${CONF_ABS}",VALTEST_RESUBMITTED=1 \
+            "${SCRIPT_ABS}"
+    fi
 fi
 
 # ----- below here: actually running on a compute node under sbatch ----
@@ -115,7 +131,8 @@ echo "OUTPUT_DIR=${OUTPUT_DIR}"
 echo "Started: $(date)"
 echo "======================================"
 
-module load apptainer
+#module load apptainer
+module load apptainer/1.2.4-suid
 
 # In-container per-task command. The driver script handles both input
 # modes; only the knobs it needs are different.
@@ -127,6 +144,13 @@ else
     EXTRA_ARGS=" \
         --rerun-lines-file ${RERUN_LINES_FILE} \
         --manifest-csv ${MANIFEST_CSV}"
+fi
+
+if [ "${SKIP_ANALYSIS}" = "true" ]; then
+    EXTRA_ARGS="${EXTRA_ARGS} --skip-analysis"
+fi
+if [ "${SKIP_INFERENCE}" = "true" ]; then
+    EXTRA_ARGS="${EXTRA_ARGS} --skip-inference"
 fi
 
 INNER_CMD="\

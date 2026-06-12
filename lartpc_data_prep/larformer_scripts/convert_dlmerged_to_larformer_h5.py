@@ -253,6 +253,7 @@ def main():
     print(f"  adc={args.adc} tb={args.tick_backward} mcc9={args.mcc9} "
           f"is_data={args.is_data}  flash={'off' if args.no_flash else 'on'}")
 
+    n_failed = 0
     for ientry in range(start, end):
         ioll.go_to(ientry)
         iolcv.read_entry(ientry)
@@ -261,23 +262,43 @@ def main():
                    f"entry{ientry:06d}.h5")
         outpath = os.path.join(args.output_dir, outname)
 
-        simchmaker.process(ioll, iolcv)
-        simchmaker.open_hdf_file(outpath)
-        simchmaker.save_entry("/entry_0")
-        simchmaker.close_hdf_file()
+        # Per-event guard: a single bad event (e.g. SimChTripletLabelMaker
+        # std::out_of_range, seen on some mcc9 events) must NOT lose the whole
+        # file — log it, drop the partial output, skip to the next entry.
+        try:
+            simchmaker.process(ioll, iolcv)
+            simchmaker.open_hdf_file(outpath)
+            simchmaker.save_entry("/entry_0")
+            simchmaker.close_hdf_file()
 
-        flashes = None
-        if not args.no_flash:
-            flashes = extract_flashes(ioll, channel_to_opdet)
-        fold_into_h5(outpath, ioll.run_id(), ioll.subrun_id(), ioll.event_id(),
-                     flashes, pmt_positions)
+            flashes = None
+            if not args.no_flash:
+                flashes = extract_flashes(ioll, channel_to_opdet)
+            fold_into_h5(outpath, ioll.run_id(), ioll.subrun_id(), ioll.event_id(),
+                         flashes, pmt_positions)
+        except Exception as e:
+            n_failed += 1
+            print(f"  [{ientry}] FAILED ({type(e).__name__}: {e}); skipping entry")
+            try:
+                simchmaker.close_hdf_file()
+            except Exception:
+                pass
+            if os.path.exists(outpath):
+                try:
+                    os.remove(outpath)
+                except OSError:
+                    pass
+            continue
 
         nfl = 0 if flashes is None else len(flashes)
         print(f"  [{ientry}] -> {outname}  ({nfl} flashes)")
 
-    simchmaker.close_hdf_file()
+    try:
+        simchmaker.close_hdf_file()
+    except Exception:
+        pass
     ioll.close()
-    print(f"\nDone. {end - start} entries processed.")
+    print(f"\nDone. {end - start - n_failed} entries processed, {n_failed} skipped.")
 
 
 if __name__ == "__main__":

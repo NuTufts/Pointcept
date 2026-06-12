@@ -69,12 +69,24 @@ if [ -z "${SLURM_ARRAY_TASK_ID:-}" ] && [ -z "${VALTEST_RESUBMITTED:-}" ]; then
     echo "  partition  = ${SBATCH_PARTITION}"
     echo "  time       = ${SBATCH_TIME}"
 
+    # exec sbatch \
+    #     --job-name="valtest_${TAG}" \
+    #     --array=0-${LAST_TASK} \
+    #     --partition="${SBATCH_PARTITION}" \
+    #     --gres=gpu:1 \
+    #     --constraint="${SBATCH_GPU_CONSTRAINT}" \
+    #     --cpus-per-task="${SBATCH_CPUS_PER_TASK}" \
+    #     --mem-per-cpu="${SBATCH_MEM_PER_CPU}" \
+    #     --time="${SBATCH_TIME}" \
+    #     --output="${SBATCH_LOG_DIR}/task_%A_%a.out" \
+    #     --error="${SBATCH_LOG_DIR}/task_%A_%a.err" \
+    #     --export=ALL,VALTEST_CONFIG="${CONF_ABS}",VALTEST_RESUBMITTED=1 \
+    #     "${SCRIPT_ABS}"
+
     exec sbatch \
         --job-name="valtest_${TAG}" \
         --array=0-${LAST_TASK} \
         --partition="${SBATCH_PARTITION}" \
-        --gres=gpu:1 \
-        --constraint="${SBATCH_GPU_CONSTRAINT}" \
         --cpus-per-task="${SBATCH_CPUS_PER_TASK}" \
         --mem-per-cpu="${SBATCH_MEM_PER_CPU}" \
         --time="${SBATCH_TIME}" \
