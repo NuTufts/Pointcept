@@ -730,6 +730,67 @@ def cascade_nu_color_options() -> list[dict]:
     ]
 
 
+_SLICER_CLASS_NAMES = {0: "nu", 1: "cosmic", 2: "no_obj"}
+
+
+def figure_for_cascade_slices(
+    pred: Optional[dict],
+    *,
+    min_mask_prob: float = 0.0,
+    nu_class_id: int = 0,
+    slicer_no_object_id: int = 2,
+    sp_marker_size: float = 1.8,
+    title_suffix: str = "",
+) -> go.Figure:
+    """STAGE-2-ONLY panel: every post-deghost SP colored by the slicer's
+    predicted query (= slice). The slice whose dominant predicted class is
+    `nu` is drawn red so it's obvious which slice Stage 3 processed. Carries
+    no Stage-3 particle layer.
+
+    `pred` is a stage3pred_*.h5 dict from `inference.load_event_h5`.
+    """
+    fig = go.Figure(data=make_detector_outline_trace())
+    if pred is None or pred.get("post/coord") is None or pred["post/coord"].shape[0] == 0:
+        fig.update_layout(title=f"No slicer prediction{title_suffix}",
+                          **_default_scene_kwargs())
+        return fig
+
+    post_coord = pred["post/coord"].astype(np.float32)
+    post_q = pred.get("post/pred_query",
+                      -np.ones(post_coord.shape[0], np.int64)).astype(np.int64)
+    post_cls = pred.get("post/pred_class",
+                        np.full(post_coord.shape[0], slicer_no_object_id)).astype(np.int64)
+    post_mp = pred.get("post/pred_mask_prob", None)
+
+    keep = np.ones(post_coord.shape[0], dtype=bool)
+    if min_mask_prob > 0.0 and post_mp is not None:
+        keep = post_mp >= float(min_mask_prob)
+
+    for qv in sorted(np.unique(post_q[keep]).tolist()):
+        m = keep & (post_q == qv)
+        if not m.any():
+            continue
+        ch = post_cls[m]
+        dom = int(np.bincount(ch[ch >= 0]).argmax()) if (ch >= 0).any() else -1
+        is_nu = dom == int(nu_class_id)
+        color = ("rgba(255,60,60,1)" if is_nu
+                 else instance_color(int(qv)) if qv >= 0
+                 else "rgba(150,150,150,0.35)")
+        x, y, z = _scatter_xyz(post_coord[m])
+        fig.add_trace(go.Scatter3d(
+            x=x, y=y, z=z, mode="markers",
+            marker=dict(size=sp_marker_size, color=color),
+            name=f"slice q{qv} [{_SLICER_CLASS_NAMES.get(dom, '?')}] ({int(m.sum())})",
+            hovertemplate=(f"slice query={qv} class={_SLICER_CLASS_NAMES.get(dom, '?')}"
+                           f"<br>x=%{{y:.1f}} y=%{{z:.1f}} z=%{{x:.1f}}<extra></extra>"),
+        ))
+
+    fig.update_layout(
+        title=f"STAGE 2 (slicer) — SPs by predicted slice; nu slice in red{title_suffix}",
+        **_default_scene_kwargs())
+    return fig
+
+
 def figure_for_cascade_prediction(
     pred: Optional[dict],
     *,

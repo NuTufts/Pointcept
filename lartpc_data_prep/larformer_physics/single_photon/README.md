@@ -359,10 +359,34 @@ apptainer exec --nv --bind /cluster:/cluster $SIF bash -c \
 flash_rank,flash_recovered,stage3pred_path (378 events; 127 own-cosmic of which 37
 flash-rank-1).
 
+### Flash recovery end-to-end (implemented + validated)
+
+`run_larformer_stage3_inference.py --flash-recover-k K [--flash-recover-chi2-max ... -oob-max ...
+-gamma 5.25] [--flash-recover-augment-all]` adds the top-K flash-matched slices to the particle-
+segmenter keep mask (helper `flash_recovery_keep`). Default = **rescue-only** (apply only when the
+ν-keep is empty, so already-segmented events aren't contaminated). `run_stageB_capped.sh` honors
+`FLASH_RECOVER_K`/`_CHI2_MAX`/`_OOB_MAX`/`_AUGMENT_ALL`. Cut calibration: `calibrate_flash_path.py`.
+
+Result (FULL 3000, the authoritative measurement, vs baseline eff 0.14 / purity 0.38):
+- **K=1 rescue-only: efficiency FLAT (0.138–0.143), purity DOWN (0.33).** Net-negative.
+  It deterministically un-drops ~94 events (stage3-drops 152→58) but they add +19 FP / −1 TP —
+  mostly fakes, not clean single photons. So dropped events aren't predominantly real 1γ.
+- K=2 augment-all: also net-negative (contamination → false-X vetoes break good events).
+- The 378-events-only run *looked* like 0.14→0.17, but that did NOT reproduce on the full 3000.
+
+**⚠ Methodology: the 1γ+0X reco is ~9% non-deterministic run-to-run** (particle segmenter, GPU
+atomics): two identical-config rescue runs differ on 33/378 events (drops identical). That noise
+(±13 events) exceeds the apparent +12 "gain", so the 378-only result was noise. Small-effect
+measurements need a deterministic mode or multiple runs / per-event diffing.
+
 ## Still to do
 
-- **Flash recovery → end-to-end**: tighten with OOB rejection + per-point charge; then
-  re-segment recovered slices to get the true post-recovery 1γ+0X efficiency.
+- Quantify/suppress the segmenter run-to-run non-determinism (deterministic CUDA, or N-run averaging)
+  before chasing small selection-level effects.
+- The flash lever helps photon *finding* (slice level) but the rescued slices don't segment into
+  clean single photons — revisit with a tighter χ² cut + cleaner slice isolation, or treat flash
+  as a post-selection re-ranking rather than a keep-mask expansion.
+- POT-normalize for absolute yields.
 - Particle-segmentation losses on correct ν-slices (photon-split 15%, false-X 14%).
 - POT-normalized absolute rates (fold in `xsecWeight`); side-band/fake-rate study.
 - Recover the ~18 OOM Stage-A tasks (16 GB) for the full 72k; scale Stage B beyond 3000.

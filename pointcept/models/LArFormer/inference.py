@@ -334,10 +334,17 @@ def slicer_predict_event_from_out(
     out: dict,
     sample: dict,
     no_object_class_id: int,
+    slicer_dedup_iou: float = 0.0,
 ) -> dict:
     """Same as `slicer_predict_event` but accepts an already-computed
     cascade output dict. Used by the full-cascade Stage-3 inference path
-    to avoid running the slicer twice."""
+    to avoid running the slicer twice.
+
+    slicer_dedup_iou > 0 enables a slicer-side mask-IoU query dedup (the same
+    `dedup_queries` NMS the particle segmenter uses), merging co-extensive
+    duplicate SLICE queries before the per-SP slice argmax — so a single photon
+    split across near-identical slices is consolidated. Default 0.0 = off (no
+    change to existing behavior)."""
     n_pre = int(sample["n_spacepoints"])
     preds = out["predictions"]
     assert len(preds) == 1, f"expected single-event batch; got {len(preds)} preds"
@@ -388,6 +395,20 @@ def slicer_predict_event_from_out(
     n_post = sp_mask.shape[1]
     cls_argmax = cls_logits.argmax(dim=-1)             # (Q,) long
     cls_probs = cls_logits.softmax(dim=-1).cpu().numpy().astype(np.float32)
+
+    # Optional slicer-side query dedup (mirrors the Stage-3 particle dedup):
+    # binarized-mask-IoU NMS merges co-extensive duplicate SLICE queries so the
+    # per-SP slice argmax below assigns a split photon to a single survivor.
+    # GT-less cascade path -> q_idx/k_idx empty, so the GT bookkeeping below is a
+    # no-op and overwriting cls_argmax here is safe.
+    if slicer_dedup_iou > 0.0 and Q > 0:
+        _dedup_records, cls_argmax = dedup_queries(
+            sp_mask_logits=sp_mask,
+            effective_argmax=cls_argmax,
+            cls_max_prob=cls_probs.max(axis=1),
+            no_object_class_id=no_object_class_id,
+            iou_threshold=slicer_dedup_iou,
+        )
 
     # Post-filter SP fields. The cascade returns `levels[name].coords`
     # (normalized) and `sp_to_level_id` per level. The spacepoint level's

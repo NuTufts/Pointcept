@@ -100,8 +100,8 @@ del _larformer_particle_evaluator_module
 # checkpoints store last_epoch == epoch * 22588 + iter_in_epoch exactly.
 RESUME_CHECKPOINT = (
   "/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept/"
-    "exp/larformer_particle_v1_cached_ptv3crosslevel_smallbatch_lr1e4_"
-    "bugfixed_resume2/model_iter_131140.pth"
+    "exp/larformer_particle_v1_cached_ptv3crosslevel_smallbatch_resume3_cosinedecay/"
+    "model_iter_211242.pth"
 )
 ITERS_PER_EPOCH      = 22588
 RESUME_EPOCH         = 5

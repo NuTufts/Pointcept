@@ -32,6 +32,71 @@ from lartpc_data_prep.larformer_analysis.lib.flash_predict import (   # noqa: E4
     predict_many_slices_pe, select_charge_y_with_uv_fallback_np)
 from lartpc_data_prep.larformer_analysis.lib.flash_chi2 import neyman_chi2  # noqa: E402
 
+# Cascade spacepoint displays (same as tools/visualize_full_cascade.py).
+import atexit                                                          # noqa: E402
+import tempfile                                                       # noqa: E402
+from pointcept.models.LArFormer.inference import load_event_h5        # noqa: E402
+from pointcept.models.LArFormer.viz_inference import (                # noqa: E402
+    figure_for_cascade_slices, figure_for_stage3_prediction,
+    figure_for_cascade_gt, cascade_nu_color_options)
+
+_VIZ_CACHE = {}   # stage3pred path -> (pred_dict, gt_dict)
+
+
+def _compute_gt(merged_path):
+    """Build the GT dict for figure_for_cascade_gt from a merged_h5 (reads it
+    twice through LArFormerDataset for slice + particle GT). None if no MC truth.
+    Replicated from tools/visualize_full_cascade.py."""
+    from pointcept.datasets.larformer import LArFormerDataset
+    with h5py.File(merged_path, "r") as f:
+        if "entry_0" not in f or "mc_particle_tree" not in f["entry_0"]:
+            return None
+    tmp = tempfile.NamedTemporaryFile(mode="w", suffix=".txt",
+                                      prefix="viz1g_gt_", delete=False)
+    tmp.write(os.path.abspath(merged_path) + "\n"); tmp.close()
+    atexit.register(lambda p=tmp.name: os.path.exists(p) and os.unlink(p))
+
+    def _ds(src):
+        # lm_score_val_threshold=0 keeps EVERY true spacepoint — including the
+        # low-larmatch-score nu points the deghoster drops — so the GT panel
+        # shows the WHOLE neutrino-induced point cloud, not the deghosted subset.
+        return LArFormerDataset(split="test", data_root="/",
+                                data_list_file=tmp.name, gt_source=src,
+                                lm_score_val_threshold=0.0)[0]
+    try:
+        s_slice = _ds("slice"); s_part = _ds("particle")
+    except Exception as e:
+        print(f"[viz] GT compute failed for {merged_path}: {e}")
+        return None
+    coord = np.asarray(s_slice["coord"], np.float32)
+    slice_id = np.asarray(s_slice["slice_id"], np.int64)
+    slice_origin = {int(g["primary_trackid"]): int(g.get("origin_type", 1))
+                    for g in s_slice.get("gt_instances", [])}
+    is_nu = np.array([slice_origin.get(int(t), 1) == 0 for t in slice_id], bool)
+    part_coord = np.asarray(s_part["coord"], np.float32)
+    part_cls = np.asarray(s_part["particle_class_id"], np.int64)
+    part_inst = np.full(len(part_coord), -1, np.int64)
+    for k, g in enumerate(s_part.get("gt_instances", [])):
+        ti = np.asarray(g["truth_indices"], np.int64)
+        if ti.size:
+            part_inst[ti] = k
+    nu_mask = part_cls >= 0
+    return dict(coord=coord, slice_id=slice_id, slice_is_nu=is_nu,
+                slice_origin=slice_origin,
+                hasmatch=np.asarray(s_slice["hasmatch"], np.int64),
+                nu_coord=part_coord[nu_mask], nu_class=part_cls[nu_mask],
+                nu_instance=part_inst[nu_mask])
+
+
+def load_viz(s3path, merged_path):
+    """(pred_dict, gt_dict) for the cascade displays, cached per stage3pred."""
+    if s3path in _VIZ_CACHE:
+        return _VIZ_CACHE[s3path]
+    pred = load_event_h5(s3path)
+    gt = _compute_gt(merged_path)
+    _VIZ_CACHE[s3path] = (pred, gt)
+    return pred, gt
+
 PHOTON_PDG = 22
 NU_CLASS = 0
 VOX = 1.0
@@ -39,6 +104,8 @@ MIN_PTS = 20
 TPC = ((0.0, 256.0), (-116.5, 116.5), (0.0, 1036.0))
 F_SYS, EPS = 0.10, 1.0
 CLSNAME = {0: "nu", 1: "cosmic", 2: "no_obj"}
+OOB_MAX = 0.05        # slices with > this OOB fraction can't match the in-time flash
+PHOTON_FRAC = 0.5     # a slice is a "photon slice" if >= this frac of its pts are true photon
 
 _CACHE = {}   # stage3pred path -> loaded dict
 
@@ -101,14 +168,14 @@ def load_event(s3path, merged_path):
         vc.setdefault(k, []).append(q)
     vc = {k: float(np.mean(v)) for k, v in vc.items()}
 
-    # photon dominant slice
-    postvox = {}
-    for k, q in zip(_vox(post), pq):
-        postvox.setdefault(k, []).append(int(q))
+    # mark which POST points are true-photon (voxel matches a photon merged point),
+    # so photon-fraction of a slice is consistent post-vs-post (always <= 1).
     from collections import Counter
-    postvox = {k: Counter(v).most_common(1)[0][0] for k, v in postvox.items()}
-    ph_sl = [postvox[k] for k in _vox(photon_pts) if k in postvox]
-    photon_slice = Counter(ph_sl).most_common(1)[0][0] if ph_sl else -1
+    photon_voxset = set(_vox(photon_pts))
+    post_is_photon = np.array([k in photon_voxset for k in _vox(post)], dtype=bool)
+    photon_total_post = int(post_is_photon.sum())
+    ph_by_slice = Counter(int(q) for q, ip in zip(pq, post_is_photon) if ip)
+    photon_slice = ph_by_slice.most_common(1)[0][0] if ph_by_slice else -1  # dominant (ref)
 
     # per-slice predictions (gamma=1; scale later)
     counts = Counter(int(q) for q in pq)
@@ -129,12 +196,14 @@ def load_event(s3path, merged_path):
     sl_info = []
     for s in slices:
         m = pq == s
+        nsp = int(m.sum()); nph = int(post_is_photon[m].sum())
+        frac = nph / max(nsp, 1)            # fraction of THIS slice that is true photon (<=1)
         sl_info.append(dict(query=s, cls=int(qcls[s]) if s < len(qcls) else -1,
-                            n_sp=int(m.sum()), oob=_oob_frac(post[m]),
+                            n_sp=nsp, oob=_oob_frac(post[m]),
                             pe_pred=pe_pred[sid[s]].astype(np.float64),
-                            is_photon=(s == photon_slice),
-                            photon_frac=(np.isin([postvox.get(k, -1) for k in _vox(photon_pts)], s).mean()
-                                         if len(photon_pts) else 0.0)))
+                            photon_frac=frac,
+                            photon_cov=nph / max(photon_total_post, 1),  # frac of photon in this slice
+                            is_photon=(frac >= PHOTON_FRAC)))            # multiple allowed
     d = dict(run=run, sub=sub, evt=evt, pe_obs=pe_obs, t0=t0,
              post=post, pq=pq, slices=sl_info, photon_slice=photon_slice,
              photon_pts=photon_pts, photon_E=photon_E, photon_tid=photon_tid)
@@ -150,9 +219,11 @@ def chi2(pe_obs, pe_pred):
 def flash_fig(d, sel_q, gamma, log_y):
     pe_obs = d["pe_obs"]; pmt = np.arange(len(pe_obs))
     info = {s["query"]: s for s in d["slices"]}
+    photon_qs = {s["query"] for s in d["slices"] if s["is_photon"]}   # >=1 allowed
     chis = {s["query"]: chi2(pe_obs, gamma * s["pe_pred"]) for s in d["slices"]
-            if s["oob"] <= 0.2}
+            if s["oob"] <= OOB_MAX}                                   # OOB<=0.05
     min_q = min(chis, key=chis.get) if chis else None
+    best_is_photon = (min_q in photon_qs)
     fig = go.Figure()
     fig.add_trace(go.Scatter(x=pmt, y=pe_obs, mode="lines+markers", name=f"observed ΣPE={pe_obs.sum():.0f}",
                              line=dict(color="white", width=2)))
@@ -177,45 +248,47 @@ def flash_fig(d, sel_q, gamma, log_y):
                       yaxis=dict(title="PE", type="log" if log_y else "linear"),
                       legend=dict(orientation="h", y=-0.25, font=dict(size=10)),
                       margin=dict(l=50, r=10, t=40, b=40),
-                      title=f"({d['run']},{d['sub']},{d['evt']})  photon E={d['photon_E']:.0f} MeV  "
-                            f"photon_slice={d['photon_slice']} "
-                            f"({'BEST flash match' if min_q==d['photon_slice'] else 'rank>1'})  γ={gamma:.3g}")
-    return fig, min_q
+                      title=f"({d['run']},{d['sub']},{d['evt']})  γ={gamma:.3g}  "
+                            f"photon E={d['photon_E']:.0f} MeV  "
+                            f"photon slices(OOB≤{OOB_MAX:g})={sorted(photon_qs)}  "
+                            f"best-match q={min_q} -> "
+                            f"{'RECOVERED (photon slice)' if best_is_photon else 'NOT a photon slice'}")
+    return fig, min_q, photon_qs
 
-
-def view3d(d, sel_q):
-    fig = go.Figure()
-    # subsample post points for speed, color by slice membership category
-    post = d["post"]; pq = d["pq"]
-    step = max(1, len(post) // 30000)
-    p = post[::step]; q = pq[::step]
-    photon_q = d["photon_slice"]
-    col = np.where(q == photon_q, "gold", np.where(q == sel_q, "royalblue", "#555"))
-    fig.add_trace(go.Scatter3d(x=p[:, 2], y=p[:, 0], z=p[:, 1], mode="markers",
-                               marker=dict(size=1.3, color=col), name="slices", hoverinfo="skip"))
-    if len(d["photon_pts"]):
-        pt = d["photon_pts"]
-        fig.add_trace(go.Scatter3d(x=pt[:, 2], y=pt[:, 0], z=pt[:, 1], mode="markers",
-                                   marker=dict(size=2.2, color="red"), name="true photon"))
-    fig.update_layout(template="plotly_dark", height=520,
-                      scene=dict(xaxis_title="z", yaxis_title="x", zaxis_title="y",
-                                 aspectmode="data"),
-                      margin=dict(l=0, r=0, t=24, b=0),
-                      title="gold=photon slice  blue=selected slice  red=true photon pts")
-    return fig
 
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--event-list", required=True)
-    ap.add_argument("--merged-dir", required=True)
+    ap.add_argument("--merged-dir", default=None,
+                    help="dir with merged_sp H5; auto-derived from the event list's "
+                         "stage3pred paths (sibling merged_sp/) when omitted.")
     ap.add_argument("--gamma", type=float, default=5.25)
     ap.add_argument("--port", type=int, default=8053)
     args = ap.parse_args()
 
     events = list(csv.DictReader(open(args.event_list)))
+    if not events:
+        sys.exit("ERROR: empty event list %s" % args.event_list)
+
+    # Auto-derive merged-dir from the stage3pred path (DATADIR/stage3pred/... ->
+    # DATADIR/merged_sp) when not given or when the given one has no files.
+    merged_dir = args.merged_dir
+    if not merged_dir or not glob.glob(os.path.join(merged_dir, "**", "merged_*entry*.h5"),
+                                       recursive=True):
+        datadir = os.path.dirname(os.path.dirname(events[0]["stage3pred_path"]))
+        cand = os.path.join(datadir, "merged_sp")
+        if glob.glob(os.path.join(cand, "**", "merged_*entry*.h5"), recursive=True):
+            print("auto-derived --merged-dir = %s" % cand)
+            merged_dir = cand
     merged = {os.path.basename(p): p for p in
-              glob.glob(os.path.join(args.merged_dir, "**", "merged_*entry*.h5"), recursive=True)}
+              glob.glob(os.path.join(merged_dir or "", "**", "merged_*entry*.h5"),
+                        recursive=True)}
+    if not merged:
+        sys.exit("ERROR: no merged_sp H5 found (merged-dir=%r). Pass --merged-dir "
+                 "explicitly (export the path; a 'VAR=x python' prefix does NOT expand "
+                 "$VAR in the same line)." % merged_dir)
+    print("indexed %d merged_sp H5" % len(merged))
 
     def evlabel(i, r):
         return (f"[{i}] ({r['run']},{r['subrun']},{r['event']}) E={float(r['lead_photon_E']):.0f} "
@@ -236,14 +309,29 @@ def main():
             dcc.Input(id="gamma", type="number", value=args.gamma, step=0.25, style={"width": "80px"}),
             dcc.Checklist(id="logy", options=[{"label": " log-y", "value": "log"}], value=[],
                           style={"display": "inline-block", "color": "white", "marginLeft": "12px"}),
+            html.Label("nu color:", style={"color": "white", "margin": "0 6px 0 16px"}),
+            dcc.Dropdown(id="nu_color", options=cascade_nu_color_options(), value="instance",
+                         clearable=False, style={"width": "150px", "color": "black",
+                                                 "display": "inline-block", "verticalAlign": "middle"}),
         ], style={"marginBottom": "10px"}),
         dcc.Dropdown(id="slice", options=[], value=None, clearable=False,
                      style={"width": "420px", "color": "black", "marginBottom": "8px"}),
         html.Div([
-            html.Div(dcc.Graph(id="flash"), style={"width": "49%", "display": "inline-block"}),
-            html.Div(dcc.Graph(id="g3d"), style={"width": "50%", "display": "inline-block"}),
+            html.Div(dcc.Graph(id="flash"), style={"width": "56%", "display": "inline-block",
+                                                   "verticalAlign": "top"}),
+            html.Div(html.Pre(id="slicetab", style={"color": "white", "fontSize": "11px"}),
+                     style={"width": "43%", "display": "inline-block", "verticalAlign": "top"}),
         ]),
-        html.Pre(id="slicetab", style={"color": "white", "fontSize": "12px"}),
+        html.Div("STAGE 2 — slicer output only (post-deghost SPs by predicted slice; "
+                 "nu-candidate slice in red)",
+                 style={"fontWeight": "bold", "color": "#9cf", "marginTop": "6px"}),
+        dcc.Graph(id="slice_scene", style={"height": "46vh"}),
+        html.Div("STAGE 3 — particle-segmenter output only (on the processed nu-candidate slice)",
+                 style={"fontWeight": "bold", "color": "#fc9"}),
+        dcc.Graph(id="part_scene", style={"height": "46vh"}),
+        html.Div("GROUND TRUTH  (full nu point cloud — deghoster-dropped true SPs included)",
+                 style={"fontWeight": "bold", "color": "#9fc"}),
+        dcc.Graph(id="gt_scene", style={"height": "46vh"}),
     ], style={"backgroundColor": "#222", "padding": "14px", "minHeight": "100vh"})
 
     @app.callback(Output("ev", "value"),
@@ -262,23 +350,36 @@ def main():
                  "value": s["query"]} for s in sorted(d["slices"], key=lambda s: -s["n_sp"])]
         return opts, d["photon_slice"]
 
-    @app.callback(Output("flash", "figure"), Output("g3d", "figure"), Output("slicetab", "children"),
-                  Input("ev", "value"), Input("slice", "value"), Input("gamma", "value"), Input("logy", "value"))
-    def _upd(i, sel_q, gamma, logy):
-        r = events[i]; mp = merged.get(os.path.basename(r["stage3pred_path"])[len("stage3pred_"):])
-        d = load_event(r["stage3pred_path"], mp)
+    @app.callback(Output("flash", "figure"), Output("slice_scene", "figure"),
+                  Output("part_scene", "figure"), Output("gt_scene", "figure"),
+                  Output("slicetab", "children"),
+                  Input("ev", "value"), Input("slice", "value"), Input("gamma", "value"),
+                  Input("logy", "value"), Input("nu_color", "value"))
+    def _upd(i, sel_q, gamma, logy, nu_color):
+        r = events[i]; s3 = r["stage3pred_path"]
+        mp = merged.get(os.path.basename(s3)[len("stage3pred_"):])
+        d = load_event(s3, mp)
         g = float(gamma) if gamma else 5.25
         if sel_q is None:
             sel_q = d["photon_slice"]
-        ff, min_q = flash_fig(d, int(sel_q), g, "log" in (logy or []))
-        f3 = view3d(d, int(sel_q))
-        lines = ["q   class    n_sp  OOB   ΣPE_pred(γ)   χ²(γ)  photon?"]
+        ff, min_q, photon_qs = flash_fig(d, int(sel_q), g, "log" in (logy or []))
+        # three stacked spacepoint displays: stage-2 slicer, stage-3 particles, GT.
+        pred, gt = load_viz(s3, mp)
+        suffix = f"  ({d['run']},{d['sub']},{d['evt']})  photon E={d['photon_E']:.0f} MeV"
+        slice_fig = figure_for_cascade_slices(pred, title_suffix=suffix)
+        part_fig = figure_for_stage3_prediction(
+            pred, color_by=("pred_query" if nu_color == "instance" else "pred_class"),
+            title_suffix=suffix)
+        gt_fig = figure_for_cascade_gt(gt, nu_color_by=nu_color, title_suffix=suffix)
+        lines = ["q   class    n_sp  OOB   ph_frac ph_cov  ΣPE_pred(γ)   χ²(γ)  photon?"]
         for s in sorted(d["slices"], key=lambda s: chi2(d["pe_obs"], g * s["pe_pred"])):
-            lines.append("%-4d %-7s %5d %5.2f %12.1f %8.1f   %s%s" % (
+            oob_rej = s["oob"] > OOB_MAX
+            lines.append("%-4d %-7s %5d %5.2f %6.2f %6.2f %12.1f %8s   %s%s" % (
                 s["query"], CLSNAME.get(s["cls"], "?"), s["n_sp"], s["oob"],
-                (g * s["pe_pred"]).sum(), chi2(d["pe_obs"], g * s["pe_pred"]),
+                s["photon_frac"], s["photon_cov"], (g * s["pe_pred"]).sum(),
+                "OOB-rej" if oob_rej else "%.0f" % chi2(d["pe_obs"], g * s["pe_pred"]),
                 "Y" if s["is_photon"] else " ", " <min-χ²" if s["query"] == min_q else ""))
-        return ff, f3, "\n".join(lines[:18])
+        return ff, slice_fig, part_fig, gt_fig, "\n".join(lines[:20])
 
     print(f"Listening on http://0.0.0.0:{args.port}  ({len(events)} events)")
     app.run(debug=False, port=args.port, host="0.0.0.0")

@@ -76,8 +76,91 @@ from pointcept.models.LArFormer.cascade_particle_filter import (  # noqa: E402
     build_nu_keep_mask,
     filter_batch_for_particle_segmenter,
     slicer_predictions_empty,
+    _prob_to_logit,
 )
 from pointcept.models.LArFormer.cascade_filter import drop_empty_events  # noqa: E402
+
+
+# Flash-recovery imports (optional path; only used when --flash-recover-k > 0).
+_TPC_BOUNDS = ((0.0, 256.0), (-116.5, 116.5), (0.0, 1036.0))
+
+
+def _oob_frac_np(pts):
+    if len(pts) == 0:
+        return 1.0
+    b = _TPC_BOUNDS
+    inb = ((pts[:, 0] >= b[0][0]) & (pts[:, 0] <= b[0][1]) &
+           (pts[:, 1] >= b[1][0]) & (pts[:, 1] <= b[1][1]) &
+           (pts[:, 2] >= b[2][0]) & (pts[:, 2] <= b[2][1]))
+    return float(1.0 - inb.mean())
+
+
+def flash_recovery_keep(ev_pred, filtered_batch, input_h5_path, no_object_class_id,
+                        mask_prob_threshold, gamma_beam, K, chi2_max, oob_max):
+    """Expanded keep-mask term: union of the top-K slice queries whose PhotonLib-
+    predicted PMT pattern best matches the in-time beam flash (Neyman chi2), cut by
+    chi2 <= chi2_max and OOB <= oob_max. Returns an (n_sp,) bool tensor (or None if
+    no in-time beam flash). The observed flash + raw charge come from input_h5_path."""
+    import h5py
+    from lartpc_data_prep.larformer_analysis.lib.flash_predict import (
+        predict_slice_pe, select_charge_y_with_uv_fallback_np)
+    from lartpc_data_prep.larformer_analysis.lib.flash_chi2 import neyman_chi2
+
+    sp_mask = ev_pred["mask_logits"]["spacepoint"]          # (Q, n_sp) logits
+    Q, n_sp = sp_mask.shape
+    if n_sp == 0 or Q == 0:
+        return None
+    post_cm = filtered_batch["coord"]
+    post_cm = (post_cm.detach().cpu().numpy() if torch.is_tensor(post_cm)
+               else np.asarray(post_cm)).astype(np.float32)
+    if post_cm.shape[0] != n_sp:        # single-event batch expected
+        post_cm = post_cm[:n_sp]
+
+    with h5py.File(input_h5_path, "r") as f:
+        e = f["entry_0"]
+        ipos = e["triplet_data"]["pos"][:].astype(np.float32)
+        icharge = select_charge_y_with_uv_fallback_np(e["triplet_data"]["pixval"][:])
+        fl = e["flashes"]
+        f_pe = fl["pe"][:]; f_pid = fl["producer_id"][:]
+        f_tpe = fl["total_pe"][:]; f_t = fl["time_us"][:]
+    beam = np.where(f_pid == 0)[0]
+    if len(beam) == 0:
+        return None
+    bi = beam[int(np.argmax(f_tpe[beam]))]
+    pe_obs = f_pe[bi].astype(np.float64); t0 = float(f_t[bi])
+
+    VOX = 1.0
+    vc = {}
+    for k, q in zip(map(tuple, np.floor(ipos / VOX).astype(np.int64)), icharge):
+        vc.setdefault(k, []).append(q)
+    vc = {k: float(np.mean(v)) for k, v in vc.items()}
+    post_charge = np.array([vc.get(k, 0.0) for k in
+                            map(tuple, np.floor(post_cm / VOX).astype(np.int64))],
+                           dtype=np.float32)
+
+    cls_argmax = ev_pred["class_logits"].argmax(dim=-1).cpu().numpy()
+    tau_logit = _prob_to_logit(float(mask_prob_threshold))
+    binmask = (sp_mask > tau_logit).cpu().numpy()           # (Q, n_sp)
+    cand = []
+    for q in range(Q):
+        if int(cls_argmax[q]) == int(no_object_class_id):
+            continue
+        m = binmask[q]
+        if m.sum() < 10:
+            continue
+        pts = post_cm[m]
+        if _oob_frac_np(pts) > oob_max:
+            continue
+        pe_pred = predict_slice_pe(pts, post_charge[m], t0, producer_id=0,
+                                   gamma_by_producer=(gamma_beam, gamma_beam))
+        c2 = neyman_chi2(pe_pred, pe_obs)
+        if np.isfinite(c2) and c2 <= chi2_max:
+            cand.append((c2, q))
+    cand.sort()
+    flash_keep = np.zeros(n_sp, dtype=bool)
+    for _, q in cand[:K]:
+        flash_keep |= binmask[q]
+    return torch.from_numpy(flash_keep).to(sp_mask.device)
 
 
 # ---------------------------------------------------------------------------
@@ -361,6 +444,18 @@ def run_full_cascade_mode(args):
     inner = getattr(model, "module", model)
     if cascaded_slicer is None:
         raise RuntimeError("could not find cascaded_slicer on built model")
+    # Optional Stage-1 deghoster keep-threshold override. The deghoster keeps
+    # SPs with P(real) > deghost_threshold_val; the forward reads this attr
+    # dynamically in eval, so setting it here changes how aggressively Stage 1
+    # prunes WITHOUT retraining. Lower it (toward the low end of the training
+    # range) to retain scattered low-confidence shower SPs the segmenter needs.
+    if args.deghost_threshold_val is not None:
+        old = float(getattr(cascaded_slicer, "deghost_threshold_val", float("nan")))
+        cascaded_slicer.deghost_threshold_val = float(args.deghost_threshold_val)
+        print(f"[infer] OVERRIDE deghost_threshold_val {old} -> "
+              f"{cascaded_slicer.deghost_threshold_val} "
+              f"(train range U({getattr(cascaded_slicer,'deghost_threshold_min','?')}, "
+              f"{getattr(cascaded_slicer,'deghost_threshold_max','?')}))")
     slicer_inner = getattr(cascaded_slicer, "slicer", cascaded_slicer)
 
     slicer_no_object = int(slicer_inner.loss_fn.no_object_class_id)
@@ -415,6 +510,7 @@ def run_full_cascade_mode(args):
             continue
         slicer_event_data = slicer_predict_event_from_out(
             slicer_out, sample, slicer_no_object,
+            slicer_dedup_iou=args.slicer_dedup_iou,
         )
         if slicer_event_data.get("event_dropped"):
             n_dropped_slicer += 1
@@ -457,6 +553,29 @@ def run_full_cascade_mode(args):
             spacepoint_level=spacepoint_level,
             device=args.device,
         )
+        # Expanded segmenter flow: also segment the top-K flash-matched slices
+        # (union into the keep mask). By default ONLY rescues would-be-dropped
+        # events (empty nu-keep) so it can't contaminate already-segmented ones;
+        # --flash-recover-augment-all applies it to every event.
+        _do_flash = (args.flash_recover_k > 0 and slicer_predictions
+                     and "class_logits" in slicer_predictions[0]
+                     and (args.flash_recover_augment_all or int(keep.sum().item()) == 0))
+        if _do_flash:
+            in_path = dataset.data_list[ev_idx % len(dataset.data_list)]
+            try:
+                fkeep = flash_recovery_keep(
+                    slicer_predictions[0], filtered_batch, in_path,
+                    no_object_class_id=slicer_no_object,
+                    mask_prob_threshold=mask_prob_threshold,
+                    gamma_beam=args.flash_recover_gamma,
+                    K=args.flash_recover_k,
+                    chi2_max=args.flash_recover_chi2_max,
+                    oob_max=args.flash_recover_oob_max,
+                )
+                if fkeep is not None and fkeep.shape == keep.shape:
+                    keep = keep | fkeep
+            except Exception as _ex:
+                print(f"   [flash-recover] skipped ({type(_ex).__name__}: {_ex})")
         if int(keep.sum().item()) == 0:
             n_dropped_stage3 += 1
             slicer_event_data["stage3_meta/event_dropped"] = int(True)
@@ -538,6 +657,44 @@ def run_full_cascade_mode(args):
 # Main
 # ---------------------------------------------------------------------------
 
+def set_deterministic(seed: int = 0):
+    """Make cascade inference repeatable (same input -> same output on a fixed
+    GPU/driver/lib stack). Addresses the run-to-run argmax jitter diagnosed for
+    the single-photon study:
+
+      - TF32 matmul (Ampere default) truncates to 10-bit mantissa and lets
+        cuBLAS vary its split-K reduction order  -> the dominant logit jitter.
+      - SerializedPooling does `torch.sort(cluster)` (non-stable for ties) then
+        `segment_csr(reduce="mean")` (non-associative)  -> pooled-feature jitter
+        that propagates through depth. Deterministic sort fixes the input order
+        so the segmented reduction becomes reproducible.
+      - cuBLAS needs CUBLAS_WORKSPACE_CONFIG set (at process start) to be
+        deterministic; cuDNN benchmark autotuner must be off.
+
+    warn_only=True: surfaces (rather than hard-failing on) any remaining op
+    without a deterministic CUDA impl (e.g. some torch_scatter kernels), so a
+    single un-pinned op doesn't abort a production run -- it prints a warning
+    naming the op instead.
+    """
+    os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+    torch.backends.cuda.matmul.allow_tf32 = False
+    torch.backends.cudnn.allow_tf32 = False
+    try:
+        torch.set_float32_matmul_precision("highest")
+    except Exception:
+        pass
+    torch.use_deterministic_algorithms(True, warn_only=True)
+    print("[deterministic] seeds fixed, TF32 off, cuDNN deterministic, "
+          "torch deterministic algorithms on (warn_only). "
+          "CUBLAS_WORKSPACE_CONFIG=:4096:8")
+
+
 def main():
     ap = argparse.ArgumentParser(
         description=__doc__.split("\n\n")[0],
@@ -578,6 +735,22 @@ def main():
                          "probability per query. Queries below the floor "
                          "are demoted to no_object for the per-SP "
                          "panoptic assignment. 0 = strict argmax.")
+    ap.add_argument("--flash-recover-k", type=int, default=0,
+                    help="Expanded segmenter flow: also segment the top-K slices by "
+                         "in-time-beam-flash Neyman chi2 (PhotonLib). 0 = off (default). "
+                         "Adds those slices' SPs to the particle-segmenter keep mask.")
+    ap.add_argument("--flash-recover-chi2-max", type=float, default=500.0)
+    ap.add_argument("--flash-recover-oob-max", type=float, default=0.05)
+    ap.add_argument("--flash-recover-gamma", type=float, default=5.25)
+    ap.add_argument("--flash-recover-augment-all", action="store_true",
+                    help="Apply flash recovery to EVERY event (default: only rescue "
+                         "events whose nu-keep is empty, to avoid contaminating "
+                         "already-segmented events).")
+    ap.add_argument("--slicer-dedup-iou", type=float, default=0.0,
+                    help="Enable slicer-side query dedup (mask-IoU NMS, same as the "
+                         "particle dedup) at this threshold; merges co-extensive "
+                         "duplicate SLICE queries so a split photon is consolidated. "
+                         "0.0 = off (default, unchanged behavior). Try 0.6.")
     ap.add_argument("--dedup-iou-threshold", type=float, default=0.6,
                     help="Query dedup (R8): merge co-extensive duplicate "
                          "queries whose binarized spacepoint-mask IoU is "
@@ -595,7 +768,24 @@ def main():
                          "no GT is available. The slicer eval-with-GT "
                          "and Stage-3 matching are skipped; only "
                          "predictions are written.")
+    ap.add_argument("--deghost-threshold-val", type=float, default=None,
+                    help="(full-cascade) Override the Stage-1 deghoster keep "
+                         "threshold τ (keep SPs with P(real)>τ). Config default "
+                         "is 0.5; training sampled τ~U(0.4,0.6). Lower it (e.g. "
+                         "0.4 or 0.3) to retain scattered low-confidence shower "
+                         "SPs — helps the segmenter pick photon over no_object. "
+                         "No retraining needed (read at eval time).")
+    ap.add_argument("--deterministic", action="store_true",
+                    help="Repeatable inference for physics production: fixes "
+                         "seeds, disables TF32, forces deterministic cuBLAS/cuDNN "
+                         "+ torch algorithms so the same input yields the same "
+                         "output on a given GPU/driver/lib stack. Costs ~1.3-2x "
+                         "latency on Ampere (TF32 off). Without it the per-SP "
+                         "argmax jitters run-to-run (~9% event-level label flips).")
     args = ap.parse_args()
+
+    if args.deterministic:
+        set_deterministic()
 
     if args.input_mode == "cached":
         run_cached_mode(args)
