@@ -90,7 +90,12 @@ class Point(Dict):
             encode(self.grid_coord, self.batch, depth, order=order_) for order_ in order
         ]
         code = torch.stack(code)
-        order = torch.argsort(code)
+        # stable=True: break ties (points sharing a serialization cell) by index
+        # deterministically, so the serialized order — and thus the attention
+        # patch grouping — does NOT depend on GPU/run state. Without it the order
+        # can vary across runs/membership and perturb the per-SP attention output
+        # (a second source of list/membership dependence beyond shuffle_orders).
+        order = torch.argsort(code, stable=True)
         inverse = torch.zeros_like(order).scatter_(
             dim=1,
             index=order,

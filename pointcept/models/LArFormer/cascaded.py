@@ -120,6 +120,7 @@ class CascadedSlicer(nn.Module):
         self.freeze_deghoster = bool(freeze_deghoster)
         self.deghoster_class_index_real = int(deghoster_class_index_real)
         self.report_keep_frac = bool(report_keep_frac)
+        self._deghost_fp64 = False   # set True by enable_fp64_deghoster()
 
         if self.freeze_deghoster:
             for p in self.deghoster.parameters():
@@ -128,6 +129,62 @@ class CascadedSlicer(nn.Module):
         # Pin deghoster to eval mode from construction onward. train()
         # override below maintains this invariant across train/eval flips.
         self.deghoster.eval()
+
+    def disable_deghost_order_shuffle(self):
+        """Turn OFF serialization order-shuffling in the deghoster.
+
+        `shuffle_orders` is a TRAINING augmentation: serialization picks the
+        z/Hilbert order via `torch.randperm` (structure.py). The deghoster's
+        PTv3 has it left ON (config), and it is NOT gated by train/eval — so at
+        inference it (a) consumes the global RNG on every event, making a given
+        event's output depend on which OTHER events preceded it in the run
+        (membership/batch/list dependence), and (b) randomizes the attention
+        patch order. Disabling it gives deterministic, per-event-isolated
+        inference (an event's result no longer depends on its batch-mates).
+
+        This is the ROOT CAUSE of the list/membership dependence: the shuffled
+        serialized order is the only order-dependent, precision-independent
+        input to the attention (which is why FP64 / dead-band could not fix it).
+        """
+        n = 0
+        for m in self.deghoster.modules():
+            if getattr(m, "shuffle_orders", False):
+                m.shuffle_orders = False
+                n += 1
+        print(f"[deghost] disabled serialization order-shuffle on {n} modules "
+              f"(deterministic per-event inference)")
+        return n
+
+    def enable_fp64_deghoster(self):
+        """Run the deghoster forward in float64 for reproducible inference.
+
+        The deghoster's `SerializedAttention` (its batched matmul / softmax
+        reduction) is the source of the membership/list and cross-architecture
+        divergence — a ~1e-4 perturbation that the P(real)>tau keep-cut amplifies
+        into keep-flips. FP64 drops that to ~1e-15, far below the decision margin.
+        Localized via tools/capture_deghost_layers.py (divergence enters at the
+        enc0 attention; embedding + spconv CPE are bit-identical).
+
+        Two subtleties this handles:
+          - the spconv `SubMConv3d` CPE has no FP64 kernel — keep the whole CPE in
+            FP32 (it is divergence-clean; the Block already casts feat to fp32
+            around it and back), so FP64 elsewhere is unaffected.
+          - `SerializedAttention` upcasts q/k/softmax to float32 — that would
+            DOWNCAST our fp64 and re-introduce the noise, so disable the upcast
+            (it exists for bf16/fp16 stability, unneeded in fp64).
+        """
+        self.deghoster.double()
+        n_cpe = n_attn = 0
+        for m in self.deghoster.modules():
+            if type(m).__name__ == "Block" and hasattr(m, "cpe"):
+                m.cpe.float(); n_cpe += 1
+            if type(m).__name__ == "SerializedAttention":
+                m.upcast_attention = False
+                m.upcast_softmax = False
+                n_attn += 1
+        self._deghost_fp64 = True
+        print(f"[fp64] deghoster -> float64 ({n_cpe} spconv CPEs kept fp32, "
+              f"{n_attn} attentions: upcast disabled)")
 
     # ------------------------------------------------------------------
     # State / mode management
@@ -276,7 +333,19 @@ class CascadedSlicer(nn.Module):
         # be defensive here for callers that may manipulate state.
         self.deghoster.eval()
         with ctx:
-            out = self.deghoster(data_dict)
+            if self._deghost_fp64:
+                # Pass a COPY with float inputs doubled, so the FP32 slicer
+                # downstream still sees the original FP32 data_dict. autocast must
+                # be OFF or it downcasts the attention matmuls (bf16) and defeats
+                # the fp64 — the divergence-prone op is the attention reduction.
+                dd = dict(data_dict)
+                for k, v in dd.items():
+                    if torch.is_tensor(v) and v.is_floating_point():
+                        dd[k] = v.double()
+                with torch.amp.autocast("cuda", enabled=False):
+                    out = self.deghoster(dd)
+            else:
+                out = self.deghoster(data_dict)
 
         if "seg_logits" in out:
             # SonataLoRA-style: flat (N_total, C) logits, no per-event slicing.

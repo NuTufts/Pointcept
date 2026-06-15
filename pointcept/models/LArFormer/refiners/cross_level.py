@@ -257,11 +257,15 @@ class CrossLevelAttn(TokenRefiner):
             sources = tuple(levels.keys())
         return targets, sources
 
-    @staticmethod
     def _maybe_subsample(
-        tokens: torch.Tensor, pos: torch.Tensor, cap: Optional[int],
+        self, tokens: torch.Tensor, pos: torch.Tensor, cap: Optional[int],
     ) -> "tuple[torch.Tensor, torch.Tensor]":
-        if cap is None or tokens.shape[0] <= cap:
+        # The random subsample is a TRAIN-TIME regularization ("light dropout").
+        # It must NOT run at inference: torch.randperm consumes the global RNG
+        # per forward, so a given event's K/V (hence output) would depend on
+        # which OTHER events preceded it (membership/list/batch dependence) — the
+        # same bug class as shuffle_orders. In eval, use ALL source tokens.
+        if cap is None or tokens.shape[0] <= cap or not self.training:
             return tokens, pos
         idx = torch.randperm(tokens.shape[0], device=tokens.device)[:cap]
         return tokens[idx], pos[idx]
