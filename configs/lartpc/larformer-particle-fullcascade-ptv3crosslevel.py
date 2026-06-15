@@ -157,7 +157,12 @@ deghoster_cfg = dict(
             enc_patch_size=(256, 256, 256, 256, 256),
             mlp_ratio=4, qkv_bias=True, qk_scale=None,
             attn_drop=0.0, proj_drop=0.0, drop_path=0.3,
-            shuffle_orders=True, pre_norm=True,
+            # shuffle_orders is a TRAIN-TIME augmentation (random serialization
+            # order via torch.randperm, NOT gated by eval). Left True it makes
+            # inference depend on RNG history -> a given event's output depends on
+            # which OTHER events preceded it in the run (membership/list/batch
+            # dependence). MUST be False at inference for per-event reproducibility.
+            shuffle_orders=False, pre_norm=True,
             enable_rpe=False, enable_flash=False, flash_backend=flash_backend,
             upcast_attention=False, upcast_softmax=False,
             traceable=True, enc_mode=True, mask_token=True,

@@ -306,22 +306,99 @@ Data on the larbys area:
 
 ### Results (3000-event sample)
 
-**Photon finding** (5446 detectable photons): **efficiency 0.71, purity 0.83**.
-- Energy turn-on: eff(all) 0.17 (0–20 MeV) → 0.64 (150–400 MeV).
-- Vertex-distance falloff: 0.79 (0–5 cm) → 0.42 (60–120 cm).
+**Photon finding** (re-baselined on the fixed reproducible base, `sp_compare_3k_fixed/base`,
+5441 detectable photons): **efficiency 0.724, purity 0.825** (was 0.71/0.83 — essentially
+unchanged; photon-finding is a coarse per-photon IoU match, robust to the per-SP perturbations
+that flipped the finer 1γ+0X selection). Detail in `workdir_scale/photon_match_fixed.csv`.
+- Energy turn-on: eff(all) 0.16 (0–20 MeV) → 0.65 (150–400 MeV).
+- Vertex-distance falloff: 0.82 (0–5 cm) → 0.44 (120+ cm).
 
-**1γ+0X selection** (`analyze_1g0X.py`, 378 truth events): **efficiency 0.14, purity 0.38**
-(vs prior **0.10 / 0.40**). Efficiency vs lead-photon E: 0.00 (<40) → 0.21 (150–400 MeV).
+**1γ+0X scale-up confirmation** (base vs rescue on the full **829 truth-1γ+0X**, both fixes,
+nominal τ=0.5): base eff **0.151** / pur 0.424; **rescue eff 0.169 / pur 0.406 (+15 TP, +12%)** —
+confirms the small-sample rescue win (378: 0.156→0.167) at 2× statistics (~1.3σ). Outputs:
+`sp_scale829_{base,rescue}`.
+
+**1γ+0X selection — REPRODUCIBLE deghost/rescue sweep** (`analyze_1g0X.py`, full 3000-event
+mixed sample, pinned to one node, `--deterministic` **+ both membership fixes**;
+`base`≡`base_dup` bit-identical across all 2999 events confirms the A/B is exact). Outputs:
+`sp_compare_3k_fixed/`. **These supersede the earlier buggy sweep — see the OLD column.**
+
+| Arm | deghost τ | flash rescue | efficiency | purity | (old, buggy) |
+|-----|-----------|--------------|------------|--------|--------------|
+| **base** | 0.5 (default) | no | 0.156 | 0.437 | (0.161 / 0.436) |
+| dg0p4 | 0.4 | no | 0.151 | 0.442 | (0.138 / 0.374) |
+| dg0p3 | 0.3 | no | 0.148 | 0.412 | (0.153 / 0.379) |
+| **rescue** | 0.5 | K=1 | **0.167** | **0.420** | (0.135 / 0.309) |
+| dg0p3+rescue | 0.3 | K=1 | 0.156 | 0.383 | (0.146 / 0.346) |
+
+- **Flash rescue HELPS — and the old "net-negative" was a reproducibility-bug artifact.** With
+  the fixes, rescue is eff **0.156 → 0.167 (+4 TP)** with purity essentially held (0.437 → 0.420).
+  The old buggy result (rescue eff 0.135 / purity 0.309) was inverted by the shuffle-RNG breaking
+  additivity (the "rescue loses TPs it never touched" effect). Rescue is the best arm.
+- **Lowering the deghoster threshold still does NOT help — even with the 8192 token cap removed.**
+  dg0p4 ~neutral, dg0p3 slightly worse. The `max_source_tokens_per_level=8192` cap *was* randomly
+  crowding out real points (now fixed: eval uses all tokens), but the extra low-confidence shower
+  points still don't improve segmentation — they're not the limiting factor. Keep τ=0.5.
+- **Significance:** deterministic now (no run-to-run noise), so +4 TP is a real effect on these 378
+  truth events, but ~0.5σ on ~60 TP — direction is solid, scale up to pin the magnitude (now safe:
+  small-sample predicts full-dataset).
+- (Superseded) earlier comparison caveat: the order-dependence below is only fully common-mode
+  for *identical* computations (base vs `base_dup` = bit-exact). Any arm that changes the
+  per-event computation — a different deghost τ, or rescue's extra flash work — also shifts the
+  history-dependent numerics of *unrelated* events, adding ±few-% noise. (Demonstrated: rescue,
+  which is rescue-only by design, still flipped 86 events it never touched and lost 47 TPs all on
+  not-rescued events.) So the sweep's **direction is robust** (the levers clearly don't help — the
+  perturbation is symmetric, not a systematic gain) but the precise deltas and the **absolute**
+  numbers are not citable until the order-dependence is fixed.
+- Prior analysis reference: ~0.10 eff / ~0.40 purity.
 
 **Where 1γ+0X photons are lost** (`analyze_photon_slice.py`): of 378, the slicer puts
 only **49% in a ν-slice** (selected at 0.28), **34% in their OWN slice mislabeled
-cosmic** (selected at 0.01 — recoverable by in-time beam-flash ↔ slice-PMT matching),
-16% merged into cosmic slices, 2% lost. Flash-recovering the own-cosmic slices at the
-ν-slice rate → **1γ+0X efficiency 0.14 → ~0.23**. FN breakdown: 71% no photon query
+cosmic**, 16% merged into cosmic slices, 2% lost. FN breakdown: 71% no photon query
 (slicer/ν-slice drop), 15% photon-split, 14% false-X.
 
 Analysis scripts: `select_visible_photon_events.py`, `match_predictions_to_truth.py`
-(energy + vertex-distance turn-on), `analyze_1g0X.py`, `analyze_photon_slice.py`.
+(energy + vertex-distance turn-on), `analyze_1g0X.py`, `analyze_photon_slice.py`,
+`run_stageB_capped.sh` env knobs `DETERMINISTIC=1` / `DEGHOST_THRESHOLD_VAL` / `FLASH_RECOVER_K`,
+sweep `slurm/submit_deghost_compare_3k_pin.sh`.
+
+### Reproducibility & determinism (`docs/LArFormer_Reproducibility.md`)
+
+Inference is non-deterministic by default; `run_larformer_stage3_inference.py --deterministic`
+(env `DETERMINISTIC=1`) fixes it. Established facts:
+
+- **Full-run reproducibility is bit-exact** with `--deterministic` (same input list, same node):
+  validated 0 / 1.08M spacepoints differ across two runs.
+- **Cross-hardware:** A100 (80 & 40 GB) and L40S are **mutually bit-identical** — determinism is
+  a property of the **driver + library stack**, not the GPU model. Hopper (H100/H200) is a
+  **separate conformance family** that diverges ~1.9% at the event level (source = architecture-
+  specialized cuBLAS GEMMs, *not* attention — tested by swapping flash↔xformers). Deploy with a
+  **driver allowlist + per-node conformance test** (`tools/capture_cascade_tensors.py` +
+  `tools/cross_gpu_diff.py`); pin Hopper jobs separately.
+- **✅ Membership/list dependence — ROOT CAUSE FOUND + FIXED.** A given event's output depended on
+  which *other* events were in the run (→ ~6.6% of 1γ+0X labels flipped between a 378- and a
+  3000-event list, same node). **Cause: `shuffle_orders=True` on the deghoster's PTv3** (config
+  `...ptv3crosslevel.py:160`; slicer/segmenter were already `False`). `shuffle_orders` randomizes the
+  serialization order via `torch.randperm` and is a **train-time augmentation not gated by eval** —
+  at inference it consumed the global RNG per event (so an event's output depended on its
+  predecessors) and randomized the attention patch order. That's why it was *precision-independent*
+  and FP64 / dead-band / allocator-toggle all failed (those were investigated and ruled out).
+  **Fix:** config → `False`, plus `run_full_cascade_mode` defensively disables `shuffle_orders`
+  model-wide at inference (logs "disabled serialization order-shuffle on N modules"). **Result:**
+  Stage-1 keep-flips 1.47% → **0.0000%**; end-to-end coord-mismatch 25/30 → 0/30, **1γ+0X label
+  flips → 0/30**. The selection is now membership-independent, so **small-sample A/B predicts
+  full-dataset behavior**. **There were TWO bugs of the same class** (train-time RNG augmentations not
+  gated by eval, each consuming the global RNG per event): (1) `shuffle_orders=True` on the deghoster,
+  and (2) `CrossLevelAttn.max_source_tokens_per_level` random token subsample
+  ([`refiners/cross_level.py` `_maybe_subsample`](../../../pointcept/models/LArFormer/refiners/cross_level.py),
+  now gated by `not self.training`). The slicer Tier-B (`tools/capture_deghost_layers.py --target
+  slicer`) localized the 2nd: slicer backbone + all tokenizer builders bit-clean, divergence enters at
+  the `token_refiner` (3e-5) and the `query_selector` amplifies it 100× (a tiny score shift flips which
+  tokens topk/FPS picks). **With BOTH fixed: 0/1,457,270 spacepoints differ across membership — truly
+  per-event reproducible.** Re-baseline once (prior absolute results had both augmentations ON). Note:
+  `--deterministic` is still required for *same-run* reproducibility; these fixes are for
+  *cross-membership* (subsample/list/batch) reproducibility. (FP64/dead-band/allocator/argsort-ties
+  were investigated and ruled out.)
 
 ### Flash recovery (prototype)
 
@@ -367,26 +444,23 @@ segmenter keep mask (helper `flash_recovery_keep`). Default = **rescue-only** (a
 ν-keep is empty, so already-segmented events aren't contaminated). `run_stageB_capped.sh` honors
 `FLASH_RECOVER_K`/`_CHI2_MAX`/`_OOB_MAX`/`_AUGMENT_ALL`. Cut calibration: `calibrate_flash_path.py`.
 
-Result (FULL 3000, the authoritative measurement, vs baseline eff 0.14 / purity 0.38):
-- **K=1 rescue-only: efficiency FLAT (0.138–0.143), purity DOWN (0.33).** Net-negative.
-  It deterministically un-drops ~94 events (stage3-drops 152→58) but they add +19 FP / −1 TP —
-  mostly fakes, not clean single photons. So dropped events aren't predominantly real 1γ.
-- K=2 augment-all: also net-negative (contamination → false-X vetoes break good events).
-- The 378-events-only run *looked* like 0.14→0.17, but that did NOT reproduce on the full 3000.
-
-**⚠ Methodology: the 1γ+0X reco is ~9% non-deterministic run-to-run** (particle segmenter, GPU
-atomics): two identical-config rescue runs differ on 33/378 events (drops identical). That noise
-(±13 events) exceeds the apparent +12 "gain", so the 378-only result was noise. Small-effect
-measurements need a deterministic mode or multiple runs / per-event diffing.
+Result, **now re-confirmed deterministically** (full 3000, pinned single node, vs `base` eff
+0.161 / purity 0.436):
+- **K=1 rescue-only is net-negative: efficiency 0.135, purity 0.309** (loses TP *and* adds fakes).
+  It un-drops events, but they are mostly fakes, not clean single photons.
+- The earlier 378-only run *looked* like a gain — that was the run-to-run / order noise (now
+  understood, see Reproducibility), not a real effect.
 
 ## Still to do
 
-- Quantify/suppress the segmenter run-to-run non-determinism (deterministic CUDA, or N-run averaging)
-  before chasing small selection-level effects.
-- The flash lever helps photon *finding* (slice level) but the rescued slices don't segment into
-  clean single photons — revisit with a tighter χ² cut + cleaner slice isolation, or treat flash
-  as a post-selection re-ranking rather than a keep-mask expansion.
-- POT-normalize for absolute yields.
-- Particle-segmentation losses on correct ν-slices (photon-split 15%, false-X 14%).
-- POT-normalized absolute rates (fold in `xsecWeight`); side-band/fake-rate study.
+- **Fix the absolute-number order-dependence** (Reproducibility): try removing per-event
+  `empty_cache` / `expandable_segments`, or a dead-band/hysteresis at the deghoster keep-cut
+  (also mitigates the cross-GPU Hopper divergence). Then re-quote absolute 1γ+0X eff/purity.
+- **Re-measure photon-finding** (0.71 / 0.83) on the deterministic `sp_compare_3k_pin/base`
+  outputs for a clean citable number.
+- The deghost-threshold and flash-rescue levers are **net-negative** — drop them; the gains were
+  artifacts of non-determinism. Photon-finding losses to attack instead: photon-split (15%) and
+  false-X (14%) on correctly-sliced ν events.
+- POT-normalize for absolute yields (fold in `xsecWeight`); side-band / fake-rate study.
 - Recover the ~18 OOM Stage-A tasks (16 GB) for the full 72k; scale Stage B beyond 3000.
+- (If deploying on Hopper) add it to the conformance allowlist or quote a measured systematic.

@@ -51,7 +51,16 @@ export LARFORMER_DEGHOSTER_CKPT LARFORMER_SLICER_CKPT LARFORMER_PARTICLE_CKPT \
 
 # Reduce CUDA fragmentation (helps avoid OOM on the 16 GB P100). The inference
 # tool also guards each event with a per-event OOM skip.
-export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+# STABLE_ALLOC=1 (allocator-stability study): use the native allocator (no
+# expandable_segments) AND skip the per-event empty_cache, to test whether the
+# history-dependent allocator layout is the source of the list-order dependence.
+if [ "${STABLE_ALLOC:-0}" = "1" ]; then
+    unset PYTORCH_CUDA_ALLOC_CONF
+    export LARFORMER_SKIP_EMPTY_CACHE=1
+    echo "  STABLE_ALLOC: native allocator + no per-event empty_cache"
+else
+    export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+fi
 
 # ubdl env (larlite/larcv for dataset slice_labels + h5py) + Pointcept on path.
 cd "${UBDL_DIR}" && source setenv_pointcept_container.sh
@@ -66,6 +75,43 @@ if [ ! -f "${REPREFIXED_CKPT}" ]; then
         echo "ERROR: checkpoint re-prefix failed"; exit 1; }
 fi
 
+# Optional slicer-side query dedup (SLICER_DEDUP_IOU>0 enables it; 0/unset = off).
+SLICER_DEDUP_FLAG=""
+if [ -n "${SLICER_DEDUP_IOU:-}" ] && awk "BEGIN{exit !(${SLICER_DEDUP_IOU}+0 > 0)}" 2>/dev/null; then
+    SLICER_DEDUP_FLAG="--slicer-dedup-iou ${SLICER_DEDUP_IOU}"
+    echo "  slicer dedup: ${SLICER_DEDUP_FLAG}"
+fi
+
+# Optional Stage-1 deghoster keep-threshold override (DEGHOST_THRESHOLD_VAL).
+# Lower than the 0.5 default keeps more (lower-confidence) spacepoints.
+DEGHOST_FLAG=""
+if [ -n "${DEGHOST_THRESHOLD_VAL:-}" ]; then
+    DEGHOST_FLAG="--deghost-threshold-val ${DEGHOST_THRESHOLD_VAL}"
+    echo "  deghost τ override: ${DEGHOST_THRESHOLD_VAL}"
+fi
+
+# Optional deterministic (repeatable) inference for physics production.
+# DETERMINISTIC=1 fixes seeds + disables TF32 + forces deterministic cuBLAS/cuDNN.
+# CUBLAS_WORKSPACE_CONFIG must be exported BEFORE the process starts (cuBLAS reads
+# it at init), so set it here rather than only inside Python.
+DETERMINISTIC_FLAG=""
+if [ "${DETERMINISTIC:-0}" = "1" ]; then
+    DETERMINISTIC_FLAG="--deterministic"
+    export CUBLAS_WORKSPACE_CONFIG=":4096:8"
+    echo "  deterministic: ON (TF32 off, deterministic cuBLAS/cuDNN; ~1.3-2x slower)"
+fi
+
+# Optional flash-recovery expanded segmenter flow (FLASH_RECOVER_K>0 enables it).
+FLASH_RECOVER_FLAG=""
+if [ -n "${FLASH_RECOVER_K:-}" ] && [ "${FLASH_RECOVER_K}" -gt 0 ] 2>/dev/null; then
+    FLASH_RECOVER_FLAG="--flash-recover-k ${FLASH_RECOVER_K} \
+        --flash-recover-chi2-max ${FLASH_RECOVER_CHI2_MAX:-500} \
+        --flash-recover-oob-max ${FLASH_RECOVER_OOB_MAX:-0.05} \
+        --flash-recover-gamma ${FLASH_RECOVER_GAMMA:-5.25}"
+    [ "${FLASH_RECOVER_AUGMENT_ALL:-0}" = "1" ] && FLASH_RECOVER_FLAG="${FLASH_RECOVER_FLAG} --flash-recover-augment-all"
+    echo "  flash recover: K=${FLASH_RECOVER_K} chi2<=${FLASH_RECOVER_CHI2_MAX:-500} oob<=${FLASH_RECOVER_OOB_MAX:-0.05} augment_all=${FLASH_RECOVER_AUGMENT_ALL:-0}"
+fi
+
 python3 "${POINTCEPT_DIR}/tools/run_larformer_stage3_inference.py" \
     --input-mode full-cascade \
     --config "${LARFORMER_CASCADE_CONFIG}" \
@@ -73,6 +119,7 @@ python3 "${POINTCEPT_DIR}/tools/run_larformer_stage3_inference.py" \
     --input-list "${INPUT_LIST}" \
     --output-dir "${OUTPUT_DIR}" \
     --class-prob-threshold "${CLASS_PROB_THRESHOLD}" \
+    ${SLICER_DEDUP_FLAG} ${FLASH_RECOVER_FLAG} ${DETERMINISTIC_FLAG} ${DEGHOST_FLAG} \
     --device cuda --no-gt
 rc=$?
 echo "Stage B exit status: ${rc}"

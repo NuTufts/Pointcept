@@ -439,6 +439,20 @@ def run_full_cascade_mode(args):
     print(f"[infer] Loading weights from {args.weights}")
     _load_weights_into(model, args.weights, allow_partial=True)
 
+    # Defensive per-event-reproducibility fix: serialization order-shuffle
+    # (shuffle_orders) is a TRAIN-TIME augmentation (random order via
+    # torch.randperm, not gated by eval). Left on at inference it makes a given
+    # event's output depend on RNG history -> on which OTHER events preceded it
+    # in the run (membership/list/batch dependence). Force it off model-wide.
+    _n_shuf = 0
+    for _m in model.modules():
+        if getattr(_m, "shuffle_orders", False):
+            _m.shuffle_orders = False
+            _n_shuf += 1
+    if _n_shuf:
+        print(f"[infer] disabled serialization order-shuffle on {_n_shuf} modules "
+              f"(per-event-reproducible inference)")
+
     cascaded_slicer = _resolve_cascaded_slicer(model)
     ps_inner = _resolve_particle_segmenter(model)
     inner = getattr(model, "module", model)
@@ -488,7 +502,10 @@ def run_full_cascade_mode(args):
         # Proactively release cached blocks between events to limit fragmentation
         # (the equivalent of Pointcept's Tester empty_cache=True, which this custom
         # loop does not go through). Cheap insurance against OOM on small GPUs.
-        if args.device == "cuda":
+        # LARFORMER_SKIP_EMPTY_CACHE=1 disables it for the allocator-stability
+        # study (per-event empty_cache + expandable_segments make tensor layout
+        # history-dependent — the leading hypothesis for the list-order dependence).
+        if args.device == "cuda" and not os.environ.get("LARFORMER_SKIP_EMPTY_CACHE"):
             torch.cuda.empty_cache()
 
         batched = larformer_collate([sample])

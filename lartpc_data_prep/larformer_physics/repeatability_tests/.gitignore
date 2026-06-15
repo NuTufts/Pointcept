@@ -1,0 +1,4 @@
+workdir/
+slurm/logs/
+__pycache__/
+*.pyc

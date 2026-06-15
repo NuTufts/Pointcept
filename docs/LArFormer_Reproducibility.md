@@ -13,10 +13,14 @@ selection effect was being swamped by run-to-run output churn.
   hard cuts into ~9% event-level label flips.
 - A `--deterministic` mode makes inference **bit-exact on a fixed GPU**
   (validated: 0 / 1,079,839 spacepoints differ across two runs).
-- **Bit-exactness does NOT survive a change of GPU model.** The same
-  deterministic config on two different A100 SKUs diverged on **376 / 378
-  events**. For heterogeneous large-scale deployment this must be treated as a
-  **systematic**, not eliminated.
+- **Bit-exactness extends across a uniform driver+library pool, regardless of
+  GPU model.** Four A100 nodes (mixed 80 GB / 40 GB, same driver) are
+  **bit-identical** — 0 differences across 88 M spacepoints. Determinism is a
+  property of the **driver + CUDA/torch stack**, not the GPU SKU.
+- The 9% event-level churn that started this came from **one non-conforming node
+  (pax003, a different driver/state) silently mixed into the pool** — not an
+  intrinsic per-GPU systematic. The control is a **driver allowlist + a cheap
+  per-node conformance test** (the capture harness), not a widened error bar.
 
 ---
 
@@ -174,87 +178,179 @@ So on a fixed GPU + driver + library stack, inference is fully repeatable.
 
 ---
 
-## 4. The hard limit: cross-hardware variation
+## 4. Cross-node variation — it tracks the driver/library stack, NOT the GPU model
 
-**Determinism is per-GPU-architecture, not portable.** `torch`'s deterministic
-algorithms guarantee a *fixed reduction order within a chosen kernel* — but the
-kernel itself is selected per GPU architecture (SM count, tensor-core
-generation, tiling), so two different GPUs run *different* deterministic
-kernels with *different* float accumulation, giving ~1e-6 differences that the
-hard cuts (§2.3) then amplify.
+This is the part that matters for large-scale deployment, and the first answer
+("treat cross-GPU as a systematic") turned out to be **too pessimistic** once we
+measured it properly with the Tier-A harness (§6, `capture_cascade_tensors.py` +
+`cross_gpu_diff.py`).
 
-We measured this directly. The **same** `base` config (deghost τ=0.5,
-`--deterministic`) on two different A100 SKUs:
+**What we first saw (and how it misled us).** The same `base` config
+(`--deterministic`) on `pax050` vs `pax003` differed on 36/378 events
+(drop-flag) with selection efficiency 0.14 ↔ 0.16 — a ~9 event swing, larger
+than the physics effects under study. The natural inference was "different GPU
+→ different result, treat as systematic."
 
-- `pax050` (`a100:8`, 80 GB SXM) vs `pax003` (`a100:2`, 40 GB PCIe)
-- **376 / 378 events** differed in deghosted `N_post`
-- **36 / 378 events** flipped their drop/keep decision
-- selection efficiency moved **0.138 → 0.161** (~9 events in the numerator)
+**What is actually true (measured per-spacepoint, coordinate-aligned).** We
+captured the 378-event decision tensors on **four** nodes and diffed them
+spacepoint-by-spacepoint:
 
-That cross-hardware spread is **larger than the physics effects we were trying
-to measure** (deghost-threshold and flash-recovery changes of a few events). A
-multi-arm comparison submitted as a plain SLURM array is therefore **invalid** —
-tasks scatter across nodes and SKUs, and the arm-to-arm differences are
-dominated by hardware, not the variable under study.
+| Node | GPU | Driver | vs pax050 |
+|------|-----|--------|-----------|
+| pax050 | A100 **80 GB** PCIe | 575.57.08 | reference |
+| pax052 | A100-PCIE-**40 GB** | 575.57.08 | **0 differences** |
+| pax105 | A100 **80 GB** PCIe | 575.57.08 | **0 differences** |
+| pax051 | A100-PCIE-**40 GB** | 575.57.08 | **0 differences** |
 
-### 4.1 Consequence for comparisons
+Zero divergence across **88 M** Stage-1 spacepoints, **17 M** Stage-2, **191 k**
+Stage-3, and 0/378 drop-flips — **bit-identical across different GPU memory sizes
+(80 GB vs 40 GB)** as long as the **driver + library stack** matches. Determinism
+is a property of the **driver + CUDA/torch libraries**, not the GPU model.
 
-For any A/B measurement, **pin all arms to one node / one GPU SKU**:
+**So what was pax003?** The one node that ever diverged. All *currently
+available* nodes run the same driver (575.57.08) and agree to the bit; pax003
+went **down** before we could read its driver, but the evidence points to it
+having been on a **different driver/runtime** (the in-container CUDA/torch libs
+are identical across all jobs, leaving the host driver as the variable). The
+~9% was **a single non-conforming node silently mixed into the pool** — not an
+intrinsic per-GPU systematic.
+
+> Why a plain multi-arm SLURM array was still invalid: the deghost sweep
+> scattered its arms across nodes, and *one* of them (pax003) happened to be the
+> non-conforming node — so that arm's difference was the node, not the variable.
+> The fix is the same either way: pin the comparison (§4.1).
+
+### 4.1 Consequences
+
+1. **Reproducibility within a uniform-driver pool is bit-exact** — across GPU
+   memory sizes, physical chips, and nodes. The cross-GPU systematic inside such
+   a pool is **zero**, not 9%.
+2. **A non-conforming node (different driver) is the real hazard**, and it is
+   *silent* — it just produces a different-but-internally-reproducible answer.
+   Guard against it with the conformance test below, not by widening error bars.
+3. **`Gres` is not a hardware identifier.** The `a100:8` tag spans both 80 GB and
+   40 GB A100s; `a100:2` is 40 GB. It doesn't matter for *correctness* (same
+   driver → same result regardless), but never use it to reason about hardware —
+   read `nvidia-smi --query-gpu=name,driver_version`.
+4. **For a pinned measurement**, `#SBATCH --nodelist=<node>` is the simplest
+   guarantee; `submit_deghost_compare_3k_pin.sh` does this and adds a `base_dup`
+   control arm (came back bit-identical, validating the pinned sweep).
+
+### 4.2 The conformance test (the operational control)
+
+The capture harness *is* a node-conformance gate. To clear a node for
+production:
 
 ```bash
-#SBATCH --nodelist=pax052        # or a --constraint that selects one SKU
+# capture a fixed reference event set on the candidate node, diff vs the reference node
+sbatch --nodelist=<candidate> --export=ALL,CAPTURE_DIR=<dir>/<candidate> submit_capture.sh
+python tools/cross_gpu_diff.py <dir>/<reference> <dir>/<candidate>   # must report 0 everywhere
 ```
 
-On the Tufts `gpu` partition the `a100:8` nodes
-(`pax049/050/051/052/105/106/007`) are the same SKU (A100 80 GB SXM); `pax003`
-(`a100:2`) is a *different* SKU. `submit_deghost_compare_3k_pin.sh` pins the
-whole sweep to one node and adds a `base_dup` arm (identical config, different
-physical GPU on the same node) to confirm same-node reproducibility before
-trusting the comparison.
+Nodes that return 0 join the allowlist; a non-zero node is quarantined until its
+driver/stack is brought into line. This is cheap (~10 min/node) and auditable —
+a standard HPC practice, not a per-event uncertainty.
+
+### 4.3 Cross-architecture conformance map (measured)
+
+Same 378-event reference set, all driver 575.57.08, deterministic, diffed
+spacepoint-by-spacepoint vs the A100-80GB reference (pax050):
+
+| Pair | arch | keep-flips (of 88M) | slice-query flips | Stage-3 class flips | **event drop-flips** | verdict |
+|------|------|---------------------|-------------------|---------------------|----------------------|---------|
+| A100-80 vs A100-40 | Ampere↔Ampere | 0 | 0 | 0 | **0 / 378** | identical |
+| A100 vs L40S | Ampere↔Ada | 3 (1e-5%) | 0.78% | 0.69% | **0 / 378** | **conforms** |
+| A100 vs H100 | Ampere↔Hopper | 235 k (0.27%) | 20.2% | 3.2% | **7 / 378 (1.9%)** | **does NOT conform** |
+| A100 vs H200 | Ampere↔Hopper | 235 k (0.27%) | 20.2% | 3.8% | **7 / 378 (1.9%)** | **does NOT conform** |
+| H100 vs H200 | Hopper↔Hopper | 1 | 0.03% | 1.3% | **0 / 378** | conforms (event-level) |
+
+**Conformance families:** `{A100 (any memory size), L40S}` are mutually
+bit/event-identical → one allowlist, zero systematic. `{H100, H200}` form a
+separate Hopper family (event-level consistent with each other) that diverges
+from the Ampere/Ada family by ~1.9% at the event level.
+
+**Source of the Hopper divergence — it's the GEMMs, NOT attention (tested).** We
+re-ran A100 and H100 with the `xformers` attention backend instead of
+`flash_attn` and re-diffed:
+
+| A100 vs H100 | keep-flips | slice churn | event drop-flips |
+|--------------|-----------|-------------|------------------|
+| flash_attn backend   | 0.27% | 20.2% | 7/378 |
+| xformers backend     | 0.27% | 19.0% | 7/378 |
+
+Identical — swapping the attention backend does **not** change the cross-arch
+gap. The clincher: the **deghoster backbone runs `enable_flash=False`**
+(config L161), so its `P(real)` is *bit-identical* between flash and xformers on
+a fixed GPU — yet the deghoster is exactly where the cross-arch divergence
+enters (the keep-flips that drive everything). Therefore the divergence comes
+from the **architecture-specialized cuBLAS GEMMs (linear/QKV/MLP projections)
+and `SerializedPooling`**, not the attention kernel. flash-attn's Hopper rewrite
+was a red herring. (Swapping flash↔xformers *does* perturb Stage 2/3 by ~1-2%
+per-SP on a fixed GPU with 0 event flips — so the backend is a minor
+reproducibility knob to pin, but not the cross-arch driver.)
+
+**Anatomy of the Hopper divergence** (from `cross_gpu_diff`'s margin analysis):
+`|ΔP(real)|` is bimodal — per-event *median* max ≈ 4e-6 (most events nearly
+identical) but *p95* ≈ 0.8 (a tail of events has points that flip hard). Of the
+235 k Stage-1 keep-flips, **64% sit within 0.05 of τ and 89% within 0.1** — so a
+dead-band / hysteresis at the deghoster (§5.4) would remove most, but not all,
+of the Hopper-vs-Ampere divergence (the ~11% large-margin tail is genuinely
+different output, not knife-edge). This quantifies the amplifier-reduction payoff
+**before** any model change.
 
 ---
 
-## 5. Deploying across heterogeneous GPUs (the open problem)
+## 5. Deploying across many nodes
 
-Large-scale production will span GPU types (A100 / H100 / L40S / …). Bit-exact
-output across them is **not achievable** with stock PyTorch. Strategies, roughly
-in order of practicality:
+Given §4, large-scale deployment is **operationally** tractable — the controls are
+about standardizing and gating the software stack, not inflating error bars.
 
-1. **Treat cross-GPU variation as a systematic uncertainty.** Physics results
-   are statistical. Run a fixed **control sample on each GPU type** and measure
-   the label-flip rate / efficiency shift vs a designated reference GPU; fold
-   that into the systematic budget. This is the realistic path for a large
-   dataset and is the recommended default.
+1. **Standardize the driver + library stack.** The in-container CUDA/torch is
+   already fixed (one `.sif`); pin production to a host **driver allowlist**.
+   Within a uniform-driver A100 pool, output is bit-identical regardless of GPU
+   memory size — the cross-node systematic is **zero**.
 
-2. **Pin a GPU SKU per *measurement*, not per *production pass*.** Production
-   (making the ntuples) can span GPUs; but any number that enters a *result*
-   (efficiency, purity, a tuned threshold) should be measured on a single pinned
-   SKU so it is itself reproducible. Re-derive such numbers if the reference
-   hardware changes.
+2. **Gate every node with the conformance test (§4.2).** Capture a fixed
+   reference event set on each candidate node and `cross_gpu_diff` vs the
+   reference; admit only nodes that return 0. This catches a non-conforming node
+   (the pax003 failure mode) *before* it contaminates a production pass — the
+   gate is the safeguard, run it whenever the pool or driver changes.
 
-3. **Reduce the amplifier — the highest-leverage code change.** The fragility is
-   not the ~1e-6 numerics, it is the **hard cuts** stacked on top of them
-   (boundary `argmax`, no_object threshold, X-veto). Options:
-   - compute the final decision logits / `argmax` in **fp32 or fp64** even if
-     the backbone runs in lower precision, to widen decision margins;
-   - propagate **soft scores** (probabilities) instead of hard per-SP labels
-     where the downstream allows, and apply cuts as late as possible;
-   - add **hysteresis / dead-bands** around knife-edge thresholds (e.g. the
-     X-veto), so a single flipped spacepoint can't tip an event.
-   These shrink sensitivity to *any* numerical perturbation — TF32, cross-GPU,
-   or driver upgrades — and are worth pursuing independently of determinism.
+3. **Different GPU *architecture* splits into conformance families — MEASURED
+   (§4.3).** Ampere (A100) and Ada (L40S) **conform** (0 event-level
+   differences). Hopper (H100 / H200) does **not** conform with them (~1.9%
+   event-level drop-flips, 20% slice-assignment churn). So the allowlist is
+   **per architecture-family**: deploy a given measurement within one family, or
+   quantify the cross-family shift as a measured systematic. Always run the
+   conformance test before adding an architecture.
 
-4. **Golden reference for spot-checks.** A CPU (or single pinned GPU) run on a
-   small fixed subset gives a stable ground truth to regression-test production
-   GPUs against, even though it is far too slow for the full dataset.
+4. **Reduce the amplifier (defense-in-depth, highest-leverage code change).**
+   Whatever the stack, the fragility is the **hard cuts** stacked on ~1e-6
+   numerics (boundary `argmax`, no_object floor, X-veto). Worth pursuing
+   independently because it shrinks sensitivity to *any* perturbation — a driver
+   upgrade, a new GPU architecture, or a future kernel change:
+   - compute the final decision logits / `argmax` in **fp32/fp64** even if the
+     backbone runs lower precision, to widen decision margins;
+   - propagate **soft scores** instead of hard per-SP labels where possible, and
+     cut as late as possible;
+   - add **hysteresis / dead-bands** around knife-edge thresholds (esp. the
+     X-veto) so a single flipped spacepoint can't tip an event.
+   The Tier-A captures let you estimate the payoff **offline** (the margin
+   analysis in `cross_gpu_diff.py`) before changing any model code.
+
+5. **Golden reference for spot-checks.** A CPU (or single pinned node) run on a
+   small fixed subset is a stable ground truth to regression-test production
+   nodes against.
 
 **Recommended operating procedure**
 
 - *Exploration:* default (fast) mode.
-- *Any measurement:* `--deterministic` **and** pin to one GPU SKU.
-- *Production at scale:* `--deterministic` ON (removes within-node run-to-run
-  churn) + accept cross-GPU spread as a measured systematic + pursue §5.3 to
-  shrink it.
+- *Any measurement:* `--deterministic`, pinned to a conforming node
+  (`--nodelist`).
+- *Production at scale:* `--deterministic` ON + a **driver allowlist** + the
+  **node conformance gate** (§4.2) run whenever the pool/driver changes. Within
+  a conforming pool the cross-node systematic is zero; pursue §5.4 (amplifier
+  reduction) as defense-in-depth against future stack changes.
 
 ---
 
@@ -266,5 +362,14 @@ in order of practicality:
 | Stage-B env knob `DETERMINISTIC=1` | `lartpc_data_prep/larformer_physics/single_photon/run_stageB_capped.sh` |
 | Same-GPU bit-exact validation (4× run + diff) | `.../single_photon/slurm/submit_determinism_test.sh`, `determinism_diff.py` |
 | Pinned single-node sweep (+ `base_dup` control) | `.../single_photon/slurm/submit_deghost_compare_3k_pin.sh` |
+| **Tier-A stage-by-stage tensor capture** (no model edits) | `tools/capture_cascade_tensors.py` |
+| **Cross-node attribution + margin analysis** | `tools/cross_gpu_diff.py` |
+| **Node conformance capture job** | `.../single_photon/slurm/submit_capture.sh` |
+
+**Conformance families (driver 575.57.08, full-cascade, 378 events) — see §4.3:**
+`{A100 80/40 GB, L40S}` mutually identical at event level (one allowlist, zero
+systematic); `{H100, H200}` a separate Hopper family that diverges ~1.9% at
+event level from Ampere/Ada. pax003 diverged historically (driver unconfirmed —
+node down at re-check).
 
 Related: `docs/LArFormer.md`, `docs/LArFormer_Stage3_TrainingStability.md`.
