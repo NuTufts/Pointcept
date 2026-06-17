@@ -169,19 +169,19 @@ hooks = [
 # =============================================================================
 weight = None
 resume = False
-save_path        = "exp/larformer_keypoint2_slice_v1"
+save_path        = "exp/larformer_keypoint2"
 epoch            = 50
 eval_epoch       = 50
-batch_size       = 8
-batch_size_val   = 16
-num_worker       = 8
+batch_size       = 10
+batch_size_val   = 10
+num_worker       = 4
 num_worker_val   = 4
 evaluate         = True
 enable_amp       = False
 amp_dtype        = "bfloat16"
 empty_cache      = False
 clip_grad        = 5.0
-enable_wandb     = False
+enable_wandb     = True
 find_unused_parameters = True
 
 skip_dataloader_on_resume = True

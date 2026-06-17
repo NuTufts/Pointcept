@@ -104,6 +104,9 @@ def predicted_masks_to_instances(
                           "primary_trackid"):
                     if k in g:
                         inst[k] = g[k]
+                # GT particle's own point set (for the side-by-side GT viz).
+                if "truth_indices" in g:
+                    inst["gt_truth_indices"] = g["truth_indices"]
                 inst["match_iou"] = best_iou
         out.append(inst)
     return out
@@ -204,6 +207,25 @@ class CascadedKeypoint(nn.Module):
             out["ps_coord"] = ps_batch.get("coord")
             out["ps_coord_norm"] = ps_batch.get("coord_norm")
             out["ps_offset"] = ps_batch.get("offset")
+            # Per-particle instances actually fed to the keypoint decoder (the
+            # predicted masks' point sets + their IoU-matched GT, or the GT
+            # instances under particle_source="gt") — for the visualizer.
+            out["ps_particle_instances"] = ps_batch.get(
+                "particle_instances_per_event",
+                ps_batch.get("gt_instances_per_event"))
+            # Per-SP GT trackid (survives the deghost/nu-keep subsetting) — the
+            # visualizer matches a predicted particle to GT by majority trackid
+            # vote (the cascade strips gt_instances before the slicer, so IoU vs
+            # gt_instances isn't available here; trackid is more robust anyway).
+            if "trackid" in ps_batch:
+                out["ps_trackid"] = ps_batch["trackid"]
+            # GT keypoints (mckeypoints) — nu-vertex (type 0) + per-trackid
+            # start/end. Present when the dataset emitted them (emit_keypoints).
+            for k in ("mckeypoints_pos_norm_per_event",
+                      "mckeypoints_type_per_event",
+                      "mckeypoints_trackid_per_event"):
+                if k in ps_batch:
+                    out[f"ps_{k}"] = ps_batch[k]
             for k in ("run", "subrun", "event", "name"):
                 if k in ps_batch:
                     out[f"ps_{k}"] = ps_batch[k]

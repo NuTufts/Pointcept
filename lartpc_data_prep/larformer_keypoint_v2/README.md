@@ -304,7 +304,56 @@ denoising; runnable end-to-end via `larformer-keypoint2-particle-v1.py`).
     processing order is canonical regardless of input-list order; the tool labels
     each output H5 with the actual processed `src_file` (+ run/subrun/event when
     available) so reorder/subset checks match the same physical event.
-  - **Still deferred:** a viz overlay for the attempt-2 cm keypoints.
+  - **Visualizer DONE (2026-06-17).** The inference tool now writes a RICH
+    per-event H5 (`slice/coord_cm`; per `particle/{i}`: `point_idx` into the
+    slice, `cls`, `start_cm`, `end_cm`, and the matched-GT `gt_point_idx` /
+    `gt_start_cm` / `gt_end_cm` / `iou` / `gt_trackid`; `nu_vertex_cm` +
+    `gt_nu_vertex_cm`). GT matching is by **majority per-SP `trackid` vote**, NOT
+    IoU-vs-gt_instances: the cascade strips `gt_instances` before the slicer, but
+    per-SP `trackid` + per-event `mckeypoints` survive into `ps_batch`, so the
+    predicted particle's points vote a GT trackid and GT keypoints come from
+    `mckeypoints` (start = type track_start/shower, end = track_end, nu-vertex =
+    type 0). Enable with `--with-gt` (default; `--no-gt` for real data).
+    `tools/visualize_keypoint2_cascade.py` renders an interactive Plotly HTML:
+    LEFT = predicted particles + predicted start/end + nu-vertex with a dropdown
+    (All / individual particle; the selected one is colour-highlighted, the rest
+    drawn small+grey for context); RIGHT (when GT present) = the trackid-matched
+    GT particle + GT keypoints (empty if no match). Validated end-to-end on real
+    events: 6/6 and 5/5 particles matched, sensible PIDs (e/gamma/p), figure
+    structure correct (dropdown buttons, two scenes, context greying).
+    A **Dash** version `tools/visualize_keypoint2_cascade_dash.py` serves a whole
+    directory of event H5s as a live app (Event + Particle dropdowns → callback
+    rebuilds the 3D figure; camera preserved via `uirevision`). Both share the
+    trace/visibility logic (`_assemble_traces` / `_visibility` /
+    `figure_for_view` in the static tool). Smoke-tested: app builds (2 callbacks),
+    server returns HTTP 200 and serves all layout components.
+    `python tools/visualize_keypoint2_cascade_dash.py <dir> --port 8050`.
+  - **GT-keypoint frame fix (2026-06-17).** Two normalized frames coexist in
+    `ps_batch`: `coord_norm` is RECENTERED to the slice centroid by the cascade,
+    but `mckeypoints_pos_norm` is the dataset's FIXED normalization
+    ((cm-coord_center)/coord_scale; the cascade recenters only coord_norm). So
+    PREDICTED keypoints (model `pos`, recentered) denormalize via the per-event
+    recovered affine, while GT keypoints (mckeypoints) MUST denormalize with the
+    fixed (coord_center, coord_scale) — using the recovered affine offset the GT
+    keypoints by the slice-centroid shift (~100 cm; visible as GT keypoints not
+    landing on the GT spacepoints). After the fix: GT start→nearest GT point
+    0.0-0.5 cm, GT nu-vertex inside the slice and ~2 cm from the predicted one.
+  - **Shared-range fix (2026-06-17).** The Predicted and Matched-GT scenes were
+    auto-ranging independently, so identical coordinates mapped to different
+    screen positions (looked like a pred-vs-GT spacepoint offset). Confirmed NOT
+    a real offset — matched pred/GT particles share many identical slice indices
+    (same `slice_coord_cm`, same frame; centroids agree to a few cm = mask-
+    coverage difference only). Fix: both scenes use ONE shared x/y/z range (over
+    slice points + finite keypoints) + the same initial camera (`_ranges` /
+    `_scene`, shared by both tools). Figure-only change — no inference re-run
+    needed, just regenerate the HTML / restart the Dash app.
+  - **Linked rotation (Dash, 2026-06-17).** Rotating/zooming either 3D scene
+    drives both (so Predicted and Matched-GT stay aligned while inspecting).
+    Loop-safe via a `cam` `dcc.Store`: a capture callback updates the Store only
+    when the camera actually changes; an apply callback `Patch`es both
+    `scene.camera`/`scene2.camera`; the programmatic update re-emits the same
+    camera, which the capture callback sees as unchanged → no-op, breaking the
+    cycle. (Static HTML keeps Plotly's built-in per-scene controls.)
 
 Remaining: full-cache training run (cluster) of Phase 1/2 — the real
 generalization test — then re-run this inference tool with the trained weights
