@@ -42,6 +42,7 @@ from .keypoint_eval import (
     decode_event_keypoints, keypoint_arrays_for_h5, dedup_query_effective_argmax,
 )
 from .keypoint_particle_evaluator import LArFormerKeypointEvaluator
+from .keypoint2_evaluator import LArFormerLevelKeypointEvaluator
 from .keypoint_hooks import KeypointRegWarmupHook
 from .tokenizer import CompositeTokenizer
 
@@ -97,5 +98,6 @@ __all__ = [
     "keypoint_arrays_for_h5",
     "dedup_query_effective_argmax",
     "LArFormerKeypointEvaluator",
+    "LArFormerLevelKeypointEvaluator",
     "KeypointRegWarmupHook",
 ]

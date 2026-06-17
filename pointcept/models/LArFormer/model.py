@@ -120,6 +120,7 @@ class LArFormer(nn.Module):
         enable_keypoint_dense_head: bool = False,
         keypoint_dense_cfg: Optional[dict] = None,
         freeze_non_keypoint: bool = False,
+        level_keypoint_heads: Optional[Sequence[dict]] = None,
     ):
         super().__init__()
         self.backbone = build_model(backbone)
@@ -355,6 +356,32 @@ class LArFormer(nn.Module):
                 self.kp_dense_offset_head = KeypointOffsetHead(
                     in_dim=backbone_out_channels, n_types=self.kp_dense_n_types,
                     hidden_dim=hid, **pe_kw)
+
+        # Per-LEVEL keypoint classification heads (attempt-2 slice model). Each
+        # spec attaches a small head to a NAMED level's tokens predicting a soft
+        # "object" score; the target is the max over the level's member
+        # spacepoints (via sp_to_level_id) of max(kpscores[:, kp_types]) — a
+        # Gaussian keypoint-proximity field already emitted by the dataset
+        # (emit_keypoints=True). Distinct from the per-SP dense head above:
+        # these live on arbitrary levels (e.g. ptv3_dec2 ~1cm for an object/
+        # no-object head, spacepoint for a nu-vertex head) and supervise with a
+        # weighted MSE on the sigmoid. Each spec:
+        #   level     — level name to attach to (must be in `levels`)
+        #   name      — head name (keys the output + loss diagnostics)
+        #   kp_types  — kpscores columns unioned (max) into the target
+        #   hidden_dim/weight/pos_weight/pos_threshold — head + loss knobs
+        self.level_kp_head_cfgs = list(level_keypoint_heads or [])
+        self.level_kp_heads = nn.ModuleDict()
+        _level_names = {lc["name"] for lc in self.levels_cfg}
+        for hc in self.level_kp_head_cfgs:
+            lvl_name = hc["level"]
+            if lvl_name not in _level_names:
+                raise ValueError(
+                    f"level_keypoint_heads references level {lvl_name!r} not in "
+                    f"`levels`: {sorted(_level_names)!r}")
+            self.level_kp_heads[hc["name"]] = KeypointScoreHead(
+                in_dim=token_dim, n_types=1,
+                hidden_dim=int(hc.get("hidden_dim", 256)))
 
         # Keypoint-only training: freeze the WHOLE particle-segmentation network
         # (backbone, PT-v3 decoder, token refiner, Mask2Former decoder layers +
@@ -817,7 +844,8 @@ class LArFormer(nn.Module):
         # have been processed by
         # `tools/augment_stage12_cache_particle_class_id.py`.
         for k in ("hasmatch", "origin_label", "ssnet_label",
-                  "trackid", "pid", "slice_id", "particle_class_id"):
+                  "trackid", "pid", "slice_id", "particle_class_id",
+                  "kpscores", "kpoffsets"):
             if k in batched_dict:
                 out[k] = batched_dict[k][sp]
         return out
@@ -959,6 +987,46 @@ class LArFormer(nn.Module):
     # ------------------------------------------------------------------
     # Forward
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _pool_sp_to_level_max(per_sp_value, sp_to_level_id, n_tokens):
+        """Max-pool a per-spacepoint value (N,) onto a level's tokens (M,) via
+        sp_to_level_id (N,)∈[0,M) or -1 (unmapped). Tokens with no member SP
+        stay 0. Used to lift the per-SP kpscores proximity onto a coarse level
+        (e.g. ptv3_dec2) as the soft target for that level's keypoint head."""
+        tok = per_sp_value.new_zeros(int(n_tokens))
+        if per_sp_value.numel() == 0 or n_tokens == 0:
+            return tok
+        valid = sp_to_level_id >= 0
+        if bool(valid.any()):
+            tok.scatter_reduce_(
+                0, sp_to_level_id[valid].long(), per_sp_value[valid],
+                reduce="amax", include_self=True)
+        return tok
+
+    def _level_keypoint_loss(self, name, logits, target_scores, hc):
+        """Weighted-MSE on sigmoid(level keypoint head logits) (M,1) vs the
+        pooled per-token soft target (M,). Mirrors the per-SP dense score loss.
+        Returns (grad_total, diag)."""
+        import torch.nn.functional as F
+        target = target_scores.to(logits.dtype).view(-1)
+        pred = torch.sigmoid(logits.view(-1))
+        se = (pred - target) ** 2
+        pos_w = float(hc.get("pos_weight", 1.0))
+        pos_thr = float(hc.get("pos_threshold", 0.05))
+        if pos_w != 1.0:
+            w = torch.where(target > pos_thr,
+                            torch.full_like(target, pos_w),
+                            torch.ones_like(target))
+            loss = (se * w).sum() / w.sum().clamp(min=1.0)
+        else:
+            loss = se.mean()
+        diag = {f"levelkp_{name}": loss.detach()}
+        with torch.no_grad():
+            pos = target > pos_thr
+            diag[f"levelkp_{name}_mse_pos"] = (se[pos].mean() if pos.any()
+                                               else logits.new_zeros(()))
+        return float(hc.get("weight", 1.0)) * loss, diag
 
     def _dense_keypoint_loss(self, logits, offsets, target_scores,
                              target_offsets):
@@ -1211,6 +1279,26 @@ class LArFormer(nn.Module):
                 pred["dense_coord_norm"] = coord_norm.detach()
                 if dense_off_all is not None:
                     pred["dense_kpoffsets"] = dense_off_all[sp].detach()
+
+            # Per-level keypoint heads: soft "object" score on a named level's
+            # tokens. Store sigmoid score + token coords + sp_to_level_id so the
+            # evaluator can score them and (attempt-2 Phase 2) the per-particle
+            # query seeder can read per-token object scores. Logits kept for the
+            # training loss below.
+            level_kp_logits = {}
+            if self.level_kp_heads:
+                pred["level_kp"] = {}
+                for hc in self.level_kp_head_cfgs:
+                    nm, ln = hc["name"], hc["level"]
+                    lvl = levels[ln]
+                    lg = self.level_kp_heads[nm](lvl.tokens)        # (M, 1)
+                    level_kp_logits[nm] = lg
+                    pred["level_kp"][nm] = {
+                        "score": torch.sigmoid(lg).detach().view(-1),
+                        "coords": lvl.coords.detach(),
+                        "level": ln,
+                        "sp_to_level_id": lvl.sp_to_level_id.detach(),
+                    }
             per_event_pred.append(pred)
 
             if self.training:
@@ -1263,6 +1351,25 @@ class LArFormer(nn.Module):
                     loss_dict["total"] = loss_dict["total"] + d_loss
                     for k, v in d_diag.items():
                         loss_dict[f"kpdense_{k}"] = v
+                # Per-level keypoint head loss: pool per-SP kpscores onto the
+                # level's tokens (max over its member SPs) and weighted-MSE the
+                # sigmoid score. kp_types selects which kpscores columns union
+                # into the "object" target (e.g. [0]=nu_vertex, [1,2,3]=track
+                # start/end/shower).
+                if level_kp_logits and "kpscores" in data_dict:
+                    kps_ev = data_dict["kpscores"][sp]              # (n_sp, 6)
+                    for hc in self.level_kp_head_cfgs:
+                        nm, ln = hc["name"], hc["level"]
+                        cols = list(hc["kp_types"])
+                        per_sp = kps_ev[:, cols].amax(dim=1)        # (n_sp,)
+                        lvl = levels[ln]
+                        tgt = self._pool_sp_to_level_max(
+                            per_sp, lvl.sp_to_level_id, lvl.tokens.shape[0])
+                        l_loss, l_diag = self._level_keypoint_loss(
+                            nm, level_kp_logits[nm], tgt, hc)
+                        loss_dict["total"] = loss_dict["total"] + l_loss
+                        for k, v in l_diag.items():
+                            loss_dict[k] = v
                 per_event_loss.append(loss_dict)
             elif "gt_instances_per_event" in data_dict:
                 # Eval-with-GT path: compute matching + loss per event so
