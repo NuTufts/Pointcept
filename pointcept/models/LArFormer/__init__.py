@@ -31,6 +31,18 @@ from .cascaded import CascadedSlicer
 from .cascaded_particle import CascadedParticleSegmenter
 from .matcher import HungarianMatcher
 from .model import LArFormer
+from .keypoint import LArFormerKeypoint
+from .keypoint_heads import KeypointScoreHead, KeypointOffsetHead
+from .keypoint_query import KeypointQueryHead, keypoint_query_loss
+from .keypoint_refine import KeypointRefinementDecoder
+from .keypoint_eval import (
+    decode_dense_votes, decode_query_points, decode_nu_vertex,
+    accumulate_metrics, format_metrics_table,
+    query_points_to_typed, reconcile_keypoints, gt_keypoints_by_type,
+    decode_event_keypoints, keypoint_arrays_for_h5, dedup_query_effective_argmax,
+)
+from .keypoint_particle_evaluator import LArFormerKeypointEvaluator
+from .keypoint_hooks import KeypointRegWarmupHook
 from .tokenizer import CompositeTokenizer
 
 __all__ = [
@@ -64,4 +76,26 @@ __all__ = [
     "recenter_coord_norm_to_per_event_centroid",
     # Top-level
     "LArFormer",
+    # Keypoint module (Phase 1: dense per-SP score head)
+    "LArFormerKeypoint",
+    "KeypointScoreHead",
+    "KeypointOffsetHead",
+    # Keypoint module (Phase 2: query-based start/end/vertex head)
+    "KeypointQueryHead",
+    "keypoint_query_loss",
+    "KeypointRefinementDecoder",
+    # Keypoint module (Phase 4: decode + PPN-style metrics)
+    "decode_dense_votes",
+    "decode_query_points",
+    "decode_nu_vertex",
+    "accumulate_metrics",
+    "format_metrics_table",
+    "query_points_to_typed",
+    "reconcile_keypoints",
+    "gt_keypoints_by_type",
+    "decode_event_keypoints",
+    "keypoint_arrays_for_h5",
+    "dedup_query_effective_argmax",
+    "LArFormerKeypointEvaluator",
+    "KeypointRegWarmupHook",
 ]

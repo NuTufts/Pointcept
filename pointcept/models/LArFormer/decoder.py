@@ -86,6 +86,45 @@ class SinusoidalPosEmb3D(nn.Module):
         return self.proj(emb)
 
 
+def build_coord_pos_emb(kind: Optional[str], out_dim: int,
+                        num_freq: Optional[int] = None,
+                        max_freq: float = 256.0,
+                        hidden_dim: Optional[int] = None,
+                        zero_init: bool = False) -> Optional[nn.Module]:
+    """Build a 3D-coordinate position-embedding module (or None).
+
+    kind:
+        None / "" / "none" — no pos-emb (returns None).
+        "sinusoidal"       — fixed NeRF-style sin/cos (SinusoidalPosEmb3D); a
+                             unique, spatially-structured signature per coord,
+                             no symmetry-collapse risk. Recommended.
+        "mlp"              — learned Linear(3->hidden)->GELU->Linear(hidden->out).
+    out_dim: embedding width emitted (dense heads concatenate it onto the
+        per-point feature; the query heads add it to the query, so out_dim
+        there must equal the token dim).
+    zero_init: zero the OUTPUT projection so the module emits 0 at init
+        (identity-at-init). Use when the embedding is ADDED to an existing
+        signal (the query heads) so adding the pos-emb doesn't shock a loaded
+        head; the module learns away from zero. Leave False when the embedding
+        is CONCATENATED (dense heads) and a live signal is wanted from iter 1.
+    """
+    if not kind or str(kind).lower() == "none":
+        return None
+    if kind == "sinusoidal":
+        m = SinusoidalPosEmb3D(out_dim, num_freq=num_freq, max_freq=max_freq)
+        out_lin = m.proj
+    elif kind == "mlp":
+        h = int(hidden_dim) if hidden_dim else int(out_dim)
+        m = nn.Sequential(nn.Linear(3, h), nn.GELU(), nn.Linear(h, int(out_dim)))
+        out_lin = m[-1]
+    else:
+        raise ValueError(f"unknown coord pos-emb kind {kind!r}")
+    if zero_init:
+        nn.init.zeros_(out_lin.weight)
+        nn.init.zeros_(out_lin.bias)
+    return m
+
+
 class _MaskedDecoderLayer(nn.Module):
     """Pre-norm masked-cross-attn → self-attn → FFN. DETR-style PE on Q/K only."""
 
@@ -162,11 +201,23 @@ class _MaskedDecoderLayer(nn.Module):
 
 
 class _PerLayerHeads(nn.Module):
-    """Class logits + optional origin head + shared mask embed."""
+    """Class logits + optional origin head + shared mask embed.
+
+    When `enable_keypoint_head` is set (Phase-2 keypoint module, requires
+    `enable_origin_head`), also emits, per query: `end` (3D end point),
+    `start_logvar`/`end_logvar` (per-axis log-variance for β-NLL), and
+    `end_logit` (track-end existence gate). The `origin` head IS the start
+    point under this mode.
+    """
 
     def __init__(self, dim: int, num_classes: int,
                  enable_origin_head: bool = True,
-                 zero_init_output_proj: bool = False):
+                 zero_init_output_proj: bool = False,
+                 enable_keypoint_head: bool = False,
+                 keypoint_pos_emb_kind: Optional[str] = None,
+                 keypoint_pos_emb_num_freq: Optional[int] = None,
+                 keypoint_pos_emb_max_freq: float = 256.0,
+                 keypoint_pos_emb_hidden_dim: Optional[int] = None):
         super().__init__()
         self.class_head = nn.Linear(dim, num_classes)
         self.enable_origin_head = bool(enable_origin_head)
@@ -176,6 +227,42 @@ class _PerLayerHeads(nn.Module):
                 nn.GELU(),
                 nn.Linear(dim, 3),
             )
+        self.enable_keypoint_head = bool(enable_keypoint_head)
+        if self.enable_keypoint_head:
+            if not self.enable_origin_head:
+                raise ValueError(
+                    "enable_keypoint_head requires enable_origin_head "
+                    "(the origin head supplies the keypoint 'start')."
+                )
+
+            def _mlp(out_dim):
+                return nn.Sequential(
+                    nn.Linear(dim, dim), nn.GELU(), nn.Linear(dim, out_dim))
+            self.end_head = _mlp(3)
+            self.start_logvar_head = _mlp(3)
+            self.end_logvar_head = _mlp(3)
+            self.end_exist_head = nn.Linear(dim, 1)
+            # Start uncertainty at logvar≈0 (var≈1).
+            nn.init.zeros_(self.start_logvar_head[-1].weight)
+            nn.init.zeros_(self.start_logvar_head[-1].bias)
+            nn.init.zeros_(self.end_logvar_head[-1].weight)
+            nn.init.zeros_(self.end_logvar_head[-1].bias)
+            # Opt-in: add a pos-emb of the query's anchor coord (the prior
+            # layer's predicted origin, or the mixed-query anchor at init) to
+            # the query content BEFORE the keypoint heads (DAB/DN-DETR style),
+            # so the start/end regression conditions on "where am I now". Only
+            # the keypoint heads (origin/end/logvar/exist) use it — class /
+            # mask_embed stay on the raw query so the (frozen) mask path is
+            # untouched. Off by default (kp_pos_emb=None). Named `kp_pos_emb`
+            # so it's caught by the keypoint-only freeze marker list.
+            self.kp_pos_emb = build_coord_pos_emb(
+                keypoint_pos_emb_kind, dim,
+                num_freq=keypoint_pos_emb_num_freq,
+                max_freq=keypoint_pos_emb_max_freq,
+                hidden_dim=keypoint_pos_emb_hidden_dim,
+                zero_init=True)  # ADDED to the query → identity at init
+        else:
+            self.kp_pos_emb = None
         self.mask_embed = nn.Sequential(
             nn.Linear(dim, dim),
             nn.GELU(),
@@ -202,14 +289,32 @@ class _PerLayerHeads(nn.Module):
                 nn.init.zeros_(self.origin_head[-1].weight)
                 nn.init.zeros_(self.origin_head[-1].bias)
 
-    def forward(self, queries: torch.Tensor) -> dict:
+    def forward(self, queries: torch.Tensor,
+                anchor_coords: Optional[torch.Tensor] = None) -> dict:
+        # `origin` is the ONLY keypoint output that feeds back into the (frozen)
+        # decoder: the next layer adds pos_emb(origin) to query_pos, so routing
+        # origin through the keypoint pos-emb would let it perturb the frozen
+        # masks (observed: val IoU dip). So origin + class + mask_embed always
+        # use the RAW query; only the non-feedback keypoint heads (end /
+        # logvars / end-exist — the ones that actually lack positional info)
+        # get the anchor pos-emb. This keeps the query pos-emb mask-safe.
+        q_kp = queries
+        if (self.enable_keypoint_head and self.kp_pos_emb is not None
+                and anchor_coords is not None):
+            q_kp = queries + self.kp_pos_emb(anchor_coords)
         origin = (self.origin_head(queries) if self.enable_origin_head
                   else queries.new_zeros(queries.shape[0], 3))
-        return {
+        out = {
             "class_logits": self.class_head(queries),
             "origin":       origin,
             "mask_embed":   self.mask_embed(queries),
         }
+        if self.enable_keypoint_head:
+            out["end"] = self.end_head(q_kp)
+            out["start_logvar"] = self.start_logvar_head(q_kp)
+            out["end_logvar"] = self.end_logvar_head(q_kp)
+            out["end_logit"] = self.end_exist_head(q_kp).squeeze(-1)
+        return out
 
 
 class Mask2FormerDecoder(nn.Module):
@@ -259,6 +364,14 @@ class Mask2FormerDecoder(nn.Module):
         pos_emb_max_freq: float = 256.0,
         enable_origin_head: bool = True,
         zero_init_output_proj: bool = False,
+        enable_keypoint_head: bool = False,
+        # Opt-in anchor pos-emb on the per-query keypoint heads (off by
+        # default). See _PerLayerHeads. Distinct from pos_emb_* above, which
+        # is the query_pos / mask-key embedding shared with the frozen path.
+        keypoint_pos_emb_kind: Optional[str] = None,
+        keypoint_pos_emb_num_freq: Optional[int] = None,
+        keypoint_pos_emb_max_freq: float = 256.0,
+        keypoint_pos_emb_hidden_dim: Optional[int] = None,
     ):
         super().__init__()
         if len(scale_pattern) == 0:
@@ -269,6 +382,13 @@ class Mask2FormerDecoder(nn.Module):
         self.num_classes = int(num_classes)
         self.mask_threshold = float(mask_threshold)
         self.enable_origin_head = bool(enable_origin_head)
+        self.enable_keypoint_head = bool(enable_keypoint_head)
+        self._kp_head_kw = dict(
+            keypoint_pos_emb_kind=keypoint_pos_emb_kind,
+            keypoint_pos_emb_num_freq=keypoint_pos_emb_num_freq,
+            keypoint_pos_emb_max_freq=keypoint_pos_emb_max_freq,
+            keypoint_pos_emb_hidden_dim=keypoint_pos_emb_hidden_dim,
+        )
 
         self.query_content = nn.Parameter(torch.empty(num_queries, dim))
         nn.init.trunc_normal_(self.query_content, std=0.02)
@@ -299,6 +419,8 @@ class Mask2FormerDecoder(nn.Module):
         self.init_heads = _PerLayerHeads(
             dim, num_classes, enable_origin_head=self.enable_origin_head,
             zero_init_output_proj=self.zero_init_output_proj,
+            enable_keypoint_head=self.enable_keypoint_head,
+            **self._kp_head_kw,
         )
         self.layers = nn.ModuleList([
             _MaskedDecoderLayer(
@@ -312,6 +434,8 @@ class Mask2FormerDecoder(nn.Module):
                 dim, num_classes,
                 enable_origin_head=self.enable_origin_head,
                 zero_init_output_proj=self.zero_init_output_proj,
+                enable_keypoint_head=self.enable_keypoint_head,
+                **self._kp_head_kw,
             )
             for _ in self.scale_pattern
         ])
@@ -373,8 +497,9 @@ class Mask2FormerDecoder(nn.Module):
         heads: _PerLayerHeads,
         queries: torch.Tensor,
         keys_pe_by_level: "OrderedDict[str, torch.Tensor]",
+        anchor_coords: Optional[torch.Tensor] = None,
     ) -> dict:
-        out = heads(queries)
+        out = heads(queries, anchor_coords)
         # Sanitize the matmul INPUTS so backward gradients don't propagate
         # Inf/NaN. See _sanitize_intermediate docstring.
         mask_embed = self._sanitize_intermediate(out["mask_embed"])
@@ -388,11 +513,21 @@ class Mask2FormerDecoder(nn.Module):
                 mask_logits[name] = self._sanitize_logits(
                     mask_embed @ keys_pe_clean.transpose(0, 1)
                 )
-        return {
+        result = {
             "class_logits": self._sanitize_logits(out["class_logits"]),
             "origin":       out["origin"],
             "mask_logits":  mask_logits,
+            # Raw per-query embedding (Q, D) — consumed by the Phase-2
+            # KeypointQueryHead. Carried on every layer dict so the DN
+            # slice (model._slice_decoder_output) splits it correctly.
+            "query_embed":  queries,
         }
+        # Phase-2 keypoint head outputs (start = `origin` above). Carried on
+        # every layer dict; sliced DN-safe in model._slice_decoder_output.
+        for k in ("end", "start_logvar", "end_logvar", "end_logit"):
+            if k in out:
+                result[k] = out[k]
+        return result
 
     def _build_attn_mask(self, prev_mask_logits: torch.Tensor
                          ) -> Optional[torch.Tensor]:
@@ -514,6 +649,7 @@ class Mask2FormerDecoder(nn.Module):
 
         init_predictions = self._compute_predictions(
             self.init_heads, queries.squeeze(0), keys_pe_by_level,
+            anchor_coords=init_anchor_coords,
         )
         last_predictions = init_predictions
 
@@ -552,6 +688,7 @@ class Mask2FormerDecoder(nn.Module):
 
             preds = self._compute_predictions(
                 self.layer_heads[li], queries.squeeze(0), keys_pe_by_level,
+                anchor_coords=last_predictions["origin"],
             )
             preds["scale"] = scale
             per_layer.append(preds)

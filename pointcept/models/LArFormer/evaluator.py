@@ -208,7 +208,7 @@ class LArFormerSlicerEvaluator(HookBase):
                         float(output["deghost_keep_frac"].item())
                     )
 
-                for ev_pred in preds:
+                for ev_in_batch, ev_pred in enumerate(preds):
                     eval_loss = ev_pred.get("eval_loss")
                     if eval_loss is None:
                         # Eval-with-GT was disabled (no gt_instances in
@@ -316,6 +316,8 @@ class LArFormerSlicerEvaluator(HookBase):
                         eval_loss=eval_loss,
                         q_idx=q_idx, k_idx=k_idx,
                         no_object_class_id=no_object_class_id,
+                        input_dict=input_dict,
+                        event_in_batch=ev_in_batch,
                     )
 
                     # Per-level cls accuracy (e.g. voxel_10cm cls head)
@@ -367,12 +369,19 @@ class LArFormerSlicerEvaluator(HookBase):
 
     def _on_event_processed(self, *, ev_pred: dict, eval_loss: dict,
                             q_idx, k_idx,
-                            no_object_class_id: int) -> None:
+                            no_object_class_id: int,
+                            input_dict: Optional[dict] = None,
+                            event_in_batch: Optional[int] = None) -> None:
         """Called once per validation event AFTER the base class's
         per-event metrics (mask IoU, cls accuracy, active-query count,
         nu_purity) are computed. Subclasses can record additional
         per-event records into `self.*` state and use them in
-        `_aggregate(...)`. Default no-op."""
+        `_aggregate(...)`. Default no-op.
+
+        `input_dict` is the (cuda-moved) collated batch and `event_in_batch`
+        the event's ordinal within it — together they let a subclass reach
+        per-event side inputs (e.g. `mckeypoints_*_per_event`) that aren't in
+        `ev_pred`/`eval_loss`. Optional / keyword-only for back-compat."""
         pass
 
     def _infer_no_object_id(self, model) -> int:

@@ -38,6 +38,7 @@ import torch.nn.functional as F
 
 from .builders import LevelOutput
 from .matcher import HungarianMatcher
+from .keypoint_query import keypoint_query_loss
 
 
 # ---------------------------------------------------------------------------
@@ -800,6 +801,29 @@ class LArFormerLoss(nn.Module):
         weight_aux_mask: float = 1.0,
         weight_per_level_cls: float = 1.0,
         weight_origin: float = 1.0,
+        # Phase-2 keypoint head (Option A). When enable_keypoint_head is set,
+        # each matched query is supervised toward its GT particle's start
+        # (= origin) and end via `keypoint_query_loss` (β-NLL by default),
+        # plus a track-end existence BCE. The plain origin L1 is then skipped
+        # (start is handled by kpq_start). gt_end / gt_has_end come from the
+        # GT instances' end_coord_norm / has_end (added by the keypoint
+        # datasets). See keypoint_query.py.
+        enable_keypoint_head: bool = False,
+        weight_kp_start: float = 1.0,
+        weight_kp_end: float = 1.0,
+        weight_kp_end_exist: float = 0.5,
+        kp_reg_kind: str = "betanll",
+        kp_beta: float = 0.5,
+        # Regression warm-up: for the first `kp_reg_warmup_epochs` epochs the
+        # start/end regression uses the robust `kp_reg_warmup_kind` (smooth_l1)
+        # instead of β-NLL. The variance heads learn nothing useful before the
+        # mean is roughly right, and early β-NLL variance is what forces the LR
+        # down; warming up with smooth_l1 lets the mean settle first, then we
+        # switch to β-NLL to start calibrating uncertainty. 0 = no warm-up.
+        # Requires a hook to call `set_epoch` each epoch (KeypointRegWarmupHook).
+        kp_reg_warmup_epochs: int = 0,
+        kp_reg_warmup_kind: str = "smooth_l1",
+        coord_scale: float = 179.55,
         num_sample_points: int = 4096,
         aux_max_tokens: int = 10_000,
         deep_supervision: bool = True,
@@ -880,6 +904,16 @@ class LArFormerLoss(nn.Module):
         self.weight_aux_mask = float(weight_aux_mask)
         self.weight_per_level_cls = float(weight_per_level_cls)
         self.weight_origin = float(weight_origin)
+        self.enable_keypoint_head = bool(enable_keypoint_head)
+        self.weight_kp_start = float(weight_kp_start)
+        self.weight_kp_end = float(weight_kp_end)
+        self.weight_kp_end_exist = float(weight_kp_end_exist)
+        self.kp_reg_kind = str(kp_reg_kind)
+        self.kp_beta = float(kp_beta)
+        self.kp_reg_warmup_epochs = int(kp_reg_warmup_epochs)
+        self.kp_reg_warmup_kind = str(kp_reg_warmup_kind)
+        self._cur_epoch = 0
+        self.coord_scale = float(coord_scale)
         self.num_sample_points = int(num_sample_points)
         self.aux_max_tokens = int(aux_max_tokens)
         self.deep_supervision = bool(deep_supervision)
@@ -928,6 +962,22 @@ class LArFormerLoss(nn.Module):
 
     # ------------------------------------------------------------------
 
+    def set_epoch(self, epoch: int) -> None:
+        """Record the current training epoch (used by the keypoint-regression
+        warm-up). Called by `KeypointRegWarmupHook.before_epoch`."""
+        self._cur_epoch = int(epoch)
+
+    def _eff_reg_kind(self) -> str:
+        """Effective keypoint-regression loss kind for the current epoch:
+        `kp_reg_warmup_kind` while `_cur_epoch < kp_reg_warmup_epochs`, else
+        `kp_reg_kind`. No-op (always `kp_reg_kind`) when warm-up is disabled."""
+        if (self.kp_reg_warmup_epochs > 0
+                and self._cur_epoch < self.kp_reg_warmup_epochs):
+            return self.kp_reg_warmup_kind
+        return self.kp_reg_kind
+
+    # ------------------------------------------------------------------
+
     def _aux_mask_loss(
         self,
         pred_logits: torch.Tensor,     # (Q, M)
@@ -965,6 +1015,8 @@ class LArFormerLoss(nn.Module):
         per_level_gt_mask: "OrderedDict[str, torch.Tensor]",
         q_idx: np.ndarray,
         k_idx: np.ndarray,
+        gt_end: Optional[torch.Tensor] = None,
+        gt_has_end: Optional[torch.Tensor] = None,
     ) -> Dict[str, torch.Tensor]:
         cls_logits = layer_pred["class_logits"]
         device = cls_logits.device
@@ -986,6 +1038,12 @@ class LArFormerLoss(nn.Module):
             "dice_primary": zero,
             "origin":       zero,
         }
+        if self.enable_keypoint_head:
+            # Always-present so deep-supervision agg (which stacks layer-0's
+            # keys) has them on every layer.
+            out["kpq_start"] = zero
+            out["kpq_end"] = zero
+            out["kpq_end_exist"] = zero
         for name in per_level_gt_mask.keys():
             if name != self.primary_level:
                 out[f"aux_mask_{name}"] = zero
@@ -1015,13 +1073,36 @@ class LArFormerLoss(nn.Module):
             pred = layer_pred["mask_logits"][name]
             out[f"aux_mask_{name}"] = self._aux_mask_loss(pred, gt, q_idx, k_idx)
 
-        # Origin L1 (matched only)
-        if (gt_origin is not None and self.weight_origin > 0
-                and "origin" in layer_pred):
+        # Origin L1 (matched only) — skipped when the keypoint head is on
+        # (kpq_start handles the start point, possibly with uncertainty).
+        if (not self.enable_keypoint_head and gt_origin is not None
+                and self.weight_origin > 0 and "origin" in layer_pred):
             q_t = torch.as_tensor(q_idx, dtype=torch.long, device=device)
             k_t = torch.as_tensor(k_idx, dtype=torch.long, device=device)
             out["origin"] = (layer_pred["origin"][q_t]
                              - gt_origin[k_t]).abs().mean()
+
+        # Phase-2 keypoint losses (start = origin head; end + gate + β-NLL).
+        # Reuses the query→GT match (q_idx, k_idx) — no new matcher.
+        if (self.enable_keypoint_head and gt_origin is not None
+                and "end" in layer_pred):
+            kp = keypoint_query_loss(
+                pred={
+                    "start":        layer_pred["origin"],
+                    "end":          layer_pred.get("end"),
+                    "end_logit":    layer_pred.get("end_logit"),
+                    "start_logvar": layer_pred.get("start_logvar"),
+                    "end_logvar":   layer_pred.get("end_logvar"),
+                },
+                q_idx=torch.as_tensor(q_idx, dtype=torch.long, device=device),
+                k_idx=torch.as_tensor(k_idx, dtype=torch.long, device=device),
+                gt_start=gt_origin, gt_end=gt_end, gt_has_end=gt_has_end,
+                reg_kind=self._eff_reg_kind(), beta=self.kp_beta,
+                coord_scale=self.coord_scale,
+            )
+            out["kpq_start"] = kp["kpq_start"]
+            out["kpq_end"] = kp["kpq_end"]
+            out["kpq_end_exist"] = kp["kpq_end_exist"]
 
         return out
 
@@ -1294,6 +1375,7 @@ class LArFormerLoss(nn.Module):
         per_sp_labels: Dict[str, torch.Tensor],
         per_level_cls_logits: "OrderedDict[str, torch.Tensor]",
         return_matching: bool = False,
+        keypoint_refine_layers: Optional[list] = None,
     ) -> Dict[str, torch.Tensor]:
         """One event.
 
@@ -1353,6 +1435,24 @@ class LArFormerLoss(nn.Module):
         else:
             gt_classes = torch.zeros(0, dtype=torch.long, device=device)
             gt_origin = None
+
+        # Phase-2 keypoint GT: per-instance end point + has-end gate (from
+        # the keypoint datasets' end_coord_norm / has_end). Only built when
+        # the keypoint head is on AND the instances carry it.
+        gt_end = None
+        gt_has_end = None
+        if (self.enable_keypoint_head and K > 0
+                and any("end_coord_norm" in g for g in gt_instances)):
+            gt_end = torch.stack([
+                torch.as_tensor(g.get("end_coord_norm",
+                                      np.zeros(3, dtype=np.float32)),
+                                dtype=torch.float32, device=device)
+                for g in gt_instances
+            ], dim=0)
+            gt_has_end = torch.tensor(
+                [float(bool(g.get("has_end", False))) for g in gt_instances],
+                dtype=torch.float32, device=device,
+            )
 
         # Per-level GT (mask + cls targets, computed once per event)
         per_level_gt = build_per_level_gt(
@@ -1420,6 +1520,7 @@ class LArFormerLoss(nn.Module):
                 gt_origin=gt_origin,
                 per_level_gt_mask=per_level_gt_mask,
                 q_idx=q_idx, k_idx=k_idx,
+                gt_end=gt_end, gt_has_end=gt_has_end,
             )
             for lyr in sup_layers
         ]
@@ -1452,6 +1553,12 @@ class LArFormerLoss(nn.Module):
             w = float(sup.get("weight", self.weight_per_level_cls))
             total = total + w * term
 
+        if self.enable_keypoint_head:
+            total = (total
+                     + self.weight_kp_start * agg["kpq_start"]
+                     + self.weight_kp_end * agg["kpq_end"]
+                     + self.weight_kp_end_exist * agg["kpq_end_exist"])
+
         out: Dict[str, torch.Tensor] = {"total": total}
         for k, v in agg.items():
             out[k] = v
@@ -1459,6 +1566,69 @@ class LArFormerLoss(nn.Module):
             out[f"cls_{name}"] = term
         out["n_matched"] = torch.tensor(len(q_idx), dtype=torch.long, device=device)
         out["n_gt_instances"] = torch.tensor(K, dtype=torch.long, device=device)
+
+        # Keypoint error diagnostics — final layer only (no_grad), so the
+        # cm errors aren't summed across the deep-supervision layers.
+        if (self.enable_keypoint_head and gt_origin is not None
+                and len(q_idx) > 0 and "end" in decoder_output["final"]):
+            fp = decoder_output["final"]
+            with torch.no_grad():
+                kpd = keypoint_query_loss(
+                    pred={
+                        "start":        fp["origin"],
+                        "end":          fp.get("end"),
+                        "end_logit":    fp.get("end_logit"),
+                        "start_logvar": fp.get("start_logvar"),
+                        "end_logvar":   fp.get("end_logvar"),
+                    },
+                    q_idx=torch.as_tensor(q_idx, dtype=torch.long, device=device),
+                    k_idx=torch.as_tensor(k_idx, dtype=torch.long, device=device),
+                    gt_start=gt_origin, gt_end=gt_end, gt_has_end=gt_has_end,
+                    reg_kind=self._eff_reg_kind(), beta=self.kp_beta,
+                    coord_scale=self.coord_scale,
+                )
+            out["kpq_start_err_cm"] = kpd["kpq_start_err_cm"]
+            out["kpq_end_err_cm"] = kpd["kpq_end_err_cm"]
+            out["kpq_n_end"] = kpd["kpq_n_end"]
+
+        # Phase-3 (2B) refinement: deep-supervise each refinement layer's
+        # start/end with the SAME kpq loss + weights as the 2A head (summed
+        # over layers). The refined FINAL layer supersedes the err
+        # diagnostics. Identity at init → no effect until it learns.
+        if (self.enable_keypoint_head and keypoint_refine_layers
+                and gt_origin is not None and len(q_idx) > 0):
+            q_t = torch.as_tensor(q_idx, dtype=torch.long, device=device)
+            k_t = torch.as_tensor(k_idx, dtype=torch.long, device=device)
+            r_start = out["total"].new_zeros(())
+            r_end = out["total"].new_zeros(())
+            r_exist = out["total"].new_zeros(())
+            r_last = None
+            for rl in keypoint_refine_layers:
+                rkp = keypoint_query_loss(
+                    pred={"start": rl["origin"], "end": rl.get("end"),
+                          "end_logit": rl.get("end_logit"),
+                          "start_logvar": rl.get("start_logvar"),
+                          "end_logvar": rl.get("end_logvar")},
+                    q_idx=q_t, k_idx=k_t,
+                    gt_start=gt_origin, gt_end=gt_end, gt_has_end=gt_has_end,
+                    reg_kind=self._eff_reg_kind(), beta=self.kp_beta,
+                    coord_scale=self.coord_scale,
+                )
+                r_start = r_start + rkp["kpq_start"]
+                r_end = r_end + rkp["kpq_end"]
+                r_exist = r_exist + rkp["kpq_end_exist"]
+                r_last = rkp
+            out["total"] = out["total"] + (
+                self.weight_kp_start * r_start
+                + self.weight_kp_end * r_end
+                + self.weight_kp_end_exist * r_exist)
+            out["kpq_refine_start"] = r_start
+            out["kpq_refine_end"] = r_end
+            out["kpq_refine_end_exist"] = r_exist
+            if r_last is not None:
+                out["kpq_start_err_cm"] = r_last["kpq_start_err_cm"]
+                out["kpq_end_err_cm"] = r_last["kpq_end_err_cm"]
+                out["kpq_n_end"] = r_last["kpq_n_end"]
 
         # Log-only diagnostics (no_grad, final layer only; see ctor doc).
         # len(q_idx) > 0 implies K > 0 and the match branch above ran, so

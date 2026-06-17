@@ -80,7 +80,8 @@ class LArFormerParticleEvaluator(LArFormerSlicerEvaluator):
 
     def _on_event_processed(self, *, ev_pred: dict, eval_loss: dict,
                             q_idx, k_idx,
-                            no_object_class_id: int) -> None:
+                            no_object_class_id: int,
+                            input_dict=None, event_in_batch=None) -> None:
         del no_object_class_id   # base-hook signature parity; unused here.
         if not self.report_origin_error:
             return

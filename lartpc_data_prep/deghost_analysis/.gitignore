@@ -1,0 +1,5 @@
+outputs/
+*.npz
+*.png
+*.pdf
+__pycache__/

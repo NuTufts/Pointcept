@@ -143,6 +143,10 @@ class LArFormerStage12CacheDataset(DefaultDataset):
         coord_center=DEFAULT_COORD_CENTER,
         coord_scale=DEFAULT_COORD_SCALE,
         backbone_grid_size_cm: float = DEFAULT_BACKBONE_GRID_SIZE_CM,
+        emit_keypoints: bool = False,
+        keypoint_sigma_cm: float = 3.0,
+        keypoint_score_threshold: float = 0.01,
+        n_keypoint_types: int = 6,
         ignore_unmatched_cache_attrs: bool = True,
         transform=None,
         loop: int = 1,
@@ -166,6 +170,14 @@ class LArFormerStage12CacheDataset(DefaultDataset):
         self.coord_center = np.asarray(coord_center, dtype=np.float32)
         self.coord_scale = float(coord_scale)
         self.backbone_grid_size_cm = float(backbone_grid_size_cm)
+        # Keypoint module: compute the dense kpscores target + per-instance
+        # endpoints + nu-vertex on-the-fly from the cache's `mckeypoints`
+        # group (added by tools/augment_stage12_cache_keypoints.py or the
+        # updated cache builder). Off by default; mirrors LArFormerDataset.
+        self.emit_keypoints = bool(emit_keypoints)
+        self.keypoint_sigma_cm = float(keypoint_sigma_cm)
+        self.keypoint_score_threshold = float(keypoint_score_threshold)
+        self.n_keypoint_types = int(n_keypoint_types)
         self.ignore_unmatched_cache_attrs = bool(ignore_unmatched_cache_attrs)
         self.data_list_file = data_list_file
         super().__init__(
@@ -327,6 +339,27 @@ class LArFormerStage12CacheDataset(DefaultDataset):
             particles = (_read_particle_instances(e0["particle_instances"])
                          if "particle_instances" in e0 else [])
 
+            # Keypoint GT group (cm frame), copied from the source merged_h5
+            # by the augment tool / cache builder. Read raw arrays here; the
+            # dense target + endpoints are derived after the source filter.
+            mckp = None
+            if self.emit_keypoints and "mckeypoints" in e0:
+                mk = e0["mckeypoints"]
+                kp_pos_cm = mk["pos"][:].astype(np.float32)
+                nkp = kp_pos_cm.shape[0]
+                mckp = {
+                    "pos_cm": kp_pos_cm,
+                    "startpos_cm": (mk["startpos"][:].astype(np.float32)
+                                    if "startpos" in mk else kp_pos_cm.copy()),
+                    "type": (mk["kptype"][:].astype(np.int64) if "kptype" in mk
+                             else np.full(nkp, -1, dtype=np.int64)),
+                    "trackid": (mk["trackid"][:].astype(np.int64)
+                                if "trackid" in mk
+                                else np.full(nkp, -1, dtype=np.int64)),
+                    "pid": (mk["pid"][:].astype(np.int64) if "pid" in mk
+                            else np.full(nkp, -1, dtype=np.int64)),
+                }
+
         # ---- 1. Apply the source_set filter ---------------------------
         keep = self._select_keep_mask(source_mask, stage2_prob)
         n_kept = int(keep.sum())
@@ -371,6 +404,64 @@ class LArFormerStage12CacheDataset(DefaultDataset):
             new_inst["n_truth_points"] = int(ti_kept.size)
             gt_instances.append(new_inst)
 
+        # ---- 2b. (Optional) keypoint targets --------------------------
+        # Derived on-the-fly from the cache's `mckeypoints` group, mirroring
+        # LArFormerDataset: dense per-SP kpscores on the kept `coord` (cm),
+        # per-instance track-end (kptype 2) by trackid, and the nu vertex
+        # (kptype 0). All normalized arrays are recentered alongside
+        # coord_norm in step 3 when recenter_to_centroid is on.
+        sp_kpscores = None
+        sp_kpoffsets = None
+        kp_pos_norm = None
+        kp_startpos_norm = None
+        nu_vertex_norm = None
+        if self.emit_keypoints:
+            if mckp is not None:
+                from lartpc_data_prep.keypoint_labels import (
+                    compute_kpscores, endpoint_by_trackid,
+                    KPTYPE_TRACK_END, KPTYPE_NU_VERTEX,
+                )
+                # Offsets in cm → normalized by coord_scale (displacement is
+                # invariant to the optional centroid recentering below).
+                sp_kpscores, off_cm = compute_kpscores(
+                    coord, mckp["pos_cm"], mckp["type"],
+                    sigma_cm=self.keypoint_sigma_cm,
+                    score_threshold=self.keypoint_score_threshold,
+                    n_types=self.n_keypoint_types,
+                    return_offsets=True,
+                )
+                sp_kpoffsets = (off_cm / self.coord_scale).astype(np.float32)
+                kp_pos_norm = (
+                    (mckp["pos_cm"] - self.coord_center) / self.coord_scale
+                ).astype(np.float32)
+                kp_startpos_norm = (
+                    (mckp["startpos_cm"] - self.coord_center) / self.coord_scale
+                ).astype(np.float32)
+                end_by_tid = endpoint_by_trackid(
+                    mckp["type"], mckp["trackid"], kp_pos_norm, KPTYPE_TRACK_END)
+                for inst in gt_instances:
+                    tid = int(inst.get("primary_trackid", -1))
+                    end = end_by_tid.get(tid)
+                    if end is not None:
+                        inst["end_coord_norm"] = np.asarray(end, dtype=np.float32)
+                        inst["has_end"] = True
+                    else:
+                        inst["end_coord_norm"] = np.zeros(3, dtype=np.float32)
+                        inst["has_end"] = False
+                nu_vertex_norm = kp_pos_norm[mckp["type"] == KPTYPE_NU_VERTEX]
+            else:
+                sp_kpscores = np.zeros(
+                    (n_kept, self.n_keypoint_types), dtype=np.float32)
+                sp_kpoffsets = np.zeros(
+                    (n_kept, self.n_keypoint_types, 3), dtype=np.float32)
+                kp_pos_norm = np.zeros((0, 3), dtype=np.float32)
+                kp_startpos_norm = np.zeros((0, 3), dtype=np.float32)
+                nu_vertex_norm = np.zeros((0, 3), dtype=np.float32)
+                for inst in gt_instances:
+                    inst.setdefault("end_coord_norm",
+                                    np.zeros(3, dtype=np.float32))
+                    inst.setdefault("has_end", False)
+
         # ---- 3. Optional centroid recentering -------------------------
         if self.recenter_to_centroid and n_kept > 0:
             centroid_norm = coord_norm.mean(axis=0)
@@ -385,6 +476,18 @@ class LArFormerStage12CacheDataset(DefaultDataset):
                         np.asarray(inst["origin_coord_norm"],
                                    dtype=np.float32) - centroid_norm
                     ).astype(np.float32)
+                if inst.get("has_end"):
+                    inst["end_coord_norm"] = (
+                        np.asarray(inst["end_coord_norm"],
+                                   dtype=np.float32) - centroid_norm
+                    ).astype(np.float32)
+            # Keep the keypoint arrays in the same recentered frame.
+            if kp_pos_norm is not None and kp_pos_norm.shape[0] > 0:
+                kp_pos_norm = (kp_pos_norm - centroid_norm).astype(np.float32)
+                kp_startpos_norm = (
+                    kp_startpos_norm - centroid_norm).astype(np.float32)
+                nu_vertex_norm = (
+                    nu_vertex_norm - centroid_norm).astype(np.float32)
 
         # ---- 4. Backbone grid_coord -----------------------------------
         grid_coord = np.floor(
@@ -393,7 +496,7 @@ class LArFormerStage12CacheDataset(DefaultDataset):
         if n_kept > 0:
             grid_coord -= grid_coord.min(axis=0)
 
-        return {
+        out = {
             "coord": coord,
             "coord_norm": coord_norm.astype(np.float32),
             "grid_coord": grid_coord,
@@ -420,3 +523,22 @@ class LArFormerStage12CacheDataset(DefaultDataset):
             "run": run, "subrun": subrun, "event": event,
             "name": name,
         }
+        if self.emit_keypoints:
+            out["kpscores"] = sp_kpscores.astype(np.float32)
+            out["kpoffsets"] = sp_kpoffsets.astype(np.float32)
+            out["nu_vertex_coord_norm"] = (
+                nu_vertex_norm if nu_vertex_norm is not None
+                else np.zeros((0, 3), dtype=np.float32))
+            if mckp is not None:
+                out["mckeypoints_pos_norm"] = kp_pos_norm
+                out["mckeypoints_startpos_norm"] = kp_startpos_norm
+                out["mckeypoints_type"] = mckp["type"]
+                out["mckeypoints_trackid"] = mckp["trackid"]
+                out["mckeypoints_pid"] = mckp["pid"]
+            else:
+                out["mckeypoints_pos_norm"] = np.zeros((0, 3), dtype=np.float32)
+                out["mckeypoints_startpos_norm"] = np.zeros((0, 3), dtype=np.float32)
+                out["mckeypoints_type"] = np.zeros((0,), dtype=np.int64)
+                out["mckeypoints_trackid"] = np.zeros((0,), dtype=np.int64)
+                out["mckeypoints_pid"] = np.zeros((0,), dtype=np.int64)
+        return out

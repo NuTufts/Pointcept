@@ -42,11 +42,14 @@ import torch
 import torch.nn as nn
 
 from pointcept.models.builder import MODELS, build_model
+from pointcept.utils.logger import get_root_logger
 
 from .builders import LevelOutput
 from .decoder import Mask2FormerDecoder
 from .heads import PerTokenClsHead
 from .losses import LArFormerLoss
+from .keypoint_heads import KeypointScoreHead, KeypointOffsetHead
+from .keypoint_refine import KeypointRefinementDecoder
 from .query_denoising import MaskDenoiser
 from .query_selection import MixedQuerySelector
 from .refiners import build_token_refiner
@@ -112,6 +115,11 @@ class LArFormer(nn.Module):
         mask_denoising: Optional[dict] = None,
         ptv3_decoder_init_scale: float = 0.0,
         backbone_weight: Optional[str] = None,
+        enable_keypoint_head: bool = False,
+        keypoint_refine: Optional[dict] = None,
+        enable_keypoint_dense_head: bool = False,
+        keypoint_dense_cfg: Optional[dict] = None,
+        freeze_non_keypoint: bool = False,
     ):
         super().__init__()
         self.backbone = build_model(backbone)
@@ -161,6 +169,12 @@ class LArFormer(nn.Module):
         self.num_queries = int(num_queries)
         self.num_classes = int(num_classes)
         self.enable_origin_head = bool(enable_origin_head)
+        self.enable_keypoint_head = bool(enable_keypoint_head)
+        if self.enable_keypoint_head and not self.enable_origin_head:
+            raise ValueError(
+                "enable_keypoint_head requires enable_origin_head "
+                "(the origin head supplies the keypoint 'start')."
+            )
 
         self.tokenizer = CompositeTokenizer(
             levels_cfg=levels,
@@ -198,6 +212,7 @@ class LArFormer(nn.Module):
                 num_queries=num_queries,
                 num_classes=num_classes,
                 enable_origin_head=self.enable_origin_head,
+                enable_keypoint_head=self.enable_keypoint_head,
                 **decoder_kwargs,
             )
         else:
@@ -257,6 +272,7 @@ class LArFormer(nn.Module):
         loss_kwargs.setdefault("num_classes", num_classes)
         if not self.enable_origin_head:
             loss_kwargs["weight_origin"] = 0.0
+        loss_kwargs["enable_keypoint_head"] = self.enable_keypoint_head
         self.loss_fn = LArFormerLoss(levels_cfg=self.levels_cfg, **loss_kwargs)
 
         # Mask DINO-style denoising (Phase B). Train-time auxiliary path:
@@ -284,6 +300,81 @@ class LArFormer(nn.Module):
             dn_cfg.setdefault("num_classes", num_classes)
             self.denoiser = MaskDenoiser(**dn_cfg)
 
+        # Phase-3 (2B) keypoint refinement decoder. Opt-in: requires the
+        # keypoint head + a Mask2Former decoder. Runs after the main decoder,
+        # cross-attending each query to its own spacepoints to sharpen
+        # start/end (identity at init — composes with a trained 2A ckpt).
+        self.keypoint_refine: Optional[KeypointRefinementDecoder] = None
+        if keypoint_refine is not None:
+            if not self.enable_keypoint_head:
+                raise ValueError(
+                    "keypoint_refine requires enable_keypoint_head=True.")
+            if self.decoder is None:
+                raise ValueError(
+                    "keypoint_refine requires num_queries > 0 (a decoder).")
+            kr_cfg = dict(keypoint_refine)
+            kr_cfg.setdefault("dim", token_dim)
+            self.keypoint_refine = KeypointRefinementDecoder(**kr_cfg)
+
+        # Optional DENSE per-SP keypoint head (the Phase-1 PPN-style score +
+        # offset heads) ON THE BACKBONE features — independent of the queries.
+        # Lets ONE model emit both the per-particle query keypoints AND the
+        # slice-level nu vertex (decoded from the dense score/offset field).
+        # Supervised by the per-SP `kpscores` / `kpoffsets` the keypoint
+        # datasets emit. Cheap; backbone can stay frozen (the dense field is
+        # learnable from frozen features — see lartpc_data_prep/larformer_keypoint).
+        self.enable_keypoint_dense_head = bool(enable_keypoint_dense_head)
+        self.kp_dense_score_head = None
+        self.kp_dense_offset_head = None
+        if self.enable_keypoint_dense_head:
+            kd = dict(keypoint_dense_cfg or {})
+            self.kp_dense_n_types = int(kd.get("n_keypoint_types", 6))
+            self.kp_dense_pos_weight = float(kd.get("pos_weight", 50.0))
+            self.kp_dense_pos_threshold = float(kd.get("pos_threshold", 0.05))
+            self.kp_dense_offset_sup_thresh = float(
+                kd.get("offset_supervision_threshold", 0.05))
+            self.kp_dense_w_score = float(kd.get("weight_score", 1.0))
+            self.kp_dense_w_offset = float(kd.get("weight_offset", 1.0))
+            self.kp_dense_coord_scale = float(kd.get("coord_scale", 179.55))
+            hid = int(kd.get("head_hidden_dim", 256))
+            # Opt-in coordinate pos-emb on the per-point dense heads (off by
+            # default). Gives the MLP an explicit position handle on top of the
+            # frozen backbone feature. `pos_emb` selects the kind
+            # (None/"sinusoidal"/"mlp"); the rest are knobs for it.
+            pe_kw = dict(
+                pos_emb_kind=kd.get("pos_emb", None),
+                pos_emb_dim=kd.get("pos_emb_dim", None),
+                pos_emb_num_freq=kd.get("pos_emb_num_freq", None),
+                pos_emb_max_freq=float(kd.get("pos_emb_max_freq", 256.0)),
+                pos_emb_hidden_dim=kd.get("pos_emb_hidden_dim", None),
+            )
+            self.kp_dense_score_head = KeypointScoreHead(
+                in_dim=backbone_out_channels, n_types=self.kp_dense_n_types,
+                hidden_dim=hid, **pe_kw)
+            if bool(kd.get("enable_offset_head", True)):
+                self.kp_dense_offset_head = KeypointOffsetHead(
+                    in_dim=backbone_out_channels, n_types=self.kp_dense_n_types,
+                    hidden_dim=hid, **pe_kw)
+
+        # Keypoint-only training: freeze the WHOLE particle-segmentation network
+        # (backbone, PT-v3 decoder, token refiner, Mask2Former decoder layers +
+        # class/mask heads, per-level cls heads, query selection, denoising) and
+        # train ONLY the keypoint-specific params — the per-query keypoint heads
+        # (start=origin / end / uncertainty / end-gate), the 2B refinement
+        # decoder, and the dense head. Preserves the loaded Stage-3 quality and
+        # directs all optimization to keypoints. Applied LAST so it overrides
+        # freeze_backbone / unfreeze_decoder. Pair with unfreeze_decoder=False
+        # so `_encode` runs the backbone under no_grad (no wasted graph).
+        self.freeze_non_keypoint = bool(freeze_non_keypoint)
+        if self.freeze_non_keypoint:
+            # The decoder needs its fp32-safe attention backend set up. If
+            # unfreeze_decoder already did it (_init_ptv3_decoder_blocks),
+            # skip; otherwise do the forward-only part here so a frozen
+            # decoder still produces correct masks (IoU regression fix).
+            if not self.unfreeze_decoder:
+                self._ensure_decoder_fp32_forward()
+            self._apply_keypoint_only_freeze()
+
         # Defense-in-depth: register a NaN/Inf-zeroing hook on every
         # trainable parameter's gradient. This guarantees no NaN/Inf
         # reaches the optimizer regardless of which internal layer
@@ -301,6 +392,60 @@ class LArFormer(nn.Module):
     @staticmethod
     def _nan_safe_grad_hook(g: torch.Tensor) -> torch.Tensor:
         return torch.nan_to_num(g, nan=0.0, posinf=0.0, neginf=0.0)
+
+    # Substrings that identify the KEYPOINT-specific parameters (everything
+    # else — class/mask heads, decoder layers, refiner, backbone — is the
+    # particle-segmentation network). `.origin_head.` is the start point.
+    _KEYPOINT_PARAM_MARKERS = (
+        "keypoint_refine", "kp_dense_score_head", "kp_dense_offset_head",
+        ".origin_head.", ".end_head.", ".start_logvar_head.",
+        ".end_logvar_head.", ".end_exist_head.", "kp_pos_emb",
+    )
+
+    def _ensure_decoder_fp32_forward(self) -> None:
+        """Set the PT-v3 decoder blocks' attention to the xformers backend so
+        the fp32 eval/inference forward is correct.
+
+        The PT-v3 native decoder (enc_mode=False) is normally set up by
+        `_init_ptv3_decoder_blocks` — but that only runs under
+        `unfreeze_decoder=True`. With the decoder frozen
+        (freeze_non_keypoint + unfreeze_decoder=False) that setup is skipped,
+        and the blocks keep `flash_attn`, which does NOT handle fp32 and
+        silently produces garbage masks (IoU→0). This applies just the
+        forward-relevant part (backend + NaN sanitizers), WITHOUT touching
+        weights — the loaded checkpoint's decoder weights are preserved.
+        No-op on backbones without a decoder."""
+        ptv3 = self._find_ptv3_inner()
+        dec = getattr(ptv3, "dec", None)
+        if dec is None:
+            return
+        n = 0
+        for _sn, stage_seq in dec.named_children():
+            for child_name, mod in stage_seq.named_children():
+                if not child_name.startswith("block"):
+                    continue
+                attn = getattr(mod, "attn", None)
+                if attn is not None and hasattr(attn, "flash_backend"):
+                    attn.flash_backend = "xformers"
+                    n += 1
+        self._register_ptv3_decoder_block_sanitizers()
+        get_root_logger().info(
+            f"[LArFormer] freeze_non_keypoint: set xformers backend on {n} "
+            f"PT-v3 decoder blocks (fp32-safe forward).")
+
+    def _apply_keypoint_only_freeze(self) -> None:
+        """requires_grad=True ONLY for keypoint params; freeze everything else."""
+        n_train = n_freeze = 0
+        for name, p in self.named_parameters():
+            keep = any(m in name for m in self._KEYPOINT_PARAM_MARKERS)
+            p.requires_grad = bool(keep)
+            if keep:
+                n_train += 1
+            else:
+                n_freeze += 1
+        get_root_logger().info(
+            f"[LArFormer] freeze_non_keypoint: {n_train} keypoint param-"
+            f"tensors trainable, {n_freeze} frozen (particle network).")
 
     def _load_backbone_weight(self, weight_path: str) -> None:
         """Load a Sonata pretrain (or similar) into self.backbone.
@@ -382,6 +527,11 @@ class LArFormer(nn.Module):
                     for name, m in layer["mask_logits"].items()
                 ),
             }
+            if "query_embed" in layer:
+                out["query_embed"] = layer["query_embed"][start:end]
+            for k in ("end", "start_logvar", "end_logvar", "end_logit"):
+                if k in layer:
+                    out[k] = layer[k][start:end]
             if "scale" in layer:
                 out["scale"] = layer["scale"]
             return out
@@ -596,7 +746,11 @@ class LArFormer(nn.Module):
         # requires_grad=False, so they still won't accumulate gradients
         # even though their activations are differentiable; only the
         # decoder's params get optimizer updates.
-        use_no_grad = self.freeze_backbone and not self.unfreeze_decoder
+        # freeze_non_keypoint freezes every backbone/decoder param, so the
+        # backbone forward can always run under no_grad (no param needs its
+        # graph), even if unfreeze_decoder was left True.
+        use_no_grad = ((self.freeze_backbone and not self.unfreeze_decoder)
+                       or getattr(self, "freeze_non_keypoint", False))
         if use_no_grad:
             with torch.no_grad():
                 result = self.backbone(bb_in, return_point=True)
@@ -806,6 +960,43 @@ class LArFormer(nn.Module):
     # Forward
     # ------------------------------------------------------------------
 
+    def _dense_keypoint_loss(self, logits, offsets, target_scores,
+                             target_offsets):
+        """Dense per-SP keypoint loss: weighted-MSE on sigmoid(score logits)
+        vs `kpscores` + smooth-L1 offset vote (where score>thr) vs `kpoffsets`.
+        Returns (grad_total, diag) with 0-d diag scalars. Mirrors
+        LArFormerKeypoint's score/offset losses."""
+        import torch.nn.functional as F
+        target_scores = target_scores.to(logits.dtype)
+        pred_s = torch.sigmoid(logits)
+        se = (pred_s - target_scores) ** 2
+        if self.kp_dense_pos_weight != 1.0:
+            w = torch.where(target_scores > self.kp_dense_pos_threshold,
+                            torch.full_like(target_scores, self.kp_dense_pos_weight),
+                            torch.ones_like(target_scores))
+            score_loss = (se * w).sum() / w.sum().clamp(min=1.0)
+        else:
+            score_loss = se.mean()
+        total = self.kp_dense_w_score * score_loss
+        diag = {"score": score_loss.detach()}
+        with torch.no_grad():
+            pos = target_scores > self.kp_dense_pos_threshold
+            diag["mse_pos"] = (se[pos].mean() if pos.any()
+                               else logits.new_zeros(()))
+        if offsets is not None and target_offsets is not None:
+            tgt_off = target_offsets.to(offsets.dtype)
+            mask = target_scores > self.kp_dense_offset_sup_thresh   # (N, T)
+            if bool(mask.any()):
+                off_loss = F.smooth_l1_loss(offsets[mask], tgt_off[mask],
+                                            reduction="mean")
+                total = total + self.kp_dense_w_offset * off_loss
+                diag["off"] = off_loss.detach()
+                with torch.no_grad():
+                    diag["off_err_cm"] = ((offsets[mask] - tgt_off[mask])
+                                          .norm(dim=-1).mean()
+                                          * self.kp_dense_coord_scale)
+        return total, diag
+
     def forward(self, data_dict: dict) -> dict:
         sp_feat_all = self._encode(data_dict)
         # Sanitize backbone output at the source. Covers any from-scratch
@@ -827,6 +1018,20 @@ class LArFormer(nn.Module):
         per_event_dec_stages = self._build_decoder_stages_per_event(
             data_dict, events,
         )
+
+        # Dense per-SP keypoint head (whole batch at once; sliced per event).
+        # Score logits (N, n_types) + offset votes (N, n_types, 3).
+        dense_logits_all = None
+        dense_off_all = None
+        if self.enable_keypoint_dense_head:
+            # coord_norm aligns row-for-row with sp_feat_all (whole batch); the
+            # heads use it only when they were built with a pos-emb.
+            dense_coord_all = data_dict["coord_norm"]
+            dense_logits_all = self.kp_dense_score_head(
+                sp_feat_all, dense_coord_all)
+            if self.kp_dense_offset_head is not None:
+                dense_off_all = self.kp_dense_offset_head(
+                    sp_feat_all, dense_coord_all)
 
         per_event_loss = []
         per_event_pred = []
@@ -945,6 +1150,25 @@ class LArFormer(nn.Module):
                     self.num_queries + dn_init.n_queries,
                 )
 
+            # Phase-3 (2B) keypoint refinement on the regular queries — each
+            # query cross-attends to its own primary-level (spacepoint) tokens
+            # to sharpen start/end. Returns per-layer dicts; the last layer is
+            # the final keypoint prediction. None when 2B is off.
+            refine_layers = None
+            if (self.keypoint_refine is not None and regular_dec is not None
+                    and "end" in regular_dec["final"]):
+                fin = regular_dec["final"]
+                prim = self.loss_fn.primary_level or "spacepoint"
+                if prim in levels and prim in fin["mask_logits"]:
+                    plvl = levels[prim]
+                    refine_layers = self.keypoint_refine(
+                        query_embed=fin["query_embed"],
+                        init_start=fin["origin"], init_end=fin["end"],
+                        init_end_logit=fin["end_logit"],
+                        sp_tokens=plvl.tokens, sp_coords=plvl.coords,
+                        sp_mask_logits=fin["mask_logits"][prim],
+                    )
+
             pred: dict = {
                 "per_level_cls":   per_level_cls,
                 # Level coords + sp_to_level_id are useful for downstream
@@ -959,6 +1183,34 @@ class LArFormer(nn.Module):
                 pred["class_logits"] = regular_dec["final"]["class_logits"]
                 pred["origin"]       = regular_dec["final"]["origin"]
                 pred["mask_logits"]  = regular_dec["final"]["mask_logits"]
+                # Per-query final embedding (Q, D) for the Phase-2 keypoint
+                # head reading a (possibly frozen) Stage-3 LArFormer.
+                if "query_embed" in regular_dec["final"]:
+                    pred["query_embed"] = regular_dec["final"]["query_embed"]
+                # Phase-2 keypoint predictions (start = `origin`). Present
+                # only when enable_keypoint_head. `end_logit` sigmoids to the
+                # track-end existence prob; logvars are per-axis.
+                for k in ("end", "start_logvar", "end_logvar", "end_logit"):
+                    if k in regular_dec["final"]:
+                        pred[f"kp_{k}"] = regular_dec["final"][k]
+                # Phase-3: the refined final layer supersedes the 2A keypoint
+                # prediction (start = origin, end, uncertainty, gate).
+                if refine_layers is not None:
+                    rf = refine_layers[-1]
+                    pred["origin"]          = rf["origin"]
+                    pred["kp_end"]          = rf["end"]
+                    pred["kp_start_logvar"] = rf["start_logvar"]
+                    pred["kp_end_logvar"]   = rf["end_logvar"]
+                    pred["kp_end_logit"]    = rf["end_logit"]
+            # Dense per-SP keypoint field (score + offset votes), detector-frame
+            # decoding happens downstream (evaluator / inference). The nu vertex
+            # is decoded from this. coord_norm is this event's SP positions.
+            if dense_logits_all is not None:
+                pred["dense_kpscores"] = torch.sigmoid(
+                    dense_logits_all[sp]).detach()
+                pred["dense_coord_norm"] = coord_norm.detach()
+                if dense_off_all is not None:
+                    pred["dense_kpoffsets"] = dense_off_all[sp].detach()
             per_event_pred.append(pred)
 
             if self.training:
@@ -975,6 +1227,7 @@ class LArFormer(nn.Module):
                     per_sp_labels=per_sp_labels,
                     per_level_cls_logits=per_level_cls,
                     return_matching=want_dn,
+                    keypoint_refine_layers=refine_layers,
                 )
                 if want_dn:
                     dn_dict = self.loss_fn.compute_dn_loss(
@@ -996,6 +1249,20 @@ class LArFormer(nn.Module):
                               "gt_classes", "gt_origin",
                               "gt_truth_indices"):
                         loss_dict.pop(k, None)
+                # Dense keypoint head loss (per-SP score MSE + offset vote),
+                # supervised by the dataset's per-SP kpscores / kpoffsets.
+                if (dense_logits_all is not None
+                        and "kpscores" in data_dict):
+                    d_logits = dense_logits_all[sp]
+                    d_off = dense_off_all[sp] if dense_off_all is not None else None
+                    d_tgt = data_dict["kpscores"][sp]
+                    d_tgt_off = (data_dict["kpoffsets"][sp]
+                                 if "kpoffsets" in data_dict else None)
+                    d_loss, d_diag = self._dense_keypoint_loss(
+                        d_logits, d_off, d_tgt, d_tgt_off)
+                    loss_dict["total"] = loss_dict["total"] + d_loss
+                    for k, v in d_diag.items():
+                        loss_dict[f"kpdense_{k}"] = v
                 per_event_loss.append(loss_dict)
             elif "gt_instances_per_event" in data_dict:
                 # Eval-with-GT path: compute matching + loss per event so
@@ -1012,6 +1279,7 @@ class LArFormer(nn.Module):
                         per_sp_labels=per_sp_labels,
                         per_level_cls_logits=per_level_cls,
                         return_matching=True,
+                        keypoint_refine_layers=refine_layers,
                     )
                 pred["eval_loss"] = eval_loss
 

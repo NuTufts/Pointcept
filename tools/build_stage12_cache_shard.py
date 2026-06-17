@@ -136,6 +136,9 @@ def parse_args():
     p.add_argument("--class-prob-floor", type=float, default=0.1)
     p.add_argument("--no-gzip", action="store_true",
                    help="Disable gzip compression on per-query mask_prob.")
+    p.add_argument("--no-keypoints", action="store_true",
+                   help="Do not copy the source mckeypoints group into cache "
+                        "files (keypoint module won't train on this cache).")
     p.add_argument("--force-recache", action="store_true",
                    help="Re-cache events that already have an .h5 OR "
                         ".skipped marker. Default: skip idempotently.")
@@ -230,6 +233,7 @@ def main():
                     "source_config": os.path.abspath(args.config),
                 },
                 skipped_marker_path=out_skip,
+                copy_keypoints=(not args.no_keypoints),
             )
             if info.get("cache_empty"):
                 n_skip_empty += 1

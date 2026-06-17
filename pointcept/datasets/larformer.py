@@ -136,6 +136,10 @@ class LArFormerDataset(DefaultDataset):
         wire_scale=1.0 / 3456.0,
         gt_source="slice",
         emit_fragments=False,
+        emit_keypoints=False,
+        keypoint_sigma_cm=3.0,
+        keypoint_score_threshold=0.01,
+        n_keypoint_types=6,
         slice_class_map=None,
         slice_origin_kind="primary_start_pos",
         merge_nu_slices=True,
@@ -227,6 +231,14 @@ class LArFormerDataset(DefaultDataset):
         self.wire_scale = float(wire_scale)
         self.gt_source = gt_source
         self.emit_fragments = bool(emit_fragments)
+        # Keypoint module (Phase 0): dense per-SP keypoint proximity scores
+        # computed on-the-fly from the `mckeypoints` group, plus per-event
+        # mckeypoints + per-instance endpoint / nu-vertex GT. Off by default
+        # so legacy configs are unaffected.
+        self.emit_keypoints = bool(emit_keypoints)
+        self.keypoint_sigma_cm = float(keypoint_sigma_cm)
+        self.keypoint_score_threshold = float(keypoint_score_threshold)
+        self.n_keypoint_types = int(n_keypoint_types)
         self.slice_class_map = (dict(slice_class_map)
                                 if slice_class_map is not None
                                 else dict(DEFAULT_SLICE_CLASS_MAP))
@@ -327,6 +339,64 @@ class LArFormerDataset(DefaultDataset):
                 self.lm_score_aug_low, self.lm_score_aug_high))
         return self.lm_score_val_threshold
 
+    def _read_mckeypoints(self, entry):
+        """Read the per-event `mckeypoints` group into a dict of arrays.
+
+        Returns None if the group is absent. Positions are kept in both cm
+        and normalized (coord_center/coord_scale) frames. `pos` is the
+        keypoint *appearance* point (what spacepoints sit near, used for the
+        dense kpscores target); `startpos` is the creation point (differs
+        from `pos` only for photons; kept for analysis / shower-start use).
+        """
+        if "mckeypoints" not in entry:
+            return None
+        mk = entry["mckeypoints"]
+        pos = mk["pos"][:].astype(np.float32)
+        n = pos.shape[0]
+        startpos = (mk["startpos"][:].astype(np.float32)
+                    if "startpos" in mk else pos.copy())
+        kp = {
+            "pos_cm": pos,
+            "startpos_cm": startpos,
+            "type": (mk["kptype"][:].astype(np.int64)
+                     if "kptype" in mk else np.full(n, -1, dtype=np.int64)),
+            "trackid": (mk["trackid"][:].astype(np.int64)
+                        if "trackid" in mk else np.full(n, -1, dtype=np.int64)),
+            "pid": (mk["pid"][:].astype(np.int64)
+                    if "pid" in mk else np.full(n, -1, dtype=np.int64)),
+        }
+        kp["pos_norm"] = (
+            (pos - self.coord_center) / self.coord_scale).astype(np.float32)
+        kp["startpos_norm"] = (
+            (startpos - self.coord_center) / self.coord_scale).astype(np.float32)
+        return kp
+
+    def _enrich_gt_with_endpoints(self, gt_instances, mckp):
+        """Attach `end_coord_norm` (+ `has_end`) to each GT instance.
+
+        The end point is the `track_end` keypoint (kptype==2) whose Geant4
+        trackid matches the instance's primary/trunk trackid. Instances with
+        no matching track-end (showers, or tracks whose end wasn't tagged)
+        get a zero `end_coord_norm` and `has_end=False`, so the Phase-2 loss
+        can mask them. The start point is already carried as
+        `origin_coord_norm`.
+        """
+        from lartpc_data_prep.keypoint_labels import (
+            endpoint_by_trackid, KPTYPE_TRACK_END,
+        )
+        end_by_tid = endpoint_by_trackid(
+            mckp["type"], mckp["trackid"], mckp["pos_norm"], KPTYPE_TRACK_END,
+        )
+        for g in gt_instances:
+            tid = int(g.get("primary_trackid", g.get("trunk_trackid", -1)))
+            end = end_by_tid.get(tid)
+            if end is not None:
+                g["end_coord_norm"] = np.asarray(end, dtype=np.float32)
+                g["has_end"] = True
+            else:
+                g["end_coord_norm"] = np.zeros(3, dtype=np.float32)
+                g["has_end"] = False
+
     @staticmethod
     def _build_children_map(mpt_group):
         tids = mpt_group["trackid"][:].astype(np.int64)
@@ -357,6 +427,7 @@ class LArFormerDataset(DefaultDataset):
         td = entry["triplet_data"]
         sf = entry["shower_fragments"]
         mpt = entry["mc_particle_tree"] if "mc_particle_tree" in entry else None
+        mckp = self._read_mckeypoints(entry) if self.emit_keypoints else None
 
         pos = td["pos"][:].astype(np.float32)
         n_sp = pos.shape[0]
@@ -457,6 +528,41 @@ class LArFormerDataset(DefaultDataset):
         coord_norm = (pos_k - self.coord_center) / self.coord_scale
         feat = np.concatenate([coord_norm, pixval_k], axis=-1).astype(np.float32)
 
+        # ---- 3b. (Optional) dense per-SP keypoint proximity scores --
+        # Computed directly on the final filtered `pos_k` (cm), so no
+        # keep/dedup/cap remap is needed — it's pure geometry vs the
+        # per-event `mckeypoints`. Falls back to a stored `kpscores` field
+        # (routed through `remap`) if one ever exists, else zeros.
+        sp_kpscores_k = None
+        sp_kpoffsets_k = None
+        if self.emit_keypoints:
+            if mckp is not None:
+                from lartpc_data_prep.keypoint_labels import compute_kpscores
+                # Offsets returned in cm; normalize by coord_scale so they
+                # live in the same frame as coord_norm (predicted_kp =
+                # coord_norm + offset).
+                sp_kpscores_k, off_cm = compute_kpscores(
+                    pos_k, mckp["pos_cm"], mckp["type"],
+                    sigma_cm=self.keypoint_sigma_cm,
+                    score_threshold=self.keypoint_score_threshold,
+                    n_types=self.n_keypoint_types,
+                    return_offsets=True,
+                )
+                sp_kpoffsets_k = (off_cm / self.coord_scale).astype(np.float32)
+            elif "kpscores" in td:
+                stored = td["kpscores"][:].astype(np.float32)
+                sp_kpscores_k = np.zeros(
+                    (n_keep, stored.shape[1]), dtype=np.float32)
+                valid = remap >= 0
+                sp_kpscores_k[remap[valid]] = stored[valid]
+                sp_kpoffsets_k = np.zeros(
+                    (n_keep, stored.shape[1], 3), dtype=np.float32)
+            else:
+                sp_kpscores_k = np.zeros(
+                    (n_keep, self.n_keypoint_types), dtype=np.float32)
+                sp_kpoffsets_k = np.zeros(
+                    (n_keep, self.n_keypoint_types, 3), dtype=np.float32)
+
         # ---- 4. (Optional) per-SP slice_id -------------------------
         if mpt is not None:
             from lartpc_data_prep.slice_labels import compute_slice_labels
@@ -493,6 +599,10 @@ class LArFormerDataset(DefaultDataset):
             gt_instances = []
         else:  # pragma: no cover — already validated in __init__
             raise RuntimeError(self.gt_source)
+
+        # ---- 6b. (Optional) attach per-instance track-end keypoints -
+        if self.emit_keypoints and mckp is not None:
+            self._enrich_gt_with_endpoints(gt_instances, mckp)
 
         # ---- 7. Identity -------------------------------------------
         run = int(entry.attrs.get("run", -1))
@@ -543,6 +653,25 @@ class LArFormerDataset(DefaultDataset):
             out["fragment_pid"] = np.asarray(fragment_pid, dtype=np.int64)
             out["fragment_type"] = np.asarray(fragment_type, dtype=np.int64)
             out["n_fragments"] = len(fragment_indices)
+        if self.emit_keypoints:
+            out["kpscores"] = sp_kpscores_k.astype(np.float32)
+            out["kpoffsets"] = sp_kpoffsets_k.astype(np.float32)
+            if mckp is not None:
+                nu_mask = mckp["type"] == 0
+                out["mckeypoints_pos_norm"] = mckp["pos_norm"]
+                out["mckeypoints_startpos_norm"] = mckp["startpos_norm"]
+                out["mckeypoints_type"] = mckp["type"]
+                out["mckeypoints_trackid"] = mckp["trackid"]
+                out["mckeypoints_pid"] = mckp["pid"]
+                out["nu_vertex_coord_norm"] = \
+                    mckp["pos_norm"][nu_mask].astype(np.float32)
+            else:
+                out["mckeypoints_pos_norm"] = np.zeros((0, 3), dtype=np.float32)
+                out["mckeypoints_startpos_norm"] = np.zeros((0, 3), dtype=np.float32)
+                out["mckeypoints_type"] = np.zeros((0,), dtype=np.int64)
+                out["mckeypoints_trackid"] = np.zeros((0,), dtype=np.int64)
+                out["mckeypoints_pid"] = np.zeros((0,), dtype=np.int64)
+                out["nu_vertex_coord_norm"] = np.zeros((0, 3), dtype=np.float32)
         return out
 
     # ---- Fragment & GT builders --------------------------------------
@@ -811,7 +940,7 @@ def larformer_collate(batch):
     # Optional per-SP fields — concatenated only when every sample in the
     # batch has them. Lets `LArFormerStage12CacheDataset` emit extra fields
     # (e.g. `particle_class_id`) without breaking legacy datasets.
-    optional_flat_keys = ("particle_class_id",)
+    optional_flat_keys = ("particle_class_id", "kpscores", "kpoffsets")
     out = {}
     for k in keys_flat:
         arrs = [s[k] for s in batch]
@@ -851,4 +980,19 @@ def larformer_collate(batch):
         ]
         out["n_fragments"] = torch.tensor(
             [s["n_fragments"] for s in batch], dtype=torch.int64)
+
+    # Keypoint per-event GT (variable length) kept nested, like fragments.
+    # `kpscores` itself is flat (handled via optional_flat_keys) so it slices
+    # per-event with `offset`, matching the model's per-SP slicing.
+    if "mckeypoints_pos_norm" in batch[0]:
+        for src, dst in (
+            ("mckeypoints_pos_norm", "mckeypoints_pos_norm_per_event"),
+            ("mckeypoints_startpos_norm", "mckeypoints_startpos_norm_per_event"),
+            ("mckeypoints_type", "mckeypoints_type_per_event"),
+            ("mckeypoints_trackid", "mckeypoints_trackid_per_event"),
+            ("mckeypoints_pid", "mckeypoints_pid_per_event"),
+            ("nu_vertex_coord_norm", "nu_vertex_coord_norm_per_event"),
+        ):
+            if all(src in s for s in batch):
+                out[dst] = [torch.from_numpy(np.asarray(s[src])) for s in batch]
     return out

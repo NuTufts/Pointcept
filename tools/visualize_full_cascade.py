@@ -2,8 +2,11 @@
 and the matching ground truth (bottom row), camera-synced.
 
 Reads the `stage3pred_*.h5` files written by
-`tools/run_larformer_stage3_inference.py --input-mode full-cascade`
-(see `lartpc_data_prep/larformer_scripts/`). Sibling of
+`tools/run_larformer_stage3_inference.py --input-mode full-cascade`, OR the
+`keypointpred_*.h5` files from `tools/run_larformer_fullcascade_inference.py`
+(a superset that adds a `keypoints/` group). When present, the predicted
+keypoints (per-particle start/end + nu vertex) are overlaid on the PREDICTION
+scene — toggle with "show keypoints". Sibling of
 `tools/visualize_stage3_larformer_from_cached.py` and the slicer overlay in
 `tools/visualize_larformer_gt.py`; it shares their color conventions +
 camera-sync pattern via `pointcept/models/LArFormer/viz_inference.py`.
@@ -39,6 +42,7 @@ import tempfile
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 
 import numpy as np  # noqa: E402
+import plotly.graph_objects as go  # noqa: E402
 from dash import Dash, Input, Output, State, Patch, dcc, html, no_update  # noqa: E402
 
 from pointcept.models.LArFormer.inference import load_event_h5  # noqa: E402
@@ -48,12 +52,83 @@ from pointcept.models.LArFormer.viz_inference import (  # noqa: E402
     cascade_nu_color_options,
 )
 
+# Predicted-keypoint overlay style per keypoint type (det-cm scene).
+# (name, plotly-3d marker symbol, size, color). Symbols limited to the
+# 3d-supported set: circle/diamond/square/cross/x (+ -open variants).
+_KP_STYLE = {
+    0: ("nu_vertex",   "diamond",      9, "red"),
+    1: ("track_start", "circle",       5, "limegreen"),
+    2: ("track_end",   "x",            5, "orange"),
+    3: ("shower",      "diamond-open", 7, "deepskyblue"),
+    4: ("michel",      "square",       5, "magenta"),
+    5: ("delta",       "cross",        5, "gold"),
+}
+
+
+def _add_predicted_keypoints(fig, pred):
+    """Overlay the predicted keypoints (from a keypointpred_*.h5's
+    `keypoints/` group, written by run_larformer_fullcascade_inference) onto
+    the prediction scene. Positions are detector cm — same frame as
+    `stage3/coord` — so they drop straight in. One legend trace per type
+    (query start/end + shower; dense vertex/michel/delta), plus a big marker
+    for the chosen nu vertex. No-op if the file has no keypoints."""
+    pos = pred.get("keypoints/pos_cm")
+    typ = pred.get("keypoints/type")
+    kind = pred.get("keypoints/kind")
+    cls = pred.get("keypoints/class_id")
+    score = pred.get("keypoints/score")
+    source = pred.get("keypoints/source")
+    n_added = 0
+    if pos is not None and np.asarray(pos).size > 0 and typ is not None:
+        pos = np.asarray(pos, np.float32).reshape(-1, 3)
+        typ = np.asarray(typ).reshape(-1)
+        for t, (name, sym, size, color) in _KP_STYLE.items():
+            m = typ == t
+            if not np.any(m):
+                continue
+            p = pos[m]
+            hover = []
+            for i in np.where(m)[0]:
+                parts = [name]
+                if kind is not None:
+                    k = int(kind[i])
+                    parts.append("start" if k == 0 else "end" if k == 1 else "-")
+                if cls is not None and int(cls[i]) >= 0:
+                    parts.append(f"cls={int(cls[i])}")
+                if score is not None:
+                    parts.append(f"s={float(score[i]):.2f}")
+                if source is not None:
+                    parts.append("dense" if int(source[i]) == 1 else "query")
+                hover.append("  ".join(parts))
+            fig.add_trace(go.Scatter3d(
+                x=p[:, 0], y=p[:, 1], z=p[:, 2], mode="markers",
+                marker=dict(symbol=sym, size=size, color=color,
+                            line=dict(width=1, color="black")),
+                name=f"kp:{name}", text=hover, hoverinfo="text"))
+            n_added += int(p.shape[0])
+
+    nv = pred.get("keypoints/nu_vertex_cm")
+    if nv is not None and np.asarray(nv).size == 3:
+        nv = np.asarray(nv, np.float32).reshape(3)
+        sc = pred.get("keypoints_nu_vertex_score")
+        lbl = ("nu vertex (best)"
+               + (f"  s={float(sc):.2f}" if sc is not None else ""))
+        fig.add_trace(go.Scatter3d(
+            x=[nv[0]], y=[nv[1]], z=[nv[2]], mode="markers",
+            marker=dict(symbol="diamond", size=14, color="red",
+                        line=dict(width=2, color="black")),
+            name="nu vertex (best)", text=[lbl], hoverinfo="text"))
+        n_added += 1
+    return n_added
+
 
 def _merged_base_from_pred(pred_path: str) -> str:
-    """stage3pred_<base>.h5 -> <base>  (the merged_h5 basename w/o ext)."""
+    """{stage3pred,keypointpred}_<base>.h5 -> <base>  (merged_h5 basename)."""
     name = os.path.basename(pred_path)
-    if name.startswith("stage3pred_"):
-        name = name[len("stage3pred_"):]
+    for pfx in ("stage3pred_", "keypointpred_"):
+        if name.startswith(pfx):
+            name = name[len(pfx):]
+            break
     if name.endswith(".h5"):
         name = name[:-3]
     return name
@@ -120,8 +195,10 @@ def main():
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     g = ap.add_mutually_exclusive_group(required=True)
-    g.add_argument("--stage3pred-dir", help="Directory of stage3pred_*.h5.")
-    g.add_argument("--stage3pred", help="A single stage3pred_*.h5 file.")
+    g.add_argument("--stage3pred-dir",
+                   help="Directory of stage3pred_*.h5 / keypointpred_*.h5.")
+    g.add_argument("--stage3pred",
+                   help="A single stage3pred_*.h5 / keypointpred_*.h5 file.")
     ap.add_argument("--merged-dir", default=None,
                     help="Directory of merged_*.h5 for the GT panel (sim "
                          "only). If omitted, the GT panel is hidden.")
@@ -142,11 +219,12 @@ def main():
     if args.stage3pred:
         pred_files = [os.path.abspath(args.stage3pred)]
     else:
-        pred_files = sorted(glob.glob(
-            os.path.join(os.path.abspath(args.stage3pred_dir),
-                         "stage3pred_*.h5")))
+        d = os.path.abspath(args.stage3pred_dir)
+        pred_files = sorted(set(
+            f for pat in ("stage3pred_*.h5", "keypointpred_*.h5")
+            for f in glob.glob(os.path.join(d, pat))))
     if not pred_files:
-        raise SystemExit("No stage3pred_*.h5 files found.")
+        raise SystemExit("No stage3pred_*.h5 / keypointpred_*.h5 files found.")
     n_events = len(pred_files)
     merged_dir = os.path.abspath(args.merged_dir) if args.merged_dir else None
     has_gt_dir = merged_dir is not None
@@ -191,6 +269,11 @@ def main():
                                     "value": "on"}],
                           value=[], style={"display": "inline-block",
                                            "marginRight": "16px"}),
+            dcc.Checklist(id="show_keypoints",
+                          options=[{"label": " show keypoints",
+                                    "value": "on"}],
+                          value=["on"], style={"display": "inline-block",
+                                               "marginRight": "16px"}),
             dcc.Checklist(id="sync", options=[{"label": " sync camera",
                                                "value": "on"}],
                           value=["on"], style={"display": "inline-block"}),
@@ -215,18 +298,23 @@ def main():
         Input("nu_color", "value"),
         Input("min_mask_prob", "value"),
         Input("show_ghosts", "value"),
+        Input("show_keypoints", "value"),
     )
-    def update(entry_val, nu_color, min_prob, show_ghosts_val):
+    def update(entry_val, nu_color, min_prob, show_ghosts_val, show_kp_val):
         idx = _clamp(entry_val)
         try:
             mp = float(min_prob) if min_prob is not None else 0.0
         except (TypeError, ValueError):
             mp = 0.0
         show_ghosts = bool(show_ghosts_val and "on" in show_ghosts_val)
+        show_kp = bool(show_kp_val and "on" in show_kp_val)
         pred = load_event_h5(pred_files[idx])
         suffix = f"  —  {os.path.basename(pred_files[idx])}"
         pred_fig = figure_for_cascade_prediction(
             pred, min_mask_prob=mp, nu_color_by=nu_color, title_suffix=suffix)
+        n_kp = 0
+        if show_kp:
+            n_kp = _add_predicted_keypoints(pred_fig, pred)
         gt = _gt_for(idx)
         gt_fig = figure_for_cascade_gt(gt, nu_color_by=nu_color,
                                        show_ghosts=show_ghosts,
@@ -234,8 +322,12 @@ def main():
                                        title_suffix=suffix)
         n_post = int(pred["post/coord"].shape[0]) if pred.get("post/coord") is not None else 0
         n_s3 = int(pred["stage3/coord"].shape[0]) if pred.get("stage3/coord") is not None else 0
+        has_kp = pred.get("keypoints/pos_cm") is not None
+        kp_str = (f"keypoints shown={n_kp}" if show_kp and has_kp
+                  else "keypoints: none in file" if not has_kp
+                  else "keypoints: hidden")
         meta = (f"event {idx+1}/{n_events}  |  post(deghost) SPs={n_post}  "
-                f"nu-slice(stage3) SPs={n_s3}  |  "
+                f"nu-slice(stage3) SPs={n_s3}  |  {kp_str}  |  "
                 f"GT={'yes' if gt is not None else 'none (real data / no merged_h5)'}")
         return pred_fig, gt_fig, meta
 

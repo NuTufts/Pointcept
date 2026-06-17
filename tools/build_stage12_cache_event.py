@@ -57,6 +57,7 @@ import torch
 # Side-effect: register dataset / model types referenced in configs.
 import pointcept.datasets  # noqa: F401
 import pointcept.models    # noqa: F401
+from lartpc_data_prep.keypoint_labels import copy_mckeypoints_group
 from pointcept.datasets.builder import build_dataset
 from pointcept.datasets.larformer import larformer_collate
 from pointcept.models.builder import build_model
@@ -151,6 +152,7 @@ def build_cache_event(
     gzip_per_query_data: bool = True,
     extra_attrs: Optional[dict] = None,
     skipped_marker_path: Optional[str] = None,
+    copy_keypoints: bool = True,
 ) -> dict:
     """Build a Stage-1+2 cache for `dataset[sample_idx]` and write to `output_path`.
 
@@ -456,6 +458,24 @@ def build_cache_event(
                 data=per_query_mask_prob,
             )
 
+        # ---- keypoint GT: copy mckeypoints from the source merged_h5 --
+        # Makes the cache self-describing for the LArFormer keypoint module
+        # (the cache reader derives kpscores + endpoints + nu-vertex from
+        # this group). Resolved via the dataset's source path for this
+        # sample. Non-fatal if absent.
+        n_mckp = -1
+        if copy_keypoints:
+            data_list = getattr(dataset, "data_list", None)
+            src_path = (data_list[sample_idx % len(data_list)]
+                        if data_list else None)
+            if src_path is not None and os.path.exists(src_path):
+                try:
+                    n_mckp = copy_mckeypoints_group(src_path, f, overwrite=True)
+                except Exception as ex:  # noqa: BLE001 — non-fatal
+                    print(f"[WARN] mckeypoints copy failed for {src_path}: {ex}")
+                    n_mckp = -1
+        f.attrs["has_mckeypoints"] = bool(n_mckp >= 0)
+
     info = {
         "output_path": output_path,
         "skipped_marker_path": None,
@@ -556,6 +576,9 @@ def parse_args():
                         "storing per-query mask_prob (default 0.1).")
     p.add_argument("--no-gzip", action="store_true",
                    help="Disable gzip compression on per-query mask_prob.")
+    p.add_argument("--no-keypoints", action="store_true",
+                   help="Do not copy the source mckeypoints group into the "
+                        "cache (keypoint module won't train on this cache).")
     p.add_argument("--overwrite", action="store_true")
     p.add_argument("--skipped-marker", default=None,
                    help="If the event has no cache SPs, write a "
@@ -607,6 +630,7 @@ def main():
         overwrite=args.overwrite,
         extra_attrs={"source_config": os.path.abspath(args.config)},
         skipped_marker_path=skipped_marker,
+        copy_keypoints=(not args.no_keypoints),
     )
     print(f"  cache built in {time.perf_counter()-t0:.2f}s")
     print()
