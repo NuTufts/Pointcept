@@ -174,7 +174,49 @@ with `determinism_diff.py`:
   coord mismatches across two independent runs. No deterministic-algorithm
   fallback warnings.
 
-So on a fixed GPU + driver + library stack, inference is fully repeatable.
+So on a fixed GPU + driver + library stack, inference is fully repeatable
+**when the events are processed in the same order** (see §3.2).
+
+### 3.2 Event-order invariance (same-order repeatability is not enough)
+
+`set_deterministic()` seeds the RNG **once at startup**. That is sufficient for
+the §3.1 validation, which re-runs the *same event list in the same order* — both
+runs consume the identical RNG sequence, so they match. It does **not** by itself
+guarantee that a given event produces the same output independent of its
+**position** in the batch sequence.
+
+The forward consumes a small amount of per-event RNG. With a single startup seed,
+the Nth event sees RNG state already advanced by the N−1 events before it — so the
+*same* physical event processed at a different position (a reordered input list,
+or a subset) can give a different result. The dataset itself is not the source
+(test split: fixed lm-score threshold, `max_spacepoints=None` → no subsample;
+note the loader also `sorted()`s the file list, so input-list order is
+canonicalized — reordering must be probed via subsets or the per-event identity,
+not list order alone).
+
+Measured on the attempt-2 keypoint cascade (which exercises the full
+deghoster→slicer→particle→keypoint stack): the same event processed alone vs 2nd
+in a trio differed by **up to 985 cm with an endpoint-existence flip** — a
+discrete amplifier flip (§2.3), purely from processing position.
+
+**Fix — re-seed before every event** (`reseed_per_event()` in
+`tools/run_larformer_stage3_inference.py`, called at the top of each event loop
+in `--deterministic` mode):
+
+```python
+np.random.seed(seed); torch.manual_seed(seed); torch.cuda.manual_seed_all(seed)
+```
+
+so each event's RNG is reset and its output depends only on the event, not its
+position. Wired into all three inference paths (cached-mode + full-cascade-mode
+in `run_larformer_stage3_inference.py`, and
+`run_larformer_keypoint2_cascade_inference.py`). After the fix (deterministic,
+A100): single-event run-to-run **bit-exact (Δ=0)**; the same event processed
+alone vs in a set, or a set processed in a different order, agrees to
+**≤2e-3 cm (21 µm) with 0 particle-count / class / endpoint-existence flips**
+(residual is float-level cuBLAS accumulation order, no deterministic-algorithm
+fallbacks — physically negligible vs the cm-scale targets). Use `--deterministic`
+for any measurement that re-processes events in a different order or as subsets.
 
 ---
 

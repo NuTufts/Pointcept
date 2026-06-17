@@ -30,6 +30,20 @@ def _get(f, key):
     return None
 
 
+def _rse_key(path):
+    """(run, subrun, event) identity from meta/* — the order-robust event key.
+    Falls back to the filename if the meta is absent."""
+    try:
+        with h5py.File(path, "r") as f:
+            if "meta" in f and "run" in f["meta"]:
+                return (int(f["meta"]["run"][()]),
+                        int(f["meta"]["subrun"][()]),
+                        int(f["meta"]["event"][()]))
+    except Exception:
+        pass
+    return os.path.basename(path)
+
+
 def compare(pa, pb, thr):
     out = dict(name=os.path.basename(pa))
     with h5py.File(pa, "r") as fa, h5py.File(pb, "r") as fb:
@@ -62,14 +76,21 @@ def main():
     ap.add_argument("dirA")
     ap.add_argument("dirB")
     ap.add_argument("--thr", type=float, default=20.0)
+    ap.add_argument("--by-rse", action="store_true",
+                    help="Match events by (run,subrun,event) from meta/* instead "
+                         "of by filename. Use for the order/subset-invariance "
+                         "test where the two dirs hold the same physical events "
+                         "but processed in a different order / as a subset.")
     args = ap.parse_args()
 
-    a = {os.path.basename(p): p for p in
+    keyfn = _rse_key if args.by_rse else (lambda p: os.path.basename(p))
+    a = {keyfn(p): p for p in
          glob.glob(os.path.join(args.dirA, "**", "stage3pred_*.h5"), recursive=True)}
-    b = {os.path.basename(p): p for p in
+    b = {keyfn(p): p for p in
          glob.glob(os.path.join(args.dirB, "**", "stage3pred_*.h5"), recursive=True)}
-    common = sorted(set(a) & set(b))
+    common = sorted(set(a) & set(b), key=str)
     print(f"dirA={args.dirA}\ndirB={args.dirB}")
+    print(f"match-by: {'run/subrun/event' if args.by_rse else 'filename'}")
     print(f"files: A={len(a)} B={len(b)} common={len(common)}\n")
     if not common:
         sys.exit("no common stage3pred files")

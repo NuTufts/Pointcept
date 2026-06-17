@@ -56,5 +56,5 @@ echo; echo "######## MEMBERSHIP DIFF: probe vs padded on the common ${PROBE_N} e
 apptainer exec --nv --bind /cluster:/cluster ${SIF} bash -c \
     "source ${UBDL}/setenv_pointcept_container.sh >/dev/null 2>&1; \
      export PYTHONPATH=${POINTCEPT}:\$PYTHONPATH; \
-     python3 ${REPEAT}/determinism_diff.py ${WORK}/probe_out ${WORK}/padded_out --thr 20"
+     python3 ${REPEAT}/determinism_diff.py ${WORK}/probe_out ${WORK}/padded_out --thr 20 --by-rse"
 echo; echo "DONE  (drop-flag / LABEL flips / coord mismatch / per-SP must all be 0)"

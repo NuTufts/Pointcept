@@ -71,6 +71,7 @@ sys.path.insert(0, REPO_ROOT)
 from tools.run_larformer_stage3_inference import (   # noqa: E402
     _load_weights_into, _move_batch, _resolve_particle_segmenter,
     _resolve_cascaded_slicer, _unpack_ps_sample, set_deterministic,
+    reseed_per_event,
 )
 from pointcept.models.LArFormer.inference import (   # noqa: E402
     slicer_predict_event_from_out, stage3_predict_event_from_out,
@@ -326,6 +327,8 @@ def main():
         if args.device == "cuda":
             torch.cuda.empty_cache()
 
+        if args.deterministic:
+            reseed_per_event()   # per-event order invariance (see helper)
         batched = _move_batch(larformer_collate([sample]), args.device)
 
         # ---- Stage 1+2 ----

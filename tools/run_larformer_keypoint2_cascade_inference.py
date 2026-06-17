@@ -33,7 +33,8 @@ from pointcept.models.builder import build_model
 from pointcept.models.LArFormer.keypoint_eval import _recover_affine
 from pointcept.models.LArFormer.keypoint2_particle import (
     KP_CLS_START, KP_CLS_END)
-from tools.run_larformer_stage3_inference import _load_weights_into
+from tools.run_larformer_stage3_inference import (
+    _load_weights_into, set_deterministic, reseed_per_event)
 
 
 def _decode_event(ev, coord_cm, coord_norm, nu_thresh):
@@ -88,7 +89,18 @@ def main():
     ap.add_argument("--n-events", type=int, default=-1)
     ap.add_argument("--nu-thresh", type=float, default=0.3)
     ap.add_argument("--device", default="cuda")
+    ap.add_argument("--deterministic", action="store_true",
+                    help="Bit-exact inference on a fixed GPU/driver/lib stack "
+                         "(TF32 off, deterministic algorithms, seeded, "
+                         "CUBLAS_WORKSPACE_CONFIG). See "
+                         "docs/LArFormer_Reproducibility.md. ~1.3-2x slower.")
+    ap.add_argument("--seed", type=int, default=0)
     args = ap.parse_args()
+
+    # MUST run before the model is built / any cuBLAS call (sets env + flags).
+    if args.deterministic:
+        set_deterministic(args.seed)
+        print(">>> deterministic mode ON")
 
     casc = Config.fromfile(args.cascade_config)
     kp = Config.fromfile(args.keypoint_config)
@@ -111,10 +123,17 @@ def main():
     ds = build_dataset(ds_cfg)
     n = len(ds) if args.n_events < 0 else min(args.n_events, len(ds))
     os.makedirs(args.output_dir, exist_ok=True)
+    # The dataset SORTS its file list (get_data_list -> sorted), so ds[i] is the
+    # i-th SORTED file, not the i-th input line — processing order is canonical
+    # regardless of input order. Label outputs by the actual processed file.
+    real_files = list(getattr(ds, "data_list", []))
     print(f">>> {n} events")
 
     import h5py
     for i in range(n):
+        # Per-event order invariance (shared helper; see its docstring).
+        if args.deterministic:
+            reseed_per_event(args.seed)
         batch = larformer_collate([ds[i]])
         batch = {k: (v.to(args.device) if torch.is_tensor(v) else v)
                  for k, v in batch.items()}
@@ -137,6 +156,15 @@ def main():
                 g = f.create_group("keypoints")
                 for k, v in kp_cm.items():
                     g.create_dataset(k, data=v)
+                # Event identity so a reorder test can match the same physical
+                # event across runs (the loop index is order-dependent).
+                f.attrs["src_file"] = os.path.basename(real_files[i]) \
+                    if i < len(real_files) else ""
+                for k in ("run", "subrun", "event"):
+                    v = out.get(f"ps_{k}")
+                    if v is not None:
+                        f.attrs[k] = int(v[ei]) if hasattr(v, "__getitem__") \
+                            else int(v)
             print(f"  [{i}.{ei}] n_particles={len(kp_cm['particle_class'])} "
                   f"nu_vertex_cm={kp_cm['nu_vertex_cm'].tolist()} -> {outp}")
     print("DONE")

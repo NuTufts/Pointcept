@@ -282,6 +282,28 @@ denoising; runnable end-to-end via `larformer-keypoint2-particle-v1.py`).
       isn't handed pseudo-instances; (2) it carries `ps_coord/ps_coord_norm/
       ps_offset` in the eval output for the cm decode. `pred_class` propagated
       into the per-particle result so the H5 carries the cascade PID.
+  - **Reproducibility (2026-06-17; see docs/LArFormer_Reproducibility.md).** The
+    inference tool got a `--deterministic` flag that calls `set_deterministic()`
+    BEFORE building the model (TF32 off, deterministic algorithms,
+    CUBLAS_WORKSPACE_CONFIG, seeds) — this pins `torch.sort` in `SerializedPooling`
+    for ALL FOUR backbones (deghoster+slicer+particle+keypoint). The dataset is
+    RNG-free in the test split (fixed lm-score threshold, `max_spacepoints=None`),
+    but the forward consumes per-event RNG, so a once-at-startup seed only gives
+    SAME-ORDER run-to-run repeatability — an event's output still depended on its
+    POSITION in the sequence (measured: same event processed alone vs 2nd in a
+    trio differed by up to 985 cm, with an endpoint-existence flip). FIX: the tool
+    RE-SEEDS before every event (`np`/`torch`/`cuda`), so each event's result
+    depends only on the event. Verified (deterministic, A100):
+      * single event, run-to-run: **bit-exact (Δ=0.0 cm)**.
+      * a 3-event set processed in different order / an event processed alone vs
+        in the set: keypoints agree to **≤2e-3 cm (21 µm)**, with **0 particle-
+        count / class / endpoint-existence flips** (residual is float-level cuBLAS
+        accumulation order, no deterministic-algorithm fallbacks — physically
+        negligible vs the 1 cm target).
+    NOTE: the dataset SORTS its file list (`get_data_list -> sorted`), so the
+    processing order is canonical regardless of input-list order; the tool labels
+    each output H5 with the actual processed `src_file` (+ run/subrun/event when
+    available) so reorder/subset checks match the same physical event.
   - **Still deferred:** a viz overlay for the attempt-2 cm keypoints.
 
 Remaining: full-cache training run (cluster) of Phase 1/2 — the real

@@ -51,6 +51,16 @@ sbatch --nodelist=<node> slurm/submit_membership_test.sh      # default 30 vs 20
 # Stronger: pad with LARGE events (high spacepoint count) — the bug showed up worst
 #   with ~800k-point padding. Build a custom padded.txt and set WORKDIR.
 ```
+The diff matches events by **(run,subrun,event)** (`determinism_diff.py --by-rse`,
+read from `meta/*`), pairing probe/padded events by identity rather than list
+position. Besides the two config-level train-RNG leaks this first caught
+(`shuffle_orders`, `max_source_tokens_per_level`), the **forward** also consumes
+per-event RNG — a single startup seed only gives same-*order* repeatability, so
+the inference tools (`run_larformer_stage3_inference.py` cached + full-cascade
+modes, and `run_larformer_keypoint2_cascade_inference.py`) now **re-seed before
+each event** (`reseed_per_event()`, `--deterministic` only) so an event is
+independent of its batch-mates. This membership test is the regression guard for
+that. See `docs/LArFormer_Reproducibility.md` §3.2.
 
 ### 3. Cross-GPU conformance (`slurm/submit_capture.sh` + `cross_gpu_diff.py`)
 Capture the per-event decision tensors on two nodes/SKUs, then diff. Use to clear a
@@ -87,7 +97,7 @@ attention (→ `shuffle_orders`) and the slicer `token_refiner` (→ `max_source
 | `capture_cascade_tensors.py` | dump per-event decision tensors (P(real), slice/particle preds) |
 | `capture_deghost_layers.py` | dump per-stage order-invariant fingerprints (Tier-B); `--target deghoster|slicer` |
 | `cross_gpu_diff.py` | diff two capture dirs: keep-flips, slice/class flips, margin analysis |
-| `determinism_diff.py` | diff two stage3pred dirs (drop-flag / 1g0X-label / per-SP); used by determinism + membership tests |
+| `determinism_diff.py` | diff two stage3pred dirs (drop-flag / 1g0X-label / per-SP); used by determinism + membership tests. `--by-rse` matches events by (run,subrun,event) from `meta/*` instead of filename (order/subset robust) |
 | `layers_diff.py` | diff two layer-fingerprint dirs → divergence onset stage |
 | `deadband_offline.py` | (investigation record) offline dead-band evaluation — a fix that was *ruled out* |
 | `slurm/submit_determinism_test.sh` | test 1 (same-GPU) |

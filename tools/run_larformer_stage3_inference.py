@@ -363,6 +363,8 @@ def run_cached_mode(args):
                   f"{os.path.basename(out_path)}")
             continue
 
+        if args.deterministic:
+            reseed_per_event()   # per-event order invariance (see helper)
         batched = larformer_collate([sample])
         batched = _move_batch(batched, args.device)
 
@@ -508,6 +510,8 @@ def run_full_cascade_mode(args):
         if args.device == "cuda" and not os.environ.get("LARFORMER_SKIP_EMPTY_CACHE"):
             torch.cuda.empty_cache()
 
+        if args.deterministic:
+            reseed_per_event()   # per-event order invariance (see helper)
         batched = larformer_collate([sample])
         batched = _move_batch(batched, args.device)
 
@@ -710,6 +714,25 @@ def set_deterministic(seed: int = 0):
     print("[deterministic] seeds fixed, TF32 off, cuDNN deterministic, "
           "torch deterministic algorithms on (warn_only). "
           "CUBLAS_WORKSPACE_CONFIG=:4096:8")
+
+
+def reseed_per_event(seed: int = 0):
+    """Reset RNG before each event so a per-event output is independent of the
+    event's POSITION in the batch sequence (event-order invariance).
+
+    `set_deterministic()` seeds only ONCE at startup, which gives same-order
+    run-to-run repeatability but NOT order invariance: the forward consumes
+    per-event RNG, so the Nth event sees RNG state advanced by the N-1 events
+    before it. Re-seeding here makes each event's result depend only on the
+    event, so re-running with the input list in a different order (or a subset)
+    gives the same per-event output. Call at the top of each event iteration in
+    --deterministic mode. (The dataset itself is RNG-free in the test split —
+    fixed lm-score threshold, max_spacepoints=None — so this targets the
+    forward-side RNG.)"""
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
 
 
 def main():
