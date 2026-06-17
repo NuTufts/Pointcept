@@ -29,7 +29,7 @@ Registers on import; configs trigger via:
     from pointcept.models.LArFormer import keypoint2_evaluator as _m
     del _m
 """
-from typing import Optional, Sequence
+from typing import Sequence
 
 import numpy as np
 import torch
@@ -38,6 +38,7 @@ from pointcept.engines.hooks.builder import HOOKS
 from pointcept.engines.hooks.default import HookBase
 
 from lartpc_data_prep.keypoint_labels import KPTYPE_NU_VERTEX
+from .keypoint2_particle import KP_CLS_START, KP_CLS_END
 
 
 def _average_precision(scores: np.ndarray, labels: np.ndarray) -> float:
@@ -71,6 +72,8 @@ class LArFormerLevelKeypointEvaluator(HookBase):
         nu_recall_cm: float = 3.0,
         coord_scale: float = 179.55,
         best_metric: str = "val/object_ap",
+        # per-particle keypoint thresholds (cm); 1cm is the precision target.
+        pkp_thresholds_cm: Sequence[float] = (1.0, 3.0, 10.0),
         eval_freq: int = 0,
         empty_cache: bool = True,
     ):
@@ -83,6 +86,7 @@ class LArFormerLevelKeypointEvaluator(HookBase):
         self.nu_recall_cm = float(nu_recall_cm)
         self.coord_scale = float(coord_scale)
         self.best_metric = str(best_metric)
+        self.pkp_thresholds_cm = [float(t) for t in pkp_thresholds_cm]
         self.eval_freq = int(eval_freq)
         self.empty_cache = bool(empty_cache)
 
@@ -125,6 +129,7 @@ class LArFormerLevelKeypointEvaluator(HookBase):
         nu_res_cm = []
         nu_n_gt_events = 0
         nu_n_recovered = 0
+        pkp_start_err, pkp_end_err = [], []   # per-particle localization (cm)
 
         with torch.no_grad():
             for input_dict in self.trainer.val_loader:
@@ -136,6 +141,7 @@ class LArFormerLevelKeypointEvaluator(HookBase):
                 kpscores = input_dict.get("kpscores")
                 pos_list = input_dict.get("mckeypoints_pos_norm_per_event")
                 typ_list = input_dict.get("mckeypoints_type_per_event")
+                gti_list = input_dict.get("gt_instances_per_event")
 
                 for ei, ev in enumerate(preds):
                     lk = ev.get("level_kp", {})
@@ -176,6 +182,30 @@ class LArFormerLevelKeypointEvaluator(HookBase):
                             if d < self.nu_recall_cm:
                                 nu_n_recovered += 1
 
+                    # ---- PER-PARTICLE keypoints: start/end localization ----
+                    pkp = ev.get("particle_kp")
+                    if pkp and gti_list is not None and ei < len(gti_list):
+                        insts = gti_list[ei]
+                        for r in pkp:
+                            inst = insts[r["inst_idx"]]
+                            prob = r["class_logits"].softmax(-1).cpu().numpy()
+                            pos = r["pos"].cpu().numpy()
+                            # START (always present)
+                            o = inst.get("origin_coord_norm")
+                            if o is not None:
+                                qi = int(prob[:, KP_CLS_START].argmax())
+                                d = (np.linalg.norm(pos[qi] - self._np(o))
+                                     * self.coord_scale)
+                                pkp_start_err.append(d)
+                            # END (tracks only)
+                            if inst.get("has_end") and \
+                                    inst.get("end_coord_norm") is not None:
+                                qi = int(prob[:, KP_CLS_END].argmax())
+                                d = (np.linalg.norm(
+                                    pos[qi] - self._np(inst["end_coord_norm"]))
+                                     * self.coord_scale)
+                                pkp_end_err.append(d)
+
         scalars = {}
         if obj_scores:
             s = np.concatenate(obj_scores)
@@ -193,6 +223,13 @@ class LArFormerLevelKeypointEvaluator(HookBase):
             scalars["val/nu_vertex_res_cm_median"] = float(np.median(r))
             scalars["val/nu_vertex_res_cm_mean"] = float(r.mean())
             scalars["val/nu_vertex_recall"] = nu_n_recovered / max(nu_n_gt_events, 1)
+        for name, errs in (("start", pkp_start_err), ("end", pkp_end_err)):
+            if errs:
+                e = np.asarray(errs, dtype=np.float64)
+                scalars[f"val/pkp_{name}_err_cm_median"] = float(np.median(e))
+                scalars[f"val/pkp_{name}_err_cm_mean"] = float(e.mean())
+                for thr in self.pkp_thresholds_cm:
+                    scalars[f"val/pkp_{name}_R{thr:g}"] = float((e < thr).mean())
 
         self._log_and_publish(scalars)
 
@@ -216,6 +253,14 @@ class LArFormerLevelKeypointEvaluator(HookBase):
                 % (scalars["val/nu_vertex_res_cm_median"],
                    scalars["val/nu_vertex_res_cm_mean"], self.nu_recall_cm,
                    scalars["val/nu_vertex_recall"]))
+        thr_lo = min(self.pkp_thresholds_cm)
+        for name in ("start", "end"):
+            mk = f"val/pkp_{name}_err_cm_median"
+            if mk in scalars:
+                log.info(
+                    "Val particle %s: err(cm) median %.2f mean %.2f  R@%gcm %.3f"
+                    % (name, scalars[mk], scalars[f"val/pkp_{name}_err_cm_mean"],
+                       thr_lo, scalars[f"val/pkp_{name}_R{thr_lo:g}"]))
         epoch1 = self.trainer.epoch + 1
         if self.trainer.writer is not None:
             for k, v in scalars.items():

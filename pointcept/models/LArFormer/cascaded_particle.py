@@ -121,6 +121,7 @@ class CascadedParticleSegmenter(nn.Module):
         spacepoint_level: str = "spacepoint",
         recenter_to_slice_centroid: bool = True,
         report_keep_frac: bool = True,
+        expose_filtered_batch: bool = False,
     ):
         super().__init__()
         self.cascaded_slicer = build_model(cascaded_slicer)
@@ -139,6 +140,10 @@ class CascadedParticleSegmenter(nn.Module):
         self.spacepoint_level = str(spacepoint_level)
         self.recenter_to_slice_centroid = bool(recenter_to_slice_centroid)
         self.report_keep_frac = bool(report_keep_frac)
+        # When set, the eval return also carries the recentered nu-slice batch
+        # (`ps_batch`) so a downstream model (e.g. CascadedKeypoint) can run its
+        # own backbone on the exact slice Stage 3 saw.
+        self.expose_filtered_batch = bool(expose_filtered_batch)
 
         if self.freeze_cascaded_slicer:
             for p in self.cascaded_slicer.parameters():
@@ -372,7 +377,7 @@ class CascadedParticleSegmenter(nn.Module):
         # Stage-1+2 telemetry and the nu-filter survivor info so a
         # full-cascade evaluator can correlate per-particle metrics with
         # which nu-slice candidate Stage 2 chose.
-        return {
+        out = {
             "predictions": ps_out["predictions"],
             "nu_keep_frac": keep_frac,
             "slicer_predictions": slicer_predictions,
@@ -384,3 +389,9 @@ class CascadedParticleSegmenter(nn.Module):
             "filtered_gt_instances_per_event":
                 ps_batch.get("gt_instances_per_event", []),
         }
+        if self.expose_filtered_batch:
+            # The recentered nu-slice batch Stage 3 ran on (coord_norm/feat/
+            # offset/grid_coord/gt_instances/...) — for a downstream keypoint
+            # model to run its own backbone on the same slice.
+            out["ps_batch"] = ps_batch
+        return out

@@ -43,6 +43,7 @@ from .keypoint_eval import (
 )
 from .keypoint_particle_evaluator import LArFormerKeypointEvaluator
 from .keypoint2_evaluator import LArFormerLevelKeypointEvaluator
+from .keypoint2_cascade import CascadedKeypoint, predicted_masks_to_instances
 from .keypoint_hooks import KeypointRegWarmupHook
 from .tokenizer import CompositeTokenizer
 
@@ -99,5 +100,7 @@ __all__ = [
     "dedup_query_effective_argmax",
     "LArFormerKeypointEvaluator",
     "LArFormerLevelKeypointEvaluator",
+    "CascadedKeypoint",
+    "predicted_masks_to_instances",
     "KeypointRegWarmupHook",
 ]

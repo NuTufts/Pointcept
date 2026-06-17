@@ -169,9 +169,124 @@ shower), `end_coord_norm` + `has_end` (tracks).
     `warmup_iters=200` >> dev iters so the LR under-ramped yet still hit AP 0.99;
     correct for the full run, but for a dev-perf read lower it (~5-10). Real
     generalization needs the full cache (cluster).
-  - **NEXT (Phase 2):** per-particle query decoder (pseudo-event sub-batching,
-    spacepoint+voxel levels on subsets, seed from dec2 object scores, {start,end,
-    no-object} + MSE, predicted-mask matching + noised-GT denoising).
+- **Phase 2 — per-particle query decoder.** Pseudo-event sub-batching
+  (particles→events); spacepoint+voxel levels on subsets; seed from slice dec2
+  scores; classes {start,end,no-object}; MSE regression; predicted-mask matching
+  + noised-GT denoising path (decision 2).
+  - **Phase 2a DONE (core mechanism, 2026-06-17).** `keypoint2_particle.py`:
+    `ParticleKeypointDecoder` — DETR-style, queries cross-attend (FULL attention,
+    no mask gating) to a particle's spacepoint tokens + self-attend over N
+    layers; per-query heads class∈{start,end,no_object} + 3D pos (zero-init →
+    pos=seed at init). `particle_keypoint_loss` — Hungarian match queries→{start,
+    end} GT (cost = class CE + L2), CE(class)+smooth_L1(pos), deep-supervised.
+    Integrated into `LArFormer` behind `enable_particle_keypoint` /
+    `particle_keypoint_cfg`: `_particle_keypoint_pass` loops the event's GT
+    instances (truth_indices → subset), builds a spacepoint level via a small
+    own tokenizer (no PTv3 dec-stage → no remap), seeds queries from the
+    slice-level object head (`seed_level=ptv3_dec2`, `seed_head=object`,
+    top-`n_seed_queries` dec2 tokens by object score among the particle's points),
+    runs the decoder, and adds the loss. GT origin/end share the recentered
+    coord_norm frame (dataset recenters both) → plain coord_norm distance.
+  - **Capacity VALIDATED (the decisive check):** 400-step overfit on 4 dev
+    events drove cls→0.000 and **start_err 24→0.35 cm, end_err 7.6→0.21 cm** —
+    SUB-CM. The separate decoder with full attention to the particle's geometry
+    has the capacity to localize below the 1 cm target — the expressivity
+    attempt 1 lacked (its frozen mask-tailored embeddings plateaued ~10 cm).
+  - **Config + eval DONE (2026-06-17).** `larformer-keypoint2-particle-v1.py`
+    inherits the slice config via `_base_` and just sets
+    `enable_particle_keypoint=True` + `particle_keypoint_cfg` (num_queries=8,
+    3 layers, seed_level=ptv3_dec2, seed_head=object, n_seed_queries=4,
+    weight_class=1, weight_pos=5). `LArFormerLevelKeypointEvaluator` extended:
+    reads `pred["particle_kp"]` (each carries `inst_idx` to pair with the GT
+    instance — the pass skips empty instances so positions aren't 1:1) and logs
+    `val/pkp_{start,end}_err_cm_{median,mean}` + `val/pkp_{start,end}_R{1,3,10}`
+    (best START/END query by class prob vs the instance origin/end).
+  - **Dev run DONE (pipeline validated, 2026-06-17).** Full `tools/train.py`,
+    50 epochs on the 10-event dev cache (`--options scheduler.warmup_iters=10`,
+    output `/mnt/ddrive/pointcept_exp/larformer_keypoint2_particle_v1`). All loss
+    components + all eval metrics log correctly (object AP 0.97; per-particle
+    start err median ~6-11 cm, R@1cm ~0 on VAL). The big gap vs the overfit's
+    0.35 cm is EXPECTED and not a bug: overfit = same 4 events, 400 steps @3e-4
+    (capacity); dev = 10 HELD-OUT val events, ~50 iters @1e-4 on 10 train events
+    (tiny-data generalization, badly under-trained — start-err even regressed
+    6→11 cm late = small-data train-overfit + the dec2 seed source co-training
+    and shifting seeds). Pipeline + capacity proven; real per-particle perf needs
+    the full cache (cluster).
+  - **Phase 2b denoising DONE (2026-06-17).** Mirrors `MaskDenoiser`. In
+    `keypoint2_particle.py`: `ParticleKeypointDecoder` gained a `class_embedding`
+    + a DN forward mode (`add_learnable_base=False` → queries = pure init
+    content, no learnable base/query_pos, variable count). `noise_particle_indices`
+    (drop `drop_frac` of a particle's points + add `add_frac` random non-member
+    event points — imperfect-mask sim, resampled per step) and
+    `particle_keypoint_dn_loss` (KNOWN assignment query↔target, CE + smooth-L1,
+    no Hungarian). In `_particle_keypoint_pass`: per instance, build `n_groups`
+    DN copies of its keypoints, jitter the anchors (`anchor_jitter_std`), seed
+    with class embeddings, run the decoder over the noised point set, add the DN
+    loss (`particle_dn_weight`). Config knob `particle_keypoint_cfg.denoise`
+    (enabled in `larformer-keypoint2-particle-v1.py`).
+  - **Validated:** DN overfit — `dn_cls` 1.32→0.000 (learns the type), `dn_total`
+    1.23→0.002; the REGULAR path still reaches ~1.3 cm (DN doesn't interfere).
+    DN position error plateaus ~8 cm BY DESIGN (noise resampled each step → not
+    memorizable; reflects genuine localize-under-noise difficulty = the
+    robustness DN instills for Phase-3 predicted masks).
+  - **Predicted-mask matching path: deferred to Phase 3** (needs the Stage-3
+    cascade to supply predicted masks + IoU→GT matching; same decoder, just fed
+    predicted point sets instead of GT instances).
+
+**Phase 2 status: COMPLETE** (decoder + loss + dec2 seeding + per-particle eval +
+denoising; runnable end-to-end via `larformer-keypoint2-particle-v1.py`).
+
+- **Phase 3 — cascade wrapper (code complete, 2026-06-17; end-to-end deferred).**
+  - **3a:** `CascadedParticleSegmenter` gained `expose_filtered_batch` — its eval
+    return now also carries `ps_batch` (the recentered nu-slice the keypoint
+    model's own backbone runs on).
+  - **3b:** `keypoint2_cascade.predicted_masks_to_instances` — converts a
+    predicted particle prediction into keypoint-decoder instances: dedup via the
+    SAME `inference.dedup_queries` as the masks (confidence floor + mask-IoU NMS),
+    each active query → pseudo-instance (`truth_indices` = its spacepoints,
+    min_points filter); optional IoU→GT match attaches the GT origin/end.
+    **Validated** (synthetic): dedup drops the duplicate query (2→1), 3 instances
+    recovered, IoU-match attaches origin (iou 1.0); inference (no GT) → 3
+    pseudo-instances, no origin.
+  - **3c:** `CascadedKeypoint` (registered MODEL) — builds + freezes the cascade
+    (`expose_filtered_batch=True`, eval-pinned, `train()` override, no_grad
+    forward), builds the attempt-2 keypoint model, and in forward runs cascade →
+    `ps_batch` + predictions → builds particle instances (predicted | gt) →
+    runs the keypoint model. Inference: pred carries `level_kp` + `particle_kp`.
+  - **FRAME CAVEAT:** the cascade recenters ONLY `coord_norm`, not GT origin/end
+    (Stage-3 trains on the cache — which recenters together — and only infers
+    through the cascade). So the wrapper is INFERENCE-correct; training the
+    keypoint model THROUGH the cascade (predicted-mask matching w/ IoU GT) needs
+    the matched GT recentered by the same centroid first (follow-up). Train the
+    keypoint model standalone on the cache (Phase 1/2); Phase-2b denoising
+    already gives imperfect-mask robustness. IoU-match branch left in for later.
+  - **END-TO-END VALIDATED ON REAL DATA (2026-06-17).** All weights exist on
+    this machine: deghoster `lora_deghost_v6_hasmatch/epoch_30`, sonata backbone
+    `lartpc_v6_..._epoch_42`, slicer `..._iter_75750`, particle `epoch_6`, +
+    raw merged_h5 (`devdata_mergedh5_pi0filter*.txt`). New tool
+    `tools/run_larformer_keypoint2_cascade_inference.py` builds `CascadedKeypoint`
+    (cascade self-loads deghoster+slicer+sonata; `--particle-weights` →
+    particle_segmenter; `--keypoint-weights` → keypoint_model), runs on raw
+    events, decodes per-particle start/end + dense nu-vertex to DETECTOR CM
+    (per-event affine via `keypoint_eval._recover_affine`), writes per-event H5
+    (`keypoints/particle_start_cm|particle_end_cm|particle_class|nu_vertex_cm`).
+    - Verified on 146928-point raw events: cascade → ~4.1k-SP nu slice → 5-8
+      predicted particles → keypoint model → cm keypoints. `particle_class` came
+      out `[gamma,p,gamma,gamma,gamma,gamma,p]` on a π0-filter event (photon-rich
+      — physically sensible, from the real epoch_6 particle weights). Keypoint
+      POSITIONS are under-trained (dev keypoint ckpt) but the full wiring +
+      cm-decode is proven.
+    - Two wiring fixes made: (1) `CascadedKeypoint` feeds PREDICTED instances via
+      `particle_instances_per_event` (separate from `gt_instances_per_event`) so
+      the keypoint model's eval-with-GT diagnostic (`loss_fn` reads `origin_type`)
+      isn't handed pseudo-instances; (2) it carries `ps_coord/ps_coord_norm/
+      ps_offset` in the eval output for the cm decode. `pred_class` propagated
+      into the per-particle result so the H5 carries the cascade PID.
+  - **Still deferred:** a viz overlay for the attempt-2 cm keypoints.
+
+Remaining: full-cache training run (cluster) of Phase 1/2 — the real
+generalization test — then re-run this inference tool with the trained weights
+for physically-meaningful keypoints.
 - **Phase 2 — per-particle query decoder.** Pseudo-event sub-batching
   (particles→events); spacepoint+voxel levels on subsets; seed from slice dec2
   scores; classes {start,end,no-object}; MSE regression; predicted-mask matching

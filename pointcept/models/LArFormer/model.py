@@ -50,6 +50,11 @@ from .heads import PerTokenClsHead
 from .losses import LArFormerLoss
 from .keypoint_heads import KeypointScoreHead, KeypointOffsetHead
 from .keypoint_refine import KeypointRefinementDecoder
+from .keypoint2_particle import (
+    ParticleKeypointDecoder, particle_keypoint_loss,
+    particle_keypoint_dn_loss, noise_particle_indices,
+    KP_CLS_START, KP_CLS_END,
+)
 from .query_denoising import MaskDenoiser
 from .query_selection import MixedQuerySelector
 from .refiners import build_token_refiner
@@ -121,6 +126,8 @@ class LArFormer(nn.Module):
         keypoint_dense_cfg: Optional[dict] = None,
         freeze_non_keypoint: bool = False,
         level_keypoint_heads: Optional[Sequence[dict]] = None,
+        enable_particle_keypoint: bool = False,
+        particle_keypoint_cfg: Optional[dict] = None,
     ):
         super().__init__()
         self.backbone = build_model(backbone)
@@ -382,6 +389,46 @@ class LArFormer(nn.Module):
             self.level_kp_heads[hc["name"]] = KeypointScoreHead(
                 in_dim=token_dim, n_types=1,
                 hidden_dim=int(hc.get("hidden_dim", 256)))
+
+        # Per-PARTICLE keypoint query decoder (attempt-2 Phase 2). A DETR-style
+        # decoder that, for each particle (a point subset), predicts typed
+        # keypoints (start/end) by cross-attending to the particle's spacepoint
+        # tokens. Queries are seeded from the slice-level object head
+        # (`seed_level`/`seed_head`, e.g. ptv3_dec2 "object"). It owns a SMALL
+        # tokenizer that builds only a spacepoint level on the particle subset
+        # (no PTv3 dec-stage levels → no global-index remap). Supervised by the
+        # per-instance origin/end keypoints (particle_keypoint_loss).
+        self.enable_particle_keypoint = bool(enable_particle_keypoint)
+        self.particle_kp = None
+        if self.enable_particle_keypoint:
+            pc = dict(particle_keypoint_cfg or {})
+            self.particle_seed_level = pc.get("seed_level", "ptv3_dec2")
+            self.particle_seed_head = pc.get("seed_head", "object")
+            self.particle_n_seed = int(pc.get("n_seed_queries", 0))
+            self.particle_kp_w_class = float(pc.get("weight_class", 1.0))
+            self.particle_kp_w_pos = float(pc.get("weight_pos", 5.0))
+            self.particle_kp_coord_scale = float(pc.get("coord_scale", 179.55))
+            # Denoising (DN) path (Phase 2b): extra queries seeded at jittered
+            # GT keypoints with class-embedding content + a drop/add-noised point
+            # set, supervised with KNOWN assignment (no Hungarian). Bridges to
+            # the predicted-mask path (Phase 3). Off → dn["enable"] False.
+            dn = dict(pc.get("denoise") or {})
+            self.particle_dn_enable = bool(dn.get("enable", False))
+            self.particle_dn_groups = int(dn.get("n_groups", 3))
+            self.particle_dn_jitter = float(dn.get("anchor_jitter_std", 0.03))
+            self.particle_dn_drop = float(dn.get("drop_frac", 0.2))
+            self.particle_dn_add = float(dn.get("add_frac", 0.2))
+            self.particle_dn_weight = float(dn.get("weight", 1.0))
+            self.particle_tokenizer = CompositeTokenizer(
+                levels_cfg=[dict(name="spacepoint", builder="SpacepointBuilder")],
+                in_dim=backbone_out_channels, token_dim=token_dim)
+            self.particle_kp = ParticleKeypointDecoder(
+                dim=token_dim,
+                num_queries=int(pc.get("num_queries", 8)),
+                num_layers=int(pc.get("num_layers", 3)),
+                num_heads=int(pc.get("num_heads", 4)),
+                mlp_ratio=float(pc.get("mlp_ratio", 4.0)),
+                pos_emb_kind=pc.get("pos_emb_kind", "sinusoidal"))
 
         # Keypoint-only training: freeze the WHOLE particle-segmentation network
         # (backbone, PT-v3 decoder, token refiner, Mask2Former decoder layers +
@@ -1028,6 +1075,126 @@ class LArFormer(nn.Module):
                                                else logits.new_zeros(()))
         return float(hc.get("weight", 1.0)) * loss, diag
 
+    def _particle_keypoint_pass(self, sp_feat, coord_norm, levels,
+                                level_kp_logits, gt_instances):
+        """Per-particle keypoint decoder over an event's GT instances.
+
+        Each instance's `truth_indices` (event-local SP indices) define the
+        particle's point subset; the decoder predicts typed start/end keypoints
+        on it, optionally seeded from the slice-level object head. Returns
+        (per_particle_pred_list, aggregated_loss_dict_or_None). Frames: GT
+        origin/end and coord_norm share the (recentered) frame (dataset
+        recenters both), so the loss is a plain coord_norm distance.
+        """
+        dev = coord_norm.device
+        # ---- seeding source: object scores on the slice seed level ----
+        seed_lvl = levels.get(self.particle_seed_level)
+        seed_logits = level_kp_logits.get(self.particle_seed_head)
+        seed_scores = seed_coords = seed_tokens = seed_s2l = None
+        if (seed_lvl is not None and seed_logits is not None
+                and self.particle_n_seed > 0):
+            seed_scores = torch.sigmoid(seed_logits.view(-1))
+            seed_coords = seed_lvl.coords
+            seed_tokens = seed_lvl.tokens
+            seed_s2l = seed_lvl.sp_to_level_id
+
+        results, losses, dn_losses = [], [], []
+        Q = self.particle_kp.num_queries
+        for inst_idx, inst in enumerate(gt_instances):
+            ti = inst.get("truth_indices")
+            if ti is None:
+                continue
+            idx = torch.as_tensor(ti, device=dev, dtype=torch.long).reshape(-1)
+            if idx.numel() == 0:
+                continue
+            p_feat = sp_feat[idx]
+            p_coord = coord_norm[idx]
+            sp_lvl = self.particle_tokenizer(p_feat, p_coord, {})["spacepoint"]
+
+            init_content = init_anchor = None
+            if seed_scores is not None:
+                dec_ids = seed_s2l[idx]
+                dec_ids = dec_ids[dec_ids >= 0].unique()
+                if dec_ids.numel() > 0:
+                    sc = seed_scores[dec_ids]
+                    k = min(self.particle_n_seed, int(dec_ids.numel()), Q)
+                    top = dec_ids[torch.topk(sc, k).indices]
+                    init_anchor = seed_coords.new_zeros(Q, 3)
+                    init_content = seed_tokens.new_zeros(Q, seed_tokens.shape[1])
+                    init_anchor[:k] = seed_coords[top[:k]]
+                    init_content[:k] = seed_tokens[top[:k]]
+
+            layer_preds = self.particle_kp(
+                sp_lvl.tokens, sp_lvl.coords, init_content, init_anchor)
+            fin = layer_preds[-1]
+            results.append({
+                "inst_idx": int(inst_idx),
+                "trackid": int(inst.get("primary_trackid", -1)),
+                "pred_class": int(inst.get("pred_class", -1)),
+                "class_logits": fin["class_logits"].detach(),
+                "pos": fin["pos"].detach(),
+            })
+
+            if self.training:
+                gt_pos, gt_cls = [], []
+                o = inst.get("origin_coord_norm")
+                if o is not None:
+                    gt_pos.append(torch.as_tensor(o, device=dev,
+                                                  dtype=torch.float32))
+                    gt_cls.append(KP_CLS_START)
+                if inst.get("has_end") and inst.get("end_coord_norm") is not None:
+                    gt_pos.append(torch.as_tensor(inst["end_coord_norm"],
+                                                  device=dev, dtype=torch.float32))
+                    gt_cls.append(KP_CLS_END)
+                if gt_pos:
+                    gp = torch.stack(gt_pos)
+                    gc = torch.tensor(gt_cls, device=dev, dtype=torch.long)
+                    lp = particle_keypoint_loss(
+                        layer_preds, gp, gc,
+                        coord_scale=self.particle_kp_coord_scale,
+                        weight_class=self.particle_kp_w_class,
+                        weight_pos=self.particle_kp_w_pos)
+                    losses.append(lp)
+
+                    # ---- Denoising (DN) path (Phase 2b) ----
+                    if self.particle_dn_enable:
+                        G = self.particle_dn_groups
+                        dn_tgt_pos = gp.repeat(G, 1)            # (G*T,3)
+                        dn_tgt_cls = gc.repeat(G)               # (G*T,)
+                        dn_anchor = dn_tgt_pos + torch.randn_like(
+                            dn_tgt_pos) * self.particle_dn_jitter
+                        dn_content = self.particle_kp.class_embedding(dn_tgt_cls)
+                        nidx = noise_particle_indices(
+                            idx, int(coord_norm.shape[0]),
+                            self.particle_dn_drop, self.particle_dn_add)
+                        n_sp = self.particle_tokenizer(
+                            sp_feat[nidx], coord_norm[nidx], {})["spacepoint"]
+                        dn_preds = self.particle_kp(
+                            n_sp.tokens, n_sp.coords, init_content=dn_content,
+                            init_anchor=dn_anchor, add_learnable_base=False)
+                        dn_losses.append(particle_keypoint_dn_loss(
+                            dn_preds, dn_tgt_pos, dn_tgt_cls,
+                            coord_scale=self.particle_kp_coord_scale,
+                            weight_class=self.particle_kp_w_class,
+                            weight_pos=self.particle_kp_w_pos))
+
+        agg = None
+        if losses:
+            keys = set().union(*[set(l.keys()) for l in losses])
+            agg = {k: torch.stack([l[k].float() for l in losses if k in l]).mean()
+                   for k in keys}
+        if dn_losses:
+            dkeys = set().union(*[set(l.keys()) for l in dn_losses])
+            dagg = {k: torch.stack([l[k].float() for l in dn_losses if k in l]).mean()
+                    for k in dkeys}
+            if agg is None:
+                agg = {"total": self.particle_dn_weight * dagg["total"]}
+            else:
+                agg["total"] = agg["total"] + self.particle_dn_weight * dagg["total"]
+            for k, v in dagg.items():
+                agg[f"dn_{k}"] = v.detach() if k == "total" else v
+        return results, agg
+
     def _dense_keypoint_loss(self, logits, offsets, target_scores,
                              target_offsets):
         """Dense per-SP keypoint loss: weighted-MSE on sigmoid(score logits)
@@ -1299,6 +1466,21 @@ class LArFormer(nn.Module):
                         "level": ln,
                         "sp_to_level_id": lvl.sp_to_level_id.detach(),
                     }
+
+            # Per-particle keypoint query decoder (attempt-2 Phase 2). Particle
+            # point sets come from `particle_instances_per_event` if present
+            # (e.g. CascadedKeypoint's PREDICTED masks at inference — kept out of
+            # `gt_instances_per_event` so the eval-with-GT diagnostic path isn't
+            # fed pseudo-instances), else the GT instances (standalone training).
+            pkp_loss = None
+            _pi_key = ("particle_instances_per_event"
+                       if "particle_instances_per_event" in data_dict
+                       else "gt_instances_per_event")
+            if self.enable_particle_keypoint and _pi_key in data_dict:
+                gt_inst = data_dict[_pi_key][ev["ei"]]
+                pkp_results, pkp_loss = self._particle_keypoint_pass(
+                    sp_feat, coord_norm, levels, level_kp_logits, gt_inst)
+                pred["particle_kp"] = pkp_results
             per_event_pred.append(pred)
 
             if self.training:
@@ -1370,6 +1552,12 @@ class LArFormer(nn.Module):
                         loss_dict["total"] = loss_dict["total"] + l_loss
                         for k, v in l_diag.items():
                             loss_dict[k] = v
+                # Per-particle keypoint decoder loss (set prediction over the
+                # event's GT instances; computed in _particle_keypoint_pass).
+                if pkp_loss is not None:
+                    loss_dict["total"] = loss_dict["total"] + pkp_loss["total"]
+                    for k, v in pkp_loss.items():
+                        loss_dict[f"pkp_{k}"] = v.detach() if k == "total" else v
                 per_event_loss.append(loss_dict)
             elif "gt_instances_per_event" in data_dict:
                 # Eval-with-GT path: compute matching + loss per event so
