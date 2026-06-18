@@ -430,6 +430,47 @@ class LArFormer(nn.Module):
                 mlp_ratio=float(pc.get("mlp_ratio", 4.0)),
                 pos_emb_kind=pc.get("pos_emb_kind", "sinusoidal"))
 
+            # Per-particle MAIN-path mask source:
+            #   "gt" (default): GT instance masks drive BOTH the matching path
+            #     and the DN path (legacy).
+            #   "predicted": a FROZEN particle segmenter is run on the slice
+            #     EACH STEP → deduped predicted masks (IoU-matched to GT for
+            #     their start/end targets; unmatched → all-no_object) drive the
+            #     MAIN path; GT masks still drive the DN path. ~2x batch time.
+            #   "predicted_cached": identical MAIN-path masks but read from the
+            #     stage-1+2+3 cache (precomputed by
+            #     augment_stage12_cache_pred_masks.py and supplied by the
+            #     dataset as particle_instances_per_event) — NO live segmenter,
+            #     so no build here and no per-step cost.
+            # Both predicted modes train on the SAME imperfect masks seen at
+            # inference → shrink the val→inference gap. See
+            # keypoint2_cascade.predicted_masks_to_instances.
+            self.particle_main_source = str(pc.get("main_source", "gt"))
+            self.particle_pred_class_prob_floor = float(
+                pc.get("pred_class_prob_floor", 0.3))
+            self.particle_pred_dedup_iou = float(pc.get("pred_dedup_iou", 0.6))
+            self.particle_pred_mask_thresh = float(pc.get("pred_mask_thresh", 0.0))
+            self.particle_pred_min_points = int(pc.get("pred_min_points", 3))
+            self.particle_pred_iou_match = float(
+                pc.get("pred_iou_match_thresh", 0.3))
+            self.particle_segmenter = None
+            self._particle_seg_no_object_id = 7
+            if self.particle_main_source == "predicted":
+                seg_cfg = pc.get("segmenter")
+                assert seg_cfg is not None, (
+                    "particle_keypoint_cfg.main_source='predicted' requires "
+                    "particle_keypoint_cfg.segmenter (the particle-segmenter "
+                    "model cfg) + segmenter_weight.")
+                self.particle_segmenter = build_model(dict(seg_cfg))
+                self._particle_seg_no_object_id = int(
+                    seg_cfg.get("num_classes", 8)) - 1
+                seg_w = pc.get("segmenter_weight")
+                if seg_w:
+                    self._load_particle_segmenter_weight(seg_w)
+                for p in self.particle_segmenter.parameters():
+                    p.requires_grad = False
+                self.particle_segmenter.eval()
+
         # Keypoint-only training: freeze the WHOLE particle-segmentation network
         # (backbone, PT-v3 decoder, token refiner, Mask2Former decoder layers +
         # class/mask heads, per-level cls heads, query selection, denoising) and
@@ -1075,18 +1116,105 @@ class LArFormer(nn.Module):
                                                else logits.new_zeros(()))
         return float(hc.get("weight", 1.0)) * loss, diag
 
-    def _particle_keypoint_pass(self, sp_feat, coord_norm, levels,
-                                level_kp_logits, gt_instances):
-        """Per-particle keypoint decoder over an event's GT instances.
+    def _load_particle_segmenter_weight(self, path: str) -> None:
+        """Load the trained particle-segmenter checkpoint into the frozen
+        in-model segmenter (main_source='predicted'). The Stage-3 particle
+        weight (e.g. model_iter_98652.pth) is complete (backbone included), so
+        strict=False with missing≈0."""
+        sd = torch.load(path, map_location="cpu")
+        sd = sd.get("state_dict", sd.get("model", sd))
+        sd = {k[len("module."):] if k.startswith("module.") else k: v
+              for k, v in sd.items()}
+        missing, unexpected = self.particle_segmenter.load_state_dict(
+            sd, strict=False)
+        get_root_logger().info(
+            f"[LArFormer] loaded particle segmenter weight {path}: "
+            f"missing={len(missing)} unexpected={len(unexpected)}")
 
-        Each instance's `truth_indices` (event-local SP indices) define the
-        particle's point subset; the decoder predicts typed start/end keypoints
-        on it, optionally seeded from the slice-level object head. Returns
-        (per_particle_pred_list, aggregated_loss_dict_or_None). Frames: GT
-        origin/end and coord_norm share the (recentered) frame (dataset
-        recenters both), so the loss is a plain coord_norm distance.
-        """
+    def _run_particle_segmenter(self, data_dict):
+        """Run the frozen particle segmenter once on the whole batch (gt
+        stripped → inference path) and return its per-event predictions
+        (list of {class_logits, mask_logits:{spacepoint}}). None when not in
+        predicted mode / segmenter absent / masks supplied externally."""
+        if (not self.enable_particle_keypoint
+                or getattr(self, "particle_segmenter", None) is None
+                or self.particle_main_source != "predicted"
+                or "particle_instances_per_event" in data_dict):
+            return None
+        self.particle_segmenter.eval()
+        seg_in = {k: v for k, v in data_dict.items()
+                  if k not in ("gt_instances_per_event", "n_gt_instances",
+                               "particle_instances_per_event")}
+        with torch.no_grad():
+            seg_out = self.particle_segmenter(seg_in)
+        return seg_out.get("predictions", []) if isinstance(seg_out, dict) else []
+
+    def _particle_main_instances(self, data_dict, ei, gt_inst_ev, seg_preds):
+        """Instances for the per-particle MAIN path, by priority:
+        (1) externally supplied `particle_instances_per_event` (CascadedKeypoint
+        inference); (2) live frozen-segmenter predicted masks deduped +
+        IoU-matched to GT (main_source='predicted'); (3) the GT instances
+        (main_source='gt')."""
+        if "particle_instances_per_event" in data_dict:
+            pe = data_dict["particle_instances_per_event"]
+            return pe[ei] if ei < len(pe) else []
+        if self.particle_main_source == "predicted" and seg_preds is not None:
+            from .keypoint2_cascade import predicted_masks_to_instances
+            ep = seg_preds[ei] if ei < len(seg_preds) else None
+            sm = ep.get("mask_logits", {}).get("spacepoint") if ep else None
+            cl = ep.get("class_logits") if ep else None
+            if cl is not None and sm is not None:
+                return predicted_masks_to_instances(
+                    cl, sm, self._particle_seg_no_object_id,
+                    class_prob_floor=self.particle_pred_class_prob_floor,
+                    dedup_iou_threshold=self.particle_pred_dedup_iou,
+                    mask_thresh=self.particle_pred_mask_thresh,
+                    min_points=self.particle_pred_min_points,
+                    gt_instances=gt_inst_ev,
+                    iou_match_thresh=self.particle_pred_iou_match)
+            return []
+        return gt_inst_ev
+
+    def _pkp_gt_targets(self, inst, dev):
+        """(gt_pos (T,3), gt_cls (T,)) for ONE instance. START target = the
+        VISIBLE start keypoint (track_start/shower, ON the particle's
+        spacepoints) when tagged, NOT the birth origin (off-cloud for showers →
+        only memorizable); falls back to origin. Empty when the instance has no
+        keypoints (e.g. an unmatched predicted mask) → all queries → no_object."""
+        gt_pos, gt_cls = [], []
+        o = (inst["start_coord_norm"] if inst.get("has_start")
+             else inst.get("origin_coord_norm"))
+        if o is not None:
+            gt_pos.append(torch.as_tensor(o, device=dev, dtype=torch.float32))
+            gt_cls.append(KP_CLS_START)
+        if inst.get("has_end") and inst.get("end_coord_norm") is not None:
+            gt_pos.append(torch.as_tensor(inst["end_coord_norm"],
+                                          device=dev, dtype=torch.float32))
+            gt_cls.append(KP_CLS_END)
+        if gt_pos:
+            return (torch.stack(gt_pos),
+                    torch.tensor(gt_cls, device=dev, dtype=torch.long))
+        return (torch.zeros(0, 3, device=dev),
+                torch.zeros(0, dtype=torch.long, device=dev))
+
+    def _particle_keypoint_pass(self, sp_feat, coord_norm, levels,
+                                level_kp_logits, main_instances,
+                                dn_instances=None):
+        """Per-particle keypoint decoder.
+
+        `main_instances` drive the MAIN (Hungarian-matched) path: with
+        main_source='predicted' these are the frozen segmenter's deduped
+        PREDICTED masks (IoU-matched to GT for their start/end targets;
+        unmatched → all-no_object), so the decoder sees the SAME imperfect masks
+        as at inference. `dn_instances` (the GT instances) drive the DN path
+        (jittered GT keypoints over a drop/add-noised GT point set, known
+        assignment) → clean-mask supervision. dn_instances=None reuses the main
+        list (legacy / main_source='gt'). Frames: GT start/origin/end and
+        coord_norm share the (recentered) frame, so losses are plain coord_norm
+        distances. Returns (per_particle_pred_list, agg_loss_or_None)."""
         dev = coord_norm.device
+        if dn_instances is None:
+            dn_instances = main_instances
         # ---- seeding source: object scores on the slice seed level ----
         seed_lvl = levels.get(self.particle_seed_level)
         seed_logits = level_kp_logits.get(self.particle_seed_head)
@@ -1098,9 +1226,10 @@ class LArFormer(nn.Module):
             seed_tokens = seed_lvl.tokens
             seed_s2l = seed_lvl.sp_to_level_id
 
-        results, losses, dn_losses = [], [], []
+        results, losses = [], []
         Q = self.particle_kp.num_queries
-        for inst_idx, inst in enumerate(gt_instances):
+        # ---- MAIN path (predicted masks when main_source='predicted') ----
+        for inst_idx, inst in enumerate(main_instances):
             ti = inst.get("truth_indices")
             if ti is None:
                 continue
@@ -1133,55 +1262,58 @@ class LArFormer(nn.Module):
                 "pred_class": int(inst.get("pred_class", -1)),
                 "class_logits": fin["class_logits"].detach(),
                 "pos": fin["pos"].detach(),
+                # GT keypoint targets carried on the result so the evaluator
+                # need not index back into a separate instance list (which is
+                # the PREDICTED list under main_source="predicted"). Present
+                # only for matched instances; absent → skipped in eval.
+                "start_coord_norm": inst.get("start_coord_norm"),
+                "has_start": bool(inst.get("has_start", False)),
+                "origin_coord_norm": inst.get("origin_coord_norm"),
+                "end_coord_norm": inst.get("end_coord_norm"),
+                "has_end": bool(inst.get("has_end", False)),
             })
 
             if self.training:
-                gt_pos, gt_cls = [], []
-                # START target = the VISIBLE start keypoint (track_start/shower
-                # position, ON the particle's spacepoints) when available, NOT
-                # the birth `origin_coord_norm` (off-cloud for showers → only
-                # memorizable). Fall back to origin if no start keypoint tagged.
-                o = (inst["start_coord_norm"] if inst.get("has_start")
-                     else inst.get("origin_coord_norm"))
-                if o is not None:
-                    gt_pos.append(torch.as_tensor(o, device=dev,
-                                                  dtype=torch.float32))
-                    gt_cls.append(KP_CLS_START)
-                if inst.get("has_end") and inst.get("end_coord_norm") is not None:
-                    gt_pos.append(torch.as_tensor(inst["end_coord_norm"],
-                                                  device=dev, dtype=torch.float32))
-                    gt_cls.append(KP_CLS_END)
-                if gt_pos:
-                    gp = torch.stack(gt_pos)
-                    gc = torch.tensor(gt_cls, device=dev, dtype=torch.long)
-                    lp = particle_keypoint_loss(
-                        layer_preds, gp, gc,
-                        coord_scale=self.particle_kp_coord_scale,
-                        weight_class=self.particle_kp_w_class,
-                        weight_pos=self.particle_kp_w_pos)
-                    losses.append(lp)
+                gp, gc = self._pkp_gt_targets(inst, dev)
+                losses.append(particle_keypoint_loss(
+                    layer_preds, gp, gc,
+                    coord_scale=self.particle_kp_coord_scale,
+                    weight_class=self.particle_kp_w_class,
+                    weight_pos=self.particle_kp_w_pos))
 
-                    # ---- Denoising (DN) path (Phase 2b) ----
-                    if self.particle_dn_enable:
-                        G = self.particle_dn_groups
-                        dn_tgt_pos = gp.repeat(G, 1)            # (G*T,3)
-                        dn_tgt_cls = gc.repeat(G)               # (G*T,)
-                        dn_anchor = dn_tgt_pos + torch.randn_like(
-                            dn_tgt_pos) * self.particle_dn_jitter
-                        dn_content = self.particle_kp.class_embedding(dn_tgt_cls)
-                        nidx = noise_particle_indices(
-                            idx, int(coord_norm.shape[0]),
-                            self.particle_dn_drop, self.particle_dn_add)
-                        n_sp = self.particle_tokenizer(
-                            sp_feat[nidx], coord_norm[nidx], {})["spacepoint"]
-                        dn_preds = self.particle_kp(
-                            n_sp.tokens, n_sp.coords, init_content=dn_content,
-                            init_anchor=dn_anchor, add_learnable_base=False)
-                        dn_losses.append(particle_keypoint_dn_loss(
-                            dn_preds, dn_tgt_pos, dn_tgt_cls,
-                            coord_scale=self.particle_kp_coord_scale,
-                            weight_class=self.particle_kp_w_class,
-                            weight_pos=self.particle_kp_w_pos))
+        # ---- DN path (always GT masks → clean-mask supervision) ----
+        dn_losses = []
+        if self.training and self.particle_dn_enable:
+            G = self.particle_dn_groups
+            for inst in dn_instances:
+                ti = inst.get("truth_indices")
+                if ti is None:
+                    continue
+                idx = torch.as_tensor(ti, device=dev,
+                                      dtype=torch.long).reshape(-1)
+                if idx.numel() == 0:
+                    continue
+                gp, gc = self._pkp_gt_targets(inst, dev)
+                if gp.shape[0] == 0:
+                    continue
+                dn_tgt_pos = gp.repeat(G, 1)            # (G*T,3)
+                dn_tgt_cls = gc.repeat(G)               # (G*T,)
+                dn_anchor = dn_tgt_pos + torch.randn_like(
+                    dn_tgt_pos) * self.particle_dn_jitter
+                dn_content = self.particle_kp.class_embedding(dn_tgt_cls)
+                nidx = noise_particle_indices(
+                    idx, int(coord_norm.shape[0]),
+                    self.particle_dn_drop, self.particle_dn_add)
+                n_sp = self.particle_tokenizer(
+                    sp_feat[nidx], coord_norm[nidx], {})["spacepoint"]
+                dn_preds = self.particle_kp(
+                    n_sp.tokens, n_sp.coords, init_content=dn_content,
+                    init_anchor=dn_anchor, add_learnable_base=False)
+                dn_losses.append(particle_keypoint_dn_loss(
+                    dn_preds, dn_tgt_pos, dn_tgt_cls,
+                    coord_scale=self.particle_kp_coord_scale,
+                    weight_class=self.particle_kp_w_class,
+                    weight_pos=self.particle_kp_w_pos))
 
         agg = None
         if losses:
@@ -1272,6 +1404,11 @@ class LArFormer(nn.Module):
             if self.kp_dense_offset_head is not None:
                 dense_off_all = self.kp_dense_offset_head(
                     sp_feat_all, dense_coord_all)
+
+        # Live frozen particle segmenter → per-event predicted masks for the
+        # per-particle MAIN path (main_source="predicted"). Run ONCE on the
+        # whole batch; per-event predictions consumed in the loop below.
+        seg_preds = self._run_particle_segmenter(data_dict)
 
         per_event_loss = []
         per_event_pred = []
@@ -1478,13 +1615,19 @@ class LArFormer(nn.Module):
             # `gt_instances_per_event` so the eval-with-GT diagnostic path isn't
             # fed pseudo-instances), else the GT instances (standalone training).
             pkp_loss = None
-            _pi_key = ("particle_instances_per_event"
-                       if "particle_instances_per_event" in data_dict
-                       else "gt_instances_per_event")
-            if self.enable_particle_keypoint and _pi_key in data_dict:
-                gt_inst = data_dict[_pi_key][ev["ei"]]
+            if self.enable_particle_keypoint and (
+                    "gt_instances_per_event" in data_dict
+                    or "particle_instances_per_event" in data_dict):
+                ei = ev["ei"]
+                gt_inst_ev = (data_dict["gt_instances_per_event"][ei]
+                              if "gt_instances_per_event" in data_dict else [])
+                # MAIN path: predicted masks (main_source='predicted') or
+                # externally-supplied / GT. DN path: always the GT instances.
+                main_inst = self._particle_main_instances(
+                    data_dict, ei, gt_inst_ev, seg_preds)
                 pkp_results, pkp_loss = self._particle_keypoint_pass(
-                    sp_feat, coord_norm, levels, level_kp_logits, gt_inst)
+                    sp_feat, coord_norm, levels, level_kp_logits,
+                    main_inst, dn_instances=gt_inst_ev)
                 pred["particle_kp"] = pkp_results
             per_event_pred.append(pred)
 

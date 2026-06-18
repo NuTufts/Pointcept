@@ -303,6 +303,87 @@ events: median 1.85–2.0, mean 12–16, R@3 ≈ 0.58–0.61.** Ruled out, in or
   `run_larformer_keypoint2_cascade_inference.py` to override the test split's cap
   for this kind of diagnosis.
 
+  **CLARIFICATION on the "recenter centroid" axis (2026-06-18).** The "Actual
+  cause" bullet above lists "different recenter centroid → shifted absolute
+  pos_emb" as one perturbation axis. To be precise: the diagnostic ran with
+  `source_set_filter="stage2_pass"` (= source_mask bit 0 = the PREDICTED nu slice
+  only — NOT a union with GT-nu), and the cascade likewise recenters over its
+  predict-only nu-keep slice. So the centroid DEFINITION matched on both sides;
+  the centroids differed only via slightly different predict-only MEMBERSHIP
+  (the old cache's 80k random subsample + ~3% set diff), which is a small effect.
+  This is CONFIRMED by the measurement: the mean error VECTOR was only ~4.5 cm
+  (no large systematic offset). A genuinely centroid-driven shift would be a
+  uniform offset — measured separately at ~10 cm IFF the training slice is a
+  UNION (predict ∪ GT-nu) recentered over the full union (see below). The
+  diagnostic used no union, so that 10 cm shift was NOT present and is NOT the
+  cause of the observed gap. Net: the centroid finding does not invalidate the
+  root cause (overfit-memorization scatter) — it explains WHY "not a systematic
+  offset" held. The union-centroid shift is a FUTURE concern only.
+
+  **`recenter_centroid_source` (2026-06-18).** If a UNION slice is adopted
+  (`source_set_filter="union"`/`"stage2_plus_gt_dropout"`/`"stage2_random_tau"` —
+  to enrich particle masks + augment toward a more-accurate slicer), recentering
+  over the full union shifts every LIVE point ~10 cm vs the cascade's predict-only
+  recenter at inference — a real train↔inference divergence. New dataset arg
+  `LArFormerStage12CacheDataset(recenter_centroid_source=...)`: `"kept"` (default,
+  legacy) recenters over all kept points; `"stage2_pass"` recenters over ONLY the
+  bit-0 (predicted/live) subset, so the live points land in the SAME frame as
+  inference even with a union slice. VERIFIED: union + `recenter_centroid_source=
+  "stage2_pass"` reproduces the live points' coord_norm to 0.0000 cm vs the
+  predict-only baseline; union + `"kept"` is off by 10.0 cm. No-op under the
+  current `stage2_pass` filter (kept == bit 0).
+
+**Predicted-mask training path (`main_source`, 2026-06-18).** To attack the
+val→inference gap at its source (train on the SAME imperfect masks seen at
+inference), the per-particle decoder can now split its two paths by mask source:
+- **MAIN (Hungarian-matched) path → predicted masks.** A FROZEN particle
+  segmenter is built INTO the keypoint LArFormer (`particle_keypoint_cfg.
+  segmenter` + `segmenter_weight`) and run under `no_grad` on each cache slice
+  per step; its deduped predicted masks (via the SAME
+  `predicted_masks_to_instances` as CascadedKeypoint inference — confidence
+  floor + mask-IoU NMS, then IoU→GT match to attach start/end targets;
+  unmatched predicted masks → all-`no_object`) drive the matching loss.
+- **DN path → GT masks** (unchanged): jittered GT keypoints over a
+  drop/add-noised GT point set, known assignment → clean-mask supervision.
+
+So the model sees correct masks (GT via DN) AND predicted masks (MAIN). Config:
+`configs/lartpc/larformer-keypoint2-particle-predmask-v1.py` (inherits the
+particle config, sets `main_source="predicted"`, pulls the segmenter sub-cfg
+from the fullcascade config — the one matching `model_iter_98652.pth`,
+`backbone_out_channels=64`; NOT larformer-particle-v1.py whose segmenter uses
+`in_dim=1232` and size-mismatches the ckpt). `main_source="gt"` (default) keeps
+the legacy behavior (GT masks drive both paths). Implementation:
+`model.py::_particle_keypoint_pass` now takes `main_instances` + `dn_instances`;
+`_run_particle_segmenter` / `_particle_main_instances` build the predicted list;
+`predicted_masks_to_instances` also copies `start_coord_norm`/`has_start` (the
+visible-start target). VERIFIED end-to-end on a no-cap cache event: both paths
+emit losses (`loss_pkp_kp_*` from predicted, `loss_pkp_dn_*` from GT), backward
+runs, segmenter stays frozen (no grads). Costs one extra cheap (small-slice)
+frozen forward + a second backbone in VRAM.
+
+**Cached predicted masks — stage-1+2+3 cache (`predicted_cached`, 2026-06-18).**
+Running the frozen segmenter LIVE (`main_source="predicted"`) ~2x'd batch time
+(1.8→3.6 s). To avoid that, precompute the deduped predicted masks ONCE into the
+cache and read them at train time (NO live segmenter, NO second backbone in
+VRAM; batch time back to ~1.7 s).
+- `tools/augment_stage12_cache_pred_masks.py` (GPU): for each event it loads the
+  exact trainer input via `LArFormerStage12CacheDataset` (same filter+recenter),
+  runs the frozen segmenter, dedups via the SAME `predicted_masks_to_instances`,
+  IoU-matches GT, and writes `entry_0/pred_instances/instance_<k>/`
+  (`truth_indices` in ORIGINAL cache-SP space + `pred_class`/`primary_trackid`/
+  `match_iou` attrs). In-place (r+) or `--output-dir`; idempotent.
+- `LArFormerStage12CacheDataset(load_pred_instances=True)` reads them, remaps
+  `truth_indices` exactly like GT, re-attaches the matched GT's recentered
+  start/end targets by trackid, and emits `particle_instances` → collate →
+  `particle_instances_per_event`. The model's MAIN path then uses these (DN still
+  uses GT). Config: `larformer-keypoint2-particle-predmask-cached-v1.py`.
+- VERIFIED: cached forward 1.66 s (vs 3.6 s live), no segmenter built; cached
+  matched-instance IoU-vs-GT median 0.72 (round-trip correct). NOTE the segmenter
+  is non-deterministic run-to-run (TF32/cuBLAS → dedup-boundary flips), so the
+  cached masks are a representative SAMPLE, not bit-identical to any one live run
+  — fine for training (inference re-derives its own). Add a `set_deterministic`
+  pass to the augment if you ever need a reproducible cache.
+
 **Phase 2 status: COMPLETE** (decoder + loss + dec2 seeding + per-particle eval +
 denoising; runnable end-to-end via `larformer-keypoint2-particle-v1.py`).
 

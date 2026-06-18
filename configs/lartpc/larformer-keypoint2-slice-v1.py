@@ -184,6 +184,7 @@ amp_dtype        = "bfloat16"
 empty_cache      = False
 clip_grad        = 5.0
 enable_wandb     = True
+wandb_project    = "pointcept-larformer-keypoint"
 find_unused_parameters = True
 
 skip_dataloader_on_resume = True

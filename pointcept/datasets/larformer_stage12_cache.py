@@ -138,6 +138,7 @@ class LArFormerStage12CacheDataset(DefaultDataset):
         random_tau_include_gt: bool = True,
         gt_keep_prob: float = 0.5,
         recenter_to_centroid: bool = False,
+        recenter_centroid_source: str = "kept",
         min_spacepoints: int = 1,
         max_resample_attempts: int = 20,
         coord_center=DEFAULT_COORD_CENTER,
@@ -147,6 +148,7 @@ class LArFormerStage12CacheDataset(DefaultDataset):
         keypoint_sigma_cm: float = 3.0,
         keypoint_score_threshold: float = 0.01,
         n_keypoint_types: int = 6,
+        load_pred_instances: bool = False,
         ignore_unmatched_cache_attrs: bool = True,
         transform=None,
         loop: int = 1,
@@ -165,6 +167,12 @@ class LArFormerStage12CacheDataset(DefaultDataset):
         self.random_tau_include_gt = bool(random_tau_include_gt)
         self.gt_keep_prob = float(gt_keep_prob)
         self.recenter_to_centroid = bool(recenter_to_centroid)
+        if recenter_centroid_source not in ("kept", "stage2_pass"):
+            raise ValueError(
+                "recenter_centroid_source must be 'kept' or 'stage2_pass'; "
+                f"got {recenter_centroid_source!r}")
+        self.recenter_centroid_source = recenter_centroid_source
+        self.load_pred_instances = bool(load_pred_instances)
         self.min_spacepoints = int(min_spacepoints)
         self.max_resample_attempts = int(max_resample_attempts)
         self.coord_center = np.asarray(coord_center, dtype=np.float32)
@@ -339,6 +347,13 @@ class LArFormerStage12CacheDataset(DefaultDataset):
             particles = (_read_particle_instances(e0["particle_instances"])
                          if "particle_instances" in e0 else [])
 
+            # Precomputed predicted-particle masks (stage-1+2+3 cache). Same
+            # group format as particle_instances; truth_indices are in the
+            # ORIGINAL cache-SP space, remapped below alongside the GT ones.
+            pred_particles = (
+                _read_particle_instances(e0["pred_instances"])
+                if (self.load_pred_instances and "pred_instances" in e0) else [])
+
             # Keypoint GT group (cm frame), copied from the source merged_h5
             # by the augment tool / cache builder. Read raw arrays here; the
             # dense target + endpoints are derived after the source filter.
@@ -488,7 +503,21 @@ class LArFormerStage12CacheDataset(DefaultDataset):
 
         # ---- 3. Optional centroid recentering -------------------------
         if self.recenter_to_centroid and n_kept > 0:
-            centroid_norm = coord_norm.mean(axis=0)
+            if self.recenter_centroid_source == "stage2_pass":
+                # Centroid from ONLY the points that survive at INFERENCE (the
+                # predicted nu slice = source_mask bit 0). So a UNION training
+                # slice (predict ∪ GT-nu, e.g. source_set_filter="union" /
+                # "stage2_plus_gt_dropout" / "stage2_random_tau") recenters to
+                # the SAME origin the live cascade uses (predict-only) —
+                # removing a train↔inference divergence while still letting the
+                # model train on the richer union slice. No-op when the filter
+                # is already "stage2_pass" (kept == bit 0). Falls back to the
+                # full kept set if no bit-0 point survived.
+                live = (source_mask[keep] & 1).astype(bool)
+                centroid_norm = (coord_norm[live].mean(axis=0) if live.any()
+                                 else coord_norm.mean(axis=0))
+            else:
+                centroid_norm = coord_norm.mean(axis=0)
             coord_norm = coord_norm - centroid_norm
             # `feat[:, :3]` is the coord_norm slot per the v6 convention
             # (built in LArFormerDataset as concat([coord_norm, pixval])).
@@ -517,6 +546,42 @@ class LArFormerStage12CacheDataset(DefaultDataset):
                     kp_startpos_norm - centroid_norm).astype(np.float32)
                 nu_vertex_norm = (
                     nu_vertex_norm - centroid_norm).astype(np.float32)
+
+        # ---- 3b. Predicted-instance assembly (stage-1+2+3 cache) ------
+        # Remap predicted-mask truth_indices the SAME way as the GT ones, and
+        # attach the matched GT's (now-recentered) keypoint targets by trackid
+        # so the per-particle MAIN path trains on predicted masks with correct
+        # start/end targets (unmatched → primary_trackid<0 → no target →
+        # all-no_object). Mirrors keypoint2_cascade.predicted_masks_to_instances
+        # but reads the FROZEN precomputed masks instead of running the segmenter.
+        particle_instances: list[dict] = []
+        if self.load_pred_instances:
+            gt_by_tid = {int(g.get("primary_trackid", -1)): g
+                         for g in gt_instances}
+            for pinst in pred_particles:
+                ti = np.asarray(pinst.get("truth_indices",
+                                          np.empty(0, dtype=np.int64)),
+                                dtype=np.int64)
+                if ti.size == 0:
+                    continue
+                ti_kept = remap[ti]
+                ti_kept = ti_kept[ti_kept >= 0]
+                if ti_kept.size == 0:
+                    continue
+                new_p = {
+                    "truth_indices": ti_kept.astype(np.int64),
+                    "n_truth_points": int(ti_kept.size),
+                    "pred_class": int(pinst.get("pred_class", -1)),
+                    "primary_trackid": int(pinst.get("primary_trackid", -1)),
+                    "match_iou": float(pinst.get("match_iou", 0.0)),
+                }
+                g = gt_by_tid.get(new_p["primary_trackid"])
+                if g is not None and new_p["primary_trackid"] >= 0:
+                    for k in ("start_coord_norm", "has_start",
+                              "origin_coord_norm", "end_coord_norm", "has_end"):
+                        if k in g:
+                            new_p[k] = g[k]
+                particle_instances.append(new_p)
 
         # ---- 4. Backbone grid_coord -----------------------------------
         grid_coord = np.floor(
@@ -547,6 +612,11 @@ class LArFormerStage12CacheDataset(DefaultDataset):
             "source_mask_kept": source_mask[keep],
             "gt_instances": gt_instances,
             "n_gt_instances": len(gt_instances),
+            # Only present when load_pred_instances=True, so collate adds
+            # particle_instances_per_event (→ MAIN path uses predicted masks)
+            # only for the stage-1+2+3 cached-mask training path.
+            **({"particle_instances": particle_instances}
+               if self.load_pred_instances else {}),
             "n_spacepoints": int(n_kept),
             "lm_score_threshold": 0.0,
             "run": run, "subrun": subrun, "event": event,

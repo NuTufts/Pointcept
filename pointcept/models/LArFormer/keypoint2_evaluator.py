@@ -183,29 +183,32 @@ class LArFormerLevelKeypointEvaluator(HookBase):
                                 nu_n_recovered += 1
 
                     # ---- PER-PARTICLE keypoints: start/end localization ----
+                    # GT targets are carried ON each result (the model attaches
+                    # them) so this works whether the per-particle pass ran on
+                    # GT instances (main_source="gt") or PREDICTED+IoU-matched
+                    # instances (main_source="predicted"); unmatched predicted
+                    # instances carry no target → skipped (matched-only metric).
                     pkp = ev.get("particle_kp")
-                    if pkp and gti_list is not None and ei < len(gti_list):
-                        insts = gti_list[ei]
+                    if pkp:
                         for r in pkp:
-                            inst = insts[r["inst_idx"]]
                             prob = r["class_logits"].softmax(-1).cpu().numpy()
                             pos = r["pos"].cpu().numpy()
                             # START = visible start keypoint (matches the loss
                             # target); fall back to origin if none tagged.
-                            o = (inst["start_coord_norm"]
-                                 if inst.get("has_start")
-                                 else inst.get("origin_coord_norm"))
+                            o = (r["start_coord_norm"]
+                                 if r.get("has_start")
+                                 else r.get("origin_coord_norm"))
                             if o is not None:
                                 qi = int(prob[:, KP_CLS_START].argmax())
                                 d = (np.linalg.norm(pos[qi] - self._np(o))
                                      * self.coord_scale)
                                 pkp_start_err.append(d)
                             # END (tracks only)
-                            if inst.get("has_end") and \
-                                    inst.get("end_coord_norm") is not None:
+                            if r.get("has_end") and \
+                                    r.get("end_coord_norm") is not None:
                                 qi = int(prob[:, KP_CLS_END].argmax())
                                 d = (np.linalg.norm(
-                                    pos[qi] - self._np(inst["end_coord_norm"]))
+                                    pos[qi] - self._np(r["end_coord_norm"]))
                                      * self.coord_scale)
                                 pkp_end_err.append(d)
 

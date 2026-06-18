@@ -973,6 +973,13 @@ def larformer_collate(batch):
     out["offset"] = torch.from_numpy(np.cumsum(n_per_event))
 
     out["gt_instances_per_event"] = [s["gt_instances"] for s in batch]
+    # Precomputed predicted-particle instances (stage-1+2+3 cache: the frozen
+    # segmenter's deduped masks, IoU-matched to GT). When present they drive the
+    # per-particle MAIN path (DN still uses gt_instances) WITHOUT running the
+    # segmenter live each step. See augment_stage12_cache_pred_masks.py.
+    if "particle_instances" in batch[0]:
+        out["particle_instances_per_event"] = [
+            s["particle_instances"] for s in batch]
     out["n_spacepoints"] = torch.from_numpy(n_per_event)
     out["n_gt_instances"] = torch.tensor(
         [s["n_gt_instances"] for s in batch], dtype=torch.int64)

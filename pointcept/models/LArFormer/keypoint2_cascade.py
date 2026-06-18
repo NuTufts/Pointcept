@@ -100,8 +100,8 @@ def predicted_masks_to_instances(
                     best_iou, best_j = iou, j
             if best_j >= 0 and best_iou >= iou_match_thresh:
                 g = gt_instances[best_j]
-                for k in ("origin_coord_norm", "end_coord_norm", "has_end",
-                          "primary_trackid"):
+                for k in ("origin_coord_norm", "start_coord_norm", "has_start",
+                          "end_coord_norm", "has_end", "primary_trackid"):
                     if k in g:
                         inst[k] = g[k]
                 # GT particle's own point set (for the side-by-side GT viz).
