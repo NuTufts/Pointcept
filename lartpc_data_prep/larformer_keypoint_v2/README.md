@@ -233,6 +233,76 @@ shower), `end_coord_norm` + `has_end` (tracks).
     cascade to supply predicted masks + IoU→GT matching; same decoder, just fed
     predicted point sets instead of GT instances).
 
+**Inference eval script (`eval_keypoint2_inference.py`, 2026-06-18).** Runs on a
+dir of inference-output H5s and reports the SAME per-particle metrics as the
+evaluator — start/end median/mean + R@{1,3,10}cm, a per-predicted-class
+breakdown (shower vs track), nu-vertex resolution + recall@3 — micro-averaged.
+Accepts multiple dirs for side-by-side (e.g. `--particle-source predicted` vs
+`gt`). Object-head AP isn't computable from the inference H5 (it stores decoded
+keypoints, not per-dec2-token object scores) — watch that in the training log.
+(In `--particle-source gt` mode the per-class line shows `[-1]`: the GT-trackid
+instances carry no predicted class; use the `start (all)` line there.)
+
+**Train→inference gap diagnostic (`--particle-source`, 2026-06-18).** The
+per-particle decoder TRAINS on GT instance masks (truth_indices) on the CACHE
+slice, but at inference runs on PREDICTED Stage-3 masks on the LIVE CASCADE slice
+— two distinct input shifts (mask source + slice membership) on top of any
+overfitting. `run_larformer_keypoint2_cascade_inference.py --particle-source
+{predicted|gt}` isolates the mask-source effect: "gt" reconstructs GT masks in
+the slice frame by grouping the surviving per-SP trackid (CascadedKeypoint) and
+feeds them to the decoder. If start error with "gt" ≈ val but "predicted" is far
+worse → the gap is GT-mask vs predicted-mask (structural; fix = train on
+predicted masks / stronger denoising, NOT just more data).
+
+**ROOT-CAUSE FOUND — val→inference gap is overfit-memorization, not a pipeline
+bug (2026-06-18).** Diagnosed with the start-GT overfit checkpoint
+(`larformer_keypoint2_overfit_startkp`, 2000 iters on the 10-event
+`cache_stage12_devdata`). **Val (cache input): particle start median 0.45 cm,
+mean 0.47, R@1 0.95** (R@3≈1.0). **Cascade GT-mask inference on the SAME 10
+events: median 1.85–2.0, mean 12–16, R@3 ≈ 0.58–0.61.** Ruled out, in order:
+  - *Units* — evaluator and inference-eval both report cm (`*coord_scale`). Not it.
+  - *Mask source* — `--particle-source gt` (GT masks, = training input) still
+    gives R@3 0.58; predicted masks only drop it to 0.49. So GT-vs-pred mask is
+    the SMALLER effect, ~0.09.
+  - *Slice density / `max_spacepoints`* — the cache was built with a **cap of
+    80000** (raw 122k–275k → ~80000 per the `n_after_dataset_filter` attr; the
+    cap uses `np.random.permutation`, so it is a RANDOM subsample), but
+    `data.test` (inference) uses `max_spacepoints=None` → the live nu-slice is
+    2-11× larger/denser than the cache's. CORRECTION to the prior note: this
+    asymmetry IS real, but it is NOT the dominant cause. Matching it via the new
+    `--max-spacepoints 80000` flag shrank the slices to cache size (e.g.
+    1282→287, 3102→148) yet moved start R@3 only 0.58→0.61 and made nu-vertex
+    recall WORSE (0.70→0.50). Not it.
+  - **Actual cause:** the cascade RE-DERIVES the nu slice live (random 80k
+    subsample → different deghost members → different `build_nu_keep_mask` set →
+    different recenter centroid → shifted absolute pos_emb; plus trackid-grouped
+    masks vs the cache's frozen `truth_indices`). The cache, by contrast, froze
+    one specific slice. An overfit-on-10-events model memorized the exact cache
+    tensors, so on the cascade's (necessarily different) reconstruction of the
+    same event the per-particle start errors are a **bimodal scatter, not a
+    systematic offset**: mean error VECTOR only ~4.5 cm but per-axis std 11-15 cm;
+    ~60% of particles stay <3 cm (≈val) while ~25-40% blow up to 15-177 cm. A
+    frame/recenter bug would shift the median too — it doesn't (median stays
+    ~2 cm). So the wiring is correct; the gap is memorization breaking under the
+    cascade's input perturbation.
+
+  **Takeaways:**
+  1. For an overfit model, VAL ON THE CACHE IS NOT A VALID PROXY for cascade
+     performance — the cache is a frozen, bit-reproducible slice; the cascade is
+     not (random subsample + live recompute). Trust the cascade-path eval.
+  2. The fix is NOT a threshold/flag — it is to (a) train on real (non-overfit)
+     data so the model learns generalizable geometry, and/or (b) train the
+     keypoint model THROUGH the cascade on the live slice (the deferred Phase-3
+     predicted-mask training), so training sees the same live-slice distribution
+     (live subsample, live centroid, predicted masks) as inference.
+  3. Minor hardening worth doing regardless: make the `max_spacepoints` cap a
+     seeded/deterministic subsample (or set the cache cap = inference cap = None)
+     so the cache and cascade at least agree on point budget — removes one of the
+     perturbation axes, though it won't close the gap for an overfit model.
+  `--max-spacepoints N` was added to
+  `run_larformer_keypoint2_cascade_inference.py` to override the test split's cap
+  for this kind of diagnosis.
+
 **Phase 2 status: COMPLETE** (decoder + loss + dec2 seeding + per-particle eval +
 denoising; runnable end-to-end via `larformer-keypoint2-particle-v1.py`).
 
@@ -328,6 +398,29 @@ denoising; runnable end-to-end via `larformer-keypoint2-particle-v1.py`).
     `figure_for_view` in the static tool). Smoke-tested: app builds (2 callbacks),
     server returns HTTP 200 and serves all layout components.
     `python tools/visualize_keypoint2_cascade_dash.py <dir> --port 8050`.
+  - **START target = VISIBLE start, not origin (2026-06-18; CHANGES THE LOSS —
+    requires retraining).** Originally the per-particle decoder's start target
+    was the instance `origin_coord_norm` (the particle BIRTH point). For a SHOWER
+    the photon is born at the nu/pi0 vertex and travels invisibly before
+    converting, so the origin is OFF the particle's own spacepoints — after the
+    decoder slices out the particle's points there is nothing to localize the
+    origin from, and the model could only MEMORIZE it (which is what the 2k run
+    did; viz error >> val makes sense). The VISIBLE start — the `track_start`
+    (tracks) / `shower` (showers) keypoint POSITION — sits ON the points and is
+    learnable. Measured: origin vs visible-start differ by **10.8 cm median, up
+    to 54 cm** for e/gamma showers (0 for tracks). Change: the datasets
+    (`larformer_stage12_cache.py` cache + `larformer.py` raw) now attach
+    `start_coord_norm`/`has_start` per instance = `endpoint_by_trackid` over
+    {track_start, shower} of the mckeypoint `pos_norm` (recentered alongside the
+    others). The per-particle loss (`_particle_keypoint_pass`, + DN path via the
+    shared `gp`), the evaluator (`pkp_start_err`), and the viz inference tool all
+    now use `start_coord_norm` (fallback to origin if no start kp tagged; 38/42
+    instances tagged). **The existing checkpoint was trained on origin — RETRAIN
+    to pick up the visible-start target; then pred should land on the on-cloud
+    start.** END target (`track_end`) and nu-vertex (dense head) unchanged.
+    (Viz GT for the matched particle is read from the RAW sample's gt_instances,
+    which the cascade strips internally but the held batch still carries, keyed
+    by trackid — same source as the loss; mckeypoints used only for nu-vertex.)
   - **GT-keypoint frame fix (2026-06-17).** Two normalized frames coexist in
     `ps_batch`: `coord_norm` is RECENTERED to the slice centroid by the cascade,
     but `mckeypoints_pos_norm` is the dataset's FIXED normalization

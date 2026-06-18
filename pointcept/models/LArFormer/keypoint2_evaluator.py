@@ -190,8 +190,11 @@ class LArFormerLevelKeypointEvaluator(HookBase):
                             inst = insts[r["inst_idx"]]
                             prob = r["class_logits"].softmax(-1).cpu().numpy()
                             pos = r["pos"].cpu().numpy()
-                            # START (always present)
-                            o = inst.get("origin_coord_norm")
+                            # START = visible start keypoint (matches the loss
+                            # target); fall back to origin if none tagged.
+                            o = (inst["start_coord_norm"]
+                                 if inst.get("has_start")
+                                 else inst.get("origin_coord_norm"))
                             if o is not None:
                                 qi = int(prob[:, KP_CLS_START].argmax())
                                 d = (np.linalg.norm(pos[qi] - self._np(o))

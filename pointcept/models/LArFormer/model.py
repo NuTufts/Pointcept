@@ -1137,7 +1137,12 @@ class LArFormer(nn.Module):
 
             if self.training:
                 gt_pos, gt_cls = [], []
-                o = inst.get("origin_coord_norm")
+                # START target = the VISIBLE start keypoint (track_start/shower
+                # position, ON the particle's spacepoints) when available, NOT
+                # the birth `origin_coord_norm` (off-cloud for showers → only
+                # memorizable). Fall back to origin if no start keypoint tagged.
+                o = (inst["start_coord_norm"] if inst.get("has_start")
+                     else inst.get("origin_coord_norm"))
                 if o is not None:
                     gt_pos.append(torch.as_tensor(o, device=dev,
                                                   dtype=torch.float32))

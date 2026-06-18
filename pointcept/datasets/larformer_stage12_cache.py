@@ -420,6 +420,7 @@ class LArFormerStage12CacheDataset(DefaultDataset):
                 from lartpc_data_prep.keypoint_labels import (
                     compute_kpscores, endpoint_by_trackid,
                     KPTYPE_TRACK_END, KPTYPE_NU_VERTEX,
+                    KPTYPE_TRACK_START, KPTYPE_SHOWER,
                 )
                 # Offsets in cm → normalized by coord_scale (displacement is
                 # invariant to the optional centroid recentering below).
@@ -439,6 +440,18 @@ class LArFormerStage12CacheDataset(DefaultDataset):
                 ).astype(np.float32)
                 end_by_tid = endpoint_by_trackid(
                     mckp["type"], mckp["trackid"], kp_pos_norm, KPTYPE_TRACK_END)
+                # VISIBLE start = the track_start (tracks) / shower (showers)
+                # keypoint POSITION, which sits ON the particle's spacepoints —
+                # unlike `origin_coord_norm` (the birth point, which for a photon
+                # is off-cloud at the nu/pi0 vertex and only learnable by
+                # memorization). The per-particle keypoint decoder supervises its
+                # start against THIS. track_start wins if both exist.
+                start_by_tid = endpoint_by_trackid(
+                    mckp["type"], mckp["trackid"], kp_pos_norm, KPTYPE_TRACK_START)
+                for tid_, pos_ in endpoint_by_trackid(
+                        mckp["type"], mckp["trackid"], kp_pos_norm,
+                        KPTYPE_SHOWER).items():
+                    start_by_tid.setdefault(tid_, pos_)
                 for inst in gt_instances:
                     tid = int(inst.get("primary_trackid", -1))
                     end = end_by_tid.get(tid)
@@ -448,6 +461,14 @@ class LArFormerStage12CacheDataset(DefaultDataset):
                     else:
                         inst["end_coord_norm"] = np.zeros(3, dtype=np.float32)
                         inst["has_end"] = False
+                    start = start_by_tid.get(tid)
+                    if start is not None:
+                        inst["start_coord_norm"] = np.asarray(start,
+                                                              dtype=np.float32)
+                        inst["has_start"] = True
+                    else:
+                        inst["start_coord_norm"] = np.zeros(3, dtype=np.float32)
+                        inst["has_start"] = False
                 nu_vertex_norm = kp_pos_norm[mckp["type"] == KPTYPE_NU_VERTEX]
             else:
                 sp_kpscores = np.zeros(
@@ -461,6 +482,9 @@ class LArFormerStage12CacheDataset(DefaultDataset):
                     inst.setdefault("end_coord_norm",
                                     np.zeros(3, dtype=np.float32))
                     inst.setdefault("has_end", False)
+                    inst.setdefault("start_coord_norm",
+                                    np.zeros(3, dtype=np.float32))
+                    inst.setdefault("has_start", False)
 
         # ---- 3. Optional centroid recentering -------------------------
         if self.recenter_to_centroid and n_kept > 0:
@@ -479,6 +503,11 @@ class LArFormerStage12CacheDataset(DefaultDataset):
                 if inst.get("has_end"):
                     inst["end_coord_norm"] = (
                         np.asarray(inst["end_coord_norm"],
+                                   dtype=np.float32) - centroid_norm
+                    ).astype(np.float32)
+                if inst.get("has_start"):
+                    inst["start_coord_norm"] = (
+                        np.asarray(inst["start_coord_norm"],
                                    dtype=np.float32) - centroid_norm
                     ).astype(np.float32)
             # Keep the keypoint arrays in the same recentered frame.

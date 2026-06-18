@@ -383,10 +383,22 @@ class LArFormerDataset(DefaultDataset):
         """
         from lartpc_data_prep.keypoint_labels import (
             endpoint_by_trackid, KPTYPE_TRACK_END,
+            KPTYPE_TRACK_START, KPTYPE_SHOWER,
         )
         end_by_tid = endpoint_by_trackid(
             mckp["type"], mckp["trackid"], mckp["pos_norm"], KPTYPE_TRACK_END,
         )
+        # VISIBLE start = the track_start (tracks) / shower (showers) keypoint
+        # position — it sits ON the particle's spacepoints, unlike the off-cloud
+        # birth `origin_coord_norm`. The per-particle keypoint decoder's start
+        # target. track_start wins if both exist.
+        start_by_tid = endpoint_by_trackid(
+            mckp["type"], mckp["trackid"], mckp["pos_norm"], KPTYPE_TRACK_START,
+        )
+        for tid_, pos_ in endpoint_by_trackid(
+                mckp["type"], mckp["trackid"], mckp["pos_norm"],
+                KPTYPE_SHOWER).items():
+            start_by_tid.setdefault(tid_, pos_)
         for g in gt_instances:
             tid = int(g.get("primary_trackid", g.get("trunk_trackid", -1)))
             end = end_by_tid.get(tid)
@@ -396,6 +408,13 @@ class LArFormerDataset(DefaultDataset):
             else:
                 g["end_coord_norm"] = np.zeros(3, dtype=np.float32)
                 g["has_end"] = False
+            start = start_by_tid.get(tid)
+            if start is not None:
+                g["start_coord_norm"] = np.asarray(start, dtype=np.float32)
+                g["has_start"] = True
+            else:
+                g["start_coord_norm"] = np.zeros(3, dtype=np.float32)
+                g["has_start"] = False
 
     @staticmethod
     def _build_children_map(mpt_group):

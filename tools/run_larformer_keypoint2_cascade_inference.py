@@ -66,8 +66,13 @@ def _decode_event(ev, inst_list, gt, coord_cm, coord_norm, nu_thresh,
     particle's point indices + GT start/end), and the predicted + GT nu vertex.
 
     GT matching uses per-SP `trackid` (gt["trackid"]) because the cascade strips
-    gt_instances before the slicer (no IoU vs gt_instances available); GT
-    keypoints come from mckeypoints (gt["mckp_*"]).
+    gt_instances before the slicer (no IoU vs gt_instances available). GT
+    start/end come from the SAME per-instance source the LOSS used — the raw
+    sample's `gt_instances` `origin_coord_norm` (start = particle birth/origin)
+    and `end_coord_norm` (track_end), keyed by trackid in gt["inst_map"] — NOT
+    the raw mckeypoint track_start/shower (which is the CONVERSION point for
+    photons, far from the origin the model was trained to predict). GT nu-vertex
+    still comes from mckeypoints (gt["mckp_*"], type 0).
 
     TWO frames are in play and MUST be denormalized differently:
       * PREDICTED keypoints (the model's `pos`) are in the cascade's RECENTERED
@@ -104,12 +109,19 @@ def _decode_event(ev, inst_list, gt, coord_cm, coord_norm, nu_thresh,
                else _np(gt["mckp_trackid"]).astype(np.int64).reshape(-1))
     have_mck = mck_pos is not None and mck_typ is not None
 
-    def gt_kp_for(track_id, types):
-        """First mckeypoint of `types` for track_id (cm), or NaN."""
-        if not have_mck or mck_trk is None or track_id < 0:
+    inst_map = gt.get("inst_map") or {}    # {trackid: {origin,end,has_end}}
+
+    def gt_start_for(track_id):
+        """Per-instance VISIBLE start (= the loss start target) for track_id."""
+        o = inst_map.get(int(track_id), {}).get("start")
+        return fixed_to_cm(_np(o)) if o is not None else _NAN3.copy()
+
+    def gt_end_for(track_id):
+        """Per-instance end_coord_norm (= the loss end target, track_end), cm."""
+        r = inst_map.get(int(track_id))
+        if r is None or not r.get("has_end") or r.get("end") is None:
             return _NAN3.copy()
-        sel = np.isin(mck_typ, types) & (mck_trk == track_id)
-        return fixed_to_cm(mck_pos[sel][0]) if sel.any() else _NAN3.copy()
+        return fixed_to_cm(_np(r["end"]))
 
     particles = []
     for p in ev.get("particle_kp", []):
@@ -141,8 +153,8 @@ def _decode_event(ev, inst_list, gt, coord_cm, coord_norm, nu_thresh,
                     rec.update(
                         has_match=True, gt_trackid=t, gt_point_idx=gt_pts,
                         iou=float(inter / max(union, 1)),
-                        gt_start_cm=gt_kp_for(t, _KP_START_TYPES),
-                        gt_end_cm=gt_kp_for(t, (_KP_END_TYPE,)))
+                        gt_start_cm=gt_start_for(t),
+                        gt_end_cm=gt_end_for(t))
         particles.append(rec)
 
     # predicted nu vertex (dense spacepoint head)
@@ -212,6 +224,13 @@ def main():
     ap.add_argument("--n-events", type=int, default=-1)
     ap.add_argument("--nu-thresh", type=float, default=0.3)
     ap.add_argument("--device", default="cuda")
+    ap.add_argument("--particle-source", choices=["predicted", "gt"],
+                    default="predicted",
+                    help="Point sets fed to the per-particle decoder: 'predicted'"
+                         " (Stage-3 masks, production) or 'gt' (GT instance masks,"
+                         " = the training-time input — use to DIAGNOSE the "
+                         "train/inference gap: if start error drops to ~val with "
+                         "'gt', the gap is GT-mask vs predicted-mask).")
     ap.add_argument("--with-gt", dest="with_gt", action="store_true",
                     default=True,
                     help="Emit MC keypoints so the output carries GT (matched "
@@ -225,6 +244,15 @@ def main():
                          "CUBLAS_WORKSPACE_CONFIG). See "
                          "docs/LArFormer_Reproducibility.md. ~1.3-2x slower.")
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--max-spacepoints", type=int, default=None,
+                    help="Override the test dataset's max_spacepoints cap "
+                         "(random subsample before deghoster+slicer). The "
+                         "stage-12 cache the keypoint model trains on was built "
+                         "with a cap (e.g. 80000); data.test defaults to None "
+                         "(full event), which makes the inference nu-slice 4-5x "
+                         "denser than training. Set this to the cache's cap to "
+                         "match the training input density. See "
+                         "lartpc_data_prep/larformer_keypoint_v2/README.md.")
     args = ap.parse_args()
 
     # MUST run before the model is built / any cuBLAS call (sets env + flags).
@@ -245,7 +273,7 @@ def main():
         type="CascadedKeypoint",
         cascade=dict(casc.model),
         keypoint_model=dict(kp.model),
-        particle_source="predicted",
+        particle_source=args.particle_source,
         no_object_class_id=int(kp.model.get("num_classes", 8)) - 1,
     ))
     _load_weights_into(model.cascade.particle_segmenter, args.particle_weights)
@@ -255,6 +283,10 @@ def main():
     ds_cfg = dict(casc.data.test)
     ds_cfg["data_root"] = "/"
     ds_cfg["data_list_file"] = os.path.abspath(args.input_list)
+    if args.max_spacepoints is not None:
+        ds_cfg["max_spacepoints"] = int(args.max_spacepoints)
+        print(f">>> max_spacepoints override = {args.max_spacepoints} "
+              "(matching the training cache cap)")
     if args.with_gt:
         # Surface MC keypoints so the output carries GT (matched particle +
         # GT start/end/nu-vertex) for the side-by-side visualizer. Sim only;
@@ -296,13 +328,34 @@ def main():
         def _ev(lst, ei):
             return lst[ei] if lst is not None and ei < len(lst) else None
 
+        # Per-trackid GT start(origin)/end from the RAW sample's gt_instances —
+        # the SAME source the loss used (the cascade strips them internally, but
+        # the batch dict we hold still carries them). Keyed by primary_trackid.
+        raw_gti = batch.get("gt_instances_per_event")
+
+        def _inst_map(insts):
+            m = {}
+            for g in insts or []:
+                t = int(g.get("primary_trackid", -1))
+                if t < 0:
+                    continue
+                # VISIBLE start (track_start/shower kp) = the loss target;
+                # fall back to origin if no start keypoint was tagged.
+                start = (g["start_coord_norm"] if g.get("has_start")
+                         else g.get("origin_coord_norm"))
+                m[t] = dict(start=start,
+                            end=g.get("end_coord_norm"),
+                            has_end=bool(g.get("has_end", False)))
+            return m
+
         for ei, ev in enumerate(preds):
             a = int(offset[ei - 1].item()) if ei > 0 else 0
             b = int(offset[ei].item())
             gt = dict(
                 trackid=(trackid[a:b] if trackid is not None else None),
                 mckp_pos=_ev(mck_pos, ei), mckp_type=_ev(mck_typ, ei),
-                mckp_trackid=_ev(mck_trk, ei))
+                mckp_trackid=_ev(mck_trk, ei),
+                inst_map=_inst_map(_ev(raw_gti, ei)))
             dec = _decode_event(
                 ev, _ev(inst_all, ei), gt,
                 coord[a:b], coord_norm[a:b], args.nu_thresh,

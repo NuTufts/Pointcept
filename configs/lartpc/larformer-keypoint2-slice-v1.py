@@ -29,7 +29,9 @@ del _kp2_eval_module
 # =============================================================================
 # Paths (laptop dev)
 # =============================================================================
-CACHE_ROOT  = "/home/twongjirad/working/larbys/gen2/container_u22/Pointcept/exp/cache_stage12_devdata/"
+# 80k spacepoint capped cache
+#CACHE_ROOT  = "/home/twongjirad/working/larbys/gen2/container_u22/Pointcept/exp/cache_stage12_devdata/"
+CACHE_ROOT = "/mnt/ddrive/data/ub_on_tufts/devdata_cache_stage12_nocap"
 TRAIN_ROOT  = f"{CACHE_ROOT}/train"
 VAL_ROOT    = f"{CACHE_ROOT}/val"
 

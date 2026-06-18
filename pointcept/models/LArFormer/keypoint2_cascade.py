@@ -199,6 +199,33 @@ class CascadedKeypoint(nn.Module):
             # inference so that path stays off.
             ps_batch["particle_instances_per_event"] = new_gti
             ps_batch.pop("gt_instances_per_event", None)
+        elif self.particle_source == "gt":
+            # Diagnostic: feed the decoder the GT particle masks (= training-time
+            # input). The cascade strips gt_instances before the slicer, so
+            # reconstruct them in the SLICE frame by grouping the surviving
+            # per-SP trackid (the same grouping the viz GT uses).
+            trk = ps_batch.get("trackid")
+            offs = ps_batch["offset"]
+            new_gti = []
+            prev = 0
+            for ei in range(int(offs.shape[0])):
+                cur = int(offs[ei].item())
+                insts = []
+                if trk is not None:
+                    tev = trk[prev:cur]
+                    for tv in torch.unique(tev):
+                        t = int(tv)
+                        if t < 0:
+                            continue
+                        idx = (tev == t).nonzero(as_tuple=False).reshape(-1)
+                        if int(idx.numel()) >= self.min_points:
+                            insts.append({"truth_indices": idx,
+                                          "primary_trackid": t, "pred_class": -1})
+                new_gti.append(insts)
+                prev = cur
+            ps_batch = dict(ps_batch)
+            ps_batch["particle_instances_per_event"] = new_gti
+            ps_batch.pop("gt_instances_per_event", None)
 
         out = self.keypoint_model(ps_batch)
         if not self.training and isinstance(out, dict) and "predictions" in out:
