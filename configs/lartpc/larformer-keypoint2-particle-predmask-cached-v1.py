@@ -17,6 +17,10 @@ PREREQUISITE: augment the (no-cap) cache with predicted masks first:
     done
 """
 
+# The top-level config is larformer-keypoint2-slice-v1.py due to the staged keypoint config
+# - larformer-keypoint2-slice-v1.py: top-level, defines the nu vertex prediction mask and the object/no-object mask
+# - larformer-keypoint2-particle-v1.py: defines the per-particle keypoint prediction mask
+# - larformer-keypoint2-particle-predmask-cached-v1.py: configures the dataset to use a cached stage 1+2+3 files
 _base_ = ["./larformer-keypoint2-particle-v1.py"]
 
 # MAIN path reads cached predicted masks (no live segmenter built/run); DN path

@@ -417,3 +417,18 @@ scheduler = dict(
     warmup_start_lr=0.0,
     ema_alpha=0.3,
 )
+
+# DelayedCosineLR: hold base_lr until RESUME_STEP, then cosine-decay to
+# final_lr_scale * base_lr at total_steps (injected by the trainer as
+# len(train_loader) * eval_epoch = 22588 * 20 = 451,760). With
+# extend_scheduler=True the fast-forward lands exactly on RESUME_STEP, so
+# the decay begins immediately at resume: 5e-5 -> 1e-6 over the remaining
+# ~14.2 epochs. No warmup (long past it), and deliberately NO reset_lr /
+# plateau machinery — that was FlatWithDecayLR-specific, and its plateau
+# trigger never fired anyway (no LREpochScheduler hook; stability doc §1.4).
+scheduler = dict(
+    type="DelayedCosineLR",
+    decay_start_step=RESUME_STEP,    # 131,140
+    final_lr_scale=0.02,             # 5e-5 * 0.02 = 1e-6 floor
+)
+

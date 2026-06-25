@@ -20,8 +20,10 @@ its own val pass over `pred["level_kp"][name]` and logs:
                              mckeypoint (same recentered coord_norm frame, so a
                              plain scaled distance is exact — see the dataset's
                              recenter of mckeypoints alongside coord_norm).
-    val/nu_vertex_recall     fraction of GT-bearing events whose decoded vertex
-                             lands within `nu_recall_cm`.
+    val/nu_vertex_recall_{t}cm   fraction of GT-bearing events whose decoded
+                             vertex lands within t cm, for each t in
+                             `nu_recall_thresholds_cm` (default 3/5/10 cm).
+    val/nu_vertex_recall     headline recall at `nu_recall_cm` (back-compat).
 
 `best_metric` (default val/object_ap) is published for CheckpointSaver.
 
@@ -70,6 +72,7 @@ class LArFormerLevelKeypointEvaluator(HookBase):
         score_thresh: float = 0.5,
         nu_decode_thresh: float = 0.3,
         nu_recall_cm: float = 3.0,
+        nu_recall_thresholds_cm: Sequence[float] = (3.0, 5.0, 10.0),
         coord_scale: float = 179.55,
         best_metric: str = "val/object_ap",
         # per-particle keypoint thresholds (cm); 1cm is the precision target.
@@ -84,6 +87,11 @@ class LArFormerLevelKeypointEvaluator(HookBase):
         self.score_thresh = float(score_thresh)
         self.nu_decode_thresh = float(nu_decode_thresh)
         self.nu_recall_cm = float(nu_recall_cm)
+        # Recall is reported at each of these distance thresholds (cm). The
+        # headline `nu_recall_cm` is always included so `val/nu_vertex_recall`
+        # stays defined for back-compat (e.g. best_metric / dashboards).
+        self.nu_recall_thresholds_cm = sorted(
+            {float(t) for t in nu_recall_thresholds_cm} | {float(nu_recall_cm)})
         self.coord_scale = float(coord_scale)
         self.best_metric = str(best_metric)
         self.pkp_thresholds_cm = [float(t) for t in pkp_thresholds_cm]
@@ -128,7 +136,6 @@ class LArFormerLevelKeypointEvaluator(HookBase):
         obj_scores, obj_labels = [], []
         nu_res_cm = []
         nu_n_gt_events = 0
-        nu_n_recovered = 0
         pkp_start_err, pkp_end_err = [], []   # per-particle localization (cm)
 
         with torch.no_grad():
@@ -179,8 +186,6 @@ class LArFormerLevelKeypointEvaluator(HookBase):
                             d = (np.linalg.norm(gt_nu - pred_nv, axis=1).min()
                                  * self.coord_scale)
                             nu_res_cm.append(d)
-                            if d < self.nu_recall_cm:
-                                nu_n_recovered += 1
 
                     # ---- PER-PARTICLE keypoints: start/end localization ----
                     # GT targets are carried ON each result (the model attaches
@@ -225,10 +230,15 @@ class LArFormerLevelKeypointEvaluator(HookBase):
             scalars["val/object_R"] = tp / max(tp + fn, 1)
             scalars["val/object_pos_frac"] = float(y.mean())
         if nu_res_cm:
+            # One residual per GT-bearing event, so recall@t = fraction of
+            # events whose decoded vertex lands within t cm.
             r = np.asarray(nu_res_cm, dtype=np.float64)
             scalars["val/nu_vertex_res_cm_median"] = float(np.median(r))
             scalars["val/nu_vertex_res_cm_mean"] = float(r.mean())
-            scalars["val/nu_vertex_recall"] = nu_n_recovered / max(nu_n_gt_events, 1)
+            for thr in self.nu_recall_thresholds_cm:
+                scalars[f"val/nu_vertex_recall_{thr:g}cm"] = float((r < thr).mean())
+            # Headline recall (back-compat) at the primary threshold.
+            scalars["val/nu_vertex_recall"] = float((r < self.nu_recall_cm).mean())
         for name, errs in (("start", pkp_start_err), ("end", pkp_end_err)):
             if errs:
                 e = np.asarray(errs, dtype=np.float64)
@@ -254,11 +264,13 @@ class LArFormerLevelKeypointEvaluator(HookBase):
                    scalars["val/object_P"], scalars["val/object_R"],
                    scalars["val/object_pos_frac"]))
         if "val/nu_vertex_res_cm_median" in scalars:
+            recall_str = "  ".join(
+                "recall@%gcm %.3f" % (thr, scalars[f"val/nu_vertex_recall_{thr:g}cm"])
+                for thr in self.nu_recall_thresholds_cm)
             log.info(
-                "Val nu-vertex: res(cm) median %.2f mean %.2f  recall@%.0fcm %.3f"
+                "Val nu-vertex: res(cm) median %.2f mean %.2f  %s"
                 % (scalars["val/nu_vertex_res_cm_median"],
-                   scalars["val/nu_vertex_res_cm_mean"], self.nu_recall_cm,
-                   scalars["val/nu_vertex_recall"]))
+                   scalars["val/nu_vertex_res_cm_mean"], recall_str))
         thr_lo = min(self.pkp_thresholds_cm)
         for name in ("start", "end"):
             mk = f"val/pkp_{name}_err_cm_median"

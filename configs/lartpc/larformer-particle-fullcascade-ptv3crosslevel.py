@@ -44,7 +44,7 @@ from pointcept.models.LArFormer import trainer as _t
 from pointcept.models.LArFormer import particle_evaluator as _pe
 del _t, _pe
 
-_REPO = "/home/twongjirad/working/larbys/gen2/container_u22/Pointcept"
+_REPO = "/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept"
 
 
 def _env(name, default):
@@ -75,8 +75,8 @@ cascaded_slicer_weight = _env(
 # config is self-documenting).
 particle_segmenter_weight = _env(
     "LARFORMER_PARTICLE_CKPT",
-    f"{_REPO}/exp/larformer_particle_v1_cached_ptv3crosslevel_smallbatch_"
-    "lr1e4_bugfixed/model_iter_98652.pth")
+    f"{_REPO}/larformer_particle_v1_cached_ptv3crosslevel_smallbatch_resume3_cosinedecay/model/"
+    "epoch_12.pth")
 
 # =============================================================================
 # Geometry / shapes

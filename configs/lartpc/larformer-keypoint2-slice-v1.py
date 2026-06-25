@@ -30,13 +30,15 @@ del _kp2_eval_module
 # Paths (laptop dev)
 # =============================================================================
 # 80k spacepoint capped cache
-#CACHE_ROOT  = "/home/twongjirad/working/larbys/gen2/container_u22/Pointcept/exp/cache_stage12_devdata/"
-CACHE_ROOT = "/mnt/ddrive/data/ub_on_tufts/devdata_cache_stage12_nocap"
+#CACHE_ROOT  = "/home/twongjirad/working/larbys/gen2/container_u22/Pointcept/exp/cache_stage12_devdata"
+#CACHE_ROOT = "/mnt/ddrive/data/ub_on_tufts/devdata_cache_stage12_nocap"
+CACHE_ROOT = "/cluster/tufts/wongjiradlab/larbys/data/ub_on_tufts/hdf5/larformer_cache_stage12_highermaxsp_ptv3crosslevelslicer_iter_75750"
 TRAIN_ROOT  = f"{CACHE_ROOT}/train"
 VAL_ROOT    = f"{CACHE_ROOT}/val"
 
 sonata_pretrain_weight = (
-    "/home/twongjirad/working/larbys/gen2/container_u22/Pointcept/"
+#    "/home/twongjirad/working/larbys/gen2/container_u22/Pointcept/"
+    "/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept/"
     "sonata/lartpc_v6_h200_noghosts_pretrain_logspace_resume/model/epoch_42.pth"
 )
 
@@ -152,6 +154,7 @@ model = dict(
 train = dict(type="LArFormerTrainer")
 
 hooks = [
+    dict(type="CheckpointLoader", extend_scheduler=True),
     dict(type="IterationTimer", warmup_iter=2),
     dict(type="InformationWriter"),
     dict(type="LArFormerLevelKeypointEvaluator",
@@ -161,9 +164,19 @@ hooks = [
          nu_decode_thresh=0.3, nu_recall_cm=3.0,
          coord_scale=coord_scale,
          best_metric="val/object_ap"),
-    dict(type="CheckpointSaver", save_freq=None),
-    dict(type="IterCheckpointSaver", save_iter_freq=5, keep_history=False),
+    dict(type="CheckpointSaver", save_freq=1),
+    dict(type="IterCheckpointSaver", save_iter_freq=50, keep_history=False),
     dict(type="SignalCheckpointHook", check_every_n_iter=30),
+    # Adam state monitor - track momentum/variance growth
+    dict(
+        type="AdamStateMonitor",
+        log_frequency=10,        # Every 100 steps (less frequent, more expensive)
+        prefix="adam_state",
+        track_layers=True,        # Group by layer type (attention, mlp, etc.)
+        track_histograms=False,   # Set True for detailed debugging (expensive)
+        histogram_frequency=500,  # If histograms enabled, log every 500 steps
+    ),
+
 ]
 
 # =============================================================================
@@ -171,13 +184,13 @@ hooks = [
 # =============================================================================
 weight = None
 resume = False
-save_path        = "exp/larformer_keypoint2"
-epoch            = 50
-eval_epoch       = 50
-batch_size       = 10
-batch_size_val   = 10
-num_worker       = 4
-num_worker_val   = 4
+save_path        = "exp/larformer_keypoint2_lr1e5_flat_nowdgroup"
+epoch            = 20
+eval_epoch       = 20
+batch_size       = 32
+batch_size_val   = 40
+num_worker       = 12
+num_worker_val   = 8
 evaluate         = True
 enable_amp       = False
 amp_dtype        = "bfloat16"
@@ -193,19 +206,43 @@ resume_seed_strategy = "per_resume"
 # =============================================================================
 # Optimizer / scheduler — PTv3 decoder + heads train from scratch.
 # =============================================================================
-base_lr = 1.0e-4
+base_lr = 2.0e-5
 param_dicts = None
-optimizer = dict(type="AdamW", lr=base_lr, weight_decay=0.01)
-scheduler = dict(
-    type="FlatWithDecayLR",
-    mode="plateau",
-    gamma=0.5,
-    min_lr=5e-8,
-    step_period_epochs=50,
-    patience_epochs=3,
-    min_delta=1e-4,
-    cooldown_epochs=1,
-    warmup_iters=200,
-    warmup_start_lr=0.0,
-    ema_alpha=0.3,
+# Exempt 1D params (norm gains/biases, all biases) and learned query/positional/
+# embedding parameters from weight decay (they would otherwise be decayed since
+# param_dicts=None passes a single global weight_decay to AdamW).
+optimizer = dict(
+    type="AdamW",
+    lr=base_lr,
+    weight_decay=0.01,
+    no_decay_on_1d_and_embeddings=True,
 )
+# scheduler = dict(
+#     type="FlatWithDecayLR",
+#     mode="plateau",
+#     gamma=0.5,
+#     min_lr=5e-8,
+#     step_period_epochs=50,
+#     patience_epochs=3,
+#     min_delta=1e-4,
+#     cooldown_epochs=1,
+#     warmup_iters=10000,
+#     warmup_start_lr=0.0,
+#     ema_alpha=0.3,
+# )
+
+# DelayedCosineLR: hold base_lr until RESUME_STEP, then cosine-decay to
+# final_lr_scale * base_lr at total_steps (injected by the trainer as
+# len(train_loader) * eval_epoch = 22588 * 20 = 451,760). With
+# extend_scheduler=True the fast-forward lands exactly on RESUME_STEP, so
+# the decay begins immediately at resume: 5e-5 -> 1e-6 over the remaining
+# ~14.2 epochs. No warmup (long past it), and deliberately NO reset_lr /
+# plateau machinery — that was FlatWithDecayLR-specific, and its plateau
+# trigger never fired anyway (no LREpochScheduler hook; stability doc §1.4).
+RESUME_STEP=116331
+scheduler = dict(
+    type="DelayedCosineLR",
+    decay_start_step=RESUME_STEP,    # previous run ended at epoch 10, step=116330
+    final_lr_scale=0.02,             # 2e-5 * 0.02 = 4e-7 floor
+)
+

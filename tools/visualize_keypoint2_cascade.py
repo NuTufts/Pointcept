@@ -53,6 +53,24 @@ def load_event(path):
                     gt_start=g["gt_start_cm"][:], gt_end=g["gt_end_cm"][:]))
         has_gt = bool(f.attrs.get("has_gt", False))
         meta = {k: f.attrs.get(k) for k in ("src_file", "run", "subrun", "event")}
+        # Optional dense-head score maps + raw GT keypoints (--save-score-maps).
+        # Stashed in `meta` so the 6-tuple signature (and all its unpackers)
+        # stays unchanged; absent in older files -> empty dicts.
+        smaps = {}
+        if "score_maps" in f:
+            for name in f["score_maps"]:
+                g = f["score_maps"][name]
+                smaps[name] = dict(
+                    coords_cm=g["coords_cm"][:], score=g["score"][:],
+                    level=g.attrs.get("level", ""),
+                    kp_types=np.asarray(g.attrs.get("kp_types", []), int))
+        meta["score_maps"] = smaps
+        gk = {}
+        if "gt_keypoints" in f:
+            gg = f["gt_keypoints"]
+            gk = dict(pos_cm=gg["pos_cm"][:], type=gg["type"][:],
+                      trackid=gg["trackid"][:])
+        meta["gt_keypoints"] = gk
     return slice_coord, nu, gt_nu, parts, has_gt, meta
 
 
@@ -221,6 +239,71 @@ def figure_for_view(event_data, view=-1):
     fig.update_layout(title=_title(meta, len(parts)), height=820,
                       scene=_scene(rng), scene2=_scene(rng) if has_gt else None,
                       uirevision="keep")  # preserve camera across callbacks
+    return fig
+
+
+# mckeypoint type codes (see configs/lartpc/larformer-keypoint2-slice-v1.py).
+KP_TYPE_NAMES = {0: "nu_vertex", 1: "track_start", 2: "track_end",
+                 3: "shower", 4: "michel", 5: "delta"}
+
+
+def figure_score_map(event_data, head_name, score_thresh=0.0):
+    """Single-scene 3D diagnostic: a dense head's per-token sigmoid score
+    (colour = score, Hot scale) with the GT keypoints it targets overlaid as
+    large markers. Lets you see whether the head fires AT the GT keypoints.
+
+    Score maps live in meta['score_maps'] (written by the inference tool's
+    --save-score-maps). `score_thresh` hides low-score tokens to declutter."""
+    slice_coord, nu, gt_nu, parts, has_gt, meta = event_data
+    sm = (meta.get("score_maps") or {}).get(head_name)
+    fig = go.Figure()
+    if sm is None:
+        fig.update_layout(
+            title=f"no score map '{head_name}' in this file "
+                  "(rerun inference with --save-score-maps)",
+            scene=_scene(), height=820, uirevision="keep")
+        return fig
+
+    # faint slice backdrop for spatial context
+    fig.add_trace(_pts(np.asarray(slice_coord, np.float32).reshape(-1, 3),
+                       marker=dict(size=1.2, color="lightgrey"),
+                       name="slice", showlegend=False, hoverinfo="skip"))
+
+    coords = np.asarray(sm["coords_cm"], np.float32).reshape(-1, 3)
+    score = np.asarray(sm["score"], np.float32).reshape(-1)
+    keep = score >= float(score_thresh)
+    coords, score = coords[keep], score[keep]
+    fig.add_trace(go.Scatter3d(
+        x=coords[:, 0], y=coords[:, 1], z=coords[:, 2], mode="markers",
+        name=f"{head_name} score",
+        marker=dict(size=3.0, color=score, colorscale="Hot", cmin=0.0,
+                    cmax=1.0, showscale=True,
+                    colorbar=dict(title="score", x=1.0)),
+        hovertext=[f"{head_name}={s:.3f}" for s in score], hoverinfo="text"))
+
+    # GT keypoints this head targets (filtered by its kp_types), if present.
+    gk = meta.get("gt_keypoints") or {}
+    pos = np.asarray(gk.get("pos_cm", np.zeros((0, 3))), np.float32).reshape(-1, 3)
+    typ = np.asarray(gk.get("type", np.zeros(0)), int).reshape(-1)
+    want = set(int(t) for t in np.asarray(sm.get("kp_types", []), int).reshape(-1))
+    if pos.shape[0] and want:
+        sel = np.array([int(t) in want for t in typ], bool)
+        gp, gt_ = pos[sel], typ[sel]
+        fig.add_trace(go.Scatter3d(
+            x=gp[:, 0], y=gp[:, 1], z=gp[:, 2], mode="markers",
+            name="GT keypoints",
+            marker=dict(size=8, symbol="diamond", color="cyan",
+                        line=dict(width=2, color="black")),
+            hovertext=[f"GT {KP_TYPE_NAMES.get(int(t), t)}" for t in gt_],
+            hoverinfo="text"))
+
+    n_gt = int(sel.sum()) if (pos.shape[0] and want) else 0
+    fig.update_layout(
+        title=(f"{head_name} score map @ {sm.get('level','')} — "
+               f"{coords.shape[0]} tokens (thresh {score_thresh:g}), "
+               f"{n_gt} GT keypoints "
+               f"[types {sorted(want)}]  |  {_title(meta, len(parts))}"),
+        scene=_scene(), height=820, uirevision="keep")
     return fig
 
 

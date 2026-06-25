@@ -32,16 +32,15 @@ module load apptainer
 # h_10.pth
 
 # to start job inside container
-apptainer exec --nv --bind /cluster:/cluster $container bash -c "cd ${WORKDIR} && \
-  source setenv_pointcept_only.sh && \
-  python3 tools/train.py --config ${CONFIG} --num-gpus 2 \
-  --options save_path=${WORKDIR}/exp/${SAVE_PATH_DIR} epoch=10 eval_epoch=10"
-  
-#CHECKPOINT="${WORKDIR}/exp/larformer_slicer_v1_cascaded_crosslevelrefiner_mixedq_maskdn/model_iter_24183.pth"
-
-# to resume job script inside container
 # apptainer exec --nv --bind /cluster:/cluster $container bash -c "cd ${WORKDIR} && \
 #   source setenv_pointcept_only.sh && \
 #   python3 tools/train.py --config ${CONFIG} --num-gpus 2 \
-#   --options save_path=${WORKDIR}/exp/${SAVE_PATH_DIR} epoch=10 eval_epoch=10 \
-#   resume=True weight=${CHECKPOINT}"
+#   --options save_path=${WORKDIR}/exp/${SAVE_PATH_DIR} epoch=10 eval_epoch=10"
+  
+CHECKPOINT="${WORKDIR}/exp/larformer_keypoint2_particle_cachedpredmask_v1/model/epoch_10.pth"
+# to resume job script inside container
+apptainer exec --nv --bind /cluster:/cluster $container bash -c "cd ${WORKDIR} && \
+  source setenv_pointcept_only.sh && \
+  python3 tools/train.py --config ${CONFIG} --num-gpus 2 \
+  --options save_path=${WORKDIR}/exp/${SAVE_PATH_DIR} epoch=30 eval_epoch=30 \
+  resume=True weight=${CHECKPOINT}"
