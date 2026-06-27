@@ -1,6 +1,9 @@
 # Keypoint Reconstruction from LArFormer Cascade Score Maps — PyTorch Spec
 
-Status: **PLAN (2026-06-27)** — not yet implemented.
+Status: **v1 IMPLEMENTED (2026-06-27)** — score-field path in
+[`reco/`](reco/) (`reco/README.md`). Synthetic test suite passes (incl. the
+truncated / one-sided / off-support cases that drive the fitter choice). The
+vote/offset head (§4.1 Method 3) remains future work.
 
 This document specifies a PyTorch reconstruction tool that turns the **dense
 keypoint score maps** produced by the attempt-2 LArFormer keypoint cascade into
@@ -261,6 +264,14 @@ filtered — it is the residual).
   DBSCAN's role (grouping connected above-threshold points) is replaced by the
   subtraction step, which removes a found peak's support before the next
   iteration. Keep DBSCAN out unless validation shows merged peaks.
+- **Tight FIT radius vs wide isolation radius (`fit_radius_cm`).** The 10 cm
+  isolation radius can engulf a *neighbor* peak, biasing the local Gaussian fit
+  toward it. The fit is therefore done on a **tighter** neighborhood
+  (`fit_radius_cm`, default 2σ = 6 cm) than the isolation/subtraction radius.
+  Validated on synthetic 2σ-separated peaks: a 10 cm fit window pulls the mean
+  3.2 cm off; the 6 cm window holds it to <1 cm and both peaks are resolved
+  (`test_keypoint_reco.test_overlapping_peaks`). The off-support extrapolation
+  still works because the masked-peak tail is sampled within `fit_radius_cm`.
 
 ### 4.3 Per-map specialization
 
@@ -297,6 +308,7 @@ lartpc_data_prep/larformer_keypoint_v2/reco/
 @dataclass
 class KeypointRecoParams:
     radius_cm: float = 10.0          # neighborhood isolation radius
+    fit_radius_cm: float | None = None  # tight FIT neighborhood (None -> 2*sigma)
     sigma_cm: float = 3.0            # fixed Gaussian width (= GT label sigma)
     score_thresh: float = 0.67       # stop when running max < this
     max_keypoints: int = 64          # safety cap per map
@@ -405,6 +417,7 @@ floor for trusting a peak.
 | Param | Default | Meaning / origin |
 |---|---|---|
 | `radius_cm` | 10.0 | neighborhood isolation radius (user spec) |
+| `fit_radius_cm` | 2σ (6.0) | tight FIT neighborhood — avoids neighbor-peak bias (§4.2) |
 | `sigma_cm` | 3.0 | fixed Gaussian width = GT label σ (`keypoint_labels.py`) |
 | `score_thresh` | 0.67 | stop when running max < this (user spec) |
 | `min_neighbors` | 4 | C++ skips clusters with `< 4` points |
