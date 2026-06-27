@@ -161,36 +161,94 @@ loop:
 
 ### 4.1 Fixed-σ Gaussian fit (reduced Caruana)
 
-The user fixes σ = 3 cm and fits only the **mean** (and amplitude). With σ fixed,
-the `x²` coefficient of the log-parabola is **known** (`−1/(2σ²)`), so per axis we
-fit only two free parameters — a much better-conditioned linear fit than the full
-3×3 Caruana system, and it cannot return an imaginary σ. Per axis `d ∈ {x,y,z}`:
+**Caveat that drives the fitter choice — truncated / one-sided support.** The
+slicer and particle-segmentation masks frequently keep only *part* of a
+keypoint's Gaussian, and track/shower **start** points are intrinsically
+**half-Gaussians** (hits exist only on the downstream side; nothing before the
+start). Worse, the true peak can lie **outside** the surviving point set when the
+start hit itself is masked. This breaks naive moment estimators, but not all the
+same way — so it's worth being precise about *which* "moment" fails:
+
+- The **score-weighted centroid** `Σ x·y / Σ y` (the true *distribution* moment)
+  is **strongly biased** by one-sided truncation — it is pulled toward the
+  visible mass. Demote it to a last-resort fallback only.
+- The **Caruana** system (C++ `_fit_cluster_CARUANA`) is **not** a centroid — it
+  is a least-squares **parabola fit to `ln y`**, and its vertex `μ = −b/2c` can
+  legitimately fall **outside** the data range. So it *can* represent an
+  off-support peak. Its truncation problems are instead: (1) it is **unweighted**,
+  so noisy low-score tail points get equal say and `ln` amplifies their noise;
+  and (2) it must **estimate the curvature `c`** from a one-sided sample, and `μ`
+  divides by `c` → a poorly-determined curvature throws the peak far off.
+
+Fixing σ removes the *dominant* pathology (2): the curvature `c = −1/(2σ²)` is
+now **known**, so the peak is a **stable linear extrapolation**, fine even from
+one side. The methods below build on that, ordered most-robust first.
+
+**Method 1 (recommended for the score-field path) — direct nonlinear weighted
+Gaussian fit, σ fixed.** Fit the *shape*, not the centroid, so one-sidedness does
+not bias it; weight by score so the noisy tail is down-weighted; let `μ` leave the
+convex hull of the points:
 
 ```
-let  yj = residual[nbr]  (>0),   xj = coords[nbr, d]
-move the known curvature to the LHS:
-    zj = ln(yj) + xj^2 / (2 sigma^2)            # = ln A + (mu/sigma^2) xj
-weighted linear fit  zj ≈ a + b·xj   (weights wj = yj^2, score-weighted as in C++):
-    b = mu_d / sigma^2   →   mu_d = b * sigma^2
-A (amplitude) from the intercept a, averaged/blended across the 3 axes:
-    ln A_d = a + ... ;  use A = residual[i*] (peak) as the robust default,
-    or the fitted A clamped to <= 1.5 * peak.
+minimize over (A, mu):   sum_j  w_j * ( y_j - A*exp(-||x_j - mu||^2 / (2 sigma^2)) )^2
+    w_j = y_j  (or y_j^2),   y_j = residual[nbr],   sigma fixed = 3 cm
+solve by 2-3 Gauss-Newton / Levenberg-Marquardt steps, seeded at mu = coords[i*].
 ```
 
-Recommended: **use the fitted `mu` for position, and the observed peak score
-`smax` for the subtraction amplitude `A`** (this is exactly what C++ does —
-`kpc.max_score` is the amplitude in the subtraction term). This avoids amplitude
-blow-ups from the log fit while still getting sub-voxel `mu`.
+Converges in a few steps (4 params: `A`, `mu_xyz`), no `ln` noise amplification,
+naturally robust to truncation. This is the default fitter.
 
-Keep the C++ goodness-of-fit outputs (`rmse`, `rsqr` per the residual vs the
-fitted Gaussian) for QA / downstream filtering; compute them as in
-`_fit_cluster_CARUANA`.
+**Method 2 (fast closed-form seed / fallback) — fixed-σ, y²-weighted, joint-3D
+log-linear fit.** The closed-form approximation to Method 1, and the right way to
+do the "Caruana with σ fixed" idea. Two upgrades over the C++: it is **weighted**
+(kills problem 1) and **jointly 3D** rather than per-axis (the per-axis C++ fit
+assumes a separability that scattered points under an isotropic 3D Gaussian do
+not satisfy):
 
-Fallbacks (guard against degenerate neighborhoods):
-- `< min_neighbors` points, or the linear system is singular → use the
-  **score²-weighted centroid** of the neighborhood as `mu` (the C++
-  `center_avg_pt_v` path), no sub-voxel fit.
-- Any `yj <= 0` excluded from the log fit (already filtered: it's the residual).
+```
+zj = ln(yj) + ||xj||^2 / (2 sigma^2)          # = lnA - ||mu||^2/2sigma^2 + (mu·xj)/sigma^2
+weighted linear LS (weights wj = yj^2), 4 unknowns jointly in 3D:
+    [ c0 ; g ] = argmin  sum_j wj ( zj - c0 - g·xj )^2 ,   g in R^3
+    mu = g * sigma^2                              # peak position (may be off-support)
+```
+
+One linear solve; use it to seed Method 1, or as the fit itself when speed
+dominates.
+
+**Amplitude.** For the subtraction term use the observed peak `smax`
+(= C++ `kpc.max_score`), not the fitted `A` — robust against log-fit blow-ups.
+With a masked peak `smax` under-estimates the true amplitude, but it only governs
+*how much* is peeled, not *where*; the position comes from `mu`.
+
+**Method 3 (proper structural fix — model-side) — a vote / offset (Hough)
+head.** The cleanest answer to "keypoint outside the points" and one-sided starts
+is to not fit the score field at all: have each point regress a **vector to its
+keypoint**, so even a single tail point on one side points back to the true
+(off-cloud) location, then cluster the votes. The codebase already has this —
+`KeypointOffsetHead`, the per-SP `kp_dense_offset_head` (supervised by the cache
+`kpoffsets`), and `keypoint_eval.decode_dense_votes` / `cluster_votes`. The v2
+*level* heads are currently **score-only** and `--save-score-maps` writes only
+`score`+`coords`, so this needs the keypoint model to emit per-token offsets and
+the inference to save them — but it is the most robust observable for exactly the
+masked/one-sided failure mode and should be the medium-term direction. (The
+per-particle query decoder already does the analogous thing: a zero-init pos head
+seeded at an anchor, refined by attention, so it can place a start off the
+visible points.)
+
+**Edge-case guards (apply with any method):**
+- **One-sidedness flag.** Test whether the neighborhood is one-sided — neighbor
+  directions subtend a cone rather than a full ball, or the neighborhood centroid
+  is ≳ 1σ from `coords[i*]`. Flag such keypoints `extrapolated=True` with inflated
+  uncertainty; prefer the vote (Method 3) there when available.
+- **Clamp the extrapolation.** Cap `mu` to `coords[i*] ± a few σ` so a
+  near-singular fit cannot fling the peak across the detector.
+- Keep the C++ goodness-of-fit outputs (`rmse`, `rsqr` of residual vs fitted
+  Gaussian) — low R² is the signal to distrust the fit / fall back.
+
+**Fallback chain (degenerate neighborhoods):** `< min_neighbors` points or a
+singular system → score²-weighted centroid (the C++ `center_avg_pt_v` path),
+flagged low-confidence. Any `yj <= 0` is excluded from the log fit (already
+filtered — it is the residual).
 
 ### 4.2 Why fixed σ and radius isolation (vs C++ DBSCAN + variable σ)
 
@@ -227,7 +285,8 @@ torch + numpy + scipy):
 lartpc_data_prep/larformer_keypoint_v2/reco/
 ├── __init__.py
 ├── keypoint_reco.py        # KeypointRecoTorch (the algorithm + params)
-├── gaussian_fit.py         # fit_gaussian_fixed_sigma (reduced Caruana) + caruana_full (parity)
+├── gaussian_fit.py         # fit_gaussian_nls (Method 1, default), fit_gaussian_loglinear
+│                           #   (Method 2, fixed-sigma y^2-weighted joint-3D), caruana_full (parity)
 ├── io.py                   # load_score_maps(h5) -> {name: (coords_cm, score, level, kp_types)}
 └── run_keypoint_reco.py    # CLI: dir of *.h5 -> reco keypoints (+ optional eval/H5 out)
 ```
@@ -242,7 +301,9 @@ class KeypointRecoParams:
     score_thresh: float = 0.67       # stop when running max < this
     max_keypoints: int = 64          # safety cap per map
     min_neighbors: int = 4           # below this: suppress point, no fit
-    amplitude: str = "peak"          # "peak" (C++ behavior) | "fit"
+    amplitude: str = "peak"          # subtraction amplitude: "peak" (C++) | "fit"
+    fit_method: str = "nls"          # "nls" (Method 1) | "loglinear" (Method 2) | "centroid"
+    clamp_extrap_sigma: float = 3.0  # cap |mu - argmax| at this * sigma_cm
     device: str = "cpu"              # "cuda" for big nu-slice maps
 
 class Keypoint:                      # ~ KPCluster, trimmed to what we have
@@ -251,6 +312,7 @@ class Keypoint:                      # ~ KPCluster, trimmed to what we have
     fit_rmse: np.ndarray # (3,)  ~ center_pt_rmse_v
     fit_rsqr: np.ndarray # (3,)  ~ center_pt_rsqr_v
     n_support: int       # neighborhood size used for the fit
+    extrapolated: bool   # peak placed outside / from one-sided support (§4.1 guard)
 
 class KeypointRecoTorch:
     def __init__(self, params: KeypointRecoParams): ...
@@ -312,7 +374,12 @@ attrs: radius_cm, sigma_cm, score_thresh  (provenance)
    known 3 cm Gaussians at random cm positions on a synthetic point support;
    assert the reco recovers all K centers to < 0.5 cm and stops at the right
    count. Add overlapping-peak cases (centers 4–8 cm apart) to probe the
-   isolation radius / subtraction.
+   isolation radius / subtraction. **Critically, add truncated cases:** mask one
+   hemisphere of the support (half-Gaussian, simulating a track start) and mask
+   the peak entirely (only the descending tail survives, peak off-support), and
+   assert Method 1/2 still recover the center to < 1 cm while the score-weighted
+   centroid visibly biases toward the visible side — this is the test that
+   justifies the fitter choice in §4.1.
 2. **Caruana parity.** Unit-test `gaussian_fit.caruana_full` against a hand
    computation / the C++ formula on a single Gaussian (no fixed-σ), then confirm
    `fit_gaussian_fixed_sigma` matches it when the data's true σ = 3 cm.
@@ -343,6 +410,8 @@ floor for trusting a peak.
 | `min_neighbors` | 4 | C++ skips clusters with `< 4` points |
 | `max_keypoints` | 3 (nu) / 64 (object) | safety cap per map |
 | `amplitude` | "peak" | subtraction amplitude = peak score (C++ `max_score`) |
+| `fit_method` | "nls" | §4.1 — "nls" (default) / "loglinear" / "centroid" |
+| `clamp_extrap_sigma` | 3.0 | cap `‖μ−argmax‖` at this × σ (off-support guard) |
 
 ---
 
@@ -350,8 +419,12 @@ floor for trusting a peak.
 
 - `pointcept/models/LArFormer/keypoint_eval.py`: `_recover_affine` / `denorm`
   (frame, only needed for Option B), `cluster_votes` (KDTree-greedy pattern to
-  mirror), `match_points` / `accumulate_metrics` / `format_metrics_table`
-  (evaluation).
+  mirror), `decode_dense_votes` (the vote/Hough decode to reuse if the offset
+  head — §4.1 Method 3 — is exposed), `match_points` / `accumulate_metrics` /
+  `format_metrics_table` (evaluation).
+- `pointcept/models/LArFormer/keypoint_heads.py`: `KeypointOffsetHead` (+ the
+  per-SP `kp_dense_offset_head` in `model.py`, supervised by cache `kpoffsets`) —
+  the existing vote-head machinery for §4.1 Method 3.
 - `larflow/larflow/Reco/KeypointReco.cxx`: `_fit_cluster_CARUANA` (the fit math),
   the subtraction term, the pass loop structure, `KPCluster` field set.
 - `lartpc_data_prep/keypoint_labels.py`: σ and the keypoint-type enum — the
@@ -385,4 +458,13 @@ New code: the `reco/` package in §5 (no ROOT / larflow link).
   the predicted field is broader/asymmetric, the fixed-σ subtraction will leave
   residual. The `fit_rsqr` QA output is the diagnostic — low R² flags maps where
   a variable-σ (full Caruana) fallback is warranted.
+- **Truncated / off-support keypoints (§4.1) are the main accuracy risk.** Masked
+  partial Gaussians and one-sided track/shower starts bias any centroid estimator
+  and stress even the shape fit when the peak is off-support. v1 mitigates with
+  the σ-fixed shape fit (Method 1) + extrapolation clamp + one-sidedness flag; the
+  durable fix is the vote/offset (Hough) head (§4.1 Method 3), which needs the
+  keypoint model to emit per-token offsets and `--save-score-maps` to write them.
+  Decision needed: ship v1 score-field-only and add offsets later, or wire the
+  offset head first. Recommended: v1 score-field first (validate the peeling +
+  metrics), then add the vote head as v2.
 ```
