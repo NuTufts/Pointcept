@@ -36,38 +36,126 @@ to head against the same truth and metrics (Section 7).
 
 ---
 
-## 2. Input data specification  *(PROPOSED — confirm before building)*
-The upstream model produces, per event, a set of reconstructed 3D spacepoints with predicted
-instance labels. Trajectory fitting operates **per instance**.
+## 2. Input data specification
 
-### 2.1 Per-event arrays `[CONFIRM exact layout]`
-| field | dtype | shape | meaning |
-|---|---|---|---|
-| `coords` | float32 | `(N, 3)` | spacepoint positions `(x, y, z)` in **cm** `[CONFIRM units]`, detector frame `[CONFIRM: x=drift, y=vertical, z=beam?]` |
-| `charge` | float32 | `(N,)` or `(N, F)` | per-point charge / ADC (and any extra features). Used as PCA weights and later for dE/dx. `[CONFIRM availability]` |
-| `instance_id` | int32 | `(N,)` | predicted instance label per point; background / unclustered = `-1` `[CONFIRM sentinel]` |
-| `semantic_id` | int32 | `(N,)` | optional: track / shower / etc., to filter to track-like instances `[CONFIRM availability]` |
+### 2.0 Detector, units, coordinate frame (confirmed)
+- **Detector: MicroBooNE** (single 2.56 × 2.3 × 10.4 m LArTPC, 3 induction/collection wireplanes,
+  32 PMTs). Dev sample is `bnb_nu_overlay` (BNB neutrino MC overlaid on cosmic data).
+- **Units: centimeters** throughout (`*_cm`, `pos`, `start_pos`, keypoint `pos`). The detector
+  coordinate convention is MicroBooNE `(x, y, z)`: x = drift (0–256 cm), y = vertical
+  (−116…+116 cm), z = beam (0–1036 cm). All spacepoints carry **space-charge-corrected (SCE)**
+  reco positions; the matching truth field is `start_pos_sce`.
+- **Per-point spacing ≈ 3.3 mm** (median NN distance in a slice ≈ 0.33 cm; this is the spacepoint
+  granularity set by the 3 mm MicroBooNE wire pitch). Use this for `σ_reso ≈ 3 mm` (the residual
+  floor in §5.3) and as the natural lower bound for the sliding-window scale and ElPiGraph node
+  spacing.
+- **X₀ = 14.0 cm** (liquid argon) is correct for MicroBooNE; resolves the `[CONFIRM detector]` in §1.
 
-### 2.2 Truth arrays (simulation only, for evaluation) `[CONFIRM availability + layout]`
-| field | dtype | shape | meaning |
-|---|---|---|---|
-| `true_instance_id` | int32 | `(N,)` | per-point true particle/instance label, for truth-matching predicted instances |
-| `true_traj` | list of float32 `(Mᵢ, 3)` | per true particle | Geant4 trajectory points (the ground-truth polyline) in cm |
-| `true_pdg` | int32 | per particle | PDG code |
-| `true_p` | float32 | per particle | true momentum (MeV/c) — needed to evaluate the MCS model and angular resolution |
+### 2.1 The two file types and how they relate
+Trajectory fitting consumes **`keypoint2_out/`** (one H5 per event, the cascade-inference product of
+`tools/run_larformer_keypoint2_cascade_inference.py`). **`merged_sp/`** (one H5 per event, the raw
+upstream event the cascade ran on) is the **truth source**; it is *optional* for fitting and *required
+only* for richer evaluation (charge weights, full MC tree, true kink vertices). A `keypoint2_out`
+file names its parent via the root attr `src_file` (= the basename of the `merged_sp` file).
 
-### 2.3 Practical scale parameters `[CONFIRM]`
-- Typical `N` per event: `[CONFIRM — thousands? millions?]`
-- Typical points per instance: `[CONFIRM — tens? few thousand?]`
-- Nominal point spacing / voxel pitch: `[CONFIRM — e.g. ~3 mm]`. This sets the floor on segment
-  resolution and feeds the resolution term in the MCS threshold.
-- Are instances delivered **pre-split into separate arrays**, or as **one labeled cloud** the
-  implementation must group by `instance_id`? `[CONFIRM]`
+**Critical fact (verified):** every point in `keypoint2_out:/slice/coord_cm` is an **exact** member of
+`merged_sp:/entry_0/triplet_data/pos` (nearest-neighbour distance = 0.0). So per-point charge and
+per-point truth can be recovered by a KD-tree position match `slice → triplet_data` (build the tree
+once per event). No index map is stored; match on coordinates.
 
-### 2.4 Input contract handed to each method
-Each method receives a single instance: `points: (n, 3) float32` and optional `weights: (n,)
-float32`. It must not assume points are ordered. It must handle small `n` (e.g. < 10) gracefully
-(return a degenerate 1–2 vertex polyline rather than crashing).
+### 2.2 `keypoint2_out/keypoint2_event{NNNNN}_{ei}.h5` — fitting input (self-contained)
+This is what each method ingests. **It alone is sufficient to run a fit and do a first-order
+evaluation** (it carries the per-instance cloud *and* GT endpoints + GT cloud).
+
+Root attrs: `n_particles:int`, `has_gt:bool`, `has_score_maps:bool`, `src_file:str` (parent
+`merged_sp` basename); plus `run/subrun/event` when present.
+
+| Path | Shape / dtype | Meaning |
+|---|---|---|
+| `slice/coord_cm` | `(N_slice, 3) f32` | The nu-slice spacepoint cloud in detector cm. **All `*point_idx` index into this array.** N_slice ~ O(2k). |
+| `nu_vertex_cm` | `(3,) f32` | Predicted neutrino vertex (dense-head, score-weighted centroid). |
+| `gt_nu_vertex_cm` | `(3,) f32` | True neutrino vertex (NaN if no MC). |
+| `particle/{i}/` (attrs) | — | `cls:int` (predicted particle class, **see §2.4**), `gt_trackid:int`, `has_match:bool`, `iou:f32` (pred-vs-GT point IoU). |
+| `particle/{i}/point_idx` | `(n_i,) i32` | **Indices into `slice/coord_cm` of this predicted instance.** `cloud = slice_coord[point_idx]` → the input to `fit()`. n_i ranges ~11–2100 here (median ~220). |
+| `particle/{i}/start_cm` | `(3,) f32` | **Predicted** start keypoint (cm). |
+| `particle/{i}/end_cm` | `(3,) f32` | **Predicted** end keypoint (cm); NaN if the model emitted no end (e.g. showers). |
+| `particle/{i}/gt_point_idx` | `(m_i,) i32` | Indices into `slice/coord_cm` of the **matched GT** particle (per-point `trackid == gt_trackid`). Use `slice_coord[gt_point_idx]` as the *truth cloud* for residual eval. |
+| `particle/{i}/gt_start_cm`, `gt_end_cm` | `(3,) f32` | **True** start/end of the matched particle (NaN if unavailable). NB: `gt_start` is the per-instance *visible/loss* start (origin for the trained head), not necessarily the photon conversion point. |
+| `score_maps/{object,nu_vertex}/` | coords+score | (only if `has_score_maps`) dense keypoint head scores — keypoint diagnostics, **not needed** for trajectory fitting. |
+| `gt_keypoints/{pos_cm,type,trackid}` | `(K,3)f32,(K,)i32,(K,)i32` | All raw MC keypoints for the event (types in §2.5). |
+
+**Instances arrive pre-split, as point-index lists into one shared slice cloud** (answers §9.2). To
+fit a track you take one `particle/{i}`, gather `slice_coord[point_idx]`, and (optionally) attach
+charge/weights from `merged_sp`. There is **no per-point feature/charge stored in `keypoint2_out`** —
+only geometry.
+
+### 2.3 `merged_sp/..._entry{NNNNNN}.h5` — truth + charge source (optional enrichment)
+One top group `entry_0` (attrs: `run, subrun, event, trigger_tick, usec_per_tick, n_pmts`). Relevant
+subgroups for trajectory fitting:
+
+- **`triplet_data/`** — the full reconstructed spacepoint cloud the cascade saw (`pos (M,3) f32`,
+  superset of the slice; M ~ O(1e5), includes ghosts). Per-point fields usable as features/weights
+  after the slice→triplet match: `pixval (M,3) f32` (per-plane wire charge U/V/Y — **the charge for
+  weighting**; use Y or the mean), `trackid (M,) i64` (true GEANT trackid, −1/0 = ghost/none),
+  `pid (M,) i32`, `edep (M,3) f32`, `lm_score`, `ssnet_label`, `kpscores (M,6)`.
+- **`triplet_truth/`** — the **true (non-ghost) energy-deposit cloud**: `pos_reco (T,3) f32` (reco
+  position), `trackid (T,) i64`, `pid`, `edep`. Use as an alternative, cleaner truth cloud per
+  trackid for residual metrics.
+- **`mc_particle_tree/`** — the per-particle MC truth (length = #particles): `trackid (P,) i32`,
+  `pid (P,) i32` (PDG), `energy_mev (P,) f32`, `start_pos (P,3)` / `start_pos_sce (P,3)` f32,
+  `parent_trackid (P,) i32`, `daughter_trackids`, `daughter_start_indices`, `num_daughters`,
+  `process_code`, `origin`, `nu_vertices (1,3)`. **This is the source for `true_pdg`, `true_p`, and
+  true kink/vertex locations** (see §2.6).
+- **`mckeypoints/`** — labelled truth keypoints (length K): `pos (K,3) f32`, `kptype (K,) i32`
+  (types in §2.5), `pid (K,) i32`, `trackid (K,) i32`, `startpos (K,3)`, `imgcoord (K,4)`. Per-track
+  **true start (type 1) and end (type 2)** for endpoint metrics, keyed by `trackid`.
+- Also present but not needed for tracks: `image_data/` (raw wireplane images), `flashes/`,
+  `pmt_positions`, `shower_fragments/`.
+
+### 2.4 Particle class codes (the `cls` attr) — which instances are tracks
+The predicted `cls` comes from the Stage-3 particle segmenter, whose class list is
+`["e", "gamma", "mu", "pi", "p", "other", "(unused)", "no_object"]`:
+
+| cls | 0 | 1 | 2 | 3 | 4 | 5 | 7 |
+|---|---|---|---|---|---|---|---|
+| name | e | gamma | mu | pi | p | other | no_object |
+| topology | shower | shower | **track** | **track** | **track** | (mixed) | — |
+
+**Track reconstruction selects instances with `cls ∈ {2, 3, 4}`** (mu, pi, p). Showers
+(`cls ∈ {0, 1}`) are deferred to a later project; the optional "trunk direction / mis-ID" study in
+the brief preamble would run the same track fitter on `cls ∈ {0,1}` clouds.
+
+### 2.5 Keypoint type codes (`mckeypoints/kptype`, `gt_keypoints/type`)
+`0 = nu_vertex`, `1 = track_start` (also used as shower-start/conversion), `2 = track_end`,
+`3 = shower-start`, … For tracks use type 1 (start) and type 2 (end) keyed by `trackid`.
+
+### 2.6 Truth available for evaluation — and the key limitation
+There is **NO stored GEANT4 step polyline** (`true_traj` does not exist as an array). For §7 metrics,
+synthesize truth from what *is* stored:
+- **Endpoint accuracy** → `mckeypoints` type-1/type-2 `pos` keyed by `trackid` (or the
+  `gt_start_cm`/`gt_end_cm` already decoded into `keypoint2_out`).
+- **Transverse residual** → fit the cloud, then measure fitted-polyline-to-**true-cloud** distance
+  using the per-instance truth cloud (`slice_coord[gt_point_idx]`, or `triplet_truth` filtered by
+  `trackid`). This replaces the missing `true_traj` for residual/RMS metrics.
+- **True kink / hard-scatter vertices** → derive from `mc_particle_tree`: a daughter's
+  `start_pos_sce` that lies on the parent's path is a scatter/decay vertex. Concretely, for a parent
+  `trackid t`, collect the `start_pos_sce` of every particle whose `parent_trackid == t` (and of `t`
+  itself for the production vertex); cluster coincident positions. In the dev event, trackid 2's
+  daughters all start at `(231.1, 19.4, 140.8)` — a single hadronic-interaction vertex. These are the
+  truth break points for vertex precision/recall and segment-count fidelity.
+- **Momentum `true_p`** for the MCS tolerance (§5.3) → from `mc_particle_tree`: `p = sqrt(E_kin² +
+  2 E_kin m)` using `energy_mev` (kinetic) and the PDG mass from `pid`. Expose `momentum_source ∈
+  {truth, range, fixed}`; start with truth.
+
+A small loader (`trajfit/io.py`, dev prototype in §10) should: open a `keypoint2_out` file, optionally
+open its `src_file` sibling under a given `merged_sp` dir, KD-match the slice into `triplet_data` once,
+and yield per-instance records `{points, charge, weights, pred_cls, pred_start/end, gt_start/end,
+truth_cloud, trackid, pid, true_p, true_kinks}`.
+
+### 2.7 Per-event scale (drives the batching strategy, §9.5)
+Dev sample (8 events with a nu slice): **0–6 particle instances per event**, instance sizes
+**~11 to ~2100 points (median ~220)**, slice cloud ~2k points. These are *small* clouds → per-track
+ElPiGraph/PCA is cheap; GPU value (if any) comes from batching many instances, not from one track.
 
 ---
 
@@ -260,12 +348,38 @@ path), validate against truth, then add C as the robust comparator.
 
 ---
 
-## 9. Open questions for the user to confirm
-1. Detector (MicroBooNE / SBND / DUNE) and coordinate convention / units.
-2. Exact input array names, dtypes, and whether instances arrive pre-split or as one labeled cloud.
-3. Availability and format of charge/feature and of truth (`true_traj`, `true_pdg`, `true_p`).
-4. Per-point spatial resolution `σ_reso` and nominal point spacing.
-5. Typical `n` per instance and number of instances per event (drives the batching strategy).
-6. Whether single instances can contain branches (primary + δ-rays), which decides curve-vs-tree
-   mode for ElPiGraph and whether an MST ordering fallback is mandatory for A.
-7. Momentum source for the MCS threshold: truth `p` for now, or range-based estimate with iteration?
+## 9. Open questions — status after the §2 data investigation
+1. **Detector / units — RESOLVED.** MicroBooNE; centimeters; SCE-corrected detector `(x,y,z)`. X₀ = 14.0 cm. (§2.0)
+2. **Array names / pre-split — RESOLVED.** Schema in §2.2–2.3. Instances arrive **pre-split** as
+   `point_idx` lists into one shared `slice/coord_cm` cloud. (§2.2)
+3. **Charge / truth — PARTIALLY RESOLVED.** Charge = `triplet_data/pixval` (3-plane), attached via
+   the slice→triplet KD-match (not stored in `keypoint2_out`). `true_pdg`/`true_p` available from
+   `mc_particle_tree`. **`true_traj` (GEANT step polyline) does NOT exist** — substitute the true
+   point cloud + true kink vertices for residual/vertex metrics (§2.6). *Confirm this substitution is
+   acceptable, or point us at a step-level truth product if one exists upstream.*
+4. **σ_reso / spacing — RESOLVED.** Point spacing ≈ 3.3 mm; use `σ_reso ≈ 3 mm`. (§2.0)
+5. **Per-instance / per-event scale — RESOLVED (dev sample).** 0–6 instances/event, ~11–2100
+   points/instance, median ~220; slice ~2k points → small clouds, batch across instances for GPU. (§2.7)
+   *Confirm whether production events (full BNB, more cosmics) are larger.*
+6. **Branches within an instance — OPEN.** δ-rays can in principle merge into a primary instance;
+   the segmenter aims for one particle per instance but is imperfect (see the low-IoU matches in the
+   dev event). Recommend **curve mode** for ElPiGraph by default with `TrimmingRadius` to reject
+   δ-ray contamination, and keep the MST ordering fallback for Method A. *User to confirm expected
+   branch rate.*
+7. **Momentum source — RECOMMEND truth first.** `true_p` from `mc_particle_tree` (§2.6) for initial
+   studies; add range-based iteration later. (§5.3)
+
+---
+
+## 10. Quick-start dev scripts (ElPiGraph spike) — `trajfit_dev/`
+A standalone spike lives in `lartpc_data_prep/larformer_keypoint_v2/trajfit_dev/` for trying
+ElPiGraph on this data **before** committing to the full `trajfit/` package (§8):
+- `trajfit_io.py` — the §2.6 loader: yields per-instance track records from a `keypoint2_out` file
+  (+ optional `merged_sp` enrichment for charge/truth).
+- `run_elpigraph.py` — fits `computeElasticPrincipalCurve` on track-class instances, traces the node
+  graph into an ordered polyline, reports runtime (CPU vs `GPU=True`), residual RMS, endpoint error,
+  and dumps a Plotly HTML per instance (cloud + fitted polyline + GT endpoints).
+- `sweep_elpigraph.py` — grids `NumNodes`/`Lambda`/`Mu`/`TrimmingRadius` over the dev events and
+  tabulates residual / endpoint error / #segments / runtime to tune the meta-parameters.
+Run inside the container, e.g.
+`./run_in_local_pointcept_container.sh python lartpc_data_prep/larformer_keypoint_v2/trajfit_dev/run_elpigraph.py`.
