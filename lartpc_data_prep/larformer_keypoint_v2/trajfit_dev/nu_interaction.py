@@ -214,6 +214,41 @@ def vertex_candidates(kp_path, max_cand=8, score_thresh=0.5):
 
 
 # ---------------------------------------------------------------------------
+# GT particle gathering (for the "what reco misses" panel)
+# ---------------------------------------------------------------------------
+_PDG_NAME = {11: "e", -11: "e", 22: "gamma", 13: "mu", -13: "mu",
+             211: "pi", -211: "pi", 111: "pi0", 2212: "p", 2112: "n"}
+_TYPE_COLORS = {"e": "#d62728", "gamma": "#ff7f0e", "mu": "#1f77b4",
+                "pi": "#2ca02c", "p": "#9467bd", "n": "#8c564b",
+                "pi0": "#e377c2", "other": "#7f7f7f"}
+
+
+def _ptype(pid, cls_name):
+    """True particle type from PID when available (merged_sp present), else the
+    predicted-class name as a proxy."""
+    return _PDG_NAME.get(int(pid), cls_name) if pid else cls_name
+
+
+def gather_gt_particles(all_recs, reco_trackids):
+    """One entry per TRUE particle (dedup by gt_trackid) from ALL instances —
+    tracks AND showers — so the GT panel shows the full true ionization, not just
+    what the track reco used. `status`: 'reco' if the particle was reconstructed
+    and attached to the interaction, else 'missed'. Skips the unassigned/neutrino
+    catch-all (gt_trackid <= 0)."""
+    seen = {}
+    for r in all_recs:
+        t = int(r.gt_trackid)
+        G = getattr(r, "truth_cloud", None)
+        if t <= 0 or G is None or len(G) == 0 or t in seen:
+            continue
+        seen[t] = dict(trackid=t, cloud=np.asarray(G, np.float32),
+                       typ=_ptype(int(getattr(r, "pid", 0) or 0), r.pred_cls_name),
+                       is_track=r.is_track,
+                       status="reco" if t in reco_trackids else "missed")
+    return list(seen.values())
+
+
+# ---------------------------------------------------------------------------
 # visualization
 # ---------------------------------------------------------------------------
 _DEPTH_COLORS = ["#1f77b4", "#2ca02c", "#ff7f0e", "#9467bd", "#8c564b", "#e377c2"]
@@ -236,7 +271,7 @@ gd.on('plotly_relayout', function(ed){
 """
 
 
-def visualize(res, gt_nu, src_label, title, out_path):
+def visualize(res, gt_nu, src_label, title, out_path, gt_particles=None):
     import plotly.graph_objects as go
     from plotly.subplots import make_subplots
     tracks = {T["id"]: T for T in res["tracks"]}
@@ -244,7 +279,7 @@ def visualize(res, gt_nu, src_label, title, out_path):
         rows=1, cols=2, specs=[[{"type": "scene"}, {"type": "scene"}]],
         horizontal_spacing=0.01,
         subplot_titles=("reco interaction",
-                        "true ionization (GT particle spacepoints)"))
+                        "true ionization (all GT particles; ✗=missed by reco)"))
 
     def trk_color(T):
         return ("lightgray" if not T["attached"]
@@ -295,18 +330,30 @@ def visualize(res, gt_nu, src_label, title, out_path):
             marker=dict(size=7, color="gray", symbol="circle", opacity=0.6),
             name=f"seed {src_label} (pre-snap)"), row=1, col=1)
 
-    # ---- RIGHT (col 2): GT particle spacepoints, colored to match left ----
-    for T in res["tracks"]:
-        G = T.get("truth_cloud")
+    # ---- RIGHT (col 2): ALL true particles, colored by type; MISSED ones
+    # (showers + anything the track reco didn't reconstruct+attach) drawn bigger/
+    # opaque so the reco's misses stand out against what it got. Falls back to the
+    # per-track truth clouds if no gt_particles list was supplied.
+    if gt_particles is None:
+        gt_particles = [dict(trackid=T["gt_trackid"], cloud=T.get("truth_cloud"),
+                             typ=T["cls_name"], is_track=True,
+                             status="reco" if T["attached"] else "missed")
+                        for T in res["tracks"]
+                        if T["gt_trackid"] > 0 and T.get("truth_cloud") is not None]
+    for gp in gt_particles:
+        G = gp["cloud"]
         if G is None or len(G) == 0:
             continue
         bbox.append(G)
+        missed = gp["status"] == "missed"
+        col = _TYPE_COLORS.get(gp["typ"], _TYPE_COLORS["other"])
         fig.add_trace(go.Scatter3d(
             x=G[:, 0], y=G[:, 1], z=G[:, 2], mode="markers",
-            marker=dict(size=1.8, color=trk_color(T), opacity=0.55),
-            showlegend=False,
-            name=f"t{T['id']} {T['cls_name']} GT (trk {T['gt_trackid']})"),
-            row=1, col=2)
+            marker=dict(size=2.6 if missed else 1.8,
+                        color=col, opacity=0.8 if missed else 0.45,
+                        symbol="x" if missed else "circle"),
+            name=f"{gp['typ']} trk{gp['trackid']} "
+                 + ("MISSED" if missed else "reco")), row=1, col=2)
 
     # GT nu vertex on BOTH panels for reference
     if gt_nu is not None and np.all(np.isfinite(gt_nu)):
@@ -414,6 +461,11 @@ def main():
                               max_gap_live=args.max_gap)
         best = best_over_candidates(cands, tracks, args)
         res = best["res"]
+        # all true particles (tracks + showers) for the "what reco misses" panel
+        all_recs = tio.load_instances(fp, msp, tracks_only=False, min_points=1)
+        reco_tids = {T["gt_trackid"] for T in tracks
+                     if T["attached"] and T["gt_trackid"] > 0}
+        gt_particles = gather_gt_particles(all_recs, reco_tids)
         n_att = sum(T["attached"] for T in tracks)
         primary = res["vertices"][0]
         n_sec = sum(1 for v in res["vertices"]
@@ -421,21 +473,24 @@ def main():
         # accuracy of the chosen (snapped) primary vs GT nu vertex
         verr = (np.linalg.norm(primary["pos"] - gt_nu)
                 if np.all(np.isfinite(gt_nu)) else float("nan"))
+        n_miss = sum(1 for gp in gt_particles if gp["status"] == "missed")
         tag = os.path.basename(fp)
         print(f"  {tag}: {len(tracks)} tracks | cand {best['rank']+1}/"
               f"{best['n_cand']} (score {best['score']:.2f}) snap "
               f"{best['shift']:.1f}cm | primary {len(primary['attached'])} prong, "
               f"{n_att}/{len(tracks)} attached, {n_sec} sec-vtx, "
-              f"{len(res['unattached'])} unatt | vtx-err vs GT={verr:.1f}cm")
+              f"{len(res['unattached'])} unatt | {n_miss} GT particles missed "
+              f"| vtx-err vs GT={verr:.1f}cm")
         if not args.no_html:
             title = (f"{tag} | V={args.vertex_source} cand{best['rank']+1}/"
                      f"{best['n_cand']} snap{best['shift']:.0f}cm | "
                      f"{len(primary['attached'])}-prong, {n_att}/{len(tracks)} att, "
-                     f"{n_sec} sec-vtx, {len(res['unattached'])} unatt | "
+                     f"{n_sec} sec-vtx | {n_miss} GT missed | "
                      f"vtx-err={verr:.1f}cm")
             op = os.path.join(args.out_dir,
                               f"{os.path.splitext(tag)[0]}_nuint.html")
-            visualize(res, gt_nu, args.vertex_source, title, op)
+            visualize(res, gt_nu, args.vertex_source, title, op,
+                      gt_particles=gt_particles)
     if not args.no_html:
         print(f">>> HTML -> {args.out_dir}")
 

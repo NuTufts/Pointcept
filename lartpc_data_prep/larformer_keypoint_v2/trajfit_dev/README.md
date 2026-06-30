@@ -36,10 +36,13 @@ CuPy are installed there, not on the host):
   cross-track-convergence **vertex snap** (`--no-snap` to disable) that recovers
   moderately-off predicted vertices. **Viz is a synced 2-panel plotly**: left =
   reco interaction (tracks by tree depth, gold primary vertex, dashed attachment
-  bridges); right = the **true ionization** (GT particle spacepoints, colored to
-  match the left panel) for direct reco-vs-truth comparison. Dragging either
-  panel rotates both (shared camera). `--vertex-source {reco,pred,gt}`,
-  `--d-vertex`, `--d-perp`, `--snap-radius`, `--max-gap`.
+  bridges); right = the **true ionization** — ALL true particles (tracks AND
+  showers), colored by type, with the ones the reco **missed** (showers,
+  sub-threshold, unmatched) drawn as larger ✗ markers so misses stand out against
+  what was reconstructed. Dragging either panel rotates both (shared camera).
+  Type is coloured by true PID when `merged_sp` is present, else by predicted
+  class. `--vertex-source {reco,pred,gt}`, `--d-vertex`, `--d-perp`,
+  `--snap-radius`, `--max-gap`. Per-event summary reports `N GT particles missed`.
 
 ## Neutrino-interaction reco findings (dev events)
 - **Vertex from the score-field fitter, not the centroid.** `--vertex-source reco`
