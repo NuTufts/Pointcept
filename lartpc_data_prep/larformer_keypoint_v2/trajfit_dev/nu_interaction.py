@@ -90,13 +90,17 @@ def attach_cost(end, V, d_vertex, d_perp, front_tol):
     return True, gap + 2.0 * perp, dict(gap=gap, perp=perp, along=along)
 
 
-def snap_vertex(V0, tracks, radius, conv_radius=5.0):
-    """Refine the seed vertex to the densest cluster of track ENDPOINTS within
-    `radius` of V0 -- i.e. where track starts converge (a real interaction point),
-    not merely the nearest endpoint (which can be a wrong far end when the seed is
-    badly placed). Returns (snapped, shift, n_in_cluster). Large offsets (no
-    endpoint within radius) are left alone -- they need a better vertex candidate
-    upstream (score-map clustering), not snapping."""
+def snap_vertex(V0, tracks, radius, conv_radius=5.0, support_radius=5.0):
+    """Refine the seed vertex ONLY when it is UNSUPPORTED.
+
+    The score-field fitter seed is usually accurate (~1-2 cm), while reconstructed
+    track STARTS scatter ~5-10 cm, so snapping a good seed to the track-start
+    convergence centroid degrades it. So: if any track endpoint already lies
+    within `support_radius` of V0, the seed sits on a real track start -> leave it
+    untouched. Only a seed with NO nearby track endpoint (a badly placed seed,
+    tens of cm off) is snapped to the densest cross-track endpoint convergence
+    within `radius` (a real interaction point, not merely the nearest endpoint).
+    Returns (snapped, shift, n_in_cluster); shift=0 when the seed is kept."""
     V0 = np.asarray(V0, np.float64)
     pos, tid = [], []
     for T in tracks:
@@ -107,7 +111,10 @@ def snap_vertex(V0, tracks, radius, conv_radius=5.0):
     if not pos:
         return V0, 0.0, 0
     pos, tid = np.asarray(pos), np.asarray(tid)
-    # convergence score: # endpoints from OTHER tracks within conv_radius
+    # supported: the seed already sits on a track start -> trust the fitter, keep
+    if float(np.linalg.norm(pos - V0, axis=1).min()) <= support_radius:
+        return V0, 0.0, 0
+    # unsupported: snap to the densest cross-track endpoint convergence
     counts = [int(((np.linalg.norm(pos - p, axis=1) <= conv_radius)
                    & (tid != tid[i])).sum()) for i, p in enumerate(pos)]
     seed = pos[int(np.argmax(counts))]                   # densest cross-track point
@@ -479,8 +486,10 @@ def best_over_candidates(cands, tracks, args):
     peak score). Returns the winning dict (or None)."""
     best = None
     for rank, (cpos, csc) in enumerate(cands):
-        seed, shift, n = (snap_vertex(cpos, tracks, args.snap_radius)
-                          if not args.no_snap else (np.asarray(cpos, float), 0.0, 0))
+        seed, shift, n = (
+            snap_vertex(cpos, tracks, args.snap_radius,
+                        support_radius=args.snap_support_radius)
+            if not args.no_snap else (np.asarray(cpos, float), 0.0, 0))
         res = reco_interaction(seed, tracks, d_vertex=args.d_vertex,
                                d_perp=args.d_perp, front_tol=args.front_tol,
                                merge_radius=args.merge_radius)
@@ -525,6 +534,10 @@ def main():
                     help="disable seed-vertex refinement to nearby track ends")
     ap.add_argument("--snap-radius", type=float, default=30.0,
                     help="max dist [cm] for snap to pull track endpoints in")
+    ap.add_argument("--snap-support-radius", type=float, default=5.0,
+                    help="snap ONLY if no track endpoint is within this [cm] of "
+                         "the seed (i.e. only refine an unsupported seed; leave a "
+                         "good fitter seed sitting on a track start untouched)")
     # track-reco params (passed to cluster_fit_stitch)
     ap.add_argument("--eps", type=float, default=1.2)
     ap.add_argument("--max-gap", type=float, default=20.0)

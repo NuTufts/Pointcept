@@ -33,8 +33,12 @@ CuPy are installed there, not on the host):
   interaction reco**: roots a particle tree at the nu vertex and attaches tracks
   whose endpoint is near the vertex AND whose initial ≤3 cm points back to it,
   then repeats at attached-track far ends (secondary vertices). Includes a
-  cross-track-convergence **vertex snap** (`--no-snap` to disable) that recovers
-  moderately-off predicted vertices. **Viz is a synced 2-panel plotly**: left =
+  cross-track-convergence **vertex snap** that recovers a badly-placed seed —
+  but ONLY when the seed is *unsupported* (no track endpoint within
+  `--snap-support-radius`, default 5 cm); a good fitter seed already sitting on a
+  track start is left untouched (snapping it to the ~5-10 cm-scattered track-start
+  convergence would only degrade it). On the dev set only 2/42 events snap; vtx-err
+  median 0.7 cm. `--no-snap` disables. **Viz is a synced 2-panel plotly**: left =
   reco interaction (tracks by tree depth, gold primary vertex, dashed attachment
   bridges); right = the **true ionization** — ALL true particles (tracks AND
   showers), colored by type, with the ones the reco **missed** (showers,
