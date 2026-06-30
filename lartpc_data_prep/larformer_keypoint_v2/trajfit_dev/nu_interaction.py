@@ -236,6 +236,69 @@ def reco_showers(shower_recs, conn_points, mode="greedy", d_impact=10.0,
     return showers
 
 
+def connection_points(res, tracks):
+    """Shower connection points for one interaction = its tree vertices (nu vtx +
+    track endpoints/junctions) + interior kinks of its attached tracks, sorted
+    closest-to-the-interaction-vertex first."""
+    nuv0 = res["vertices"][0]["pos"]
+    cps = [dict(id=f"v{v['id']}", pos=v["pos"], kind="vertex")
+           for v in res["vertices"]]
+    for T in tracks:
+        if T["attached"]:
+            for ki, kp in enumerate(T.get("kinks", [])):
+                cps.append(dict(id=f"k{T['id']}_{ki}", pos=kp, kind="kink"))
+    for c in cps:
+        c["dist"] = float(np.linalg.norm(c["pos"] - nuv0))
+    cps.sort(key=lambda c: c["dist"])
+    return cps
+
+
+def reco_interactions(cands, tracks, shower_recs, args):
+    """Iterative multi-vertex reco. Build the best interaction, then RE-RUN on the
+    leftover (unassociated) tracks+showers with candidates away from the vertices
+    already used — forming additional nu-vertex candidates. This recovers the true
+    interaction when the score-field fitter latched onto a displaced (e.g.
+    hadronic-secondary) vertex: the true vertex's particles are left over and a
+    later iteration reconstructs them. Continues while >=1 unassociated particle
+    has >= reco_min_unassoc_points (and up to max_interactions). The analyzer
+    chooses which interaction is THE nu vertex; the rest are displaced secondaries.
+
+    Returns (interactions, leftover_tracks, leftover_shrec)."""
+    rem_tracks = list(tracks)
+    rem_shrec = list(shower_recs)
+    used = []
+    out = []
+    sk = dict(d_impact=args.shower_d_impact, cos_min=args.shower_cos_min,
+              d_gap=args.shower_d_gap)
+    for it in range(args.max_interactions):
+        pool = [c for c in cands if all(
+            np.linalg.norm(np.asarray(c[0], float) - u) > args.reco_exclude_radius
+            for u in used)]
+        if not pool or not rem_tracks:
+            break
+        best = best_over_candidates(pool, rem_tracks, args)
+        if best is None or sum(T["attached"] for T in rem_tracks) == 0:
+            break
+        res = best["res"]
+        cps = connection_points(res, rem_tracks)
+        showers = reco_showers(rem_shrec, cps, args.shower_mode, **sk)
+        res["showers"] = showers
+        out.append(dict(res=res, best=best, iter=it, conn_points=cps,
+                        vertex=np.asarray(res["vertices"][0]["pos"], float),
+                        tracks=[T for T in rem_tracks if T["attached"]],
+                        showers=showers))
+        used.append(np.asarray(res["vertices"][0]["pos"], float))
+        rem_tracks = [T for T in rem_tracks if not T["attached"]]
+        rem_shrec = [r for r, s in zip(rem_shrec, showers) if not s["attached"]]
+        n_unassoc = (sum(len(T["points"]) >= args.reco_min_unassoc_points
+                         for T in rem_tracks)
+                     + sum(r.n_points >= args.reco_min_unassoc_points
+                           for r in rem_shrec))
+        if n_unassoc == 0:
+            break
+    return out, rem_tracks, rem_shrec
+
+
 # ---------------------------------------------------------------------------
 # event IO
 # ---------------------------------------------------------------------------
@@ -343,82 +406,82 @@ gd.on('plotly_relayout', function(ed){
 """
 
 
-def visualize(res, gt_nu, src_label, title, out_path, gt_particles=None):
+# per-interaction colors: tracks/secondary vertices, and the primary vertex marker
+_INT_COLORS = ["#1f77b4", "#2ca02c", "#9467bd", "#8c564b", "#17becf"]
+_INT_VTX_COLORS = ["gold", "darkorange", "cyan", "magenta", "lime"]
+
+
+def visualize(interactions, leftover_tracks, leftover_shrec, gt_nu, title,
+              out_path, gt_particles=None):
+    """LEFT: one or more reconstructed interactions (nu-vertex candidates), each a
+    distinct color; leftover/unassociated particles in gray. RIGHT: all true
+    particles by PID. The analyzer picks which interaction is THE nu vertex."""
     import plotly.graph_objects as go
     from plotly.subplots import make_subplots
-    tracks = {T["id"]: T for T in res["tracks"]}
     fig = make_subplots(
         rows=1, cols=2, specs=[[{"type": "scene"}, {"type": "scene"}]],
         horizontal_spacing=0.01,
-        subplot_titles=("reco interaction",
+        subplot_titles=("reco interactions (nu-cand 0=gold,1=orange,2=cyan)",
                         "true ionization (all GT particles; ✗=missed by reco)"))
+    bbox = []
 
-    def trk_color(T):
-        return ("lightgray" if not T["attached"]
-                else _DEPTH_COLORS[T["attach"]["depth"] % len(_DEPTH_COLORS)])
-
-    bbox = []   # collect all plotted points for a shared cube range
-
-    # ---- LEFT (col 1): reco interaction ----
-    for T in res["tracks"]:
-        col = trk_color(T)
-        P = T["points"]
-        bbox.append(P)
-        fig.add_trace(go.Scatter3d(
-            x=P[:, 0], y=P[:, 1], z=P[:, 2], mode="markers",
-            marker=dict(size=1.6, color=col, opacity=0.35), showlegend=False,
-            name=f"t{T['id']} {T['cls_name']}"), row=1, col=1)
-        poly = T["poly"]
-        fig.add_trace(go.Scatter3d(
-            x=poly[:, 0], y=poly[:, 1], z=poly[:, 2], mode="lines",
-            line=dict(color=col, width=5),
-            name=f"t{T['id']} {T['cls_name']} L={T['length']:.0f}cm"
-                 + ("" if T["attached"] else " UNATT")), row=1, col=1)
-
-    for e in res["edges"]:                          # attachment bridges
-        V = res["vertices"][e["vertex"]]["pos"]
-        ep = tracks[e["track"]]["ends"][e["end"]]["pos"]
-        fig.add_trace(go.Scatter3d(
-            x=[V[0], ep[0]], y=[V[1], ep[1]], z=[V[2], ep[2]], mode="lines",
-            line=dict(color="black", width=2, dash="dot"),
-            showlegend=False), row=1, col=1)
-
-    for v in res["vertices"]:                       # vertices
-        nprong = len(v["attached"])
-        is_primary = v["depth"] == 0
-        fig.add_trace(go.Scatter3d(
-            x=[v["pos"][0]], y=[v["pos"][1]], z=[v["pos"][2]], mode="markers",
-            marker=dict(size=12 if is_primary else 6 + 2 * nprong,
-                        color="gold" if is_primary
-                        else _DEPTH_COLORS[v["depth"] % len(_DEPTH_COLORS)],
-                        symbol="diamond", line=dict(width=1, color="black")),
-            name=(f"PRIMARY V ({nprong}p)" if is_primary
-                  else f"V{v['id']} d{v['depth']} {nprong}p")), row=1, col=1)
-
-    # showers: cluster (faint) + trunk arrow + attachment bridge to its conn point
-    for sh in res.get("showers", []):
-        tk = sh.get("trunk")
-        att = sh["attached"]
-        col = "#d62728" if att else "lightgray"      # attached shower = red trunk
-        P = sh["points"]
-        bbox.append(P)
-        fig.add_trace(go.Scatter3d(
-            x=P[:, 0], y=P[:, 1], z=P[:, 2], mode="markers",
-            marker=dict(size=1.4, color=col, opacity=0.3),
-            showlegend=False, name=f"sh{sh['inst']} {sh['cls_name']}"), row=1, col=1)
-        if tk is not None:
+    # ---- LEFT (col 1): each interaction in its own color ----
+    for I in interactions:
+        res = I["res"]
+        ci = I["iter"]
+        col = _INT_COLORS[ci % len(_INT_COLORS)]
+        tracks_by_id = {T["id"]: T for T in res["tracks"]}
+        for T in I["tracks"]:                        # attached tracks only
+            P, poly = T["points"], T["poly"]
+            bbox.append(P)
+            fig.add_trace(go.Scatter3d(
+                x=P[:, 0], y=P[:, 1], z=P[:, 2], mode="markers",
+                marker=dict(size=1.6, color=col, opacity=0.35),
+                showlegend=False, name=f"i{ci} t{T['id']}"), row=1, col=1)
+            fig.add_trace(go.Scatter3d(
+                x=poly[:, 0], y=poly[:, 1], z=poly[:, 2], mode="lines",
+                line=dict(color=col, width=5),
+                name=f"i{ci} t{T['id']} {T['cls_name']} L={T['length']:.0f}cm"),
+                row=1, col=1)
+        for e in res["edges"]:                       # bridges
+            V = res["vertices"][e["vertex"]]["pos"]
+            ep = tracks_by_id[e["track"]]["ends"][e["end"]]["pos"]
+            fig.add_trace(go.Scatter3d(
+                x=[V[0], ep[0]], y=[V[1], ep[1]], z=[V[2], ep[2]], mode="lines",
+                line=dict(color="black", width=2, dash="dot"),
+                showlegend=False), row=1, col=1)
+        for v in res["vertices"]:                    # vertices
+            nprong = len(v["attached"])
+            if not nprong and v["depth"] > 0:
+                continue
+            is_primary = v["depth"] == 0
+            fig.add_trace(go.Scatter3d(
+                x=[v["pos"][0]], y=[v["pos"][1]], z=[v["pos"][2]], mode="markers",
+                marker=dict(size=13 if is_primary else 6 + 2 * nprong,
+                            color=(_INT_VTX_COLORS[ci % len(_INT_VTX_COLORS)]
+                                   if is_primary else col),
+                            symbol="diamond", line=dict(width=1, color="black")),
+                name=(f"nu-cand{ci} ({nprong}p)" if is_primary
+                      else f"i{ci} V{v['id']} {nprong}p")), row=1, col=1)
+        for sh in I["showers"]:                      # attached showers only
+            if not sh["attached"]:
+                continue
+            tk = sh["trunk"]
+            P = sh["points"]
+            bbox.append(P)
+            fig.add_trace(go.Scatter3d(
+                x=P[:, 0], y=P[:, 1], z=P[:, 2], mode="markers",
+                marker=dict(size=1.4, color="#d62728", opacity=0.3),
+                showlegend=False, name=f"i{ci} sh{sh['inst']}"), row=1, col=1)
             tip = tk.start + tk.direction * 15.0
             g = sh.get("geom") or {}
-            metric = (f" imp={g['impact']:.0f} cos={g['cosine']:.2f}"
-                      if att and g else "")
             fig.add_trace(go.Scatter3d(
                 x=[tk.start[0], tip[0]], y=[tk.start[1], tip[1]],
                 z=[tk.start[2], tip[2]], mode="lines",
-                line=dict(color=col, width=6),
-                name=f"sh{sh['inst']} {sh['cls_name']} trunk"
-                     + (f" @{sh['cp_kind']}{metric}" if att else " UNATT")),
+                line=dict(color="#d62728", width=6),
+                name=f"i{ci} sh{sh['inst']} {sh['cls_name']} @{sh['cp_kind']} "
+                     f"imp={g.get('impact',0):.0f} cos={g.get('cosine',0):.2f}"),
                 row=1, col=1)
-        if att and sh.get("cp_pos") is not None:
             cp = sh["cp_pos"]
             fig.add_trace(go.Scatter3d(
                 x=[cp[0], tk.start[0]], y=[cp[1], tk.start[1]],
@@ -426,24 +489,24 @@ def visualize(res, gt_nu, src_label, title, out_path, gt_particles=None):
                 line=dict(color="#d62728", width=2, dash="dash"),
                 showlegend=False), row=1, col=1)
 
-    seed = res.get("seed_input")
-    if seed is not None and np.linalg.norm(seed - res["vertices"][0]["pos"]) > 0.5:
+    # leftover / unassociated particles (gray)
+    for T in leftover_tracks:
+        P = T["points"]
+        bbox.append(P)
         fig.add_trace(go.Scatter3d(
-            x=[seed[0]], y=[seed[1]], z=[seed[2]], mode="markers",
-            marker=dict(size=7, color="gray", symbol="circle", opacity=0.6),
-            name=f"seed {src_label} (pre-snap)"), row=1, col=1)
+            x=P[:, 0], y=P[:, 1], z=P[:, 2], mode="markers",
+            marker=dict(size=1.4, color="lightgray", opacity=0.4),
+            name=f"unassoc t{T['id']} {T['cls_name']}"), row=1, col=1)
+    for r in leftover_shrec:
+        P = r.points
+        bbox.append(P)
+        fig.add_trace(go.Scatter3d(
+            x=P[:, 0], y=P[:, 1], z=P[:, 2], mode="markers",
+            marker=dict(size=1.4, color="lightgray", opacity=0.4),
+            name=f"unassoc sh{r.inst_idx} {r.pred_cls_name}"), row=1, col=1)
 
-    # ---- RIGHT (col 2): ALL true particles, colored by type; MISSED ones
-    # (showers + anything the track reco didn't reconstruct+attach) drawn bigger/
-    # opaque so the reco's misses stand out against what it got. Falls back to the
-    # per-track truth clouds if no gt_particles list was supplied.
-    if gt_particles is None:
-        gt_particles = [dict(trackid=T["gt_trackid"], cloud=T.get("truth_cloud"),
-                             typ=T["cls_name"], is_track=True,
-                             status="reco" if T["attached"] else "missed")
-                        for T in res["tracks"]
-                        if T["gt_trackid"] > 0 and T.get("truth_cloud") is not None]
-    for gp in gt_particles:
+    # ---- RIGHT (col 2): ALL true particles by PID; MISSED ones as ✗ ----
+    for gp in (gt_particles or []):
         G = gp["cloud"]
         if G is None or len(G) == 0:
             continue
@@ -555,6 +618,16 @@ def main():
     ap.add_argument("--kink-tol", type=float, default=3.0,
                     help="constant RDP tolerance [cm] for track kinks used as "
                          "extra shower connection points (item b)")
+    # iterative multi-vertex reco (handle displaced/secondary vertices)
+    ap.add_argument("--max-interactions", type=int, default=3,
+                    help="max nu-vertex candidates per event (re-run on leftover "
+                         "slice after excluding used particles/vertices)")
+    ap.add_argument("--reco-exclude-radius", type=float, default=10.0,
+                    help="exclude vertex candidates within this [cm] of an "
+                         "already-used interaction vertex")
+    ap.add_argument("--reco-min-unassoc-points", type=int, default=30,
+                    help="re-iterate only if an unassociated particle has at "
+                         "least this many points")
     ap.add_argument("--no-html", action="store_true")
     args = ap.parse_args()
 
@@ -564,8 +637,8 @@ def main():
     os.makedirs(args.out_dir, exist_ok=True)
     print(f">>> {len(files)} events | vertex-source={args.vertex_source} "
           f"| shower-mode={args.shower_mode}")
-    tot = dict(show=0, g=0, e=0, dis=0, tp=0, fp=0, fn=0, tn=0, nprim=0,
-               att_vtx=0, att_kink=0, nkink=0)
+    tot = dict(show=0, g=0, tp=0, fp=0, fn=0, tn=0, nprim=0, att_vtx=0,
+               att_kink=0, nkink=0, nint=0, nev=0, recov=0, recov1=0)
 
     for fp in files:
         recs = tio.load_instances(fp, msp, tracks_only=True,
@@ -582,97 +655,91 @@ def main():
         if not cands:
             print(f"  {os.path.basename(fp)}: no {args.vertex_source} vertex, skip")
             continue
+        tag = os.path.basename(fp)
         tracks = build_tracks(recs, seg_cm=args.seg_cm, kink_tol=args.kink_tol,
                               eps=args.eps, max_gap_live=args.max_gap)
-        best = best_over_candidates(cands, tracks, args)
-        res = best["res"]
         all_recs = tio.load_instances(fp, msp, tracks_only=False, min_points=1)
-        # --- Phase 2: attach showers to connection points = nu vtx + track
-        # endpoints/junctions (the tree vertices) + interior track KINKS (item b) ---
-        nuv0 = res["vertices"][0]["pos"]
-        conn_points = [dict(id=f"v{v['id']}", pos=v["pos"], kind="vertex")
-                       for v in res["vertices"]]
-        for T in tracks:                             # only attached tracks' kinks
-            if T["attached"]:
-                for ki, kp in enumerate(T.get("kinks", [])):
-                    conn_points.append(dict(id=f"k{T['id']}_{ki}", pos=kp,
-                                            kind="kink"))
-        for c in conn_points:
-            c["dist"] = float(np.linalg.norm(c["pos"] - nuv0))
-        conn_points.sort(key=lambda c: c["dist"])
         shower_recs = [r for r in all_recs if r.pred_cls in tio.SHOWER_CLASSES
                        and np.all(np.isfinite(r.pred_start))
                        and r.n_points >= args.shower_min_points]
-        sk = dict(d_impact=args.shower_d_impact, cos_min=args.shower_cos_min,
-                  d_gap=args.shower_d_gap)
-        sh_greedy = reco_showers(shower_recs, conn_points, "greedy", **sk)
-        sh_exhaust = reco_showers(shower_recs, conn_points, "exhaustive", **sk)
-        showers = (sh_greedy if args.shower_mode == "greedy" else sh_exhaust
-                   if args.shower_mode == "exhaustive" else [])
-        res["showers"] = showers
-        ng = sum(s["attached"] for s in sh_greedy)
-        ne = sum(s["attached"] for s in sh_exhaust)
-        n_disagree = sum(1 for a, b in zip(sh_greedy, sh_exhaust)
-                         if a["attached"] != b["attached"] or a["cp_id"] != b["cp_id"])
-        tot["show"] += len(shower_recs)
-        tot["g"] += ng
-        tot["e"] += ne
-        tot["dis"] += n_disagree
-        tot["nkink"] += sum(1 for c in conn_points if c["kind"] == "kink")
-        tot["att_vtx"] += sum(1 for s in showers
-                              if s["attached"] and s["cp_kind"] == "vertex")
-        tot["att_kink"] += sum(1 for s in showers
-                               if s["attached"] and s["cp_kind"] == "kink")
-        # --- (a) provenance truth: did each shower attach to the NU VERTEX, and
-        # should it (true origin within 5cm of the true nu vertex)? ---
+        # iterative multi-vertex reco: build interactions on the slice, re-running
+        # on the leftover after excluding each used vertex's particles.
+        interactions, lo_tracks, lo_shrec = reco_interactions(
+            cands, tracks, shower_recs, args)
+        if not interactions:
+            print(f"  {tag}: no interaction formed, skip")
+            continue
+        n_trk_att = sum(len(I["tracks"]) for I in interactions)
+        # ONE record per shower instance: the interaction where it attached (first
+        # wins), so a shower passing through several interactions isn't counted
+        # repeatedly.
+        att_by_inst = {}
+        for I in interactions:
+            for s in I["showers"]:
+                if s["attached"] and s["inst"] not in att_by_inst:
+                    att_by_inst[s["inst"]] = s
+        n_shw_att = len(att_by_inst)
+
+        # --- (a) provenance truth: shower attached AT the true nu vertex? ---
         frag = load_shower_fragments(fp, msp)
-        nuvtx_pos = res["vertices"][0]["pos"]
-        for s in showers:
-            prim, origin, _ = shower_is_primary(s.get("gt_start"), frag, gt_nu)
-            s["truth_primary"] = prim
-            s["truth_origin"] = origin
+        for r in shower_recs:                        # one per instance
+            prim, _, _ = shower_is_primary(r.gt_start, frag, gt_nu)
             if prim is None:
-                continue                              # no truth for this shower
+                continue
             tot["nprim"] += int(prim)
-            at_nuvtx = (s["attached"] and s["cp_pos"] is not None and
-                        np.linalg.norm(s["cp_pos"] - nuvtx_pos) <= 5.0)
+            s = att_by_inst.get(r.inst_idx)
+            at_nuvtx = (s is not None and s["cp_pos"] is not None
+                        and np.all(np.isfinite(gt_nu))
+                        and np.linalg.norm(s["cp_pos"] - gt_nu) <= 5.0)
             tot["tp" if (at_nuvtx and prim) else "fp" if at_nuvtx else
                 "fn" if prim else "tn"] += 1
-        # all true particles for the "what reco misses" panel; attached showers count
-        reco_tids = {T["gt_trackid"] for T in tracks
-                     if T["attached"] and T["gt_trackid"] > 0}
-        reco_tids |= {s["gt_trackid"] for s in showers
-                      if s["attached"] and s["gt_trackid"] > 0}
+        tot["show"] += len(shower_recs)
+        tot["g"] += n_shw_att
+        tot["nkink"] += sum(1 for I in interactions for c in I["conn_points"]
+                            if c["kind"] == "kink")
+        tot["att_vtx"] += sum(1 for s in att_by_inst.values()
+                              if s["cp_kind"] == "vertex")
+        tot["att_kink"] += sum(1 for s in att_by_inst.values()
+                               if s["cp_kind"] == "kink")
+
+        reco_tids = {T["gt_trackid"] for I in interactions for T in I["tracks"]
+                     if T["gt_trackid"] > 0}
+        reco_tids |= {s["gt_trackid"] for s in att_by_inst.values()
+                      if s["gt_trackid"] > 0}
         gt_particles = gather_gt_particles(all_recs, reco_tids)
-        n_att = sum(T["attached"] for T in tracks)
-        primary = res["vertices"][0]
-        n_sec = sum(1 for v in res["vertices"]
-                    if v["depth"] > 0 and len(v["attached"]) > 0)
-        # accuracy of the chosen (snapped) primary vs GT nu vertex
-        verr = (np.linalg.norm(primary["pos"] - gt_nu)
-                if np.all(np.isfinite(gt_nu)) else float("nan"))
         n_miss = sum(1 for gp in gt_particles if gp["status"] == "missed")
-        tag = os.path.basename(fp)
-        print(f"  {tag}: {len(tracks)}trk {len(shower_recs)}shw | cand "
-              f"{best['rank']+1}/{best['n_cand']} snap {best['shift']:.1f}cm | "
-              f"{len(primary['attached'])}-prong, {n_att}/{len(tracks)} trk-att | "
-              f"showers {ng}/{len(shower_recs)} att (exh {ne}, disagree {n_disagree}) "
-              f"| {n_miss} GT missed | vtx-err={verr:.1f}cm")
+
+        # per-interaction vtx-err; "recovery" = any interaction within 5cm of GT
+        verrs = [float(np.linalg.norm(I["vertex"] - gt_nu))
+                 if np.all(np.isfinite(gt_nu)) else float("nan")
+                 for I in interactions]
+        best_verr = min(verrs) if verrs and np.all(np.isfinite(gt_nu)) else float("nan")
+        tot["nint"] += len(interactions)
+        if np.all(np.isfinite(gt_nu)):
+            tot["nev"] += 1
+            tot["recov"] += int(best_verr <= 5.0)
+            tot["recov1"] += int(verrs[0] <= 5.0)        # 1st interaction only
+        ipart = " ".join(f"int{I['iter']}:{len(I['tracks'])}p/v{ve:.0f}"
+                         for I, ve in zip(interactions, verrs))
+        print(f"  {tag}: {len(tracks)}trk {len(shower_recs)}shw | "
+              f"{len(interactions)} interaction(s) [{ipart}] | "
+              f"{n_trk_att} trk-att, showers {n_shw_att}/{len(shower_recs)} att | "
+              f"{n_miss} GT missed | best vtx-err={best_verr:.1f}cm")
         if not args.no_html:
-            title = (f"{tag} | V={args.vertex_source} | "
-                     f"{len(primary['attached'])}-prong, {n_att}/{len(tracks)} trk, "
-                     f"showers {ng}/{len(shower_recs)} att ({args.shower_mode}) | "
-                     f"{n_miss} GT missed | vtx-err={verr:.1f}cm")
+            title = (f"{tag} | {len(interactions)} nu-cand(s) | "
+                     f"{n_trk_att} trk, {n_shw_att}/{len(shower_recs)} shw att | "
+                     f"{n_miss} GT missed | best vtx-err={best_verr:.1f}cm")
             op = os.path.join(args.out_dir,
                               f"{os.path.splitext(tag)[0]}_nuint.html")
-            visualize(res, gt_nu, args.vertex_source, title, op,
+            visualize(interactions, lo_tracks, lo_shrec, gt_nu, title, op,
                       gt_particles=gt_particles)
-    print(f"\n=== showers: {tot['show']} total | greedy attached {tot['g']} "
-          f"({100*tot['g']/max(tot['show'],1):.0f}%) | exhaustive {tot['e']} "
-          f"({100*tot['e']/max(tot['show'],1):.0f}%) | "
-          f"greedy-vs-exhaustive disagreements {tot['dis']} ===")
-    print(f"=== connection points: {tot['nkink']} track kinks added (item b) | "
-          f"shower attach by kind: vertex {tot['att_vtx']}, kink {tot['att_kink']} ===")
+    print(f"\n=== interactions: {tot['nint']} over {tot['nev']} events | "
+          f"true-vertex recovered (<=5cm) by 1st interaction {tot['recov1']}/"
+          f"{tot['nev']}, by ANY interaction {tot['recov']}/{tot['nev']} "
+          f"(iteration gain +{tot['recov']-tot['recov1']}) ===")
+    print(f"=== showers: {tot['show']} total | attached {tot['g']} "
+          f"({100*tot['g']/max(tot['show'],1):.0f}%) | kinks added {tot['nkink']} | "
+          f"attach by kind: vertex {tot['att_vtx']}, kink {tot['att_kink']} ===")
     ntruth = tot["tp"] + tot["fp"] + tot["fn"] + tot["tn"]
     if ntruth:
         prec = tot["tp"] / max(tot["tp"] + tot["fp"], 1)

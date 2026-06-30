@@ -48,6 +48,27 @@ CuPy are installed there, not on the host):
   class. `--vertex-source {reco,pred,gt}`, `--d-vertex`, `--d-perp`,
   `--snap-radius`, `--max-gap`. Per-event summary reports `N GT particles missed`.
 
+## Iterative multi-vertex reco (displaced-vertex recovery) — `reco_interactions`
+When the score-field fitter latches onto a displaced (e.g. hadronic-secondary)
+vertex, the true interaction's particles are left unassociated. `reco_interactions`
+builds the best interaction, then **re-runs on the leftover** slice (excluding
+candidates within `--reco-exclude-radius` of already-used vertices) while any
+unassociated particle has ≥ `--reco-min-unassoc-points` (up to
+`--max-interactions`). Each iteration is a nu-vertex *candidate*; the analyzer
+picks which is THE nu vertex (the rest are displaced secondaries). The viz draws
+each interaction in its own color (nu-cand 0=gold, 1=orange, …) with leftovers in
+gray.
+- **Recovery (dev set): true vertex within 5 cm by the 1st interaction 36/42, by
+  ANY interaction 37/42** — the iteration recovers **event13** (1st interaction
+  51 cm off on a proton cluster; the 2nd lands 1.8 cm from truth on the leftover
+  muon). Shower recall ticks up (0.80→0.81) since the recovered vertex's showers
+  now attach there.
+- **Limitation**: the other bad-vertex events (20, 38, 47) are *not* recovered —
+  the score-field fitter has **no candidate near the true vertex** (its peaks are
+  all on the displaced activity), so excluding candidates can't place a vertex
+  there. Those need re-running the *fitter* on the leftover spacepoints (a deeper
+  change), not just candidate exclusion.
+
 ## Shower attachment into the interaction (Phase 2) — in `nu_interaction.py`
 `reco_showers()` attaches predicted shower instances to the interaction's
 **connection points** (nu vertex + track endpoints from the tree, ordered
