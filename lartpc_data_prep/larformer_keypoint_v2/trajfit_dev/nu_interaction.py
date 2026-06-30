@@ -20,6 +20,9 @@ import h5py
 
 import trajfit_io as tio
 from cluster_fit_stitch import cluster_fit_stitch
+from shower_trunk import trunk_vertex_biased
+from shower_connect import connects
+from shower_truth import load_shower_fragments, shower_is_primary
 
 
 # ---------------------------------------------------------------------------
@@ -42,11 +45,14 @@ def _initial_dir(poly, at_start, seg_cm=3.0):
     return p0, (u / n if n > 1e-9 else np.zeros(3))
 
 
-def build_tracks(recs, seg_cm=3.0, **cfg):
-    """Reconstruct each track-class instance and extract its two ends + dirs."""
+def build_tracks(recs, seg_cm=3.0, kink_tol=3.0, **cfg):
+    """Reconstruct each track-class instance: two ends + dirs, plus interior
+    KINKS (constant-tolerance RDP break points on the centerline) — these become
+    extra connection points where mid-track scatters can seed a shower (item b)."""
     tracks = []
     for tid, rec in enumerate(recs):
-        cfs = cluster_fit_stitch(rec.points, weights=rec.weights, **cfg)
+        cfs = cluster_fit_stitch(rec.points, weights=rec.weights,
+                                 rdp_tol=(lambda L: kink_tol), **cfg)
         poly = np.asarray(cfs["polyline"], np.float64)
         if len(poly) < 2:
             continue
@@ -58,6 +64,7 @@ def build_tracks(recs, seg_cm=3.0, **cfg):
             id=tid, inst_idx=rec.inst_idx, cls=rec.pred_cls,
             cls_name=rec.pred_cls_name, gt_trackid=rec.gt_trackid,
             poly=poly, points=rec.points, ends=ends,
+            kinks=np.asarray(cfs.get("kink_vertices", np.zeros((0, 3))), np.float64),
             truth_cloud=np.asarray(rec.truth_cloud, np.float32),
             length=float(np.linalg.norm(np.diff(poly, axis=0), axis=1).sum())))
     return tracks
@@ -162,6 +169,64 @@ def reco_interaction(primary, tracks, d_vertex=8.0, d_perp=3.0, front_tol=1.5,
     unattached = [T["id"] for T in tracks if not T["attached"]]
     return dict(vertices=vertices, tracks=tracks, edges=edges,
                 unattached=unattached, primary_vertex=np.asarray(primary, float))
+
+
+# ---------------------------------------------------------------------------
+# Phase 2: attach showers to interaction connection points
+# ---------------------------------------------------------------------------
+def reco_showers(shower_recs, conn_points, mode="greedy", d_impact=10.0,
+                 cos_min=0.9, d_gap=60.0):
+    """Attach predicted shower instances to interaction connection points.
+
+    `conn_points`: list of {vid, pos, dist} (the nu vertex + track endpoints from
+    the interaction tree), sorted closest-to-nu-vertex first. For each (shower,
+    connection point) the trunk is re-fit biased toward that point
+    (`trunk_vertex_biased`, the Phase-1 winner, faithful to LANTERN which makes
+    the trunk relative to the vertex under test), then tested with `connects`
+    (impact + back-pointing cosine; showers attach across a gap).
+
+    mode='greedy': walk connection points closest-first, attach each shower to the
+    FIRST point it points back to. mode='exhaustive': test every point, attach to
+    the best (smallest impact). Returns a list of shower records."""
+    showers = [dict(inst=r.inst_idx, cls=r.pred_cls, cls_name=r.pred_cls_name,
+                    gt_trackid=r.gt_trackid, points=r.points,
+                    truth_cloud=getattr(r, "truth_cloud", None),
+                    pred_start=r.pred_start, gt_start=r.gt_start,
+                    attached=False, cp_id=None, cp_pos=None, cp_kind=None,
+                    trunk=None, geom=None) for r in shower_recs]
+    if not conn_points:
+        return showers
+
+    def _attach(sh, cp, tk, g):
+        sh.update(attached=True, cp_id=cp["id"], cp_pos=cp["pos"],
+                  cp_kind=cp["kind"], trunk=tk, geom=g)
+
+    if mode == "greedy":
+        for cp in conn_points:                       # closest-to-nu-vtx first
+            for sh in showers:
+                if sh["attached"]:
+                    continue
+                tk = trunk_vertex_biased(sh["points"], cp["pos"])
+                ok, g = connects(tk.start, tk.direction, cp["pos"],
+                                 d_impact=d_impact, cos_min=cos_min, d_gap=d_gap)
+                if ok:
+                    _attach(sh, cp, tk, g)
+    else:                                            # exhaustive
+        for sh in showers:
+            best = None
+            for cp in conn_points:
+                tk = trunk_vertex_biased(sh["points"], cp["pos"])
+                ok, g = connects(tk.start, tk.direction, cp["pos"],
+                                 d_impact=d_impact, cos_min=cos_min, d_gap=d_gap)
+                if ok and (best is None or g["impact"] < best[0]):
+                    best = (g["impact"], cp, tk, g)
+            if best is not None:
+                _attach(sh, best[1], best[2], best[3])
+
+    for sh in showers:                               # default trunk for the viz
+        if sh["trunk"] is None:
+            sh["trunk"] = trunk_vertex_biased(sh["points"], conn_points[0]["pos"])
+    return showers
 
 
 # ---------------------------------------------------------------------------
@@ -323,6 +388,37 @@ def visualize(res, gt_nu, src_label, title, out_path, gt_particles=None):
             name=(f"PRIMARY V ({nprong}p)" if is_primary
                   else f"V{v['id']} d{v['depth']} {nprong}p")), row=1, col=1)
 
+    # showers: cluster (faint) + trunk arrow + attachment bridge to its conn point
+    for sh in res.get("showers", []):
+        tk = sh.get("trunk")
+        att = sh["attached"]
+        col = "#d62728" if att else "lightgray"      # attached shower = red trunk
+        P = sh["points"]
+        bbox.append(P)
+        fig.add_trace(go.Scatter3d(
+            x=P[:, 0], y=P[:, 1], z=P[:, 2], mode="markers",
+            marker=dict(size=1.4, color=col, opacity=0.3),
+            showlegend=False, name=f"sh{sh['inst']} {sh['cls_name']}"), row=1, col=1)
+        if tk is not None:
+            tip = tk.start + tk.direction * 15.0
+            g = sh.get("geom") or {}
+            metric = (f" imp={g['impact']:.0f} cos={g['cosine']:.2f}"
+                      if att and g else "")
+            fig.add_trace(go.Scatter3d(
+                x=[tk.start[0], tip[0]], y=[tk.start[1], tip[1]],
+                z=[tk.start[2], tip[2]], mode="lines",
+                line=dict(color=col, width=6),
+                name=f"sh{sh['inst']} {sh['cls_name']} trunk"
+                     + (f" @{sh['cp_kind']}{metric}" if att else " UNATT")),
+                row=1, col=1)
+        if att and sh.get("cp_pos") is not None:
+            cp = sh["cp_pos"]
+            fig.add_trace(go.Scatter3d(
+                x=[cp[0], tk.start[0]], y=[cp[1], tk.start[1]],
+                z=[cp[2], tk.start[2]], mode="lines",
+                line=dict(color="#d62728", width=2, dash="dash"),
+                showlegend=False), row=1, col=1)
+
     seed = res.get("seed_input")
     if seed is not None and np.linalg.norm(seed - res["vertices"][0]["pos"]) > 0.5:
         fig.add_trace(go.Scatter3d(
@@ -433,6 +529,19 @@ def main():
     ap.add_argument("--eps", type=float, default=1.2)
     ap.add_argument("--max-gap", type=float, default=20.0)
     ap.add_argument("--min-points", type=int, default=20)
+    # shower attachment (Phase 2)
+    ap.add_argument("--shower-mode", choices=["greedy", "exhaustive", "off"],
+                    default="greedy", help="how showers attach to connection "
+                    "points (greedy=closest-first; exhaustive=best over all)")
+    # balanced point from scan_shower_attach.py (P=0.98, R=0.80); tighten to
+    # (10, 0.80) for P=1.00/R=0.72, or loosen to (30, 0.50) for R=0.85/P=0.96.
+    ap.add_argument("--shower-d-impact", type=float, default=15.0)
+    ap.add_argument("--shower-cos-min", type=float, default=0.80)
+    ap.add_argument("--shower-d-gap", type=float, default=60.0)
+    ap.add_argument("--shower-min-points", type=int, default=20)
+    ap.add_argument("--kink-tol", type=float, default=3.0,
+                    help="constant RDP tolerance [cm] for track kinks used as "
+                         "extra shower connection points (item b)")
     ap.add_argument("--no-html", action="store_true")
     args = ap.parse_args()
 
@@ -440,7 +549,10 @@ def main():
     msp = (args.merged_sp_dir if args.merged_sp_dir
            and os.path.isdir(args.merged_sp_dir) else None)
     os.makedirs(args.out_dir, exist_ok=True)
-    print(f">>> {len(files)} events | vertex-source={args.vertex_source}")
+    print(f">>> {len(files)} events | vertex-source={args.vertex_source} "
+          f"| shower-mode={args.shower_mode}")
+    tot = dict(show=0, g=0, e=0, dis=0, tp=0, fp=0, fn=0, tn=0, nprim=0,
+               att_vtx=0, att_kink=0, nkink=0)
 
     for fp in files:
         recs = tio.load_instances(fp, msp, tracks_only=True,
@@ -457,14 +569,67 @@ def main():
         if not cands:
             print(f"  {os.path.basename(fp)}: no {args.vertex_source} vertex, skip")
             continue
-        tracks = build_tracks(recs, seg_cm=args.seg_cm, eps=args.eps,
-                              max_gap_live=args.max_gap)
+        tracks = build_tracks(recs, seg_cm=args.seg_cm, kink_tol=args.kink_tol,
+                              eps=args.eps, max_gap_live=args.max_gap)
         best = best_over_candidates(cands, tracks, args)
         res = best["res"]
-        # all true particles (tracks + showers) for the "what reco misses" panel
         all_recs = tio.load_instances(fp, msp, tracks_only=False, min_points=1)
+        # --- Phase 2: attach showers to connection points = nu vtx + track
+        # endpoints/junctions (the tree vertices) + interior track KINKS (item b) ---
+        nuv0 = res["vertices"][0]["pos"]
+        conn_points = [dict(id=f"v{v['id']}", pos=v["pos"], kind="vertex")
+                       for v in res["vertices"]]
+        for T in tracks:                             # only attached tracks' kinks
+            if T["attached"]:
+                for ki, kp in enumerate(T.get("kinks", [])):
+                    conn_points.append(dict(id=f"k{T['id']}_{ki}", pos=kp,
+                                            kind="kink"))
+        for c in conn_points:
+            c["dist"] = float(np.linalg.norm(c["pos"] - nuv0))
+        conn_points.sort(key=lambda c: c["dist"])
+        shower_recs = [r for r in all_recs if r.pred_cls in tio.SHOWER_CLASSES
+                       and np.all(np.isfinite(r.pred_start))
+                       and r.n_points >= args.shower_min_points]
+        sk = dict(d_impact=args.shower_d_impact, cos_min=args.shower_cos_min,
+                  d_gap=args.shower_d_gap)
+        sh_greedy = reco_showers(shower_recs, conn_points, "greedy", **sk)
+        sh_exhaust = reco_showers(shower_recs, conn_points, "exhaustive", **sk)
+        showers = (sh_greedy if args.shower_mode == "greedy" else sh_exhaust
+                   if args.shower_mode == "exhaustive" else [])
+        res["showers"] = showers
+        ng = sum(s["attached"] for s in sh_greedy)
+        ne = sum(s["attached"] for s in sh_exhaust)
+        n_disagree = sum(1 for a, b in zip(sh_greedy, sh_exhaust)
+                         if a["attached"] != b["attached"] or a["cp_id"] != b["cp_id"])
+        tot["show"] += len(shower_recs)
+        tot["g"] += ng
+        tot["e"] += ne
+        tot["dis"] += n_disagree
+        tot["nkink"] += sum(1 for c in conn_points if c["kind"] == "kink")
+        tot["att_vtx"] += sum(1 for s in showers
+                              if s["attached"] and s["cp_kind"] == "vertex")
+        tot["att_kink"] += sum(1 for s in showers
+                               if s["attached"] and s["cp_kind"] == "kink")
+        # --- (a) provenance truth: did each shower attach to the NU VERTEX, and
+        # should it (true origin within 5cm of the true nu vertex)? ---
+        frag = load_shower_fragments(fp, msp)
+        nuvtx_pos = res["vertices"][0]["pos"]
+        for s in showers:
+            prim, origin, _ = shower_is_primary(s.get("gt_start"), frag, gt_nu)
+            s["truth_primary"] = prim
+            s["truth_origin"] = origin
+            if prim is None:
+                continue                              # no truth for this shower
+            tot["nprim"] += int(prim)
+            at_nuvtx = (s["attached"] and s["cp_pos"] is not None and
+                        np.linalg.norm(s["cp_pos"] - nuvtx_pos) <= 5.0)
+            tot["tp" if (at_nuvtx and prim) else "fp" if at_nuvtx else
+                "fn" if prim else "tn"] += 1
+        # all true particles for the "what reco misses" panel; attached showers count
         reco_tids = {T["gt_trackid"] for T in tracks
                      if T["attached"] and T["gt_trackid"] > 0}
+        reco_tids |= {s["gt_trackid"] for s in showers
+                      if s["attached"] and s["gt_trackid"] > 0}
         gt_particles = gather_gt_particles(all_recs, reco_tids)
         n_att = sum(T["attached"] for T in tracks)
         primary = res["vertices"][0]
@@ -475,22 +640,34 @@ def main():
                 if np.all(np.isfinite(gt_nu)) else float("nan"))
         n_miss = sum(1 for gp in gt_particles if gp["status"] == "missed")
         tag = os.path.basename(fp)
-        print(f"  {tag}: {len(tracks)} tracks | cand {best['rank']+1}/"
-              f"{best['n_cand']} (score {best['score']:.2f}) snap "
-              f"{best['shift']:.1f}cm | primary {len(primary['attached'])} prong, "
-              f"{n_att}/{len(tracks)} attached, {n_sec} sec-vtx, "
-              f"{len(res['unattached'])} unatt | {n_miss} GT particles missed "
-              f"| vtx-err vs GT={verr:.1f}cm")
+        print(f"  {tag}: {len(tracks)}trk {len(shower_recs)}shw | cand "
+              f"{best['rank']+1}/{best['n_cand']} snap {best['shift']:.1f}cm | "
+              f"{len(primary['attached'])}-prong, {n_att}/{len(tracks)} trk-att | "
+              f"showers {ng}/{len(shower_recs)} att (exh {ne}, disagree {n_disagree}) "
+              f"| {n_miss} GT missed | vtx-err={verr:.1f}cm")
         if not args.no_html:
-            title = (f"{tag} | V={args.vertex_source} cand{best['rank']+1}/"
-                     f"{best['n_cand']} snap{best['shift']:.0f}cm | "
-                     f"{len(primary['attached'])}-prong, {n_att}/{len(tracks)} att, "
-                     f"{n_sec} sec-vtx | {n_miss} GT missed | "
-                     f"vtx-err={verr:.1f}cm")
+            title = (f"{tag} | V={args.vertex_source} | "
+                     f"{len(primary['attached'])}-prong, {n_att}/{len(tracks)} trk, "
+                     f"showers {ng}/{len(shower_recs)} att ({args.shower_mode}) | "
+                     f"{n_miss} GT missed | vtx-err={verr:.1f}cm")
             op = os.path.join(args.out_dir,
                               f"{os.path.splitext(tag)[0]}_nuint.html")
             visualize(res, gt_nu, args.vertex_source, title, op,
                       gt_particles=gt_particles)
+    print(f"\n=== showers: {tot['show']} total | greedy attached {tot['g']} "
+          f"({100*tot['g']/max(tot['show'],1):.0f}%) | exhaustive {tot['e']} "
+          f"({100*tot['e']/max(tot['show'],1):.0f}%) | "
+          f"greedy-vs-exhaustive disagreements {tot['dis']} ===")
+    print(f"=== connection points: {tot['nkink']} track kinks added (item b) | "
+          f"shower attach by kind: vertex {tot['att_vtx']}, kink {tot['att_kink']} ===")
+    ntruth = tot["tp"] + tot["fp"] + tot["fn"] + tot["tn"]
+    if ntruth:
+        prec = tot["tp"] / max(tot["tp"] + tot["fp"], 1)
+        rec = tot["tp"] / max(tot["tp"] + tot["fn"], 1)
+        print(f"=== nu-vertex attachment vs provenance truth (origin<=5cm of true "
+              f"vtx): {ntruth} showers w/ truth, {tot['nprim']} primary | "
+              f"precision={prec:.2f} recall={rec:.2f} "
+              f"(TP={tot['tp']} FP={tot['fp']} FN={tot['fn']} TN={tot['tn']}) ===")
     if not args.no_html:
         print(f">>> HTML -> {args.out_dir}")
 

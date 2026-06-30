@@ -44,6 +44,101 @@ CuPy are installed there, not on the host):
   class. `--vertex-source {reco,pred,gt}`, `--d-vertex`, `--d-perp`,
   `--snap-radius`, `--max-gap`. Per-event summary reports `N GT particles missed`.
 
+## Shower attachment into the interaction (Phase 2) — in `nu_interaction.py`
+`reco_showers()` attaches predicted shower instances to the interaction's
+**connection points** (nu vertex + track endpoints from the tree, ordered
+closest-to-vertex first). Per (shower, connection point) the trunk is re-fit
+biased toward that point (`trunk_vertex_biased`, the Phase-1 winner) and tested
+with the impact-parameter + back-pointing cosine `connects()`. Two modes:
+`--shower-mode greedy` (attach to the first point it points back to) vs
+`exhaustive` (best over all). Attached showers draw as red trunk arrows + dashed
+bridges on the left panel and flip to `reco` (no longer `MISSED`) in the GT panel.
+Knobs: `--shower-d-impact`, `--shower-cos-min`, `--shower-d-gap`.
+
+Connection points = nu vertex + track endpoints/junctions + **interior track
+kinks** (`--kink-tol`, item b). The trunk anchors on fragments ≥ `min_frag_pts`
+(default 10) so a tiny stray cluster near a connection point can't produce a
+trunk "floating in space" (fixed). `shower_truth.py` provides the **provenance
+truth**: a shower is *primary* iff its true `originpt` (from
+`merged_sp/shower_fragments`, matched by nearest `startpt` to the instance's GT
+conversion point) is within ~5 cm of the true nu vertex — NOT the matched
+trackid's mc origin (shower electrons are created 100s of cm downstream).
+
+**Findings (89 showers, bnb_pi0_valdata, merged_sp present):**
+- **Greedy ≈ exhaustive**: both attach **57/89 (64%)**, differing on only **6/89**
+  (which connection point) — cheap closest-first greedy loses ~nothing.
+- **nu-vertex attachment vs provenance truth** (75/81 showers truly primary).
+  Per-shower `impact`/`cosine` are in the viz legend so a confidence threshold can
+  be chosen.
+- **Parameter scan** (`scan_shower_attach.py`, sweeps `d_impact` × `cos_min`
+  against the provenance truth — caches per-event geometry once, then applies cuts
+  cheaply). Efficiency curve:
+
+  | working point | d_impact | cos_min | precision | recall |
+  |---|---|---|---|---|
+  | tight (old default) | 10 | 0.90 | 1.00 | 0.67 |
+  | precision-first | 10 | 0.80 | **1.00** | 0.72 |
+  | **balanced (new default)** | 15 | 0.80 | 0.98 | **0.80** |
+  | recall-first (best F1) | 30 | 0.50 | 0.96 | 0.85 |
+
+  **Recall ceilings at ~0.85** even at the loosest cuts; precision degrades
+  gracefully (1.00→0.96). Default is now the balanced point.
+
+### Failure analysis (the recall ceiling)
+Trunk-direction error vs the true photon direction (`startpt−originpt`) over 84
+primary showers: **median ~10°, 85% under 30°**. The >60° tail (the recall
+ceiling) decomposes by **vertex quality**, not by the trunk method:
+- **On good-vertex events (77/84): only 2 failures (2.6%)** — the trunk method is
+  essentially solved there. Both are genuine hard cases (very short / heavily
+  fragmented showers where the local PCA picks the fan).
+- **The other 3 failures are all on the few bad-vertex events** (reco vtx 20–48 cm
+  off — the same events whose whole interaction fails). The vertex-biased trunk
+  anchors at the wrong place when the vertex is wrong.
+- **Tested fixes that do NOT help**: anchoring the trunk at the predicted
+  shower-start keypoint instead of the vertex is *worse* (median 9.7→11.1°, BAD
+  6%→15%, p90 41→130°) — the vertex gives a strong "points away from vertex"
+  orientation prior the noisier keypoint lacks. Shrinking the trunk radius helps
+  the angular proxy but slightly *hurts* attachment recall (kept R=5).
+
+**Conclusion:** shower trunk direction is not the bottleneck — the recall ceiling
+is set by **vertex reco on a handful of events**, which is upstream and also
+breaks those whole interactions. The lever for the remaining tail is better /
+flagged vertex reco, not the shower direction method.
+- **Kinks (item b)**: 15 added across events; **0 used here** because these pi0
+  showers are overwhelmingly primary (attach at the vertex). Kinks are
+  infrastructure for secondary / mid-track-scatter showers, which this sample
+  lacks.
+- Several pi0 events fully reconstruct (event1, event11: 2/2 showers, 0 GT
+  missed). GT panel colors by **true PID**; attached showers show as `reco`.
+
+## Shower direction reco (Phase 1) — `shower_trunk.py`, `shower_connect.py`, `run_shower_dir.py`
+Prototype of the three trunk-direction methods from
+[`../shower_reco_spec.md`](../shower_reco_spec.md), evaluated on nu-vertex
+connection only. All anchor the trunk at the predicted shower-start keypoint
+(method 3 anchors at the vertex-nearest cluster point, its defining bias).
+- `shower_trunk.py` — `ShowerTrunk` + `trunk_pca`, `trunk_elpigraph`,
+  `trunk_vertex_biased` (LANTERN `NuVertexShowerReco::_make_trunk_cand` port).
+- `shower_connect.py` — impact-parameter / back-pointing-cosine / gap geometry +
+  greedy `connects()` decision (showers attach by pointing back across a gap).
+- `run_shower_dir.py` — runs all 3 on every predicted shower instance, scores
+  direction vs a truth trunk (GT start keypoint + local GT cloud), reports a
+  comparison table + per-event arrow viz.
+
+**Findings (100 showers, bnb_pi0_valdata):**
+| method | ang median | ang p95 | start err | conn P/R | ms/shower |
+|---|---|---|---|---|---|
+| whole-cluster PCA | 17.6° | 166° | 5.65 | 0.96/0.33 | 0.1 |
+| ElPiGraph | 14.5° | 164° | 5.65 | 0.75/0.32 | 5.9 |
+| **vertex-biased** | **10.6°** | **121°** | **0.72** | 0.83/**0.67** | 0.7 |
+- **Vertex-biased wins** on median angle, connection recall, and start error, at
+  ~1 ms/shower. **ElPiGraph is less accurate AND ~8× slower** — skeletonization
+  doesn't pay off for trunk direction here.
+- All methods have a **large p95 tail (>120°)** — ~a few % of showers (noisy /
+  very short trunks) get a flipped/garbage direction; that tail caps recall.
+- The predicted shower-start keypoint sits ~5.6 cm from the true start (the PCA/
+  elpigraph `start_med`); the vertex-nearest anchor is closer (0.7 cm) for showers
+  that truly connect.
+
 ## Neutrino-interaction reco findings (dev events)
 - **Vertex from the score-field fitter, not the centroid.** `--vertex-source reco`
   takes ranked peaks from `reco.KeypointRecoTorch` (the sibling `reco/` package's
