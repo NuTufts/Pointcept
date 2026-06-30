@@ -2,7 +2,9 @@ import torch
 import torch.nn as nn
 import torch_scatter
 import torch_cluster
-from peft import LoraConfig, get_peft_model
+# from peft import LoraConfig, get_peft_model
+LoraConfig = None
+get_peft_model = None
 from collections import OrderedDict
 
 from pointcept.models.losses import build_criteria

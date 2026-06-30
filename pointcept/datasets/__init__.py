@@ -12,13 +12,13 @@ from .structure3d import Structured3DDataset
 from .aeo import AEODataset
 
 # outdoor scene
-from .semantic_kitti import SemanticKITTIDataset
-from .nuscenes import NuScenesDataset
-from .waymo import WaymoDataset
+# from .semantic_kitti import SemanticKITTIDataset
+# from .nuscenes import NuScenesDataset
+# from .waymo import WaymoDataset
 
 # object
-from .modelnet import ModelNetDataset
-from .shapenet_part import ShapeNetPartDataset
+# from .modelnet import ModelNetDataset
+# from .shapenet_part import ShapeNetPartDataset
 
 # physics / LArTPC
 from .lartpc import LArTPCDataset, LArTPCInstanceDataset

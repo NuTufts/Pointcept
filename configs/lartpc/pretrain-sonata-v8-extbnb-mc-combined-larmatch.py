@@ -60,6 +60,19 @@ enable_amp = False
 evaluate = False  # Disabled - PretrainEvaluator hook is commented out
 find_unused_parameters = False
 
+# Mid-epoch resume strategy:
+#   skip_dataloader_on_resume=True: when resuming mid-epoch, activate
+#     FastForwardSampler so the dataloader jumps straight to the resumed iter
+#     instead of driving workers through the skipped batches' transforms.
+#     Trades reproducibility-of-augmentations on kept batches for ~1h of
+#     startup time at typical mid-epoch resume points.
+#   resume_seed_strategy="per_resume": derive a fresh worker seed from the
+#     checkpoint's (epoch, iter_in_epoch) on each resume, so retried jobs
+#     don't reproduce identical augmentation sequences on the kept batches.
+#     Only takes effect when skip_dataloader_on_resume=True.
+skip_dataloader_on_resume = True
+resume_seed_strategy = "per_resume"
+
 flash_backend='flash_attn' # default backend
 amp_dtype = "bfloat16" # use this for default 'flash_attn' backend
 
@@ -472,7 +485,7 @@ hooks = [
     # iter_in_epoch + RNG state so CheckpointLoader can pick up mid-epoch.
     # save_iter_freq=500 ≈ ~9 min between saves at ~30k batches/epoch, so the
     # worst-case wasted compute on a kill is bounded by that.
-    dict(type="IterCheckpointSaver", save_iter_freq=500, keep_history=False),
+    dict(type="IterCheckpointSaver", save_iter_freq=50, keep_history=False),
     # Catch SLURM's pre-timeout SIGUSR1 (sent via --signal=USR1@1800), save a
     # checkpoint, write a RESUBMIT marker so the batch script can chain the
     # next job, and exit cleanly before SLURM kills the process.
