@@ -87,13 +87,7 @@ def fit_shower_calib(files, resolve_msp, min_points=20):
                     data[r.pred_cls_name].append((c["comb"], r.energy_mev))
         finally:
             fh.close()
-    calib = {}
-    for typ, v in data.items():
-        if len(v) < 3:
-            continue
-        Q = np.array([a for a, _ in v]); KE = np.array([b for _, b in v])
-        calib[typ] = float((Q * KE).sum() / (Q * Q).sum())   # KE = a*Q
-    return calib, data
+    return _fit_pairs(data), data
 
 
 def _calib_path():
@@ -104,6 +98,43 @@ def _calib_path():
 def save_shower_calib(calib, path=None):
     np.savez(path or _calib_path(),
              **{f"{k}_a": np.float32(v) for k, v in calib.items()})
+
+
+def _fit_pairs(data):
+    """data {type:[(Q,KE)]} -> {type: a} with KE = a*Q (through origin)."""
+    calib = {}
+    for typ, v in data.items():
+        if len(v) < 3:
+            continue
+        Q = np.array([a for a, _ in v]); KE = np.array([b for _, b in v])
+        calib[typ] = float((Q * KE).sum() / (Q * Q).sum())
+    return calib
+
+
+def save_calib_data(data, path):
+    """Per-shard collected (Q,KE) pairs -> npz (for later merge+fit)."""
+    d = {}
+    for typ, v in data.items():
+        if v:
+            d[f"{typ}_Q"] = np.array([a for a, _ in v], np.float32)
+            d[f"{typ}_KE"] = np.array([b for _, b in v], np.float32)
+    np.savez(path, **d)
+
+
+def merge_calib_data(paths):
+    """Concatenate per-shard (Q,KE) npz -> data {type:[(Q,KE)]}."""
+    acc = {"e": [[], []], "gamma": [[], []]}
+    for p in paths:
+        d = np.load(p)
+        for typ in acc:
+            if f"{typ}_Q" in d.files:
+                acc[typ][0].append(d[f"{typ}_Q"])
+                acc[typ][1].append(d[f"{typ}_KE"])
+    out = {}
+    for typ, (Q, KE) in acc.items():
+        if Q:
+            out[typ] = list(zip(np.concatenate(Q), np.concatenate(KE)))
+    return out
 
 
 def load_shower_calib(path=None):
@@ -185,7 +216,34 @@ def main():
     ap.add_argument("--start", type=int, default=0)
     ap.add_argument("--n", type=int, default=-1,
                     help="subsample the file list for calibration (-1 = all)")
+    # grid chunking: collect (Q,KE) pairs per shard, then merge+fit
+    ap.add_argument("--out-data", default=None,
+                    help="collect mode: write this shard's (Q,KE) pairs to this "
+                         "npz and STOP (no fit); merge later with --merge-data")
+    ap.add_argument("--merge-data", default=None,
+                    help="merge mode: glob of per-shard *_data.npz -> fit + save "
+                         "calo_calib.npz (no file processing)")
     args = ap.parse_args()
+
+    if args.merge_data:                            # merge shards -> fit -> save
+        import glob as _glob
+        paths = sorted(_glob.glob(args.merge_data))
+        data = merge_calib_data(paths)
+        calib = _fit_pairs(data)
+        save_shower_calib(calib)
+        print(f">>> merged {len(paths)} shards -> calo_calib.npz")
+        for typ in ("e", "gamma"):
+            if typ in data:
+                Q = np.array([a for a, _ in data[typ]])
+                KE = np.array([b for _, b in data[typ]])
+                E = calib[typ] * Q
+                r = _res(list(zip(E, KE)))
+                print(f"    {typ:5s} a={calib.get(typ, float('nan')):.4f} "
+                      f"n={len(data[typ])} corr={np.corrcoef(Q, KE)[0,1]:.2f}"
+                      + (f" | E_calo vs KE: bias={r[0]:+.2f} res={r[1]:.2f}"
+                         if r else ""))
+        return
+
     import nu_interaction as ni                # lazy: avoid import cycle
     files, resolve_msp = make_msp_resolver(
         kp_dir=args.keypoint2_dir, kp_list=args.keypoint2_list,
@@ -197,6 +255,11 @@ def main():
     rmom = RangeMomentum()
 
     calib, data = fit_shower_calib(files, resolve_msp)
+    if args.out_data:                              # collect mode: dump pairs, stop
+        save_calib_data(data, args.out_data)
+        print(f">>> collected {sum(len(v) for v in data.values())} (Q,KE) pairs "
+              f"({ {k: len(v) for k, v in data.items()} }) -> {args.out_data}")
+        return
     save_shower_calib(calib)
     print(">>> shower calo calibration  KE[MeV] = a * Q_comb (saved to npz):")
     for typ in ("e", "gamma"):

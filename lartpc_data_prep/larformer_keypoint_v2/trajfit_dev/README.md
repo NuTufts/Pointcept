@@ -60,10 +60,13 @@ Run the full reco (vertices + tracks + showers + 4-momenta) over a large dataset
 - `submit_nu_reco_shard.sh` — SLURM **CPU array** job (modeled on the cascade
   submit script) that splits the keypoint2 list into `NSHARDS` contiguous chunks.
   Needs `data/range2ke_lar.npz` + `data/calo_calib.npz` present. **Refit the calo
-  calib on the full valdata** (one pass, no reco needed — just sums pixel charge
-  per predicted shower cluster vs true KE):
+  calib on the full valdata** (no reco needed — just sums pixel charge per
+  predicted shower cluster vs true KE). Either one pass:
   `python trajfit_dev/particle_momentum.py --keypoint2-list KP.txt --merged-sp-list
-  MSP.txt` (same list interface as `run_nu_reco.py`; `--start/--n` to subsample).
+  MSP.txt`, or **sharded on the grid** with `../submit_calo_calib_shard.sh` (each
+  shard `--out-data` collects (Q,KE) pairs; then merge+fit with
+  `particle_momentum.py --merge-data 'OUT/calo_data_shard*.npz'`). `--start/--n`
+  subsample.
 
 ## Particle 4-momentum — `range_momentum.py`, `calo.py`, `particle_momentum.py`
 Assigns a 4-momentum to every reco particle (spec
