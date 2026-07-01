@@ -1,11 +1,16 @@
 """Assign 4-momenta to reco particles (spec §6): tracks via range, showers via
-calorimetry. Also derives the primary-level shower calo calibration and evaluates
-both estimators against truth.
+calorimetry. Also derives the shower calo calibration (sums de-double-counted
+pixel charge per predicted shower cluster vs true KE -- no interaction reco
+needed) and evaluates both estimators against truth.
 
-    python particle_momentum.py            # fit calib + eval vs truth (pi0 set)
+    # dev (dir mode):
+    python particle_momentum.py
+    # production (list mode -- valdata spread over subdirs, like run_nu_reco.py):
+    python particle_momentum.py --keypoint2-list KP.txt --merged-sp-list MSP.txt \
+        [--start 0 --n 2000]      # optional: calibrate on a subsample
+The fitted calibration is saved to data/calo_calib.npz (loaded by run_nu_reco.py).
 """
 import os
-import glob
 import argparse
 import statistics as st
 
@@ -33,9 +38,41 @@ def _entry(fp, msp_dir):
 # ---------------------------------------------------------------------------
 # shower calo calibration: KE = a * Q_comb  (per type, through origin)
 # ---------------------------------------------------------------------------
-def fit_shower_calib(files, msp_dir, min_points=20):
+def _read_list(path):
+    with open(path) as f:
+        return [ln.strip() for ln in f if ln.strip()]
+
+
+def _build_msp_map(path):
+    """basename -> full path, for resolving a keypoint2 file's src_file."""
+    return {os.path.basename(p): p for p in _read_list(path)}
+
+
+def make_msp_resolver(kp_dir=None, kp_list=None, msp_dir=None, msp_list=None):
+    """Returns (kp_files, resolve) where resolve(kp_path) -> merged_sp DIR for that
+    file. Dir mode: constant `msp_dir`. List mode: per-file via the src_file attr
+    matched by basename against `msp_list`."""
+    import glob as _glob
+    if kp_list:
+        kp_files = _read_list(kp_list)
+        mmap = _build_msp_map(msp_list) if msp_list else {}
+
+        def resolve(kp):
+            import h5py
+            with h5py.File(kp, "r") as f:
+                src = f.attrs.get("src_file", "")
+            src = src.decode() if isinstance(src, bytes) else src
+            p = mmap.get(os.path.basename(src))
+            return os.path.dirname(p) if p else None
+        return kp_files, resolve
+    kp_files = sorted(_glob.glob(os.path.join(kp_dir, "*.h5")))
+    return kp_files, (lambda kp: msp_dir)
+
+
+def fit_shower_calib(files, resolve_msp, min_points=20):
     data = {"e": [], "gamma": []}
     for fp in files:
+        msp_dir = resolve_msp(fp)
         entry, fh = _entry(fp, msp_dir)
         if entry is None:
             continue
@@ -138,14 +175,28 @@ def main():
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     here = os.path.dirname(os.path.abspath(__file__))
     dev = os.path.join(here, "..", "reco_dev_data", "bnb_pi0_valdata")
+    # dir mode (dev) OR list mode (production valdata, spread over subdirs)
     ap.add_argument("--keypoint2-dir", default=os.path.join(dev, "keypoint2_out"))
     ap.add_argument("--merged-sp-dir", default=os.path.join(dev, "merged_sp"))
+    ap.add_argument("--keypoint2-list", default=None,
+                    help="list of keypoint2 files (overrides --keypoint2-dir)")
+    ap.add_argument("--merged-sp-list", default=None,
+                    help="list of merged_sp files (src_file resolved by basename)")
+    ap.add_argument("--start", type=int, default=0)
+    ap.add_argument("--n", type=int, default=-1,
+                    help="subsample the file list for calibration (-1 = all)")
     args = ap.parse_args()
     import nu_interaction as ni                # lazy: avoid import cycle
-    files = sorted(glob.glob(os.path.join(args.keypoint2_dir, "*.h5")))
+    files, resolve_msp = make_msp_resolver(
+        kp_dir=args.keypoint2_dir, kp_list=args.keypoint2_list,
+        msp_dir=args.merged_sp_dir, msp_list=args.merged_sp_list)
+    end = len(files) if args.n < 0 else min(args.start + args.n, len(files))
+    files = files[args.start:end]
+    print(f">>> {len(files)} keypoint2 files "
+          f"({'list' if args.keypoint2_list else 'dir'} mode)")
     rmom = RangeMomentum()
 
-    calib, data = fit_shower_calib(files, args.merged_sp_dir)
+    calib, data = fit_shower_calib(files, resolve_msp)
     save_shower_calib(calib)
     print(">>> shower calo calibration  KE[MeV] = a * Q_comb (saved to npz):")
     for typ in ("e", "gamma"):
@@ -160,11 +211,12 @@ def main():
     calo_pairs = {"e": [], "gamma": []}
     range_pairs = {"mu": [], "pi": [], "p": []}
     for fp in files:
-        entry, fh = _entry(fp, args.merged_sp_dir)
+        msp_dir = resolve_msp(fp)
+        entry, fh = _entry(fp, msp_dir)
         if entry is None:
             continue
         try:
-            recs = tio.load_instances(fp, args.merged_sp_dir, tracks_only=False,
+            recs = tio.load_instances(fp, msp_dir, tracks_only=False,
                                       min_points=20)
             sh = [r for r in recs if r.pred_cls_name in ("e", "gamma")]
             charges = event_particle_charges([r.points for r in sh], entry)
