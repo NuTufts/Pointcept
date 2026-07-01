@@ -23,6 +23,8 @@ from cluster_fit_stitch import cluster_fit_stitch
 from shower_trunk import trunk_vertex_biased
 from shower_connect import connects
 from shower_truth import load_shower_fragments, shower_is_primary
+from range_momentum import RangeMomentum
+from particle_momentum import assign_momenta, load_shower_calib, _entry
 
 
 # ---------------------------------------------------------------------------
@@ -438,10 +440,13 @@ def visualize(interactions, leftover_tracks, leftover_shrec, gt_nu, title,
                 x=P[:, 0], y=P[:, 1], z=P[:, 2], mode="markers",
                 marker=dict(size=1.6, color=col, opacity=0.35),
                 showlegend=False, name=f"i{ci} t{T['id']}"), row=1, col=1)
+            mom = T.get("mom")
+            pstr = (f" p={float(np.linalg.norm(mom['momentum'])):.0f}MeV"
+                    if mom and "momentum" in mom else "")
             fig.add_trace(go.Scatter3d(
                 x=poly[:, 0], y=poly[:, 1], z=poly[:, 2], mode="lines",
                 line=dict(color=col, width=5),
-                name=f"i{ci} t{T['id']} {T['cls_name']} L={T['length']:.0f}cm"),
+                name=f"i{ci} t{T['id']} {T['cls_name']} L={T['length']:.0f}cm{pstr}"),
                 row=1, col=1)
         for e in res["edges"]:                       # bridges
             V = res["vertices"][e["vertex"]]["pos"]
@@ -475,12 +480,15 @@ def visualize(interactions, leftover_tracks, leftover_shrec, gt_nu, title,
                 showlegend=False, name=f"i{ci} sh{sh['inst']}"), row=1, col=1)
             tip = tk.start + tk.direction * 15.0
             g = sh.get("geom") or {}
+            mom = sh.get("mom")
+            estr = (f" E={mom['ke_calo']:.0f}MeV"
+                    if mom and np.isfinite(mom.get("ke_calo", np.nan)) else "")
             fig.add_trace(go.Scatter3d(
                 x=[tk.start[0], tip[0]], y=[tk.start[1], tip[1]],
                 z=[tk.start[2], tip[2]], mode="lines",
                 line=dict(color="#d62728", width=6),
-                name=f"i{ci} sh{sh['inst']} {sh['cls_name']} @{sh['cp_kind']} "
-                     f"imp={g.get('impact',0):.0f} cos={g.get('cosine',0):.2f}"),
+                name=f"i{ci} sh{sh['inst']} {sh['cls_name']}{estr} @{sh['cp_kind']} "
+                     f"cos={g.get('cosine',0):.2f}"),
                 row=1, col=1)
             cp = sh["cp_pos"]
             fig.add_trace(go.Scatter3d(
@@ -639,6 +647,8 @@ def main():
           f"| shower-mode={args.shower_mode}")
     tot = dict(show=0, g=0, tp=0, fp=0, fn=0, tn=0, nprim=0, att_vtx=0,
                att_kink=0, nkink=0, nint=0, nev=0, recov=0, recov1=0)
+    rmom = RangeMomentum()                    # range->KE tables (tracks)
+    shower_calib = load_shower_calib()        # KE = a*Q_comb (showers); {} if none
 
     for fp in files:
         recs = tio.load_instances(fp, msp, tracks_only=True,
@@ -669,6 +679,14 @@ def main():
         if not interactions:
             print(f"  {tag}: no interaction formed, skip")
             continue
+        # 4-momentum per particle (tracks: range; showers: calo). Attaches
+        # obj["mom"] onto each track/shower; needs merged_sp image charge for calo.
+        mom_entry, mom_fh = _entry(fp, msp)
+        try:
+            assign_momenta(interactions, mom_entry, rmom, shower_calib)
+        finally:
+            if mom_fh is not None:
+                mom_fh.close()
         n_trk_att = sum(len(I["tracks"]) for I in interactions)
         # ONE record per shower instance: the interaction where it attached (first
         # wins), so a shower passing through several interactions isn't counted
@@ -719,7 +737,11 @@ def main():
             tot["nev"] += 1
             tot["recov"] += int(best_verr <= 5.0)
             tot["recov1"] += int(verrs[0] <= 5.0)        # 1st interaction only
-        ipart = " ".join(f"int{I['iter']}:{len(I['tracks'])}p/v{ve:.0f}"
+        def _evis(I):
+            objs = list(I["tracks"]) + [s for s in I["showers"] if s["attached"]]
+            return sum(o["mom"]["energy"] for o in objs
+                       if o.get("mom") and np.isfinite(o["mom"].get("energy", np.nan)))
+        ipart = " ".join(f"int{I['iter']}:{len(I['tracks'])}p/v{ve:.0f}/Evis{_evis(I):.0f}"
                          for I, ve in zip(interactions, verrs))
         print(f"  {tag}: {len(tracks)}trk {len(shower_recs)}shw | "
               f"{len(interactions)} interaction(s) [{ipart}] | "

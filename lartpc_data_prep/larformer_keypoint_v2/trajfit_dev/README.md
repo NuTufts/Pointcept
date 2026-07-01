@@ -48,6 +48,34 @@ CuPy are installed there, not on the host):
   class. `--vertex-source {reco,pred,gt}`, `--d-vertex`, `--d-perp`,
   `--snap-radius`, `--max-gap`. Per-event summary reports `N GT particles missed`.
 
+## Particle 4-momentum — `range_momentum.py`, `calo.py`, `particle_momentum.py`
+Assigns a 4-momentum to every reco particle (spec
+[`../particle_momentum_spec.md`](../particle_momentum_spec.md)).
+- `make_range2ke_npz.py` — Bethe-Bloch CSDA range→KE tables (μ/π/p) in LAr →
+  `data/range2ke_lar.npz` (ROOT-free). **Validated vs the LANTERN ROOT splines to
+  0.2% (μ), 0.9% (p)**; adds the pion table the ROOT file lacked.
+- `range_momentum.py` — `RangeMomentum`: `np.interp` range→KE + 4-vector for a
+  track given length, predicted class, and trunk direction (port of
+  `NuTrackKinematics`).
+- `calo.py` — de-double-counted per-plane charge (pixel identity = `(tick,wire)`;
+  each pixel's ADC split among the spacepoints sharing it) + combined "Y else
+  mean(U,V)"; `event_particle_charges()` KD-matches reco particle points to the
+  merged_sp image charge.
+- `particle_momentum.py` — fits the shower calo calibration (KE = a·Q_comb, per
+  type), `assign_momenta()` for integration, and a truth eval.
+
+**Validated (pi0 set):** proton range **19% res, ~unbiased**; photon calo
+**43% res, −4% bias** (e/γ factors ~equal → one calibration). π/μ range biased
+low (−31/−36%) — the non-stopping cases (μ=cosmics, π reinteract) that route to
+calo + the stopping tag.
+
+**Wired into `nu_interaction.py`**: each track/shower carries a 4-momentum
+(`obj["mom"]`); the viz legend shows track `p=…MeV` (range) and shower `E=…MeV`
+(calo), and the per-event line reports per-interaction visible energy (`Evis`).
+The shower calibration is loaded from `data/calo_calib.npz` (regenerate with
+`python particle_momentum.py`); tracks need only the range tables, showers need
+`merged_sp` image charge.
+
 ## Iterative multi-vertex reco (displaced-vertex recovery) — `reco_interactions`
 When the score-field fitter latches onto a displaced (e.g. hadronic-secondary)
 vertex, the true interaction's particles are left unassociated. `reco_interactions`
