@@ -48,6 +48,20 @@ CuPy are installed there, not on the host):
   class. `--vertex-source {reco,pred,gt}`, `--d-vertex`, `--d-perp`,
   `--snap-radius`, `--max-gap`. Per-event summary reports `N GT particles missed`.
 
+## Batch / production reco (cluster) — `../run_nu_reco.py`, `../submit_nu_reco_shard.sh`
+Run the full reco (vertices + tracks + showers + 4-momenta) over a large dataset.
+- `run_nu_reco.py` (in `..`) — CPU-only driver over a **shard** of the keypoint2
+  list (`--start/--n`); links each keypoint2 file to its parent merged_sp by the
+  `src_file` attr (basename → `--merged-sp-list`), runs the reco headless (no
+  HTML), and writes one H5 per shard (`nu_reco_shard{START:07d}.h5`) with a group
+  per event: `vertices_cm` + a flat per-particle table (`part_pred_class`,
+  `part_energy`, `part_momentum(3)`, `part_fourvec(4)`, `part_length`,
+  `part_charge`, `part_method`, `part_gt_trackid`, `part_true_ke`, …).
+- `submit_nu_reco_shard.sh` — SLURM **CPU array** job (modeled on the cascade
+  submit script) that splits the keypoint2 list into `NSHARDS` contiguous chunks.
+  Needs `data/range2ke_lar.npz` + `data/calo_calib.npz` present (**refit the calo
+  calib on the full valdata sample** — the shipped one is from the pi0 dev set).
+
 ## Particle 4-momentum — `range_momentum.py`, `calo.py`, `particle_momentum.py`
 Assigns a 4-momentum to every reco particle (spec
 [`../particle_momentum_spec.md`](../particle_momentum_spec.md)).
