@@ -286,6 +286,11 @@ def main():
     ap.add_argument("--keypoint-weights", default=None,
                     help="override cfg.keypoint_weights (keypoint model ckpt)")
     ap.add_argument("--n-events", type=int, default=-1)
+    ap.add_argument("--start-event", type=int, default=0,
+                    help="Dataset index (in the SORTED file list) to start at. "
+                         "Combine with --n-events to process a contiguous shard "
+                         "[start-event, start-event+n-events). Output filenames "
+                         "carry the dataset index, so shards never collide.")
     ap.add_argument("--nu-thresh", type=float, default=None,
                     help="override cfg.nu_thresh (dense nu-vertex decode thresh)")
     ap.add_argument("--save-score-maps", dest="save_score_maps",
@@ -386,15 +391,20 @@ def main():
         ds_cfg["emit_keypoints"] = False
         ds_cfg["gt_source"] = "deghost"
     ds = build_dataset(ds_cfg)
-    n = len(ds) if args.n_events < 0 else min(args.n_events, len(ds))
+    # Contiguous shard [start, end) over the SORTED file list. --n-events < 0
+    # means "to the end of the list" from start; both bounds are clamped so an
+    # over-provisioned final shard simply processes fewer events.
+    start = min(max(0, args.start_event), len(ds))
+    end = len(ds) if args.n_events < 0 else min(start + args.n_events, len(ds))
+    n = max(0, end - start)
     os.makedirs(args.output_dir, exist_ok=True)
     # The dataset SORTS its file list (get_data_list -> sorted), so ds[i] is the
     # i-th SORTED file, not the i-th input line — processing order is canonical
     # regardless of input order. Label outputs by the actual processed file.
     real_files = list(getattr(ds, "data_list", []))
-    print(f">>> {n} events")
+    print(f">>> {n} events (indices [{start}, {end}) of {len(ds)})")
 
-    for i in range(n):
+    for i in range(start, end):
         # Per-event order invariance (shared helper; see its docstring).
         if args.deterministic:
             reseed_per_event(args.seed)

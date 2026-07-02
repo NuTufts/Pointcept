@@ -72,7 +72,7 @@ particle_weights = os.environ.get("LARFORMER_KP_PARTICLE_CKPT", "").strip() or (
 
 # Trained attempt-2 keypoint model.
 keypoint_weights = os.environ.get("LARFORMER_KP_KEYPOINT_CKPT", "").strip() or (
-    "exp/larformer_keypoint2_particle_cachedpredmask_v1/model/epoch_14.pth")
+    "exp/larformer_keypoint2_particle_cachedpredmask_v1/model/epoch_30.pth")
 
 # =============================================================================
 # Model — the full CascadedKeypoint (frozen cascade + keypoint model).
