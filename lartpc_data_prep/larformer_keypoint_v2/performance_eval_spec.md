@@ -2,18 +2,45 @@
 
 ## 0. Goal
 Measure how well the nu-interaction reco finds each **particle species** as a
-function of **true kinetic energy (KE)**, over the 10k validation set. Two
+function of **true kinetic energy (KE)**, over the 10k validation set. Three
 complementary efficiencies (same denominator):
 
 - **Metric A — segmentation/cluster efficiency**: fraction of true nu-origin
   particles for which a predicted instance ("query mask") captured **≥70%** of the
-  particle.
+  particle (completeness measured *within the nu slice*).
 - **Metric B — attachment + kinematics efficiency**: fraction of true nu-origin
   particles for which a reco particle is **attached to a (primary or secondary)
   vertex and has a reconstructed 4-momentum**. Also produces a **2D reco-vs-true
   KE** scatter/2D-hist per species; a missed particle is assigned reco KE = 0.
+- **Metric C — slice-coverage efficiency (upstream diagnostic)**: fraction of true
+  nu-origin particles whose **nu slice** (`keypoint2_out:/slice/coord_cm`) captures
+  **≥50%** of the particle's **visible ionization**. This is **charge-based**, not
+  spacepoint-count-based: `coverage = Q(in-slice true points) / Q(all true points)`,
+  where `Q` is the reco's de-double-counted calorimetric charge
+  (`trajfit_dev/calo.py:dedup_charge`, `comb` = Y plane else mean(U,V) — the same
+  quantity the shower energy reco integrates). Each wire pixel's ADC is split among
+  the spacepoints sharing it, so `Q` over a set counts every pixel it touches once;
+  denominator = "pass in the GT spacepoints", numerator = "pass in the reco/slice
+  spacepoints", each de-double-counted over its own set. Charge (not count) because
+  the GT labeller is **over-liberal on the low-charge ionization edges/tails** —
+  count-based coverage over-penalises those many low-ADC edge spacepoints (count
+  coverage ~0.31 vs charge ~0.71 on the dev electron). Isolates **upstream
+  slice/deghost losses** from the reco: if C is high but A/B are low the reco is the
+  culprit; if C itself is low the particle never made it into the slice. (The old
+  count-based coverage is still saved as `slice_cov_count` for comparison, and the
+  charge denominator as `q_true`.)
 
-Denominator (both): number of true, **neutrino-origin** instances of the species.
+Linkage adds `triplet_data/trackid == mc_particle_tree.trackid` — verified: for
+the valdata samples `triplet_data/trackid` carries the real GEANT nu trackids
+(unlike the older overlay dev set where nu deposits were labelled 0). `triplet_truth`
+does **not** exist in these files; use `triplet_data` (with per-point `trackid`,
+`origin`, `pid`, `pos`). `slice/coord_cm` points are bit-identical members of
+`triplet_data/pos` (match dist 0), matched triplet_data→slice so the coverage
+numerator and denominator count the same (duplicate-inclusive) objects.
+
+Denominator (all three): number of true, **neutrino-origin** instances of the
+species. Per-particle `slice_cov` (the fraction) and `n_true_sp` (the denominator)
+are saved so a visibility cut (e.g. `n_true_sp > 0`) can be applied downstream.
 
 ---
 

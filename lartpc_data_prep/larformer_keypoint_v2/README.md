@@ -3,6 +3,32 @@
 Status: **PLAN (2026-06-17)** — not yet implemented. Forks from attempt 1
 (`../larformer_keypoint/`, checked in). Attempt 1 may be deprecated.
 
+## 0. Notes on the scripts and files relevant to the work in this folder
+
+To run the full cascade inference on a single node, in this folder:
+
+```bash
+bash run_keypoint2_fullcascade_inference.sh
+```
+
+To run the full cascade inference on a SLURM array:
+
+```bash
+bash slurm_scripts/larformer/submit_larformer_keypoint2_fullcascade_inference_shard.sh
+```
+
+The above provides the inputs to the nu interaction reconstruction that includes
+ - keypoint reco
+ - track trajectory reconstruction
+ - shower reconstruction
+ - nu ineraction formation
+ - kinematic estimators for the particles within the nu interaction
+
+This spec is for the keypoint reco. The other parts have the following specs:
+ - track reconstruction: trajectory_fitting_brief.md
+ - shower reconstruction: shower_reco_spec.md
+ - particle kinematics: particle_momentum_spec.md
+
 ## 1. Why a redesign
 
 Attempt 1 appended keypoint heads onto the **frozen** Stage-3 particle masker

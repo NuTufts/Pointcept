@@ -22,7 +22,7 @@
 #SBATCH --mem=16G
 #SBATCH --cpus-per-task=4
 #SBATCH --time=8:00:00
-#SBATCH --partition=preempt
+#SBATCH --partition=batch
 #SBATCH --output=logs/calo_calib/calo_calib_shard.%A_%a.%N.log
 #SBATCH --error=logs/calo_calib/calo_calib_shard.%A_%a.%N.err
 #SBATCH --array=0-9

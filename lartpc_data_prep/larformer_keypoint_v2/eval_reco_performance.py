@@ -1,26 +1,43 @@
 """First-pass performance eval: per-species reco efficiency vs true KE.
 
-Two metrics vs the same denominator (true neutrino-origin particles, from
+Three metrics vs the same denominator (true neutrino-origin particles, from
 merged_sp/mc_particle_tree, origin==1):
   A. segmentation: a predicted keypoint2 instance captured >=70% of the particle's
      slice points.
   B. attachment+kinematics: a nu_reco particle with reconstructed 4-momentum is
      attached (present in the nu_reco_shard output).
+  C. slice coverage (upstream): the nu slice (slice/coord_cm) captures >=50% of the
+     particle's visible ionization -- CHARGE-based, = (de-double-counted pixel
+     charge of its in-slice spacepoints) / (that of all its true spacepoints), using
+     the reco's shower-charge sum (calo.dedup_charge, Y else mean(U,V)). Charge, not
+     spacepoint count, so it isn't fooled by the GT labeller being over-liberal on
+     the low-charge ionization edges/tails. Isolates upstream slice/deghost losses
+     from the reco -- if C is high but A/B are low the problem is in the reco; if C
+     itself is low the particle never made it into the slice. (slice_cov_count keeps
+     the old count-based coverage for comparison.)
 Linkage is by trackid: keypoint2.gt_trackid == nu_reco.part_gt_trackid ==
-mc_particle_tree.trackid.  See performance_eval_spec.md.
+mc_particle_tree.trackid == triplet_data.trackid.  See performance_eval_spec.md.
 
     python eval_reco_performance.py \
       --keypoint2-list KP.txt --merged-sp-list MSP.txt \
       --nu-reco-dir output/nu_reco_valdata_all --out eval_records.npz [--plots DIR]
 
-Pure h5py+numpy (+matplotlib if --plots); no torch/ROOT.
+Pure h5py+numpy+scipy (+matplotlib if --plots); no torch/ROOT. Reuses the reco's
+de-double-counted calorimetric charge (trajfit_dev/calo.py) for metric C.
 """
 import os
+import sys
 import glob
 import argparse
 
 import numpy as np
 import h5py
+
+# reuse the reco's de-double-counted calorimetric charge for metric C (the same
+# `comb` = Y-plane-else-mean(U,V) charge the shower energy reco integrates).
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                "trajfit_dev"))
+from calo import dedup_charge  # noqa: E402
 
 PID2SP = {11: "e", -11: "e", 22: "gamma", 13: "mu", -13: "mu",
           211: "pi", -211: "pi", 2212: "p"}
@@ -29,6 +46,7 @@ SP2I = {s: i for i, s in enumerate(SPECIES)}
 MASS = {"e": 0.511, "gamma": 0.0, "mu": 105.6584, "pi": 139.5704, "p": 938.2721}
 CLASS_NAMES = ["e", "gamma", "mu", "pi", "p", "other", "(unused)", "no_object"]
 COMPLETENESS = 0.70
+SLICE_COVERAGE = 0.50
 
 
 def read_list(p):
@@ -75,9 +93,10 @@ def preload_nu_reco(nu_reco_dir):
 
 
 def completeness_by_trackid(kp_path):
-    """{trackid: max completeness over instances, pred_class of best instance}."""
+    """({trackid: (max completeness, pred_class of best instance)}, slice_coord)."""
     best = {}
     with h5py.File(kp_path, "r") as f:
+        slice_coord = f["slice/coord_cm"][()].astype(np.float32)
         n = int(f.attrs["n_particles"])
         for i in range(n):
             g = f[f"particle/{i}"]
@@ -89,7 +108,67 @@ def completeness_by_trackid(kp_path):
             c = inter / gp.size
             if t not in best or c > best[t][0]:
                 best[t] = (c, int(g.attrs["cls"]))
-    return best
+    return best, slice_coord
+
+
+def _charge_sum(pixval, tick, uw, vw, yw, sel):
+    """De-double-counted unique-pixel charge (comb: Y else mean(U,V)) over `sel`.
+
+    calo.dedup_charge splits each wire pixel's ADC among the spacepoints sharing
+    it, so summing the per-point charge over a set counts every pixel it touches
+    exactly once -- the same quantity the shower energy reco integrates.
+    """
+    if not np.any(sel):
+        return 0.0
+    _, q_comb = dedup_charge(pixval[sel], tick[sel], uw[sel], vw[sel], yw[sel])
+    return float(q_comb.sum())
+
+
+def slice_coverage(entry, slice_coord, truth_ids):
+    """Per-trackid charge- and count-based nu-slice coverage from triplet_data.
+
+    Returns four {trackid: value} dicts:
+      n_true : # triplet_data spacepoints truth-matched to the particle (count)
+      q_true : de-double-counted unique-pixel CHARGE of those points (denominator)
+      q_slice: charge of the subset that fall inside the nu slice (numerator)
+      n_slice: count of those in-slice points (for the count-based comparison)
+
+    The headline coverage (metric C) is CHARGE-based, q_slice/q_true: the fraction
+    of the particle's visible ionization the slice kept. This is robust to the GT
+    labeller being over-liberal on the low-charge ionization edges/tails (lots of
+    edge spacepoints, little charge) that count-based coverage over-penalises.
+    Charge is the reco's `comb` (Y plane else mean(U,V)); denominator = "pass in
+    the GT spacepoints", numerator = "pass in the reco/slice spacepoints", each
+    de-double-counted over its own set. Slice membership is an exact position
+    match triplet_data->slice (bit-identical subset, dist 0).
+    """
+    td = entry["triplet_data"]
+    td_tid = np.asarray(td["trackid"][()], np.int64)
+    sel = np.isin(td_tid, np.asarray(list(truth_ids), np.int64))
+    n_true, q_true, q_slice, n_slice = {}, {}, {}, {}
+    if not sel.any():
+        return n_true, q_true, q_slice, n_slice
+    tid_sel = td_tid[sel]
+    pixval = np.asarray(td["pixval"][()])[sel]
+    tick = np.asarray(td["tick"][()])[sel]
+    uw = np.asarray(td["uwire"][()])[sel]
+    vw = np.asarray(td["vwire"][()])[sel]
+    yw = np.asarray(td["ywire"][()])[sel]
+    inm = np.zeros(len(tid_sel), bool)
+    if slice_coord is not None and len(slice_coord):
+        from scipy.spatial import cKDTree
+        pos_sel = np.asarray(td["pos"][()], np.float32)[sel]
+        d, _ = cKDTree(slice_coord).query(pos_sel, k=1)
+        inm = d < 0.05   # cm; slice points are bit-identical members of triplet_data
+    for t in np.unique(tid_sel):
+        m = tid_sel == t
+        ms = m & inm
+        ti = int(t)
+        n_true[ti] = int(m.sum())
+        n_slice[ti] = int(ms.sum())
+        q_true[ti] = _charge_sum(pixval, tick, uw, vw, yw, m)
+        q_slice[ti] = _charge_sum(pixval, tick, uw, vw, yw, ms)
+    return n_true, q_true, q_slice, n_slice
 
 
 def reco_ke(energy, cls_idx):
@@ -97,79 +176,37 @@ def reco_ke(energy, cls_idx):
     return energy - MASS.get(name, 0.0) if name in ("mu", "pi", "p") else energy
 
 
-def main():
-    ap = argparse.ArgumentParser(description=__doc__,
-                                 formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--keypoint2-list", required=True)
-    ap.add_argument("--merged-sp-list", required=True)
-    ap.add_argument("--nu-reco-dir", required=True)
-    ap.add_argument("--out", default="eval_records.npz")
-    ap.add_argument("--plots", default=None, help="dir for PNGs (needs matplotlib)")
-    ap.add_argument("--primaries-only", action="store_true",
-                    help="denominator = primaries (parent is the nu) only")
-    args = ap.parse_args()
+PI0 = 111
 
-    msp_map = {os.path.basename(p): p for p in read_list(args.merged_sp_list)}
-    kp_list = read_list(args.keypoint2_list)
-    print(f">>> {len(kp_list)} keypoint2, {len(msp_map)} merged_sp; indexing...",
-          flush=True)
-    kp_index = build_kp_index(kp_list)
-    nu_reco = preload_nu_reco(args.nu_reco_dir)
-    print(f">>> kp_index={len(kp_index)}  nu_reco events={len(nu_reco)}", flush=True)
 
-    # per-particle records (one row per true nu-origin particle)
-    rec = dict(species=[], true_ke=[], found_A=[], compl=[], found_B=[],
-               reco_ke=[], reco_class=[], had_kp=[])
-    n_ev = 0
-    for msp_base, msp_path in msp_map.items():
-        try:
-            with h5py.File(msp_path, "r") as f:
-                mt = f["entry_0/mc_particle_tree"]
-                tid = mt["trackid"][()]; pid = mt["pid"][()]
-                ke = mt["energy_mev"][()]; org = mt["origin"][()]
-                par = mt["parent_trackid"][()] if args.primaries_only else None
-        except Exception:
-            continue
-        # true nu-origin particles of reconstructable species
-        truth = {}
-        for i in range(len(tid)):
-            if org[i] != 1 or int(pid[i]) not in PID2SP:
-                continue
-            if args.primaries_only and int(par[i]) not in (0, int(tid[i])):
-                continue
-            truth[int(tid[i])] = (PID2SP[int(pid[i])], float(ke[i]))
-        if not truth:
-            continue
-        n_ev += 1
-        hit = kp_index.get(msp_base)
-        compl = completeness_by_trackid(hit[1]) if hit else {}
-        nr = nu_reco.get(hit[0]) if hit else None
-        for t, (sp, tke) in truth.items():
-            c = compl.get(t, (0.0, -1))[0]
-            fB = rk = rc = None
-            if nr is not None:
-                m = np.where(nr["gt"] == t)[0]
-                if m.size:
-                    j = m[np.argmax(nr["energy"][m])]      # largest-energy match
-                    rk = reco_ke(float(nr["energy"][j]), int(nr["cls"][j]))
-                    rc = int(nr["cls"][j])
-            rec["species"].append(SP2I[sp])
-            rec["true_ke"].append(tke)
-            rec["found_A"].append(c >= COMPLETENESS)
-            rec["compl"].append(c)
-            rec["found_B"].append(rk is not None)
-            rec["reco_ke"].append(rk if rk is not None else 0.0)
-            rec["reco_class"].append(rc if rc is not None else -1)
-            rec["had_kp"].append(hit is not None)
-    for k in rec:
-        rec[k] = np.asarray(rec[k])
-    np.savez(args.out, species_names=np.array(SPECIES), **rec)
-    print(f">>> {n_ev} events with nu-origin truth, {len(rec['species'])} "
-          f"true particles -> {args.out}", flush=True)
+def is_primary(t, pid_by_tid, par_by_tid):
+    """True if particle `t` is a ν-vertex primary.
 
-    # ---- summary: efficiency in coarse KE bins ----
+    A ν primary has parent_trackid 0 (or itself). Photons from a primary π0
+    decay are also treated as primaries: the π0 decays effectively at the ν
+    vertex, so its two γ appear to originate there. π0 itself is not
+    reconstructable (not in PID2SP) so it never enters the denominator.
+    """
+    p = int(par_by_tid.get(t, 0))
+    if p in (0, t):
+        return True
+    # γ from a π0 whose own parent is the ν (primary π0)
+    if int(pid_by_tid.get(t, 0)) == 22 and int(pid_by_tid.get(p, 0)) == PI0:
+        pp = int(par_by_tid.get(p, 0))
+        return pp in (0, p)
+    return False
+
+
+RECORD_KEYS = ["species", "true_ke", "found_A", "compl", "found_B",
+               "reco_ke", "reco_class", "had_kp", "found_C", "slice_cov",
+               "slice_cov_count", "q_true", "n_true_sp"]
+
+
+def print_summary(rec):
+    """Per-species efficiency in coarse KE bins."""
     bins = [0, 50, 100, 200, 400, 800, 1e9]
-    print("\nspecies | KE bin[MeV] |   N  | eff_A(>=70%) | eff_B(attach)")
+    print("\nspecies | KE bin[MeV] |   N  | eff_A(seg70) | eff_B(attach) | "
+          "eff_C(chgQ50)")
     for si, sp in enumerate(SPECIES):
         m = rec["species"] == si
         if m.sum() == 0:
@@ -180,8 +217,150 @@ def main():
             if N == 0:
                 continue
             eA = rec["found_A"][b].mean(); eB = rec["found_B"][b].mean()
+            eC = rec["found_C"][b].mean()
             print(f"{sp:>6} | {lo:5.0f}-{hi if hi < 1e8 else 9999:<5.0f} | "
-                  f"{N:5d} | {eA:5.2f}       | {eB:5.2f}")
+                  f"{N:5d} | {eA:5.2f}        | {eB:5.2f}         | {eC:5.2f}")
+
+
+def merge_shards(glob_pat, out, plots):
+    """Concatenate per-shard record npz files -> one table + summary + plots."""
+    paths = sorted(glob.glob(glob_pat))
+    if not paths:
+        raise SystemExit(f"no shard npz matched {glob_pat!r}")
+    parts = {k: [] for k in RECORD_KEYS}
+    for p in paths:
+        with np.load(p, allow_pickle=True) as z:
+            for k in RECORD_KEYS:
+                parts[k].append(z[k])
+    rec = {k: np.concatenate(parts[k]) if parts[k] else np.array([])
+           for k in RECORD_KEYS}
+    np.savez(out, species_names=np.array(SPECIES), **rec)
+    print(f">>> merged {len(paths)} shards -> {len(rec['species'])} true "
+          f"particles -> {out}", flush=True)
+    print_summary(rec)
+    if plots:
+        _plots(rec, plots)
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--keypoint2-list")
+    ap.add_argument("--merged-sp-list")
+    ap.add_argument("--nu-reco-dir")
+    ap.add_argument("--out", default="eval_records.npz")
+    ap.add_argument("--plots", default=None, help="dir for PNGs (needs matplotlib)")
+    ap.add_argument("--primaries-only", action="store_true",
+                    help="denominator = primaries (parent is the nu) only")
+    ap.add_argument("--start", type=int, default=0,
+                    help="shard: first merged_sp index (sorted by basename)")
+    ap.add_argument("--n", type=int, default=None,
+                    help="shard: number of merged_sp files to process from --start")
+    ap.add_argument("--merge", metavar="GLOB",
+                    help="merge mode: concatenate matching shard npz -> --out "
+                         "(+summary/plots); ignores the list/dir args")
+    args = ap.parse_args()
+
+    if args.merge:
+        merge_shards(args.merge, args.out, args.plots)
+        return
+
+    for req in ("keypoint2_list", "merged_sp_list", "nu_reco_dir"):
+        if getattr(args, req) is None:
+            ap.error(f"--{req.replace('_', '-')} is required (unless --merge)")
+
+    # deterministic order so --start/--n shards are contiguous & non-overlapping
+    msp_items = sorted({os.path.basename(p): p
+                        for p in read_list(args.merged_sp_list)}.items())
+    ntot = len(msp_items)
+    lo = args.start
+    hi = ntot if args.n is None else min(ntot, args.start + args.n)
+    msp_items = msp_items[lo:hi]
+    kp_list = read_list(args.keypoint2_list)
+    print(f">>> {len(kp_list)} keypoint2, {ntot} merged_sp; "
+          f"this shard: [{lo}:{hi}] ({len(msp_items)}); indexing...", flush=True)
+    kp_index = build_kp_index(kp_list)
+    nu_reco = preload_nu_reco(args.nu_reco_dir)
+    print(f">>> kp_index={len(kp_index)}  nu_reco events={len(nu_reco)}", flush=True)
+
+    # per-particle records (one row per true nu-origin particle)
+    rec = {k: [] for k in RECORD_KEYS}
+    n_ev = 0
+    for msp_base, msp_path in msp_items:
+        try:
+            fmsp = h5py.File(msp_path, "r")
+        except Exception:
+            continue
+        try:
+            entry = fmsp["entry_0"]
+            mt = entry["mc_particle_tree"]
+            tid = mt["trackid"][()]; pid = mt["pid"][()]
+            ke = mt["energy_mev"][()]; org = mt["origin"][()]
+            par = mt["parent_trackid"][()] if args.primaries_only else None
+        except Exception:
+            fmsp.close()
+            continue
+        # maps for the primaries cut (need parent pid to catch π0-decay γ)
+        if args.primaries_only:
+            pid_by_tid = {int(tid[i]): int(pid[i]) for i in range(len(tid))}
+            par_by_tid = {int(tid[i]): int(par[i]) for i in range(len(tid))}
+        # true nu-origin particles of reconstructable species
+        truth = {}
+        for i in range(len(tid)):
+            if org[i] != 1 or int(pid[i]) not in PID2SP:
+                continue
+            if args.primaries_only and not is_primary(int(tid[i]), pid_by_tid,
+                                                       par_by_tid):
+                continue
+            truth[int(tid[i])] = (PID2SP[int(pid[i])], float(ke[i]))
+        if not truth:
+            fmsp.close()
+            continue
+        n_ev += 1
+        hit = kp_index.get(msp_base)
+        compl, slice_coord = completeness_by_trackid(hit[1]) if hit else ({}, None)
+        nr = nu_reco.get(hit[0]) if hit else None
+        # metric C: charge-based slice coverage of each true particle
+        try:
+            n_true_sp, q_true, q_slice, n_in_slice = slice_coverage(
+                entry, slice_coord, truth.keys())
+        except Exception as ex:
+            print(f"  [warn] slice_coverage {msp_base}: {ex}")
+            n_true_sp, q_true, q_slice, n_in_slice = {}, {}, {}, {}
+        fmsp.close()
+        for t, (sp, tke) in truth.items():
+            c = compl.get(t, (0.0, -1))[0]
+            fB = rk = rc = None
+            if nr is not None:
+                m = np.where(nr["gt"] == t)[0]
+                if m.size:
+                    j = m[np.argmax(nr["energy"][m])]      # largest-energy match
+                    rk = reco_ke(float(nr["energy"][j]), int(nr["cls"][j]))
+                    rc = int(nr["cls"][j])
+            ntsp = int(n_true_sp.get(t, 0))
+            qt = q_true.get(t, 0.0)
+            cov = q_slice.get(t, 0.0) / qt if qt > 0 else 0.0    # charge coverage
+            cov_count = n_in_slice.get(t, 0) / ntsp if ntsp > 0 else 0.0
+            rec["species"].append(SP2I[sp])
+            rec["true_ke"].append(tke)
+            rec["found_A"].append(c >= COMPLETENESS)
+            rec["compl"].append(c)
+            rec["found_B"].append(rk is not None)
+            rec["reco_ke"].append(rk if rk is not None else 0.0)
+            rec["reco_class"].append(rc if rc is not None else -1)
+            rec["had_kp"].append(hit is not None)
+            rec["found_C"].append(cov >= SLICE_COVERAGE)
+            rec["slice_cov"].append(cov)
+            rec["slice_cov_count"].append(cov_count)
+            rec["q_true"].append(qt)
+            rec["n_true_sp"].append(ntsp)
+    for k in rec:
+        rec[k] = np.asarray(rec[k])
+    np.savez(args.out, species_names=np.array(SPECIES), **rec)
+    print(f">>> {n_ev} events with nu-origin truth, {len(rec['species'])} "
+          f"true particles -> {args.out}", flush=True)
+
+    print_summary(rec)
 
     if args.plots:
         _plots(rec, args.plots)
@@ -200,7 +379,9 @@ def _plots(rec, outdir):
             continue
         # efficiency vs KE
         fig, ax = plt.subplots(figsize=(5, 4))
-        for key, lab in (("found_A", "A: seg >=70%"), ("found_B", "B: attached")):
+        for key, lab in (("found_C", "C: charge slice >=50%"),
+                         ("found_A", "A: seg >=70%"),
+                         ("found_B", "B: attached")):
             eff, err = [], []
             for lo, hi in zip(edges[:-1], edges[1:]):
                 b = m & (rec["true_ke"] >= lo) & (rec["true_ke"] < hi)
@@ -213,6 +394,16 @@ def _plots(rec, outdir):
                title=f"{sp} reco efficiency")
         ax.legend(); ax.grid(alpha=0.3)
         fig.tight_layout(); fig.savefig(f"{outdir}/eff_{sp}.png", dpi=110)
+        plt.close(fig)
+        # slice-coverage distribution (metric C, upstream diagnostic)
+        fig, ax = plt.subplots(figsize=(5, 4))
+        ax.hist(rec["slice_cov"][m], bins=np.linspace(0, 1, 21), color="C0")
+        ax.axvline(SLICE_COVERAGE, color="r", ls="--", lw=1,
+                   label=f"cut={SLICE_COVERAGE:.2f}")
+        ax.set(xlabel="charge slice coverage of true ionization",
+               ylabel="particles", title=f"{sp}: nu-slice charge coverage")
+        ax.legend(); ax.grid(alpha=0.3)
+        fig.tight_layout(); fig.savefig(f"{outdir}/slicecov_{sp}.png", dpi=110)
         plt.close(fig)
         # 2D reco vs true KE (missed -> 0)
         fig, ax = plt.subplots(figsize=(5, 4))

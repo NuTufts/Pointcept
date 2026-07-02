@@ -24,7 +24,7 @@
 #SBATCH --mem=16G
 #SBATCH --cpus-per-task=4
 #SBATCH --time=12:00:00
-#SBATCH --partition=preempt
+#SBATCH --partition=batch
 #SBATCH --output=logs/nu_reco/nu_reco_shard.%A_%a.%N.log
 #SBATCH --error=logs/nu_reco/nu_reco_shard.%A_%a.%N.err
 #SBATCH --array=0-19

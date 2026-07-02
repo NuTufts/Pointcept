@@ -22,8 +22,15 @@ WORKDIR=/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/kpv2_pointcept
 container=/cluster/tufts/wongjiradlabnu/larbys/larbys-container/pointcept_cuml.sif
 
 CONFIG=${CONFIG:-configs/lartpc/larformer-keypoint2-fullcascade.py}
-INPUT_LIST=${INPUT_LIST:-lartpc_data_prep/larformer_keypoint_v2/inputlists/merged_sp_mcc9_v29e_dl_run3b_bnb_nu_overlay_50event_test.txt}
-OUTPUT_DIR=${OUTPUT_DIR:-${WORKDIR}/lartpc_data_prep/larformer_keypoint_v2/output/test_50events_with_score_maps/}
+#INPUT_LIST=${INPUT_LIST:-lartpc_data_prep/larformer_keypoint_v2/inputlists/merged_sp_mcc9_v29e_dl_run3b_bnb_nu_overlay_50event_test.txt}
+#OUTPUT_DIR=${OUTPUT_DIR:-${WORKDIR}/lartpc_data_prep/larformer_keypoint_v2/output/test_50events_with_score_maps/}
+
+#INPUT_LIST=lartpc_data_prep/larformer_keypoint_v2/inputlists/merged_sp_valdata_pi0filtered_50events.txt
+#OUTPUT_DIR=${OUTPUT_DIR:-${WORKDIR}/lartpc_data_prep/larformer_keypoint_v2/output/valdata_pi0filtered_50events_with_score_maps/}
+
+INPUT_LIST=lartpc_data_prep/larformer_keypoint_v2/inputlists/merged_sp_valdata_all.txt
+OUTPUT_DIR=${OUTPUT_DIR:-${WORKDIR}/lartpc_data_prep/larformer_keypoint_v2/output/valdata_all_with_score_maps/}
+
 N_EVENTS=${N_EVENTS:--1}        # -1 = all events in the list
 
 # Stage-3 particle ckpt + keypoint ckpt default from the config; override here.
@@ -45,6 +52,11 @@ mkdir -p "${OUTPUT_DIR}"
 # ---- run inside the apptainer container --------------------------------------
 module load apptainer 2>/dev/null || true
 
+# Ensure the nvidia-uvm device nodes exist on the host before apptainer --nv
+# binds them; otherwise CUDA fails to initialize inside the container with
+# "CUDA unknown error" even though nvidia-smi works.
+nvidia-modprobe -u -c=0 2>/dev/null || true
+
 apptainer exec --nv --bind /cluster:/cluster "${container}" bash -c "
   cd ${WORKDIR} && \
   source setenv_pointcept_only.sh && \
@@ -54,6 +66,7 @@ apptainer exec --nv --bind /cluster:/cluster "${container}" bash -c "
     --output-dir ${OUTPUT_DIR} \
     --n-events ${N_EVENTS} \
     --device cuda \
+    --save-score-maps \
     ${EXTRA_ARGS}
 "
 
