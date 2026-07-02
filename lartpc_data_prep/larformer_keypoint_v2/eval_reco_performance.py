@@ -199,11 +199,45 @@ def is_primary(t, pid_by_tid, par_by_tid):
 
 RECORD_KEYS = ["species", "true_ke", "found_A", "compl", "found_B",
                "reco_ke", "reco_class", "had_kp", "found_C", "slice_cov",
-               "slice_cov_count", "q_true", "n_true_sp"]
+               "slice_cov_count", "q_true", "n_true_sp", "has_instance"]
+
+# per-particle failure-stage diagnosis (mirrors the visualizer's why_unattached):
+# where in the pipeline each true particle fell out. First matching wins.
+STAGE_NAMES = ["ok", "misID", "seg!att", "noInst", "missSlice"]
+STAGE_DESC = {
+    "ok":        "attached + correct class",
+    "misID":     "attached but wrong predicted class",
+    "seg!att":   "segmenter made an instance but reco did not attach it",
+    "noInst":    "in slice (charge) but segmenter made no instance",
+    "missSlice": "little/no charge in the slice (upstream loss)",
+}
+STAGE_LOWCOV = 0.10   # charge slice-coverage below which we call it "missed"
+
+
+def stage_codes(rec, lowcov=STAGE_LOWCOV):
+    """int stage per particle: 0 ok, 1 misID, 2 seg!att, 3 noInst, 4 missSlice."""
+    n = len(rec["species"])
+    fb = np.asarray(rec["found_B"]).astype(bool)
+    hi = np.asarray(rec["has_instance"]).astype(bool)
+    cov = np.asarray(rec["slice_cov"], float)
+    rc = np.asarray(rec["reco_class"], int)
+    sp = np.asarray(rec["species"], int)
+    out = np.empty(n, int)
+    for i in range(n):
+        if fb[i]:
+            cn = CLASS_NAMES[rc[i]] if 0 <= rc[i] < len(CLASS_NAMES) else "?"
+            out[i] = 0 if cn == SPECIES[sp[i]] else 1
+        elif hi[i]:
+            out[i] = 2
+        elif cov[i] >= lowcov:
+            out[i] = 3
+        else:
+            out[i] = 4
+    return out
 
 
 def print_summary(rec):
-    """Per-species efficiency in coarse KE bins."""
+    """Per-species efficiency + failure-stage breakdown in coarse KE bins."""
     bins = [0, 50, 100, 200, 400, 800, 1e9]
     print("\nspecies | KE bin[MeV] |   N  | eff_A(seg70) | eff_B(attach) | "
           "eff_C(chgQ50)")
@@ -220,6 +254,29 @@ def print_summary(rec):
             eC = rec["found_C"][b].mean()
             print(f"{sp:>6} | {lo:5.0f}-{hi if hi < 1e8 else 9999:<5.0f} | "
                   f"{N:5d} | {eA:5.2f}        | {eB:5.2f}         | {eC:5.2f}")
+    if "has_instance" in rec:
+        print_stage_breakdown(rec, bins)
+
+
+def print_stage_breakdown(rec, bins):
+    """Fraction of true particles in each reco failure stage, per species/KE bin."""
+    codes = stage_codes(rec)
+    print("\n== reco failure-stage breakdown (fraction of true particles) ==")
+    print("   " + "  ".join(f"{s}={STAGE_DESC[s]}" for s in STAGE_NAMES))
+    print(f"{'species':>6} | {'KE bin[MeV]':>11} | {'N':>5} | " +
+          " | ".join(f"{s:>9}" for s in STAGE_NAMES))
+    for si, sp in enumerate(SPECIES):
+        m = rec["species"] == si
+        if m.sum() == 0:
+            continue
+        for lo, hi in zip(bins[:-1], bins[1:]):
+            b = m & (rec["true_ke"] >= lo) & (rec["true_ke"] < hi)
+            N = int(b.sum())
+            if N == 0:
+                continue
+            fr = [f"{(codes[b] == k).mean():9.2f}" for k in range(len(STAGE_NAMES))]
+            print(f"{sp:>6} | {lo:5.0f}-{hi if hi < 1e8 else 9999:<5.0f} | "
+                  f"{N:5d} | " + " | ".join(fr))
 
 
 def merge_shards(glob_pat, out, plots):
@@ -354,6 +411,7 @@ def main():
             rec["slice_cov_count"].append(cov_count)
             rec["q_true"].append(qt)
             rec["n_true_sp"].append(ntsp)
+            rec["has_instance"].append(t in compl)   # segmenter made an instance
     for k in rec:
         rec[k] = np.asarray(rec[k])
     np.savez(args.out, species_names=np.array(SPECIES), **rec)
@@ -414,7 +472,51 @@ def _plots(rec, outdir):
                title=f"{sp}: reco vs true KE (missed=0)")
         fig.tight_layout(); fig.savefig(f"{outdir}/recovstrue_{sp}.png", dpi=110)
         plt.close(fig)
+    if "has_instance" in rec:
+        _stage_plots(rec, outdir)
     print(f">>> plots -> {outdir}")
+
+
+def _stage_plots(rec, outdir):
+    """Stacked-bar of the reco failure-stage mix vs KE, per species -- shows which
+    stage dominates the eff_B gap (e.g. electrons: mis-ID vs no-instance)."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    codes = stage_codes(rec)
+    bins = [0, 50, 100, 200, 400, 800, 1e9]
+    labels = [f"{lo:.0f}-{hi if hi < 1e8 else 9999:.0f}"
+              for lo, hi in zip(bins[:-1], bins[1:])]
+    # ok green, misID orange, seg!att red, noInst blue, missSlice gray
+    colors = ["#3ca03c", "#e08000", "#d03030", "#5060d0", "#909090"]
+    for si, sp in enumerate(SPECIES):
+        m = rec["species"] == si
+        if m.sum() < 5:
+            continue
+        fracs = np.zeros((len(STAGE_NAMES), len(labels)))
+        Ns = []
+        for j, (lo, hi) in enumerate(zip(bins[:-1], bins[1:])):
+            b = m & (rec["true_ke"] >= lo) & (rec["true_ke"] < hi)
+            N = int(b.sum()); Ns.append(N)
+            if N:
+                for k in range(len(STAGE_NAMES)):
+                    fracs[k, j] = (codes[b] == k).mean()
+        fig, ax = plt.subplots(figsize=(6.5, 4))
+        bottoms = np.zeros(len(labels))
+        for k in range(len(STAGE_NAMES)):
+            ax.bar(labels, fracs[k], bottom=bottoms, color=colors[k],
+                   label=STAGE_NAMES[k], width=0.8)
+            bottoms += fracs[k]
+        for x, N in enumerate(Ns):
+            ax.text(x, 1.01, f"N={N}", ha="center", va="bottom", fontsize=6)
+        ax.set(ylabel="fraction of true particles", ylim=(0, 1.12),
+               title=f"{sp}: reco failure-stage mix vs true KE")
+        ax.legend(fontsize=7, ncol=5, loc="lower center",
+                  bbox_to_anchor=(0.5, -0.32))
+        plt.setp(ax.get_xticklabels(), rotation=25, ha="right", fontsize=7)
+        ax.set_xlabel("true KE [MeV]")
+        fig.tight_layout(); fig.savefig(f"{outdir}/stage_{sp}.png", dpi=110)
+        plt.close(fig)
 
 
 if __name__ == "__main__":

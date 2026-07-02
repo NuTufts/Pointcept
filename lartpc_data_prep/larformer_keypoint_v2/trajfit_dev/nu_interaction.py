@@ -184,7 +184,7 @@ def reco_interaction(primary, tracks, d_vertex=8.0, d_perp=3.0, front_tol=1.5,
 # Phase 2: attach showers to interaction connection points
 # ---------------------------------------------------------------------------
 def reco_showers(shower_recs, conn_points, mode="greedy", d_impact=10.0,
-                 cos_min=0.9, d_gap=60.0):
+                 cos_min=0.9, d_gap=60.0, gap_touch=3.0):
     """Attach predicted shower instances to interaction connection points.
 
     `conn_points`: list of {vid, pos, dist} (the nu vertex + track endpoints from
@@ -217,7 +217,8 @@ def reco_showers(shower_recs, conn_points, mode="greedy", d_impact=10.0,
                     continue
                 tk = trunk_vertex_biased(sh["points"], cp["pos"])
                 ok, g = connects(tk.start, tk.direction, cp["pos"],
-                                 d_impact=d_impact, cos_min=cos_min, d_gap=d_gap)
+                                 d_impact=d_impact, cos_min=cos_min, d_gap=d_gap,
+                                 gap_touch=gap_touch)
                 if ok:
                     _attach(sh, cp, tk, g)
     else:                                            # exhaustive
@@ -226,7 +227,8 @@ def reco_showers(shower_recs, conn_points, mode="greedy", d_impact=10.0,
             for cp in conn_points:
                 tk = trunk_vertex_biased(sh["points"], cp["pos"])
                 ok, g = connects(tk.start, tk.direction, cp["pos"],
-                                 d_impact=d_impact, cos_min=cos_min, d_gap=d_gap)
+                                 d_impact=d_impact, cos_min=cos_min, d_gap=d_gap,
+                                 gap_touch=gap_touch)
                 if ok and (best is None or g["impact"] < best[0]):
                     best = (g["impact"], cp, tk, g)
             if best is not None:
@@ -271,7 +273,8 @@ def reco_interactions(cands, tracks, shower_recs, args):
     used = []
     out = []
     sk = dict(d_impact=args.shower_d_impact, cos_min=args.shower_cos_min,
-              d_gap=args.shower_d_gap)
+              d_gap=args.shower_d_gap,
+              gap_touch=getattr(args, "shower_gap_touch", 3.0))
     for it in range(args.max_interactions):
         pool = [c for c in cands if all(
             np.linalg.norm(np.asarray(c[0], float) - u) > args.reco_exclude_radius

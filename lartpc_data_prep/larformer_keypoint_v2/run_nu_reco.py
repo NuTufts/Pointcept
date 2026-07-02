@@ -44,6 +44,7 @@ def reco_args(a):
         d_vertex=12.0, d_perp=4.0, front_tol=1.5, merge_radius=3.0,
         shower_mode=a.shower_mode, shower_d_impact=a.shower_d_impact,
         shower_cos_min=a.shower_cos_min, shower_d_gap=60.0,
+        shower_gap_touch=getattr(a, "shower_gap_touch", 3.0),
         max_interactions=a.max_interactions, reco_exclude_radius=10.0,
         reco_min_unassoc_points=30)
 
@@ -91,7 +92,13 @@ def reco_one(kp_path, msp_path, rmom, calib, a):
 
 
 def _write_event(g, interactions, all_recs, kp_path):
-    """Flat per-particle 4-momentum table + per-interaction vertices."""
+    """Per-particle 4-momentum table + geometry: the fitted track polylines
+    (`part_poly_cm` concatenated + `part_npoly` counts), per-particle start point
+    (`part_start_cm`) and attach-vertex index (`part_vtx`), and the full vertex
+    tree (`vtx_pos_cm`/`vtx_interaction`/`vtx_depth`/`vtx_parent_track`, primary +
+    secondary), so a downstream viewer can draw the interaction on the real
+    spacepoints without re-running the reco. `vertices_cm` (primary per
+    interaction) is kept for backward compatibility."""
     ke_by = {r.inst_idx: (r.energy_mev, int(r.gt_trackid)) for r in (all_recs or [])}
     with h5py.File(kp_path, "r") as f:
         for k in ("src_file", "run", "subrun", "event"):
@@ -103,10 +110,28 @@ def _write_event(g, interactions, all_recs, kp_path):
     g.create_dataset("vertices_cm",
                      data=np.array([I["vertex"] for I in interactions], np.float32))
 
+    # --- full vertex tree (primary + secondary), flattened across interactions --
+    vtx_pos, vtx_int, vtx_depth, vtx_parent = [], [], [], []
+    vtx_gidx = {}                     # (interaction_idx, local_vertex_id) -> global
+    for ii, I in enumerate(interactions):
+        for v in I["res"]["vertices"]:
+            vtx_gidx[(ii, int(v["id"]))] = len(vtx_pos)
+            vtx_pos.append(np.asarray(v["pos"], np.float32))
+            vtx_int.append(ii)
+            vtx_depth.append(int(v.get("depth", 0)))
+            pt = v.get("parent_track")
+            vtx_parent.append(int(pt) if pt is not None else -1)
+    g.create_dataset("vtx_pos_cm",
+                     data=(np.asarray(vtx_pos, np.float32).reshape(-1, 3)
+                           if vtx_pos else np.zeros((0, 3), np.float32)))
+    g.create_dataset("vtx_interaction", data=np.asarray(vtx_int, np.int64))
+    g.create_dataset("vtx_depth", data=np.asarray(vtx_depth, np.int64))
+    g.create_dataset("vtx_parent_track", data=np.asarray(vtx_parent, np.int64))
+
     rows = dict(interaction=[], kind=[], pred_class=[], energy=[], length=[],
-                charge=[], method=[], gt_trackid=[], true_ke=[])
-    mom, fourvec, direction = [], [], []
-    for I in interactions:
+                charge=[], method=[], gt_trackid=[], true_ke=[], vtx=[])
+    mom, fourvec, direction, start_cm, polys = [], [], [], [], []
+    for ii, I in enumerate(interactions):
         objs = ([("track", T) for T in I["tracks"]]
                 + [("shower", s) for s in I["showers"] if s["attached"]])
         for kind, o in objs:
@@ -115,7 +140,7 @@ def _write_event(g, interactions, all_recs, kp_path):
             tke, gtid = ke_by.get(inst, (float("nan"), -1))
             rows["interaction"].append(I["iter"])
             rows["kind"].append(0 if kind == "track" else 1)
-            rows["pred_class"].append(int(o["cls"] if kind == "shower" else o["cls"]))
+            rows["pred_class"].append(int(o["cls"]))
             rows["energy"].append(float(m.get("energy", np.nan)))
             rows["length"].append(float(o["length"]) if kind == "track" else np.nan)
             rows["charge"].append(float(m.get("charge_comb", np.nan)))
@@ -125,6 +150,34 @@ def _write_event(g, interactions, all_recs, kp_path):
             mom.append(np.asarray(m.get("momentum", [np.nan] * 3), np.float32))
             fourvec.append(np.asarray(m.get("fourvec", [np.nan] * 4), np.float32))
             direction.append(np.asarray(m.get("direction", [np.nan] * 3), np.float32))
+            if kind == "track":
+                poly = np.asarray(o.get("poly", np.zeros((0, 3))),
+                                  np.float32).reshape(-1, 3)
+                att = o.get("attach") or {}
+                ei = int(att.get("end", 0))
+                if ei == 1 and len(poly) >= 2:        # orient poly to start at vtx
+                    poly = poly[::-1].copy()
+                st = (poly[0] if len(poly) else np.full(3, np.nan, np.float32))
+                av = att.get("vertex")
+                gv = vtx_gidx.get((ii, int(av)), -1) if av is not None else -1
+            else:                                     # shower: trunk start + dir
+                tk = o.get("trunk")
+                st = np.asarray(getattr(tk, "start", None)
+                                if tk is not None else o.get("cp_pos"),
+                                np.float32) if (tk is not None or o.get("cp_pos")
+                                                is not None) else np.full(3, np.nan,
+                                                                          np.float32)
+                poly = np.zeros((0, 3), np.float32)   # drawn from start + direction
+                cpid = o.get("cp_id") or ""
+                gv = -1
+                if isinstance(cpid, str) and cpid.startswith("v"):
+                    try:
+                        gv = vtx_gidx.get((ii, int(cpid[1:])), -1)
+                    except ValueError:
+                        gv = -1
+            rows["vtx"].append(int(gv))
+            start_cm.append(st)
+            polys.append(poly)
     n = len(rows["kind"])
     g.attrs["n_particles"] = n
     for k, v in rows.items():
@@ -132,6 +185,15 @@ def _write_event(g, interactions, all_recs, kp_path):
     g.create_dataset("part_momentum", data=np.asarray(mom).reshape(n, 3))
     g.create_dataset("part_fourvec", data=np.asarray(fourvec).reshape(n, 4))
     g.create_dataset("part_direction", data=np.asarray(direction).reshape(n, 3))
+    g.create_dataset("part_start_cm",
+                     data=(np.asarray(start_cm, np.float32).reshape(n, 3)
+                           if n else np.zeros((0, 3), np.float32)))
+    npoly = np.asarray([len(p) for p in polys], np.int64)
+    g.create_dataset("part_npoly", data=npoly)
+    g.create_dataset("part_poly_cm",
+                     data=(np.concatenate(polys, 0).astype(np.float32)
+                           if polys and npoly.sum() > 0
+                           else np.zeros((0, 3), np.float32)))
 
 
 def main():
@@ -148,6 +210,10 @@ def main():
     ap.add_argument("--shower-mode", default="greedy")
     ap.add_argument("--shower-d-impact", type=float, default=15.0)
     ap.add_argument("--shower-cos-min", type=float, default=0.80)
+    ap.add_argument("--shower-gap-touch", type=float, default=3.0,
+                    help="attach a shower regardless of back-pointing cosine when "
+                         "its trunk-start is within this many cm of the vertex "
+                         "(cosine is ill-conditioned at ~zero gap)")
     ap.add_argument("--snap-radius", type=float, default=30.0)
     ap.add_argument("--max-interactions", type=int, default=3)
     args = ap.parse_args()

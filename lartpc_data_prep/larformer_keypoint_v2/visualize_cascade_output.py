@@ -30,10 +30,19 @@ Per triplet_data point we derive a STAGE:
   segmented        — in the slice and inside a predicted instance
 and per particle whether nu-reco attached it. Color modes expose each stage.
 
-Run inside the container, e.g.
+The nu-interaction reco PRODUCT is drawn too ("reco axes" toggle + "reco
+particles" color mode): the reco vertices and each reco track/shower as a ray
+from its vertex along its reconstructed direction (colored by predicted class),
+and the segmenter instances colored by whether the reco attached them (bright) or
+dropped them (gray). Showers are in nu_reco only if attached, so a missing
+electron ray == an unattached electron shower -- the failure mode under study.
+
+Browse a subset with --browse-list (e.g. the 20 CC-nue events) while cascade
+files still resolve by sorted-position in the FULL --merged-sp-list:
     ./run_in_tufts_pointcept_container.sh python \
         lartpc_data_prep/larformer_keypoint_v2/visualize_cascade_output.py \
-        --merged-sp /cluster/.../merged_..._fileno00005_entry000001.h5
+        --browse-list lartpc_data_prep/larformer_keypoint_v2/inputlists/\
+merged_sp_valdata_nuesubset.txt
 then open http://<host>:8050 .  Pure h5py + numpy + scipy + dash/plotly.
 """
 
@@ -68,6 +77,7 @@ from calo import dedup_charge  # noqa: E402
 CLASS_NAMES = ["e", "gamma", "mu", "pi", "p", "other", "(unused)", "no_object"]
 PID2NAME = {11: "e", -11: "e", 22: "gamma", 13: "mu", -13: "mu",
             211: "pi", -211: "pi", 2212: "p"}
+SPECIES_RECO = {"e", "gamma", "mu", "pi", "p"}   # directly reconstructable
 MASS = {"mu": 105.6584, "pi": 139.5704, "p": 938.2721}   # for reco KE of tracks
 ORIGIN_NU, ORIGIN_COSMIC = 1, 2
 
@@ -139,13 +149,23 @@ def _attr_str(attrs, key):
 class Context:
     """Holds the lists / indices shared across events (built once)."""
 
-    def __init__(self, cascade_dir, msp_list_path, kp_list_path, nureco_dir):
+    def __init__(self, cascade_dir, msp_list_path, kp_list_path, nureco_dir,
+                 browse_list_path=None):
         self.cascade_dir = cascade_dir
         self.nureco_dir = nureco_dir
+        # The full (sorted) merged_sp list is the RESOLUTION index: cascade files
+        # are named keypoint2_event{i:05d} by sorted-position in THIS list, so it
+        # must always be the full valdata_all list even when browsing a subset.
         self.msp_sorted = sorted(read_list(msp_list_path)) if \
             os.path.exists(msp_list_path) else []
         self.msp_index = {os.path.basename(p): i
                           for i, p in enumerate(self.msp_sorted)}
+        # The BROWSE list = what the UI pages through (a subset, e.g. nue events);
+        # each browsed file still resolves its cascade via msp_index above.
+        if browse_list_path and os.path.exists(browse_list_path):
+            self.browse = read_list(browse_list_path)
+        else:
+            self.browse = list(self.msp_sorted)
         # gidx = line index of a cascade file in the keypoint2 list
         self.kp_gidx = {}
         if os.path.exists(kp_list_path):
@@ -344,6 +364,7 @@ def _particle_rows(ev):
     edge spacepoints, little charge), which count-based coverage over-penalises.
     """
     tid, origin = ev["td_tid"], ev["td_origin"]
+    inst_tids = {int(p["gt_trackid"]) for p in ev["particles"]}
     rows = []
     for t in np.unique(tid):
         if t <= 0:
@@ -368,6 +389,7 @@ def _particle_rows(ev):
             cov=q_slice / q_true if q_true > 0 else 0.0,        # charge coverage
             segfrac=q_seg / q_true if q_true > 0 else 0.0,
             pred_cls=pcmaj, attached=att is not None,
+            has_instance=int(t) in inst_tids,
             reco_ke=att["reco_ke"] if att else float("nan")))
     # nu first, then by charge desc
     rows.sort(key=lambda r: (r["origin"] != ORIGIN_NU, -r["q_true"]))
@@ -415,8 +437,148 @@ def _subsample(mask, cap, seed=0):
     return idx
 
 
+_CORRECT_CLR = "rgba(60,200,90,1)"     # pred class == true species
+_WRONG_CLR = "rgba(240,60,60,1)"       # pred class != true species
+_NOTRUTH_CLR = "rgba(150,150,150,0.9)"  # no truth match (gt_trackid <= 0)
+
+
+def reco_geometry_traces(ev, shower_len=40.0, color_mode="correct",
+                         highlight_gt=None):
+    """Draw the nu-interaction reco PRODUCT: vertices + per-particle axes.
+
+    Geometry source, in priority order (hover `anchor=`):
+      "poly" -- the reco's saved fitted polyline (`part_poly_cm`/`part_npoly`) for
+                tracks, or `part_start_cm` + direction for showers. This is the
+                exact reco trajectory (kinks and all), on the real spacepoints, and
+                also draws secondary vertices (`vtx_pos_cm`, depth>0). Present only
+                after run_nu_reco is re-run with the enriched _write_event.
+      "inst" -- stopgap for OLD shards without geometry: the segmenter instance's
+                fitted start_cm->end_cm (matched by gt trackid), which also sits on
+                the spacepoints.
+      "vtx?" -- last resort: a ray from the interaction's PRIMARY vertex along
+                part_direction (can float off for secondary-vertex tracks).
+    Tracks are thick with a round tip, showers thin with a diamond tip. `color_mode`
+    "correct" = green if predicted class matches the true species (red if mis-ID,
+    gray if no truth); "class" = by predicted class. Showers appear only if the
+    reco ATTACHED them, so a missing electron ray == an unattached electron shower.
+    """
+    nr = ev.get("nureco")
+    if nr is None:
+        return []
+    vtx = np.atleast_2d(np.asarray(nr.get("vertices_cm", np.zeros((0, 3))),
+                                   np.float64))
+    pdir = np.asarray(nr.get("part_direction", np.zeros((0, 3))),
+                      np.float64).reshape(-1, 3)
+    plen = np.asarray(nr.get("part_length", []), np.float64).reshape(-1)
+    pint = np.asarray(nr.get("part_interaction", []), np.int64).reshape(-1)
+    pcls = np.asarray(nr.get("part_pred_class", []), np.int64).reshape(-1)
+    pkind = np.asarray(nr.get("part_kind", []), np.int64).reshape(-1)
+    pen = np.asarray(nr.get("part_energy", []), np.float64).reshape(-1)
+    ptke = np.asarray(nr.get("part_true_ke", []), np.float64).reshape(-1)
+    pgt = np.asarray(nr.get("part_gt_trackid", []), np.int64).reshape(-1)
+    # enriched geometry (present after re-running run_nu_reco): fitted polylines +
+    # per-particle start point.
+    npoly = np.asarray(nr.get("part_npoly", []), np.int64).reshape(-1)
+    poly_cat = np.asarray(nr.get("part_poly_cm", np.zeros((0, 3))),
+                          np.float64).reshape(-1, 3)
+    pstart = np.asarray(nr.get("part_start_cm", np.zeros((0, 3))),
+                        np.float64).reshape(-1, 3)
+    has_geom = len(npoly) == len(pdir) and len(pstart) == len(pdir)
+    offs = np.concatenate([[0], np.cumsum(npoly)]) if has_geom else None
+    # stopgap for OLD shards: segmenter instance endpoints (by gt trackid).
+    inst_by_gt = {}
+    for p in ev["particles"]:
+        g = int(p["gt_trackid"])
+        n = int(np.size(p["point_idx"]))
+        if g not in inst_by_gt or n > inst_by_gt[g][2]:
+            inst_by_gt[g] = (np.asarray(p["start_cm"], np.float64),
+                             np.asarray(p["end_cm"], np.float64), n)
+    traces = []
+    # vertex tree: prefer the full list (primary depth 0 + secondary depth>0)
+    vpos = np.asarray(nr.get("vtx_pos_cm", np.zeros((0, 3))), np.float64).reshape(-1, 3)
+    vdep = np.asarray(nr.get("vtx_depth", []), np.int64).reshape(-1)
+    if len(vpos) and len(vdep) == len(vpos):
+        for depth_sel, nm, sz, col in ((vdep == 0, "primary vtx", 8, "yellow"),
+                                       (vdep > 0, "secondary vtx", 5, "orange")):
+            if depth_sel.any():
+                x, y, z = _xyz(vpos[depth_sel])
+                traces.append(go.Scatter3d(
+                    x=x, y=y, z=z, mode="markers", name=nm,
+                    marker=dict(size=sz, color=col, symbol="diamond",
+                                line=dict(color="black", width=1))))
+    elif len(vtx):
+        x, y, z = _xyz(vtx)
+        traces.append(go.Scatter3d(
+            x=x, y=y, z=z, mode="markers", name="reco vertex",
+            marker=dict(size=8, color="yellow", symbol="diamond",
+                        line=dict(color="black", width=1))))
+    for k in range(len(pdir)):
+        d = pdir[k]
+        nrm = float(np.linalg.norm(d))
+        d = d / nrm if (nrm > 1e-6 and np.all(np.isfinite(d))) else None
+        is_track = (k < len(pkind) and int(pkind[k]) == 0)
+        gt = int(pgt[k]) if k < len(pgt) else -1
+        L = (float(plen[k]) if (k < len(plen) and np.isfinite(plen[k])
+                                and plen[k] > 0) else shower_len)
+        iv = int(pint[k]) if 0 <= int(pint[k]) < len(vtx) else 0
+        inst = inst_by_gt.get(gt)
+        line = None; anchor = ""
+        if has_geom and npoly[k] >= 2:                       # saved polyline
+            line = poly_cat[offs[k]:offs[k + 1]]; anchor = "poly"
+        elif has_geom and np.all(np.isfinite(pstart[k])) and d is not None:
+            line = np.vstack([pstart[k], pstart[k] + d * L]); anchor = "poly"
+        elif inst is not None:                               # instance stopgap
+            start, iend, _ = inst
+            if is_track and np.all(np.isfinite(iend)):
+                line = np.vstack([start, iend])
+            elif d is not None:
+                line = np.vstack([start, start + d * L])
+            anchor = "inst"
+        elif d is not None and len(vtx):                     # primary-vertex ray
+            line = np.vstack([vtx[iv], vtx[iv] + d * L]); anchor = "vtx?"
+        if line is None or not np.all(np.isfinite(line)):
+            continue
+        end = line[-1]
+        cls = int(pcls[k]) if k < len(pcls) else -1
+        cname = CLASS_NAMES[cls] if 0 <= cls < len(CLASS_NAMES) else str(cls)
+        kind = "track" if is_track else "shower"
+        tname = PID2NAME.get(ev["mc"].get(gt, {}).get("pid"), "?") if gt > 0 \
+            else "?"
+        correct = (tname == cname)
+        if color_mode == "class":
+            clr = cls_color(cls)
+        elif gt <= 0 or tname == "?":
+            clr = _NOTRUTH_CLR
+        else:
+            clr = _CORRECT_CLR if correct else _WRONG_CLR
+        verdict = ("OK" if correct else f"WRONG (true {tname})") if tname != "?" \
+            else "no truth"
+        # when focusing one true particle, dim the other rays and fatten its own
+        width = 7 if is_track else 4
+        if highlight_gt is not None:
+            if gt != highlight_gt:
+                clr = "rgba(170,170,170,0.25)"
+            else:
+                width += 3
+        hov = (f"pred {cname} {kind}  [{verdict}]<br>E={pen[k]:.0f} MeV  "
+               f"true_KE={ptke[k]:.0f}<br>gt_trk={gt}  int {iv}  anchor={anchor}")
+        x, y, z = _xyz(line)
+        traces.append(go.Scatter3d(
+            x=x, y=y, z=z, mode="lines", name=f"{cname} {kind}",
+            line=dict(color=clr, width=width),
+            text=[hov] * len(line), hoverinfo="text", showlegend=False))
+        tx, ty, tz = _xyz(end)
+        traces.append(go.Scatter3d(
+            x=tx, y=ty, z=tz, mode="markers", name=f"{cname} {kind}",
+            marker=dict(size=4, color=clr,
+                        symbol="circle" if is_track else "diamond"),
+            text=[hov], hoverinfo="text", showlegend=False))
+    return traces
+
+
 def figure_for_event(ev, color_by, focus_tid, show_cosmic, show_ghost,
-                     show_vertices, size, other_cap):
+                     show_vertices, show_reco, size, other_cap,
+                     ray_color="correct"):
     pos = ev["td_pos"]; tid = ev["td_tid"]; origin = ev["td_origin"]
     traces = make_detector_outline_trace()
 
@@ -434,8 +596,27 @@ def figure_for_event(ev, color_by, focus_tid, show_cosmic, show_ghost,
         traces.append(_scatter(pos[gi], "rgba(140,140,140,0.25)",
                                "ghost/none", size * 0.7))
 
-    # ---- main content by color mode ----
-    if color_by == "truth_origin":
+    # ---- main content: a chosen focus particle OVERRIDES the color mode so the
+    # focus dropdown works from any view (else color by the selected mode) ----
+    focus_on = focus_tid not in (None, "__all__")
+    if focus_on:
+        t = int(focus_tid)
+        sel = tid == t
+        rest = nu & ~sel
+        if rest.any():
+            traces.append(_scatter(pos[_subsample(rest, other_cap, 3)],
+                                   "rgba(120,120,120,0.2)", "other nu", size*0.7))
+        for key, (lab, clr) in STAGE_STYLE.items():
+            if key == "segmented":
+                m = sel & ev["seg"]
+            elif key == "in_slice_unseg":
+                m = sel & ev["in_slice"] & ~ev["seg"]
+            else:
+                m = sel & ~ev["in_slice"]
+            if m.any():
+                traces.append(_scatter(pos[m], clr, f"focus: {lab}", size + 0.6))
+
+    elif color_by == "truth_origin":
         if nu.any():
             traces.append(_scatter(pos[nu], "rgba(240,50,50,1)", "nu", size))
 
@@ -472,23 +653,27 @@ def figure_for_event(ev, color_by, focus_tid, show_cosmic, show_ghost,
             traces.append(_scatter(pos[m], "rgba(150,150,150,0.6)",
                                    "slice (no instance)", size))
 
-    elif color_by == "particle_focus" and focus_tid not in (None, "__all__"):
-        t = int(focus_tid)
-        sel = tid == t
-        # faint everything else that is nu
-        rest = nu & ~sel
-        if rest.any():
-            traces.append(_scatter(pos[_subsample(rest, other_cap, 3)],
-                                   "rgba(120,120,120,0.2)", "other nu", size*0.7))
-        for key, (lab, clr) in STAGE_STYLE.items():
-            if key == "segmented":
-                m = sel & ev["seg"]
-            elif key == "in_slice_unseg":
-                m = sel & ev["in_slice"] & ~ev["seg"]
-            else:
-                m = sel & ~ev["in_slice"]
-            if m.any():
-                traces.append(_scatter(pos[m], clr, lab, size + 0.6))
+    elif color_by == "reco_particles":
+        # each segmenter instance colored by class if the nu-reco ATTACHED it
+        # (its gt_trackid appears in nu_reco), else dim gray = dropped. Shows
+        # directly which segmented particles the interaction reco kept vs lost.
+        sc = ev["slice_coord"]
+        claimed = np.zeros(len(sc), bool)
+        for p in ev["particles"]:
+            pi = p["point_idx"]
+            pi = pi[(pi >= 0) & (pi < len(sc))]
+            if pi.size == 0:
+                continue
+            claimed[pi] = True
+            att = int(p["gt_trackid"]) in ev["attached"]
+            cname = CLASS_NAMES[p["cls"]] if 0 <= p["cls"] < len(CLASS_NAMES) \
+                else str(p["cls"])
+            clr = cls_color(p["cls"]) if att else "rgba(95,95,95,0.55)"
+            lab = f"{cname} {'attached' if att else 'DROPPED'} (trk {p['gt_trackid']})"
+            traces.append(_scatter(sc[pi], clr, lab, size + (0.4 if att else 0)))
+        if (~claimed).any():
+            traces.append(_scatter(sc[~claimed], "rgba(200,200,200,0.35)",
+                                   "slice (no instance)", size * 0.8))
     else:
         if nu.any():
             traces.append(_scatter(pos[nu], "rgba(240,50,50,1)", "nu", size))
@@ -507,12 +692,11 @@ def figure_for_event(ev, color_by, focus_tid, show_cosmic, show_ghost,
             traces.append(go.Scatter3d(
                 x=x, y=y, z=z, mode="markers", name="pred nu vtx",
                 marker=dict(size=6, color="magenta", symbol="diamond")))
-        nr = ev.get("nureco")
-        if nr is not None and "vertices_cm" in nr and len(nr["vertices_cm"]):
-            x, y, z = _xyz(np.atleast_2d(nr["vertices_cm"]))
-            traces.append(go.Scatter3d(
-                x=x, y=y, z=z, mode="markers", name="nu_reco vtx",
-                marker=dict(size=6, color="cyan", symbol="circle")))
+    # ---- nu-interaction reco product: vertices + track/shower axes ----
+    if show_reco:
+        hl = int(focus_tid) if focus_on else None
+        traces.extend(reco_geometry_traces(ev, color_mode=ray_color,
+                                           highlight_gt=hl))
 
     title = (f"{ev['msp_base']}  |  "
              f"cascade={'yes' if ev['kp_path'] else 'MISSING'}  "
@@ -572,6 +756,49 @@ def info_block(ev, ctx):
     return html.Pre("\n".join(lines), style={"fontSize": "11px"})
 
 
+def why_unattached(ev):
+    """Per-true-particle reco diagnosis: for each reconstructable nu particle that
+    the interaction reco did NOT attach, name the stage it fell out at (from the
+    coverage/segmentation/attach flags); also flag attached-but-misidentified ones.
+    """
+    LOWCOV = 0.10
+    items = []
+    for r in ev["particle_rows"]:
+        if r["origin"] != ORIGIN_NU or r["name"] not in SPECIES_RECO:
+            continue
+        covQ, segQ = 100 * r["cov"], 100 * r["segfrac"]
+        pcn = CLASS_NAMES[r["pred_cls"]] if 0 <= r["pred_cls"] < len(CLASS_NAMES) \
+            else "?"
+        tag = f"{r['name']} {r['ke']:.0f} MeV (trk {r['trackid']})"
+        if not r["attached"]:
+            if not r["has_instance"]:
+                if r["cov"] < LOWCOV:
+                    why = f"NOT ATTACHED — missed by slice (covQ={covQ:.0f}%)"
+                else:
+                    why = (f"NOT ATTACHED — in slice (covQ={covQ:.0f}%) but "
+                           f"segmenter made no instance")
+            else:
+                why = (f"NOT ATTACHED — segmented as '{pcn}' (covQ={covQ:.0f}%, "
+                       f"segQ={segQ:.0f}%) but interaction reco dropped it")
+            items.append(("bad", tag, why))
+        elif pcn != r["name"]:
+            items.append(("warn", tag,
+                          f"attached but MIS-ID as '{pcn}' (true {r['name']})"))
+    if not items:
+        return html.Div([html.B("reco diagnosis: "),
+                         "all reconstructable nu particles attached & correctly "
+                         "classified."], style={"fontSize": "12px",
+                                                 "color": "#207020"})
+    col = {"bad": "#b00000", "warn": "#b06000"}
+    rows = [html.Li([html.B(tag + ": "), why],
+                    style={"color": col[k], "marginBottom": "2px"})
+            for k, tag, why in items]
+    return html.Div([
+        html.B("reco diagnosis (unattached / mis-ID nu particles):"),
+        html.Ul(rows, style={"marginTop": "3px"}),
+    ], style={"fontSize": "12px"})
+
+
 # ---------------------------------------------------------------------------
 # Dash app
 # ---------------------------------------------------------------------------
@@ -582,7 +809,7 @@ _CACHE = {}
 def _get_event(index):
     if index in _CACHE:
         return _CACHE[index]
-    path = _CTX.msp_sorted[index]
+    path = _CTX.browse[index]
     ev = load_event(_CTX, path)
     _CACHE.clear()          # keep memory small: only the current event
     _CACHE[index] = ev
@@ -592,7 +819,7 @@ def _get_event(index):
 def build_app(initial_index):
     app = Dash(__name__)
     app.title = "cascade reco visualizer"
-    n_events = len(_CTX.msp_sorted)
+    n_events = len(_CTX.browse)
 
     controls = html.Div([
         html.Div([
@@ -612,8 +839,8 @@ def build_app(initial_index):
                              {"label": "truth: origin (nu)", "value":
                               "truth_origin"},
                              {"label": "predicted class", "value": "pred_class"},
-                             {"label": "focus one particle", "value":
-                              "particle_focus"}],
+                             {"label": "reco particles (attached?)", "value":
+                              "reco_particles"}],
                          value="slice_stage"),
             html.Label(" focus trk "),
             dcc.Dropdown(id="focus", clearable=False, value="__all__",
@@ -626,8 +853,17 @@ def build_app(initial_index):
             dcc.Checklist(id="toggles",
                           options=[{"label": "cosmic", "value": "cosmic"},
                                    {"label": "ghost", "value": "ghost"},
-                                   {"label": "vertices", "value": "vtx"}],
-                          value=["vtx"], inline=True),
+                                   {"label": "nu vtx", "value": "vtx"},
+                                   {"label": "reco axes", "value": "reco"}],
+                          value=["vtx", "reco"], inline=True),
+            html.Div([
+                html.Label("reco rays", style={"fontSize": "12px"}),
+                dcc.Dropdown(id="ray_color", clearable=False, value="correct",
+                             options=[{"label": "by correctness",
+                                       "value": "correct"},
+                                      {"label": "by pred class",
+                                       "value": "class"}]),
+            ], style={"width": "170px"}),
             html.Div([
                 html.Label("pt size", style={"fontSize": "12px"}),
                 dcc.Slider(id="size", min=0.6, max=4, step=0.2, value=1.8,
@@ -646,8 +882,10 @@ def build_app(initial_index):
 
     app.layout = html.Div([
         controls,
+        html.Div(id="diag", style={"padding": "4px 8px",
+                                   "borderBottom": "1px solid #ddd"}),
         html.Div([
-            dcc.Graph(id="graph", style={"height": "78vh"}),
+            dcc.Graph(id="graph", style={"height": "72vh"}),
         ]),
         html.Div([
             html.Div(id="info", style={"flex": "1"}),
@@ -679,17 +917,19 @@ def build_app(initial_index):
 
     # main render
     @app.callback(Output("graph", "figure"), Output("stats", "children"),
-                  Output("info", "children"),
+                  Output("info", "children"), Output("diag", "children"),
                   Input("index", "value"), Input("color_by", "value"),
                   Input("focus", "value"), Input("toggles", "value"),
+                  Input("ray_color", "value"),
                   Input("size", "value"), Input("cap", "value"))
-    def _render(index, color_by, focus, toggles, size, cap):
+    def _render(index, color_by, focus, toggles, ray_color, size, cap):
         ev = _get_event(int(index or 0))
         toggles = toggles or []
         fig = figure_for_event(
             ev, color_by, focus, "cosmic" in toggles, "ghost" in toggles,
-            "vtx" in toggles, float(size), int(cap))
-        return fig, stats_table(ev), info_block(ev, _CTX)
+            "vtx" in toggles, "reco" in toggles, float(size), int(cap),
+            ray_color=ray_color or "correct")
+        return fig, stats_table(ev), info_block(ev, _CTX), why_unattached(ev)
 
     return app
 
@@ -701,7 +941,12 @@ def main():
     ap.add_argument("--merged-sp", default=None,
                     help="initial event's merged_sp file (path or basename)")
     ap.add_argument("--cascade-dir", default=DEF_CASCADE_DIR)
-    ap.add_argument("--merged-sp-list", default=DEF_MSP_LIST)
+    ap.add_argument("--merged-sp-list", default=DEF_MSP_LIST,
+                    help="FULL sorted list used to resolve cascade file names "
+                         "(keypoint2_event{i}); keep this the valdata_all list")
+    ap.add_argument("--browse-list", default=None,
+                    help="optional subset list to page through (e.g. the 20 nue "
+                         "events); cascade files still resolve via --merged-sp-list")
     ap.add_argument("--keypoint2-list", default=DEF_KP_LIST)
     ap.add_argument("--nu-reco-dir", default=DEF_NURECO_DIR)
     ap.add_argument("--host", default="0.0.0.0")
@@ -709,18 +954,23 @@ def main():
     args = ap.parse_args()
 
     _CTX = Context(args.cascade_dir, args.merged_sp_list,
-                   args.keypoint2_list, args.nu_reco_dir)
-    if not _CTX.msp_sorted:
-        raise SystemExit(f"empty/missing merged_sp list: {args.merged_sp_list}")
-    print(f">>> {len(_CTX.msp_sorted)} merged_sp events, "
-          f"{len(_CTX.kp_gidx)} cascade files, {len(_CTX.shards)} nu_reco shards")
+                   args.keypoint2_list, args.nu_reco_dir,
+                   browse_list_path=args.browse_list)
+    if not _CTX.browse:
+        raise SystemExit("empty/missing merged_sp browse list")
+    print(f">>> resolve-list {len(_CTX.msp_sorted)} events, browsing "
+          f"{len(_CTX.browse)}, {len(_CTX.kp_gidx)} cascade files, "
+          f"{len(_CTX.shards)} nu_reco shards")
 
     initial = 0
     if args.merged_sp:
         base = os.path.basename(args.merged_sp)
-        initial = _CTX.msp_index.get(base, 0)
-        if base not in _CTX.msp_index:
-            print(f"[warn] {base} not in list; starting at index 0")
+        hits = [i for i, p in enumerate(_CTX.browse)
+                if os.path.basename(p) == base]
+        if hits:
+            initial = hits[0]
+        else:
+            print(f"[warn] {base} not in browse list; starting at index 0")
     app = build_app(initial)
     print(f">>> serving on http://{args.host}:{args.port}")
     app.run(host=args.host, port=args.port, debug=False)

@@ -160,12 +160,22 @@ attached showers, across all interaction candidates). So a true particle `t` is
 
 ## 6. Output & plots
 - `eval_reco_performance.py` writes `eval_records.npz` (the per-particle table) +
-  prints a per-species summary (denominator, eff_A, eff_B in a few coarse KE bins)
-  + a class-confusion summary.
-- Plots (matplotlib; the script can emit PNGs or leave to a notebook):
-  - **Efficiency vs true KE** per species (A and B on the same axes).
+  prints a per-species summary (denominator, eff_A, eff_B, eff_C in coarse KE bins).
+- **Failure-stage breakdown** (mirrors the visualizer's `why_unattached`): every
+  true particle is bucketed into the FIRST stage it fell out at —
+  `ok` (attached + correct class), `misID` (attached, wrong predicted class),
+  `seg!att` (segmenter made an instance but the interaction reco didn't attach it),
+  `noInst` (charge is in the slice but the segmenter produced no instance),
+  `missSlice` (little/no charge in the slice — upstream loss). Printed as a
+  per-species/KE-bin fraction table and drawn as a stacked bar (`stage_<sp>.png`),
+  so the eff_B gap can be attributed to a stage (e.g. electrons: mis-ID vs
+  no-instance vs upstream). Uses recorded `has_instance`, `reco_class`, `found_B`,
+  `slice_cov`.
+- Plots (matplotlib):
+  - **Efficiency vs true KE** per species (A/B/C on the same axes).
+  - **Charge slice-coverage distribution** per species (`slicecov_<sp>.png`).
   - **2D reco-vs-true KE** per species (with the y=x line; missed pile up at y=0).
-  - Optional: completeness distribution; predicted-class confusion matrix.
+  - **Failure-stage stacked bar vs KE** per species (`stage_<sp>.png`).
 
 ---
 

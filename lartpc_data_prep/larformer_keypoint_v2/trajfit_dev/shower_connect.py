@@ -34,15 +34,24 @@ def connection_geometry(start, direction, point):
 
 
 def connects(start, direction, point, d_impact=5.0, cos_min=0.9,
-             d_gap=np.inf):
+             d_gap=np.inf, gap_touch=3.0):
     """Greedy connection decision (Phase 1: point = nu vertex).
 
     Attach when the trunk line passes close to `point` (impact) AND the trunk
     points back at it (cosine) AND the gap is within bound (default unbounded —
     showers can convert far from the vertex). `cos_min`/`d_gap` are the
     class-specific knobs left open for later e-vs-gamma tuning.
+
+    Small-gap bypass: when the trunk-start essentially TOUCHES the point
+    (`gap <= gap_touch`), skip the back-pointing cosine. The cosine is
+    `direction . (start - point)/|start - point|`, which is ill-conditioned when
+    `start - point` is a ~zero-length vector: a sub-cm vertex error then swings it
+    wildly. A shower that converts AT the vertex (primary e/-, gap ~ 0) must not be
+    rejected on that unstable cosine -- impact alone already makes the connection
+    unambiguous there. The cosine test still guards real conversion GAPS (photons).
     """
     g = connection_geometry(start, direction, point)
-    ok = (g["impact"] <= d_impact and g["cosine"] >= cos_min
-          and g["gap"] <= d_gap)
+    touch = g["gap"] <= gap_touch and g["impact"] <= d_impact
+    ok = touch or (g["impact"] <= d_impact and g["cosine"] >= cos_min
+                   and g["gap"] <= d_gap)
     return bool(ok), g
