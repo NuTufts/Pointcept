@@ -301,6 +301,38 @@ def reco_interactions(cands, tracks, shower_recs, args):
                            for r in rem_shrec))
         if n_unassoc == 0:
             break
+
+    # --- shower-seeded interactions -------------------------------------------
+    # A track-seeded interaction needs >= 1 attaching track, so electron-shower-
+    # dominated CC nu_e events (electron + soft/no hadrons) form NO interaction and
+    # orphan a well-reconstructed shower that points right at an accurate nu-vertex
+    # candidate. Recover these SHOWER-ONLY interactions: root one at each strong,
+    # unused vertex candidate that >= 1 leftover shower points back to (same
+    # `connects` gate as normal shower attachment). This is the CC-nu_e signal
+    # topology, so it must be reconstructed even with no tracks.
+    seed_score = getattr(args, "shower_seed_score", 0.5)
+    for c in cands:
+        if len(out) >= args.max_interactions or not rem_shrec:
+            break
+        cpos = np.asarray(c[0], np.float64)
+        cscore = float(c[1]) if len(c) > 1 else 1.0
+        if cscore < seed_score:
+            continue
+        if any(np.linalg.norm(cpos - u) <= args.reco_exclude_radius for u in used):
+            continue
+        # single-vertex "tree" (no tracks); test the leftover showers against it
+        res = dict(vertices=[dict(id=0, pos=cpos, depth=0, parent_track=None,
+                                  attached=[])],
+                   tracks=[], edges=[], unattached=[], primary_vertex=cpos)
+        cps = [dict(id="v0", pos=cpos, kind="vertex", dist=0.0)]
+        showers = reco_showers(rem_shrec, cps, args.shower_mode, **sk)
+        if not any(s["attached"] for s in showers):
+            continue
+        res["showers"] = showers
+        out.append(dict(res=res, best=None, iter=len(out), conn_points=cps,
+                        vertex=cpos, tracks=[], showers=showers))
+        used.append(cpos)
+        rem_shrec = [r for r, s in zip(rem_shrec, showers) if not s["attached"]]
     return out, rem_tracks, rem_shrec
 
 

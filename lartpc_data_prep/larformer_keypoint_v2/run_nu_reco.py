@@ -45,6 +45,7 @@ def reco_args(a):
         shower_mode=a.shower_mode, shower_d_impact=a.shower_d_impact,
         shower_cos_min=a.shower_cos_min, shower_d_gap=60.0,
         shower_gap_touch=getattr(a, "shower_gap_touch", 3.0),
+        shower_seed_score=getattr(a, "shower_seed_score", 0.5),
         max_interactions=a.max_interactions, reco_exclude_radius=10.0,
         reco_min_unassoc_points=30)
 
@@ -70,15 +71,19 @@ def reco_one(kp_path, msp_path, rmom, calib, a):
     recs = tio.load_instances(kp_path, msp_dir, tracks_only=True,
                               min_points=a.min_points)
     cands = vertex_candidates(kp_path)
-    if not cands or not recs:
+    if not cands:                       # need a nu-vertex candidate to root on
         return None, None
     args = reco_args(a)
+    # recs (tracks) may be EMPTY for shower-only (CC-nu_e) events; build_tracks
+    # returns [] and reco_interactions then seeds a shower-only interaction.
     tracks = build_tracks(recs, seg_cm=3.0, kink_tol=3.0, eps=1.2,
                           max_gap_live=20.0)
     all_recs = tio.load_instances(kp_path, msp_dir, tracks_only=False, min_points=1)
     shower_recs = [r for r in all_recs if r.pred_cls in tio.SHOWER_CLASSES
                    and np.all(np.isfinite(r.pred_start))
                    and r.n_points >= a.shower_min_points]
+    if not tracks and not shower_recs:
+        return None, all_recs
     interactions, _lo_t, _lo_s = reco_interactions(cands, tracks, shower_recs, args)
     if not interactions:
         return None, all_recs
@@ -214,6 +219,10 @@ def main():
                     help="attach a shower regardless of back-pointing cosine when "
                          "its trunk-start is within this many cm of the vertex "
                          "(cosine is ill-conditioned at ~zero gap)")
+    ap.add_argument("--shower-seed-score", type=float, default=0.5,
+                    help="min nu-vertex candidate score to seed a SHOWER-ONLY "
+                         "interaction (CC-nu_e with no tracks) when leftover "
+                         "showers point back to an unused candidate")
     ap.add_argument("--snap-radius", type=float, default=30.0)
     ap.add_argument("--max-interactions", type=int, default=3)
     args = ap.parse_args()
