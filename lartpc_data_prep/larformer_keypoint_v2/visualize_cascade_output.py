@@ -56,7 +56,7 @@ import numpy as np
 import h5py
 from scipy.spatial import cKDTree
 
-from dash import Dash, Input, Output, State, dcc, html
+from dash import Dash, Input, Output, State, dcc, html, callback_context
 import plotly.graph_objects as go
 
 # detectoroutline lives one dir up (lartpc_data_prep/).
@@ -893,13 +893,20 @@ def build_app(initial_index):
         ], style={"display": "flex", "gap": "16px", "padding": "6px"}),
     ])
 
-    # prev/next -> index
+    # prev/next -> index. n_clicks is CUMULATIVE, so step by +/-1 based on which
+    # button actually fired the callback (idx + nx - p double-counts and skips).
     @app.callback(Output("index", "value"),
                   Input("prev", "n_clicks"), Input("next", "n_clicks"),
                   State("index", "value"))
     def _step(p, nx, idx):
         idx = int(idx or 0)
-        return max(0, min(n_events - 1, idx + int(nx) - int(p)))
+        trig = (callback_context.triggered[0]["prop_id"].split(".")[0]
+                if callback_context.triggered else None)
+        if trig == "next":
+            idx += 1
+        elif trig == "prev":
+            idx -= 1
+        return max(0, min(n_events - 1, idx))
 
     # index -> focus dropdown options
     @app.callback(Output("focus", "options"), Output("focus", "value"),
