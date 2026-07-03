@@ -78,7 +78,7 @@ For proxy model tuning with ~3 HPs and ~20-30 trials, **`bayes`** is the best ch
 
 ### Step 1: Create a proxy model config
 
-Create `configs/lartpc/pretrain-sonata-v1m1-lartpc-v6-mup-proxy.py` that inherits from the muP config but with 4x narrower channels:
+Create `configs/lartpc/sonata_pretrain/archive/pretrain-sonata-v1m1-lartpc-v6-mup-proxy.py` that inherits from the muP config but with 4x narrower channels:
 
 ```python
 _base_ = ["./pretrain-sonata-v1m1-lartpc-v6-mup.py"]
@@ -120,7 +120,7 @@ patches the Pointcept config, and runs training.
 
 Usage (standalone test):
     python tools/sweep_train.py \
-        --config configs/lartpc/pretrain-sonata-v1m1-lartpc-v6-mup-proxy.py
+        --config configs/lartpc/sonata_pretrain/archive/pretrain-sonata-v1m1-lartpc-v6-mup-proxy.py
 
 Usage (via wandb agent -- see sweep_config.yaml):
     wandb agent <entity>/<project>/<sweep_id>
@@ -221,7 +221,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--config",
-        default="configs/lartpc/pretrain-sonata-v1m1-lartpc-v6-mup-proxy.py",
+        default="configs/lartpc/sonata_pretrain/archive/pretrain-sonata-v1m1-lartpc-v6-mup-proxy.py",
     )
     args = parser.parse_args()
     train(args.config)
@@ -385,8 +385,8 @@ model = dict(
 
 | Component | Path |
 |---|---|
-| muP full config | `configs/lartpc/pretrain-sonata-v1m1-lartpc-v6-mup.py` |
-| Proxy config (to create) | `configs/lartpc/pretrain-sonata-v1m1-lartpc-v6-mup-proxy.py` |
+| muP full config | `configs/lartpc/sonata_pretrain/archive/pretrain-sonata-v1m1-lartpc-v6-mup.py` |
+| Proxy config (to create) | `configs/lartpc/sonata_pretrain/archive/pretrain-sonata-v1m1-lartpc-v6-mup-proxy.py` |
 | Sweep wrapper (to create) | `tools/sweep_train.py` |
 | Sweep YAML (to create) | `configs/sweeps/mup_proxy_sweep.yaml` |
 | SLURM script (to create) | `submit_mup_sweep.sh` |

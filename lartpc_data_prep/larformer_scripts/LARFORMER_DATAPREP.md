@@ -62,7 +62,7 @@ stage3_levels/ stage3_meta/`). Visualize with
 [`tools/visualize_stage3_larformer_from_cached.py --stage3pred-dir`] and
 [`tools/visualize_larformer_gt.py --slicerpred-dir`].
 
-Config: [`../../configs/lartpc/larformer-particle-fullcascade-ptv3crosslevel.py`](../../configs/lartpc/larformer-particle-fullcascade-ptv3crosslevel.py)
+Config: [`../../configs/lartpc/larformer/stage3_particle/larformer-particle-fullcascade-ptv3crosslevel.py`](../../configs/lartpc/larformer/stage3_particle/larformer-particle-fullcascade-ptv3crosslevel.py)
 (derived from the trained cached config `larformer-particle-v1-cached-ptv3crosslevel.py`).
 
 **Query dedup (2026-06-11).** `run_larformer_stage3_inference.py` now

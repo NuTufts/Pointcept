@@ -421,7 +421,7 @@ For LArTPC data with 6 semantic classes, the loss does **not** settle around ln(
 | `match_neighbour()` | Spatial matching between views (default radius < 0.08) |
 | EMA teacher update | teacher = momentum * teacher + (1-momentum) * student |
 
-**References**: `pointcept/models/sonata/sonata_v1m1_base.py`, `configs/lartpc/pretrain-sonata-v1m1-lartpc.py`
+**References**: `pointcept/models/sonata/sonata_v1m1_base.py`, `configs/lartpc/sonata_pretrain/archive/pretrain-sonata-v1m1-lartpc.py`
 
 ---
 
@@ -461,7 +461,7 @@ The C++ `SimChTripletLabelMaker` (modified in `ubdl/larflow`) exports an `mc_par
 ```bash
 # Single GPU
 python tools/train.py \
-    --config-file configs/lartpc/shower-origin-sonata-v1m1-v3.py \
+    --config-file configs/lartpc/shower_origin/archive/shower-origin-sonata-v1m1-v3.py \
     --num-gpus 1 \
     --options save_path=exp/shower_origin/v3
 
@@ -751,7 +751,7 @@ Including shower fragments and mc particle tree in HDF5 produces a tolerable siz
 
 ## Configuration
 
-Example config: `configs/lartpc/shower-origin-sonata-v1m1-v3.py`
+Example config: `configs/lartpc/shower_origin/archive/shower-origin-sonata-v1m1-v3.py`
 
 Key parameters:
 
@@ -814,7 +814,7 @@ The model operates in normalized coordinates. To convert predicted distances bac
 | `pointcept/models/shower_origin/virtual_grid.py` | `VirtualGridGenerator`, `PositionalEncoding3D` |
 | `pointcept/models/shower_origin/slot_attention.py` | `SlotAttention` module |
 | `pointcept/models/shower_origin/__init__.py` | Exports V3, classification head, virtual grid |
-| `configs/lartpc/shower-origin-sonata-v1m1-v3.py` | V3 training config |
+| `configs/lartpc/shower_origin/archive/shower-origin-sonata-v1m1-v3.py` | V3 training config |
 
 ### Workstream 3: Data Pipeline (Pointcept)
 

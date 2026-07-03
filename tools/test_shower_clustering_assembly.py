@@ -16,12 +16,12 @@ Usage examples:
 
     # CPU smoke test with mock backbone
     python tools/test_shower_clustering_assembly.py \\
-        -c configs/lartpc/shower-cluster-sonata-v1.py \\
+        -c configs/lartpc/shower_origin/archive/shower-cluster-sonata-v1.py \\
         --mock-backbone --num-events 1
 
     # GPU run with real backbone (P100 / H200)
     python tools/test_shower_clustering_assembly.py \\
-        -c configs/lartpc/shower-cluster-sonata-v1.py \\
+        -c configs/lartpc/shower_origin/archive/shower-cluster-sonata-v1.py \\
         --device cuda --num-events 1
 """
 import argparse

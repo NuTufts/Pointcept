@@ -11,7 +11,7 @@ scaling is varying --num-workers and watching where samples/sec plateaus.
 
 Usage (inside the apptainer container, see test_dataset_read.sh wrapper):
     python isambard/test_dataset_read.py \\
-        --config-file configs/lartpc/pretrain-sonata-v7-extbnb-larmatch.py \\
+        --config-file configs/lartpc/sonata_pretrain/pretrain-sonata-v7-extbnb-larmatch.py \\
         --data-list-file /projects/u6jo/datasets/test_list_isambard.txt \\
         --data-root /data \\
         --split train \\

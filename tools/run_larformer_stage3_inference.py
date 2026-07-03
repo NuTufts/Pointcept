@@ -12,7 +12,7 @@ Thin CLI around the inference helpers in
     `tools/augment_stage12_cache_particle_class_id.py`). The config
     must be one whose `model = dict(type="LArFormer", ...)` describes
     the particle segmenter (e.g.
-    `configs/lartpc/larformer-particle-v1-cached-ptv3crosslevel.py`).
+    `configs/lartpc/larformer/stage3_particle/larformer-particle-v1-cached-ptv3crosslevel.py`).
     For each event, runs the particle segmenter forward, writes a
     `stage3pred_<basename>.h5` with `stage3*/...` keys.
 
@@ -20,7 +20,7 @@ Thin CLI around the inference helpers in
 
     Reads raw merged_h5 events via a standard `LArFormerDataset`. The
     config must declare a `CascadedParticleSegmenter` model (e.g.
-    `configs/lartpc/larformer-particle-v1.py`) so we can find both the
+    `configs/lartpc/larformer/stage3_particle/larformer-particle-v1.py`) so we can find both the
     Stage-1+2 (`cascaded_slicer`) and Stage-3 (`particle_segmenter`)
     sub-modules. For each event, runs the slicer with GT to produce a
     full slicerpred-shaped output at the top of the file, then applies
@@ -39,7 +39,7 @@ Output file naming: `stage3pred_<input_basename_without_ext>.h5`.
 
 Usage (cached mode):
     ./run_in_container.sh python tools/run_larformer_stage3_inference.py \\
-        --config configs/lartpc/larformer-particle-v1-cached-ptv3crosslevel.py \\
+        --config configs/lartpc/larformer/stage3_particle/larformer-particle-v1-cached-ptv3crosslevel.py \\
         --weights exp/.../model/model_last.pth \\
         --cache-dir exp/cache_stage12_ptv3crosslevelslicer_iter_75750/val \\
         --output-dir exp/.../inference \\
@@ -48,7 +48,7 @@ Usage (cached mode):
 Usage (full-cascade mode):
     ./run_in_container.sh python tools/run_larformer_stage3_inference.py \\
         --input-mode full-cascade \\
-        --config configs/lartpc/larformer-particle-v1.py \\
+        --config configs/lartpc/larformer/stage3_particle/larformer-particle-v1.py \\
         --weights exp/.../model/model_last.pth \\
         --input-list inputlists/run3b_ncpi0.txt \\
         --output-dir exp/.../inference \\
@@ -415,7 +415,7 @@ def run_full_cascade_mode(args):
             f"--input-mode full-cascade requires a "
             f"CascadedParticleSegmenter config; got "
             f"cfg.model.type={cfg.model.get('type')!r}. Try "
-            f"`configs/lartpc/larformer-particle-v1.py`."
+            f"`configs/lartpc/larformer/stage3_particle/larformer-particle-v1.py`."
         )
 
     # Force gt_source="particle" — the full-cascade inference is

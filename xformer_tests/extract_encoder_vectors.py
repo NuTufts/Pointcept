@@ -7,7 +7,7 @@ xformers backend (P100) to compare outputs.
 
 Usage:
     python extract_encoder_vectors.py \
-        --config configs/lartpc/pretrain-sonata-v1m1-lartpc.py \
+        --config configs/lartpc/sonata_pretrain/archive/pretrain-sonata-v1m1-lartpc.py \
         --checkpoint /path/to/checkpoint.pth \
         --data-file /path/to/data.h5 \
         --output encoder_vectors.pt \
@@ -40,7 +40,7 @@ def parse_args():
         "--config",
         type=str,
         required=True,
-        help="Path to config file (e.g., configs/lartpc/pretrain-sonata-v1m1-lartpc.py)",
+        help="Path to config file (e.g., configs/lartpc/sonata_pretrain/archive/pretrain-sonata-v1m1-lartpc.py)",
     )
     parser.add_argument(
         "--checkpoint",

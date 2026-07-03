@@ -8,7 +8,7 @@ Supports both CPU (umap-learn) and GPU (cuML) backends.
 
 Usage:
     python tools/visualize_sonata_umap.py \
-        --config configs/lartpc/pretrain-sonata-v1m1-lartpc.py \
+        --config configs/lartpc/sonata_pretrain/archive/pretrain-sonata-v1m1-lartpc.py \
         --checkpoint exp/lartpc/sonata-v1m1/model_best.pth \
         --data-list /path/to/val_split.txt \
         --output umap_features.png \
@@ -52,7 +52,7 @@ def parse_args():
         "--config",
         type=str,
         required=True,
-        help="Path to config file (e.g., configs/lartpc/pretrain-sonata-v1m1-lartpc.py)",
+        help="Path to config file (e.g., configs/lartpc/sonata_pretrain/archive/pretrain-sonata-v1m1-lartpc.py)",
     )
     parser.add_argument(
         "--checkpoint",

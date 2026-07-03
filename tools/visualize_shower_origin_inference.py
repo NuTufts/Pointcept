@@ -15,7 +15,7 @@ Uses two callbacks to avoid re-running inference on fragment switch:
 
 Usage:
     python tools/visualize_shower_origin_inference.py \
-        -c configs/lartpc/shower-origin-sonata-v1m1-v3.py \
+        -c configs/lartpc/shower_origin/archive/shower-origin-sonata-v1m1-v3.py \
         --checkpoint path/to/model_epoch_90.pth \
         --data-list shower_origin_single_event_test.txt
 """

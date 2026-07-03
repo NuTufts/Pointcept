@@ -618,7 +618,7 @@ existing trainer plumbing work unchanged). Key knobs:
 
 **Production config**:
 
-[`configs/lartpc/larformer-particle-v1-cached.py`](../configs/lartpc/larformer-particle-v1-cached.py):
+[`configs/lartpc/larformer/stage3_particle/archive/larformer-particle-v1-cached.py`](../configs/lartpc/larformer/stage3_particle/archive/larformer-particle-v1-cached.py):
 
 - `model = dict(type="LArFormer", backbone_weight=sonata_pretrain, ...)`
   — standalone particle segmenter (no cascade wrapper at train time).
@@ -700,18 +700,18 @@ To run Stage 3 from a freshly-built training set:
 #    Per-event cost ≈ 2 s (single forward of the cascade in eval).
 #SBATCH --array=0-127
 python tools/build_stage12_cache_shard.py \
-    --config configs/lartpc/larformer-particle-v1.py \
+    --config configs/lartpc/larformer/stage3_particle/larformer-particle-v1.py \
     --inputlist /path/to/h5list_train.txt \
     --cache-root /path/to/stage12_cache_v2 \
     --split train --shard-id $SLURM_ARRAY_TASK_ID --n-shards 128
 #    Repeat for split=val with the val list.
 
-# 2) Edit configs/lartpc/larformer-particle-v1-cached.py:
+# 2) Edit configs/lartpc/larformer/stage3_particle/archive/larformer-particle-v1-cached.py:
 #    set CACHE_ROOT to the cluster path above.
 #    Optionally uncomment the `train_dn` stanza (§13.6).
 
 # 3) Train.
-python tools/train.py --config configs/lartpc/larformer-particle-v1-cached.py
+python tools/train.py --config configs/lartpc/larformer/stage3_particle/archive/larformer-particle-v1-cached.py
 ```
 
 **Eyeball-test a cached event** (recommended before kicking off the
@@ -843,7 +843,7 @@ Operator commands:
 ```bash
 # Cached-mode (production training-loop iteration)
 python tools/run_larformer_stage3_inference.py \
-    --config configs/lartpc/larformer-particle-v1-cached-ptv3crosslevel.py \
+    --config configs/lartpc/larformer/stage3_particle/larformer-particle-v1-cached-ptv3crosslevel.py \
     --weights exp/.../model/model_last.pth \
     --cache-dir exp/cache_stage12_ptv3crosslevelslicer_iter_75750/val \
     --output-dir exp/.../inference \
@@ -853,7 +853,7 @@ python tools/run_larformer_stage3_inference.py \
 # Full-cascade on real data with no GT (Q8 use case)
 python tools/run_larformer_stage3_inference.py \
     --input-mode full-cascade \
-    --config configs/lartpc/larformer-particle-v1.py \
+    --config configs/lartpc/larformer/stage3_particle/larformer-particle-v1.py \
     --weights exp/.../model/model_last.pth \
     --input-list inputlists/realdata_run3b.txt \
     --output-dir exp/.../inference_realdata \

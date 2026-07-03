@@ -15,9 +15,9 @@ skipped unless --force.
 Usage (single node, 1 shard = whole dir — equivalent to the serial tool):
 
     python tools/augment_stage12_cache_pred_masks_shard.py \\
-        --keypoint-config configs/lartpc/larformer-keypoint2-particle-v1.py \\
+        --keypoint-config configs/lartpc/larformer/stage4_keypoint/larformer-keypoint2-particle-v1.py \\
         --cache-root <CACHE_ROOT>/train \\
-        --particle-config configs/lartpc/larformer-particle-fullcascade-ptv3crosslevel.py \\
+        --particle-config configs/lartpc/larformer/stage3_particle/larformer-particle-fullcascade-ptv3crosslevel.py \\
         --particle-weights exp/.../model_iter_98652.pth \\
         --shard-id 0 --n-shards 1
 
@@ -25,9 +25,9 @@ SLURM (one shard per array task, per split):
 
     #SBATCH --array=0-63
     python tools/augment_stage12_cache_pred_masks_shard.py \\
-        --keypoint-config configs/lartpc/larformer-keypoint2-particle-v1.py \\
+        --keypoint-config configs/lartpc/larformer/stage4_keypoint/larformer-keypoint2-particle-v1.py \\
         --cache-root /path/to/stage123_cache/train \\
-        --particle-config configs/lartpc/larformer-particle-fullcascade-ptv3crosslevel.py \\
+        --particle-config configs/lartpc/larformer/stage3_particle/larformer-particle-fullcascade-ptv3crosslevel.py \\
         --particle-weights /path/to/model_iter_98652.pth \\
         --shard-id $SLURM_ARRAY_TASK_ID --n-shards 64
 """

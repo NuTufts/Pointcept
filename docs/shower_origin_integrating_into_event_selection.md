@@ -81,7 +81,7 @@ Chains Steps 5-7 for each input merged H5 file:
 CLI arguments:
 ```
 python tools/run_shower_origin_pipeline_step567.py \
-    -c configs/lartpc/shower-origin-sonata-v1m1-v3-reco-fragments-p1cmp075.py \
+    -c configs/lartpc/shower_origin/archive/shower-origin-sonata-v1m1-v3-reco-fragments-p1cmp075.py \
     --checkpoint shower_origin/.../model_epoch165.pth \
     --input-h5 <merged_h5_file>        # single file
     --input-list <filelist.txt>        # or multiple files
@@ -168,7 +168,7 @@ merged_*.h5 (from Steps 1-4)
 2. Test on a single merged H5 file:
    ```bash
    python tools/run_shower_origin_pipeline_step567.py \
-       -c configs/lartpc/shower-origin-sonata-v1m1-v3-reco-fragments-p1cmp075.py \
+       -c configs/lartpc/shower_origin/archive/shower-origin-sonata-v1m1-v3-reco-fragments-p1cmp075.py \
        --checkpoint shower_origin/sonata_v1m1_v3_v6backbone_pax_pi0filter_recofragments/model/model_epoch165.pth \
        --input-h5 <any_merged_h5_file> \
        --output-dir /tmp/test_showerreco \

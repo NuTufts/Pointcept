@@ -11,7 +11,7 @@ meaningful ground truth origin, so GT-based distance metrics are set to NaN.
 
 Usage:
     python tools/run_shower_origin_inference.py \
-        -c configs/lartpc/shower-origin-sonata-v1m1-v3-reco-fragments-p1cmp075.py \
+        -c configs/lartpc/shower_origin/archive/shower-origin-sonata-v1m1-v3-reco-fragments-p1cmp075.py \
         --checkpoint path/to/model.pth \
         --data-list filelist.txt \
         --output results.h5 \

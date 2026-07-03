@@ -32,7 +32,7 @@ from pointcept.models.LArFormer.keypoint_eval import (
 )
 from lartpc_data_prep.keypoint_labels import N_KEYPOINT_TYPES, KPTYPE_NU_VERTEX
 
-CONFIG = "configs/lartpc/larformer-keypoint-v1.py"
+CONFIG = "configs/lartpc/larformer/stage4_keypoint/archive/larformer-keypoint-v1.py"
 # 1 cm is the precision target (GT proximity sigma = 3 cm); 3/10 cm are
 # coarse/loose context. Watch recall@1cm.
 THR = [1.0, 3.0, 10.0]

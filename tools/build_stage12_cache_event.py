@@ -1,7 +1,7 @@
 """Build a single-event Stage-1+2 cache for Stage-3 particle-segmenter
 training.
 
-Reads a Stage-3 config (e.g. `configs/lartpc/larformer-particle-v1.py`),
+Reads a Stage-3 config (e.g. `configs/lartpc/larformer/stage3_particle/larformer-particle-v1.py`),
 brings up the trained Stage-1+2 cascade, picks ONE sample from the
 dataset (`gt_source="particle"`), runs Stages 1 and 2 in eval mode,
 and writes a self-contained HDF5 cache file whose schema mirrors the
@@ -38,7 +38,7 @@ loop over `sample_idx` for its assigned shard.
 CLI:
 
     python tools/build_stage12_cache_event.py \\
-        --config configs/lartpc/larformer-particle-v1.py \\
+        --config configs/lartpc/larformer/stage3_particle/larformer-particle-v1.py \\
         --inputlist /abs/path/devdata_mergedh5_pi0filter_10files.txt \\
         --sample-idx 0 --output /tmp/cache0.h5
 """
@@ -552,7 +552,7 @@ def parse_args():
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--config", required=True,
                    help="Stage-3 config (e.g. "
-                        "configs/lartpc/larformer-particle-v1.py).")
+                        "configs/lartpc/larformer/stage3_particle/larformer-particle-v1.py).")
     p.add_argument("--inputlist", default=None,
                    help="Absolute path to a data list. Overrides cfg.")
     p.add_argument("--data-root", default=None,

@@ -10,7 +10,7 @@ Reuses inference functions from run_shower_origin_inference.py.
 
 Usage:
     python tools/run_shower_origin_pipeline_step567.py \
-        -c configs/lartpc/shower-origin-sonata-v1m1-v3-reco-fragments-p1cmp075.py \
+        -c configs/lartpc/shower_origin/archive/shower-origin-sonata-v1m1-v3-reco-fragments-p1cmp075.py \
         --checkpoint path/to/model.pth \
         --input-h5 merged_showerorigin_entry0042.h5 \
         --output-dir /tmp/showerreco_output \

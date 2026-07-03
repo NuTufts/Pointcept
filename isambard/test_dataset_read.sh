@@ -22,7 +22,7 @@
 #   COMBINED_SQSH    /projects/u6jo/datasets/combined_pretrain-sonata-v7-extbnb-larmatch-test.sqsh
 #   DATA_ROOT        /data
 #   POINTCEPT_DIR    $HOME/ubpointcept/pointcept (on Isambard) — host path to the cloned pointcept repo
-#   CONFIG_FILE      ${POINTCEPT_DIR}/configs/lartpc/pretrain-sonata-v7-extbnb-larmatch.py
+#   CONFIG_FILE      ${POINTCEPT_DIR}/configs/lartpc/sonata_pretrain/pretrain-sonata-v7-extbnb-larmatch.py
 #   SPLIT            train
 #   NUM_BATCHES      4
 #   BATCH_SIZE       2
@@ -58,7 +58,7 @@ COMBINED_SQSH="${COMBINED_SQSH:-/projects/u6jo/datasets/combined_pretrain-sonata
 DATA_ROOT="${DATA_ROOT:-/data}"
 DATA_LIST_FILE="${DATA_LIST_FILE:?Set DATA_LIST_FILE to an Isambard-side list; paths must start with \$DATA_ROOT (= $DATA_ROOT).}"
 POINTCEPT_DIR="${POINTCEPT_DIR:-$HOME/ubpointcept/pointcept}"
-CONFIG_FILE="${CONFIG_FILE:-${POINTCEPT_DIR}/configs/lartpc/pretrain-sonata-v7-extbnb-larmatch.py}"
+CONFIG_FILE="${CONFIG_FILE:-${POINTCEPT_DIR}/configs/lartpc/sonata_pretrain/pretrain-sonata-v7-extbnb-larmatch.py}"
 SPLIT="${SPLIT:-train}"
 NUM_BATCHES="${NUM_BATCHES:-4}"
 BATCH_SIZE="${BATCH_SIZE:-2}"

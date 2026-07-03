@@ -8,7 +8,7 @@ reproduces the wandb mIoU at training-time eval.
 
 Usage:
     python lartpc_data_prep/semseg_analysis/run_val_eval.py \
-        --config-file configs/lartpc/lorafinetune-sonata-v1m1-lartpc-v6-seg.py \
+        --config-file configs/lartpc/lora_finetune/archive/lorafinetune-sonata-v1m1-lartpc-v6-seg.py \
         --weight sonata/lora_finetune_v6_p100_50_epochs_noghost_logspacefix/model/model_last.pth \
         --val-filelist prod4_valsplit_subset.txt \
         --batch-size 48 \

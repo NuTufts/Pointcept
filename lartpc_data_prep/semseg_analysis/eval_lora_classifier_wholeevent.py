@@ -25,7 +25,7 @@ sparse / peripheral regions of the detector.
 Usage
 -----
 python3 tools/eval_lora_classifier_wholeevent.py \\
-    --config     configs/lartpc/lorafinetune-sonata-v1m1-lartpc-v5-seg.py \\
+    --config     configs/lartpc/lora_finetune/archive/lorafinetune-sonata-v1m1-lartpc-v5-seg.py \\
     --checkpoint sonata/lora_seg_v5_fixed/model/model_best.pth \\
     --data-list  lartpc_data_prep/hdflist_combined_prod4_validated_shuffled_valsplit.txt \\
     --output-dir exp/lartpc/sonata/lora_seg_v5_fixed/eval_wholeevent \\

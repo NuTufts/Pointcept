@@ -14,7 +14,7 @@ Usage
 =====
 
     python tools/run_shower_clustering_inference.py \\
-        -c configs/lartpc/shower-cluster-sonata-v1.py \\
+        -c configs/lartpc/shower_origin/archive/shower-cluster-sonata-v1.py \\
         --checkpoint exp/shower_clustering/run1/model/model_epoch4.pth \\
         --data-list lartpc_data_prep/lantern_scripts/h5lists/h5list_bnbnu_pi0filter_validated_test.txt \\
         --output-dir exp/shower_clustering/run1/inference_epoch4/ \\

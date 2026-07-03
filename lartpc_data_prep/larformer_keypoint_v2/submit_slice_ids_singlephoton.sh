@@ -25,7 +25,7 @@ WORKDIR=/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/kpv2_pointcept
 container=/cluster/tufts/wongjiradlabnu/larbys/larbys-container/pointcept_cuml.sif
 RECODIR=${WORKDIR}/lartpc_data_prep/larformer_keypoint_v2
 
-CONFIG=${CONFIG:-configs/lartpc/larformer-keypoint2-fullcascade.py}
+CONFIG=${CONFIG:-configs/lartpc/larformer/stage4_keypoint/larformer-keypoint2-fullcascade.py}
 INPUT_LIST=${INPUT_LIST:-${RECODIR}/inputlists/merged_sp_valdata_singlephoton.txt}
 SID_DIR=${SID_DIR:-${RECODIR}/output/slice_ids_singlephoton/}
 

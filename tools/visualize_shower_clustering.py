@@ -1,7 +1,7 @@
 """
 Visualize the ShowerClusteringDataset — what the Mask2Former model will see.
 
-Builds the dataset from a config (default: configs/lartpc/shower-cluster-sonata-v1.py),
+Builds the dataset from a config (default: configs/lartpc/shower_origin/archive/shower-cluster-sonata-v1.py),
 loads one event at a time, and shows four 3D plotly panels:
 
     1. Ground-truth instances    — each Mask2Former GT mask its own color
@@ -24,10 +24,10 @@ sampled τ to visualize the lm_score augmentation).
 
 Usage:
     python tools/visualize_shower_clustering.py \\
-        -c configs/lartpc/shower-cluster-sonata-v1.py
+        -c configs/lartpc/shower_origin/archive/shower-cluster-sonata-v1.py
 
     python tools/visualize_shower_clustering.py \\
-        -c configs/lartpc/shower-cluster-sonata-v1.py \\
+        -c configs/lartpc/shower_origin/archive/shower-cluster-sonata-v1.py \\
         --split val --data-list /path/to/files.txt --port 8053
 
 The dataset class (pointcept/datasets/shower_clustering.py) already applies
@@ -158,7 +158,7 @@ def parse_args():
     )
     parser.add_argument(
         "-c", "--config", required=True, type=str,
-        help="Config file path (e.g. configs/lartpc/shower-cluster-sonata-v1.py)"
+        help="Config file path (e.g. configs/lartpc/shower_origin/archive/shower-cluster-sonata-v1.py)"
     )
     parser.add_argument(
         "--split", default="train", choices=["train", "val", "test"],

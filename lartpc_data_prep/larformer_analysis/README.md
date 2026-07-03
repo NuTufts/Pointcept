@@ -72,8 +72,8 @@ When comparing the predicted and observed flash agreement between the different 
 
 We have trained two models. Their configs are:
 
-1. crosslevel model: `configs/lartpc/larformer-slicer-v1-cascaded-crosslevel.py`
-2. PTv3+crosslevel hybrid: `configs/lartpc/larformer-slicer-v1-cascaded-ptv3hybrid-crosslevel.py`
+1. crosslevel model: `configs/lartpc/larformer/stage2_slicer/archive/larformer-slicer-v1-cascaded-crosslevel.py`
+2. PTv3+crosslevel hybrid: `configs/lartpc/larformer/stage2_slicer/larformer-slicer-v1-cascaded-ptv3hybrid-crosslevel.py`
 
 ### Checkpoints available locally for testing
 

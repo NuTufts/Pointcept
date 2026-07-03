@@ -19,7 +19,7 @@ container=/cluster/tufts/wongjiradlabnu/larbys/larbys-container/pointcept_cuml.s
 module load modtree/deprecated
 module load apptainer/1.2.4-suid
 
-config=/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept/configs/lartpc/pretrain-sonata-v1m1-lartpc-v6-logspace-resume.py
+config=/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept/configs/lartpc/sonata_pretrain/pretrain-sonata-v1m1-lartpc-v6-logspace-resume.py
 #CHECKPOINT_FILE=/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept/sonata/lartpc_v6_h200_noghosts_pretrain_logspace_resume/model/epoch_14.pth
 CHECKPOINT_FILE=/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept/sonata/lartpc_v6_h200_noghosts_pretrain_logspace_resume/model/epoch_28.pth
 #python3 tools/train.py --config ${config} --num-gpus 2 

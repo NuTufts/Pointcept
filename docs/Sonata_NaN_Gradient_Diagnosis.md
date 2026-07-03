@@ -1,7 +1,7 @@
 # Sonata Training NaN/Inf Gradient Diagnosis and Fixes
 
 **Date:** 2026-03-30
-**Config:** `configs/lartpc/pretrain-sonata-v6-extbnb.py`
+**Config:** `configs/lartpc/sonata_pretrain/archive/pretrain-sonata-v6-extbnb.py`
 **Jobs:** `larsonata.v6.extbnb.373354.pax008` (epochs 1-7), `larsonata.v6.extbnb.resume.epoch7.382201.pax008` (resumed epoch 8, crashed)
 
 ## Symptom

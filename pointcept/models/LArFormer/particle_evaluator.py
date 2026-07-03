@@ -5,7 +5,7 @@ Specialization of `LArFormerSlicerEvaluator` for Stage 3:
 
   - Default class taxonomy: 7-class
     {e, gamma, mu, pi, p, other, (unused), no_object}
-    (matches `configs/lartpc/larformer-particle-v1.py`).
+    (matches `configs/lartpc/larformer/stage3_particle/larformer-particle-v1.py`).
   - Drops the nu-specific metrics (`nu_recall` / `nu_purity` / `nu_mIoU`)
     that lose meaning when the leading class isn't "nu vs cosmic".
   - Default `best_metric = "mask_iou_mean"` — matched-pair IoU averaged

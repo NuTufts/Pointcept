@@ -27,12 +27,12 @@ Two filtering modes:
 Usage:
     # Plain mode (no deghoster):
     ./run_in_container.sh python tools/visualize_larformer_gt.py \\
-        --config configs/lartpc/larformer-slicer-v0.py
+        --config configs/lartpc/larformer/stage2_slicer/archive/larformer-slicer-v0.py
 
     # Cascade-deghoster mode (run the SAME trained deghoster as training):
     ./run_in_container.sh python tools/visualize_larformer_gt.py \\
-        --config configs/lartpc/larformer-slicer-v1-cascaded-loradeghost.py \\
-        --cascade-config configs/lartpc/larformer-slicer-v1-cascaded-loradeghost.py
+        --config configs/lartpc/larformer/stage2_slicer/archive/larformer-slicer-v1-cascaded-loradeghost.py \\
+        --cascade-config configs/lartpc/larformer/stage2_slicer/archive/larformer-slicer-v1-cascaded-loradeghost.py
 
 (The two `--config` args can point at the same cascade config; `--config`
 controls the dataset + levels for GT viz, `--cascade-config` controls the

@@ -293,4 +293,4 @@ For LArTPC, evaluate on your semantic segmentation task at various checkpoints (
 ## References
 
 - Sonata implementation: `pointcept/models/sonata/sonata_v1m1_base.py`
-- Configuration example: `configs/lartpc/pretrain-sonata-v1m1-lartpc.py`
+- Configuration example: `configs/lartpc/sonata_pretrain/archive/pretrain-sonata-v1m1-lartpc.py`

@@ -15,7 +15,7 @@ set -u
 # set the location of your copy of the repo here
 WORKDIR=/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/kpv2_pointcept/
 POINTCEPT_WORKDIR=/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept/
-CONFIG=${WORKDIR}/configs/lartpc/larformer-keypoint2-particle-predmask-cached-v1.py
+CONFIG=${WORKDIR}/configs/lartpc/larformer/stage4_keypoint/larformer-keypoint2-particle-predmask-cached-v1.py
 SAVE_PATH_DIR=larformer_keypoint2_particle_cachedpredmask_v1
 
 # location of the sl7 container here

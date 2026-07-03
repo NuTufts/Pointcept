@@ -1,6 +1,6 @@
 """S3.2 — Stage-3 cascade benchmark.
 
-Loads a Stage-3 config (e.g. `configs/lartpc/larformer-particle-v1.py`)
+Loads a Stage-3 config (e.g. `configs/lartpc/larformer/stage3_particle/larformer-particle-v1.py`)
 together with the trained Stage 1/2/3-backbone checkpoints specified in
 the config, then measures forward / backward time and peak GPU memory
 on a representative batch.
@@ -26,21 +26,21 @@ Usage:
     # End-to-end with the production config + the real checkpoints,
     # on the local 10-event dev sample.
     python tools/benchmark_larformer_s3_cascade.py \\
-        --config configs/lartpc/larformer-particle-v1.py \\
+        --config configs/lartpc/larformer/stage3_particle/larformer-particle-v1.py \\
         --inputlist devdata_mergedh5_pi0filter_10files.txt \\
         --batch-size 2 --n-warmup 2 --n-iters 5
 
     # Inference-only (no backward) — useful when comparing to the
     # cached-Stage-3 cost.
     python tools/benchmark_larformer_s3_cascade.py \\
-        --config configs/lartpc/larformer-particle-v1.py \\
+        --config configs/lartpc/larformer/stage3_particle/larformer-particle-v1.py \\
         --inputlist devdata_mergedh5_pi0filter_10files.txt \\
         --no-backward
 
     # Don't load real checkpoints (use random init — useful for shape
     # sanity-checking before the real checkpoints are available).
     python tools/benchmark_larformer_s3_cascade.py \\
-        --config configs/lartpc/larformer-particle-v1.py \\
+        --config configs/lartpc/larformer/stage3_particle/larformer-particle-v1.py \\
         --inputlist devdata_mergedh5_pi0filter_10files.txt \\
         --skip-checkpoints
 """
@@ -266,7 +266,7 @@ def parse_args():
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--config", required=True,
                    help="Path to a Stage-3 config (e.g. "
-                        "configs/lartpc/larformer-particle-v1.py).")
+                        "configs/lartpc/larformer/stage3_particle/larformer-particle-v1.py).")
     p.add_argument("--inputlist", default=None,
                    help="Override the config's val data_list_file. "
                         "Recommended for local runs where the cluster "

@@ -27,7 +27,7 @@ from pointcept.models.builder import build_model
 from pointcept.datasets.builder import build_dataset
 from pointcept.datasets.larformer import larformer_collate
 
-CONFIG = "configs/lartpc/larformer-particle-v1-cached-ptv3crosslevel.py"
+CONFIG = "configs/lartpc/larformer/stage3_particle/larformer-particle-v1-cached-ptv3crosslevel.py"
 CKPT = ("exp/larformer_particle_v1_cached_ptv3crosslevel_smallbatch_lr1e4_"
         "bugfixed/epoch_6.pth")
 TRAIN_CACHE = "exp/cache_stage12_devdata/train"

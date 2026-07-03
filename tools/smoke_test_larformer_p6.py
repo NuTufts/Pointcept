@@ -30,7 +30,7 @@ REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--config",
-                    default="configs/lartpc/larformer-slicer-v1-cascaded.py")
+                    default="configs/lartpc/larformer/stage2_slicer/archive/larformer-slicer-v1-cascaded.py")
     ap.add_argument("--cap", type=int, default=20_000,
                     help="per-event spacepoint cap (memory bound)")
     ap.add_argument("--n-iters", type=int, default=3)

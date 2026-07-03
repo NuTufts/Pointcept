@@ -14,7 +14,7 @@ set -u
 
 # set the location of your copy of the repo here
 WORKDIR=/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept/
-CONFIG=${WORKDIR}/configs/lartpc/larformer-slicer-v1-cascaded-crosslevel.py
+CONFIG=${WORKDIR}/configs/lartpc/larformer/stage2_slicer/archive/larformer-slicer-v1-cascaded-crosslevel.py
 #SQASHFILE=/projects/u6jo/datasets/combined_pretrain-sonata-v7-extbnb-larmatch.sqsh
 
 # location of the sl7 container here

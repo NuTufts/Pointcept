@@ -4,7 +4,7 @@ Status doc for the rising/oscillating training losses observed in the Stage-3
 particle-segmenter runs (`wandb: pointcept-larformer-stage3`). Use the
 checkboxes in §4 to track implementation.
 
-- **Config under analysis:** [`configs/lartpc/larformer-particle-v1-cached-ptv3crosslevel.py`](../configs/lartpc/larformer-particle-v1-cached-ptv3crosslevel.py)
+- **Config under analysis:** [`configs/lartpc/larformer/stage3_particle/larformer-particle-v1-cached-ptv3crosslevel.py`](../configs/lartpc/larformer/stage3_particle/larformer-particle-v1-cached-ptv3crosslevel.py)
 - **Runs:** (brown) base_lr=1e-4 flat; (blue) resume with `reset_lr=5e-5`;
   (purple) same checkpoint, `reset_optimizer=True`.
 - **Symptom:** `loss_mask_primary`, `loss_dice_primary`, `loss_cls`, and the
@@ -136,7 +136,7 @@ matcher-sanitization warnings.
 
 - [x] R1.1 Register `DelayedCosineLR` in `pointcept/utils/scheduler.py` (2026-06-10)
 - [x] R1.2 Patch `CheckpointLoader.extend_scheduler` fast-forward to include `iter_in_epoch` (2026-06-10 — **required**, not optional: the resume point is a mid-epoch IterCheckpointSaver checkpoint)
-- [x] R1.3 Create `configs/lartpc/larformer-particle-v1-cached-ptv3crosslevel-decaylrsched.py` (2026-06-10; unit tests in `tests/test_delayed_cosine_lr.py` all pass, incl. validation of the fast-forward formula against a real checkpoint)
+- [x] R1.3 Create `configs/lartpc/larformer/stage3_particle/larformer-particle-v1-cached-ptv3crosslevel-decaylrsched.py` (2026-06-10; unit tests in `tests/test_delayed_cosine_lr.py` all pass, incl. validation of the fast-forward formula against a real checkpoint)
 - [ ] R1.4 Launch on cluster + verify resume log lines and `params/lr` trajectory
   - First launch attempt (2026-06-10) crashed in `CheckpointLoader`'s
     extend-scheduler logging: it formatted `group.get('max_lr', 'N/A')`
@@ -273,7 +273,7 @@ epoch-boundary checkpoint, or patch the line to add
 
 ### 5.5 The new config (copy of the current one)
 
-`configs/lartpc/larformer-particle-v1-cached-ptv3crosslevel-decaylrsched.py`,
+`configs/lartpc/larformer/stage3_particle/larformer-particle-v1-cached-ptv3crosslevel-decaylrsched.py`,
 deltas only:
 
 1. **Resume source:** `weight = "<...>/exp/larformer_particle_v1_cached_ptv3crosslevel_smallbatch_lr1e4_bugfixed_resume2B_resetoptim/model/model_last.pth"`,

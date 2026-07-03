@@ -7,13 +7,13 @@ when resuming training with an extended epoch count.
 Usage:
     python tools/test_scheduler_extension.py \
         --checkpoint exp/lartpc/your_exp/model/epoch_90.pth \
-        --config configs/lartpc/pretrain-sonata-v1m1-lartpc-v2.py \
+        --config configs/lartpc/sonata_pretrain/archive/pretrain-sonata-v1m1-lartpc-v2.py \
         --original-epochs 100 \
         --extended-epochs 200
 
 Or without a checkpoint (uses config defaults):
     python tools/test_scheduler_extension.py \
-        --config configs/lartpc/pretrain-sonata-v1m1-lartpc-v2.py \
+        --config configs/lartpc/sonata_pretrain/archive/pretrain-sonata-v1m1-lartpc-v2.py \
         --original-epochs 100 \
         --extended-epochs 200 \
         --resume-epoch 90
@@ -169,7 +169,7 @@ Examples:
   # Compare original (from command line) vs extended (from config):
   python tools/test_scheduler_extension.py \\
       --checkpoint epoch_90.pth \\
-      --config configs/lartpc/pretrain-sonata-v1m1-lartpc-v2.py \\
+      --config configs/lartpc/sonata_pretrain/archive/pretrain-sonata-v1m1-lartpc-v2.py \\
       --original-max-lr 0.004 \\
       --original-div-factor 10.0 \\
       --original-final-div-factor 1000.0 \\
@@ -178,7 +178,7 @@ Examples:
   # Test different extended parameters without modifying config:
   python tools/test_scheduler_extension.py \\
       --checkpoint epoch_90.pth \\
-      --config configs/lartpc/pretrain-sonata-v1m1-lartpc-v2.py \\
+      --config configs/lartpc/sonata_pretrain/archive/pretrain-sonata-v1m1-lartpc-v2.py \\
       --original-max-lr 0.004 \\
       --extended-max-lr 0.001 \\
       --extended-pct-start 0.025

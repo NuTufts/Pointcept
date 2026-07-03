@@ -19,15 +19,15 @@ The Primary Models we are developing/training are:
 sh scripts/train.sh -g <NUM_GPU> -d <DATASET> -c <CONFIG_NAME> -n <EXP_NAME>
 
 # Examples:
-sh scripts/train.sh -g 4 -d lartpc -c semseg-pt-v3m1-0-base -n my-experiment
+sh scripts/train.sh -g 4 -d lartpc -c semseg/semseg-pt-v3m1-0-base -n my-experiment
 sh scripts/train.sh -g 4 -d scannet -c semseg-pt-v2m2-0-base -n semseg-test
 
 # Resume training
-sh scripts/train.sh -g 4 -d lartpc -c semseg-pt-v3m1-0-base -n my-experiment -r true
+sh scripts/train.sh -g 4 -d lartpc -c semseg/semseg-pt-v3m1-0-base -n my-experiment -r true
 
 # Direct invocation
 export PYTHONPATH=./
-python tools/train.py --config-file configs/lartpc/semseg-pt-v3m1-0-base.py --num-gpus 4 --options save_path=exp/lartpc/my-experiment
+python tools/train.py --config-file configs/lartpc/semseg/semseg-pt-v3m1-0-base.py --num-gpus 4 --options save_path=exp/lartpc/my-experiment
 ```
 
 ### Testing
@@ -89,9 +89,12 @@ class MyDataset(DefaultDataset): ...
 - `uwire/vwire/ywire`: Wire coordinates
 
 ### Configs
-- `configs/lartpc/semseg-pt-v3m1-0-base.py` - PTv3 semantic segmentation
-- `configs/lartpc/pretrain-sonata-v1m1-lartpc.py` - Sonata pre-training
-- `configs/lartpc/linearprobe-sonata-v1m1-lartpc.py` - Linear probe evaluation
+Configs are organized by project (`sonata_pretrain/`, `lora_finetune/`, `larformer/stage{1..4}_*/`,
+`semseg/`, `shower_origin/`), each with an `archive/` of past experiments. See
+`configs/lartpc/README.md` for the production configuration chain. Examples:
+- `configs/lartpc/semseg/semseg-pt-v3m1-0-base.py` - PTv3 semantic segmentation
+- `configs/lartpc/sonata_pretrain/pretrain-sonata-v1m1-lartpc-v6-logspace-resume.py` - Sonata pre-training (production)
+- `configs/lartpc/sonata_pretrain/probes/linearprobe-sonata-v1m1-lartpc.py` - Linear probe evaluation
 
 ### Data Organization
 ```

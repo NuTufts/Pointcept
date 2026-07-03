@@ -12,7 +12,7 @@ A LoRA-fine-tuned SONATA semantic segmentor (8 LArTPC particle classes: electron
 
 | File | Purpose |
 |---|---|
-| `configs/lartpc/lorafinetune-sonata-v1m1-lartpc-v6-seg.py` | Training config (uses `SonataLoRASegmentor` + LoRA on top of SONATA-v1m1 + PT-v3m2 backbone, 10 epochs, drop_cosmics_prob=0.9, BiasedSphereCrop r=20 cm) |
+| `configs/lartpc/lora_finetune/archive/lorafinetune-sonata-v1m1-lartpc-v6-seg.py` | Training config (uses `SonataLoRASegmentor` + LoRA on top of SONATA-v1m1 + PT-v3m2 backbone, 10 epochs, drop_cosmics_prob=0.9, BiasedSphereCrop r=20 cm) |
 | `sonata/lora_finetune_v6_p100_50_epochs_noghost_logspacefix/model/model_last.pth` | The checkpoint in question. metadata: `epoch=1, best_metric_value=0.8212` (epoch=1 is fine — `eval_epoch=1` means a single eval cycle covers all 10 dataset passes; 40625 iters × bs=96 ÷ 390k entries ≈ 10 epochs of data) |
 | `lartpc_data_prep/semseg_analysis/run_semseg_inference.py` | Standalone inference driver written during the laptop debug session; faithfully reproduces the `LArTPCDataset` val pipeline |
 | `lartpc_data_prep/semseg_analysis/histograms.py` | Accumulator schema (confusion + score histograms per origin) |
@@ -120,7 +120,7 @@ This confirms or refutes H3 (env-specific bug). Run the standalone inference scr
 ```bash
 cd /path/to/Pointcept
 ./run_in_container.sh python lartpc_data_prep/semseg_analysis/run_semseg_inference.py \
-    --model-config configs/lartpc/lorafinetune-sonata-v1m1-lartpc-v6-seg.py \
+    --model-config configs/lartpc/lora_finetune/archive/lorafinetune-sonata-v1m1-lartpc-v6-seg.py \
     --weights sonata/lora_finetune_v6_p100_50_epochs_noghost_logspacefix/model/model_last.pth \
     --filelist prod4_valsplit_subset.txt \
     --output-shard /tmp/cluster_check_last.npz \
@@ -144,7 +144,7 @@ This is the ground-truth comparison. If our standalone driver and the official t
 ```bash
 cd /path/to/Pointcept
 ./run_in_container.sh python tools/test.py \
-    --config-file configs/lartpc/lorafinetune-sonata-v1m1-lartpc-v6-seg.py \
+    --config-file configs/lartpc/lora_finetune/archive/lorafinetune-sonata-v1m1-lartpc-v6-seg.py \
     --options weight=sonata/lora_finetune_v6_p100_50_epochs_noghost_logspacefix/model/model_last.pth \
               save_path=/tmp/official_test_last \
               data.test.data_list_file=prod4_valsplit_subset.txt
@@ -292,7 +292,7 @@ That's within sample-size noise of the wandb-logged 0.82/0.89/0.95.
 
 For all inference pathways through `LArTPCDataset` (i.e. anything using `build_dataset(cfg.data.val)` or `eval_lora_classifier.py`):
 
-1. **Add `adc_scale=500.0` to the config's `data.val` and `data.test` blocks** in `configs/lartpc/lorafinetune-sonata-v1m1-lartpc-v6-seg.py`. This encodes the training-era preprocessing in the config explicitly.
+1. **Add `adc_scale=500.0` to the config's `data.val` and `data.test` blocks** in `configs/lartpc/lora_finetune/archive/lorafinetune-sonata-v1m1-lartpc-v6-seg.py`. This encodes the training-era preprocessing in the config explicitly.
 
 2. **Patch `eval_lora_classifier.py`** (around line 287 where `LArTPCDataset(...)` is instantiated) to read `adc_scale` from the config:
    ```python

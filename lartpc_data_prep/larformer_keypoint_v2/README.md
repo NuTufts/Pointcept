@@ -160,7 +160,7 @@ shower), `end_coord_norm` + `has_end` (tracks).
     evaluator + Phase-2 query seeding. `kpscores`/`kpoffsets` added to
     `_per_sp_labels_for_event`. The decoder-optional path (`num_queries=0`)
     already existed — no new plumbing needed there.
-  - Config: `configs/lartpc/larformer-keypoint2-slice-v1.py` — frozen encoder
+  - Config: `configs/lartpc/larformer/stage4_keypoint/larformer-keypoint2-slice-v1.py` — frozen encoder
     (`freeze_backbone=True`) + trainable PTv3 decoder (`unfreeze_decoder=True`,
     from scratch, `ptv3_decoder_init_scale=0.01`), levels
     (voxel_4cm, ptv3_dec3, ptv3_dec2, spacepoint), heads: dec2 `object`

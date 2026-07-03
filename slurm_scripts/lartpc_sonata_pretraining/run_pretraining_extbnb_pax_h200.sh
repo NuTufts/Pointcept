@@ -5,7 +5,7 @@ source setenv_pointcept_only.sh
 cd /cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept
 
 
-CONFIG="/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept/configs/lartpc/pretrain-sonata-v7-extbnb-larmatch.py"
+CONFIG="/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept/configs/lartpc/sonata_pretrain/pretrain-sonata-v7-extbnb-larmatch.py"
 
 #python3 tools/train.py --config $CONFIG --num-gpus 2
 

@@ -21,7 +21,7 @@ WEIGHTS=/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept/sonata/la
 # Uncomment this block and comment out the test block below when ready.
 # ----------------------------------------------------------------------------
 python3 tools/train.py \
-    --config configs/lartpc/lorafinetune-sonata-v1m1-lartpc-v6-deghost.py \
+    --config configs/lartpc/lora_finetune/archive/lorafinetune-sonata-v1m1-lartpc-v6-deghost.py \
     --num-gpus 2 \
     --options weight=$WEIGHTS
 
@@ -31,7 +31,7 @@ python3 tools/train.py \
 # SemSegEvaluator reporting IoU for both real and ghost classes.
 # ----------------------------------------------------------------------------
 #python3 tools/train.py \
-#    --config configs/lartpc/lorafinetune-sonata-v1m1-lartpc-v5-deghost.py \
+#    --config configs/lartpc/lora_finetune/archive/lorafinetune-sonata-v1m1-lartpc-v5-deghost.py \
 #    --num-gpus 4 \
 #    --options weight=$WEIGHTS \
 #        epoch=2 \
@@ -44,6 +44,6 @@ python3 tools/train.py \
 # ----------------------------------------------------------------------------
 #RESUME_WEIGHTS=/cluster/tufts/wongjiradlabnu/vdasil01/Pointcept/sonata/lora_finetune_v6_deghost_coordfix/model/model_last.pth
 #python3 tools/train.py \
-#    --config configs/lartpc/lorafinetune-sonata-v1m1-lartpc-v6-deghost.py \
+#    --config configs/lartpc/lora_finetune/archive/lorafinetune-sonata-v1m1-lartpc-v6-deghost.py \
 #    --num-gpus 6 \
 #    --options weight=$RESUME_WEIGHTS resume=True

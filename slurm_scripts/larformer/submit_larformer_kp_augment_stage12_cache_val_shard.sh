@@ -17,8 +17,8 @@ set -u
 # set the location of your copy of the repo here
 WORKDIR=/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/kpv2_pointcept/
 POINTCEPT_WORKDIR=/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept/
-KP_CONFIG=${WORKDIR}/configs/lartpc/larformer-keypoint2-particle-v1.py
-PARTICLE_CONFIG=${WORKDIR}/configs/lartpc/larformer-particle-fullcascade-ptv3crosslevel.py
+KP_CONFIG=${WORKDIR}/configs/lartpc/larformer/stage4_keypoint/larformer-keypoint2-particle-v1.py
+PARTICLE_CONFIG=${WORKDIR}/configs/lartpc/larformer/stage3_particle/larformer-particle-fullcascade-ptv3crosslevel.py
 PARTICLE_WEIGHTS=${POINTCEPT_WORKDIR}/exp/larformer_particle_v1_cached_ptv3crosslevel_smallbatch_resume3_cosinedecay/model/epoch_12.pth
 
 # location of the sl7 container here
@@ -36,9 +36,9 @@ OUTPUT_ROOT="/cluster/tufts/wongjiradlab/larbys/data/ub_on_tufts/hdf5/larformer_
 # start job inside container
 #SBATCH --array=0-63
 # python tools/augment_stage12_cache_pred_masks_shard.py \
-#   --keypoint-config configs/lartpc/larformer-keypoint2-particle-v1.py \
+#   --keypoint-config configs/lartpc/larformer/stage4_keypoint/larformer-keypoint2-particle-v1.py \
 #   --cache-root /path/to/stage123_cache/train \
-#   --particle-config configs/lartpc/larformer-particle-fullcascade-ptv3crosslevel.py \
+#   --particle-config configs/lartpc/larformer/stage3_particle/larformer-particle-fullcascade-ptv3crosslevel.py \
 #   --particle-weights /path/to/model_iter_98652.pth \
 #   --shard-id $SLURM_ARRAY_TASK_ID --n-shards 64
 

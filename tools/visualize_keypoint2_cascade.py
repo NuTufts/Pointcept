@@ -242,7 +242,7 @@ def figure_for_view(event_data, view=-1):
     return fig
 
 
-# mckeypoint type codes (see configs/lartpc/larformer-keypoint2-slice-v1.py).
+# mckeypoint type codes (see configs/lartpc/larformer/stage4_keypoint/larformer-keypoint2-slice-v1.py).
 KP_TYPE_NAMES = {0: "nu_vertex", 1: "track_start", 2: "track_end",
                  3: "shower", 4: "michel", 5: "delta"}
 

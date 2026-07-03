@@ -34,7 +34,7 @@ ROOT_OUTPUT_DIR=/cluster/tufts/wongjiradlab/larbys/data/ub_on_tufts/root/shower_
 TAG=showerorigin_reco_mcc9_v29e_dl_run3b_bnb_nu_overlay_test
 
 # Model configuration
-SHOWER_ORIGIN_CONFIG=${POINTCEPT_DIR}/configs/lartpc/shower-origin-sonata-v1m1-v3-reco-fragments-p1cmp075.py
+SHOWER_ORIGIN_CONFIG=${POINTCEPT_DIR}/configs/lartpc/shower_origin/archive/shower-origin-sonata-v1m1-v3-reco-fragments-p1cmp075.py
 SHOWER_ORIGIN_CKPT=${POINTCEPT_DIR}/shower_origin/sonata_v1m1_v3_v6backbone_pax_pi0filter_recofragments/model/model_epoch165.pth
 DEVICE=cuda
 

@@ -17,7 +17,7 @@ We never save per-spacepoint scores. Each shard sums:
 with:
     C = 8 semantic classes (electron, muon, pion, proton, gamma, michel, delta, led)
         — order matches the training config
-        Pointcept/configs/lartpc/lorafinetune-sonata-v1m1-lartpc-v6-seg.py
+        Pointcept/configs/lartpc/lora_finetune/archive/lorafinetune-sonata-v1m1-lartpc-v6-seg.py
     O = 3 origin strata (unknown / nu / cosmic)
     B = score-bin count, default 1000, edges = linspace(0, 1, B+1)
 

@@ -7,14 +7,14 @@ regardless of width.
 
 Usage:
     python tools/mup_coord_check.py \
-        --config-file configs/lartpc/pretrain-sonata-v1m1-lartpc-v6-mup.py \
+        --config-file configs/lartpc/sonata_pretrain/archive/pretrain-sonata-v1m1-lartpc-v6-mup.py \
         --num-steps 10 \
         --widths 0.25,0.5,1.0,2.0 \
         --output coord_check.png
 
     # Compare SP vs muP:
     python tools/mup_coord_check.py \
-        --config-file configs/lartpc/pretrain-sonata-v1m1-lartpc-v6.py \
+        --config-file configs/lartpc/sonata_pretrain/archive/pretrain-sonata-v1m1-lartpc-v6.py \
         --num-steps 10 --widths 0.25,0.5,1.0,2.0 --output coord_check_sp.png
 """
 

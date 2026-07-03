@@ -10,12 +10,12 @@ for proper initialization of the segmentation head bias.
 
 Usage:
     python tools/estimate_class_fraction.py \
-        --config-file configs/lartpc/semseg-sonata-v1m1-lartpc-v3-decoder-finetune.py \
+        --config-file configs/lartpc/semseg/archive/semseg-sonata-v1m1-lartpc-v3-decoder-finetune.py \
         --num-samples 1000
 
     # With specific output format for config
     python tools/estimate_class_fraction.py \
-        --config-file configs/lartpc/semseg-sonata-v1m1-lartpc-v3-decoder-finetune.py \
+        --config-file configs/lartpc/semseg/archive/semseg-sonata-v1m1-lartpc-v3-decoder-finetune.py \
         --num-samples 500 \
         --output-format config
 

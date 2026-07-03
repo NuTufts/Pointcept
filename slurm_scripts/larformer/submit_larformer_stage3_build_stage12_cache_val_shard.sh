@@ -16,8 +16,8 @@ set -u
 
 # set the location of your copy of the repo here
 WORKDIR=/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/kpv2_pointcept/
-#CONFIG=${WORKDIR}/configs/lartpc/larformer-particle-v1-cached-ptv3crosslevel.py
-CONFIG=${WORKDIR}/configs/lartpc/larformer-particle-v1.py
+#CONFIG=${WORKDIR}/configs/lartpc/larformer/stage3_particle/larformer-particle-v1-cached-ptv3crosslevel.py
+CONFIG=${WORKDIR}/configs/lartpc/larformer/stage3_particle/larformer-particle-v1.py
 
 # location of the sl7 container here
 container=/cluster/tufts/wongjiradlabnu/larbys/larbys-container/pointcept_cuml.sif

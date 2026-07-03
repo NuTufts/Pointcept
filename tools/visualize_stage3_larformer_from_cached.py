@@ -34,13 +34,13 @@ What changes from the Stage-2 GT viz:
 Usage (GT only):
 
     python tools/visualize_stage3_larformer_from_cached.py \\
-        --config configs/lartpc/larformer-particle-v1-cached.py \\
+        --config configs/lartpc/larformer/stage3_particle/archive/larformer-particle-v1-cached.py \\
         --cache /tmp/stage12_cache_v2/val
 
 Usage (with inference overlay):
 
     python tools/visualize_stage3_larformer_from_cached.py \\
-        --config configs/lartpc/larformer-particle-v1-cached-ptv3crosslevel.py \\
+        --config configs/lartpc/larformer/stage3_particle/larformer-particle-v1-cached-ptv3crosslevel.py \\
         --cache exp/cache_stage12_ptv3crosslevelslicer_iter_75750/val \\
         --stage3pred-dir exp/.../inference \\
         --min-mask-prob 0.5
@@ -93,7 +93,7 @@ def main():
     ap.add_argument(
         "--config", required=True,
         help="Stage-3 LArFormer config — typically "
-             "configs/lartpc/larformer-particle-v1-cached.py. The viz "
+             "configs/lartpc/larformer/stage3_particle/archive/larformer-particle-v1-cached.py. The viz "
              "reads cfg.model.levels + cfg.model.token_dim for the "
              "tokenizer and cfg.data.<split> for the cache dataset.",
     )

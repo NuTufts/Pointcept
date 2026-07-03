@@ -46,7 +46,7 @@ fi
 POINTCEPT_DIR=${POINTCEPT_DIR:-$(cd "${SCRIPT_DIR}/../.." && pwd)}
 
 # Cascade config + checkpoints (config has env-overridable defaults).
-LARFORMER_CASCADE_CONFIG=${LARFORMER_CASCADE_CONFIG:-${POINTCEPT_DIR}/configs/lartpc/larformer-particle-fullcascade-ptv3crosslevel.py}
+LARFORMER_CASCADE_CONFIG=${LARFORMER_CASCADE_CONFIG:-${POINTCEPT_DIR}/configs/lartpc/larformer/stage3_particle/larformer-particle-fullcascade-ptv3crosslevel.py}
 LARFORMER_PARTICLE_CKPT=${LARFORMER_PARTICLE_CKPT:-${POINTCEPT_DIR}/exp/larformer_particle_v1_cached_ptv3crosslevel_smallbatch_lr1e4_bugfixed/model_iter_98652.pth}
 CLASS_PROB_THRESHOLD=${CLASS_PROB_THRESHOLD:-0.3}
 DEVICE=${DEVICE:-cuda}

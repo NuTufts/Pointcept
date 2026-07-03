@@ -703,7 +703,7 @@ allows pure-CPU jobs and you want a cheaper / faster-queued test.
 | `CONTAINER` | `/projects/u6jo/containers/pointcept_cuml.sif` | The training container. The test scripts run inside this. |
 | `DATA_ROOT` | `/data` | In-container mount point for `$COMBINED_SQSH`. The list paths must start with this. |
 | `POINTCEPT_DIR` | `$HOME/ubpointcept/pointcept` | Host path to the cloned pointcept repo on Isambard. Bound at `/pointcept` inside the container. |
-| `CONFIG_FILE` | `$POINTCEPT_DIR/configs/lartpc/pretrain-sonata-v7-extbnb-larmatch.py` | Pointcept config; the wrapper translates this to its in-container path. Point at the larformer config to test that dataset instead. |
+| `CONFIG_FILE` | `$POINTCEPT_DIR/configs/lartpc/sonata_pretrain/pretrain-sonata-v7-extbnb-larmatch.py` | Pointcept config; the wrapper translates this to its in-container path. Point at the larformer config to test that dataset instead. |
 | `SPLIT` | `train` | Which `cfg.data.<split>` block to read. |
 | `NUM_BATCHES` | `4` | How many batches to pull. |
 | `BATCH_SIZE` | `2` | Per-batch sample count. |

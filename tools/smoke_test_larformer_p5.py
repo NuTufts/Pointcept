@@ -54,7 +54,7 @@ def per_sp_accuracy(per_level_cls, hasmatch):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--config",
-                    default="configs/lartpc/larformer-deghost-v0.py")
+                    default="configs/lartpc/larformer/stage1_deghost/archive/larformer-deghost-v0.py")
     ap.add_argument("--n-events", type=int, default=2)
     ap.add_argument("--cap", type=int, default=30_000)
     ap.add_argument("--overfit-event", type=int, default=-1)

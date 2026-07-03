@@ -43,14 +43,14 @@ Weights:
 
 The --config should be a CascadedParticleSegmenter whose particle_segmenter
 matches the keypoint-trained weights, e.g.
-`configs/lartpc/larformer-particle-fullcascade-ptv3crosslevel.py`.
+`configs/lartpc/larformer/stage3_particle/larformer-particle-fullcascade-ptv3crosslevel.py`.
 
 Usage:
     python tools/run_larformer_fullcascade_inference.py \\
-        --config configs/lartpc/larformer-particle-fullcascade-ptv3crosslevel.py \\
+        --config configs/lartpc/larformer/stage3_particle/larformer-particle-fullcascade-ptv3crosslevel.py \\
         --weights exp/.../cascade_or_slicer.pth \\
         --particle-keypoint-weights exp/larformer_keypoint_query_v1/model/model_best.pth \\
-        --keypoint-dense-config configs/lartpc/larformer-keypoint-v1.py \\
+        --keypoint-dense-config configs/lartpc/larformer/stage4_keypoint/archive/larformer-keypoint-v1.py \\
         --keypoint-dense-weights exp/larformer_keypoint_v1/model/model_best.pth \\
         --input-list inputlists/run3b_ncpi0.txt \\
         --output-dir exp/.../keypoint_inference

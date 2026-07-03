@@ -22,7 +22,7 @@ module load apptainer
 #apptainer exec --nv --bind /cluster:/cluster $container bash -c "cd ${WORKDIR}/../ && \
 #  source setenv_pointcept_only.sh && \
 #  cd ${WORKDIR} && \
-#  python tools/train.py --config configs/lartpc/shower-cluster-sonata-v1-h200.py --num-gpus 2"
+#  python tools/train.py --config configs/lartpc/shower_origin/archive/shower-cluster-sonata-v1-h200.py --num-gpus 2"
 
 # run job script inside container: resume
 
@@ -34,5 +34,5 @@ resume_checkpoint="${CHECKPOINT_FOLDER}/model_epoch60.pth"
 apptainer exec --nv --bind /cluster:/cluster $container bash -c "cd ${WORKDIR}/../ && \
   source setenv_pointcept_only.sh && \
   cd ${WORKDIR} && \
-  python tools/train.py --config configs/lartpc/shower-cluster-sonata-v1-h200.py --num-gpus 2 --options resume=True weight=${resume_checkpoint}"
+  python tools/train.py --config configs/lartpc/shower_origin/archive/shower-cluster-sonata-v1-h200.py --num-gpus 2 --options resume=True weight=${resume_checkpoint}"
 

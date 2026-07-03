@@ -34,9 +34,9 @@ Usage (the no-cap dev cache, both splits):
 
     for SPLIT in train val; do
       python tools/augment_stage12_cache_pred_masks.py \\
-        --keypoint-config configs/lartpc/larformer-keypoint2-particle-v1.py \\
+        --keypoint-config configs/lartpc/larformer/stage4_keypoint/larformer-keypoint2-particle-v1.py \\
         --cache-root /mnt/ddrive/data/ub_on_tufts/devdata_cache_stage12_nocap/$SPLIT \\
-        --particle-config configs/lartpc/larformer-particle-fullcascade-ptv3crosslevel.py \\
+        --particle-config configs/lartpc/larformer/stage3_particle/larformer-particle-fullcascade-ptv3crosslevel.py \\
         --particle-weights exp/larformer_particle_v1_cached_ptv3crosslevel_smallbatch_lr1e4_bugfixed/model_iter_98652.pth
     done
 """

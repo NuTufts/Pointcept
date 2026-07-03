@@ -21,7 +21,7 @@ On your A100 machine:
 cd /cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/xformers/pointcept_dev
 
 python xformer_tests/extract_encoder_vectors.py \
-    --config configs/lartpc/pretrain-sonata-v1m1-lartpc.py \
+    --config configs/lartpc/sonata_pretrain/archive/pretrain-sonata-v1m1-lartpc.py \
     --checkpoint /path/to/your/checkpoint.pth \
     --data_file /path/to/single_event.h5 \
     --output xformer_tests/encoder_a100_flash_attn.pt \
@@ -36,7 +36,7 @@ On your P100 machine:
 cd /cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/xformers/pointcept_dev
 
 python xformer_tests/extract_encoder_vectors.py \
-    --config configs/lartpc/pretrain-sonata-v1m1-lartpc.py \
+    --config configs/lartpc/sonata_pretrain/archive/pretrain-sonata-v1m1-lartpc.py \
     --checkpoint /path/to/your/checkpoint.pth \
     --data_file /path/to/single_event.h5 \
     --output xformer_tests/encoder_p100_xformers.pt \

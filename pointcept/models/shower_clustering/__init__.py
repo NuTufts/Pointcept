@@ -20,7 +20,7 @@ from .model import ShowerClusteringMask2Former
 # pointcept.engines.train.TRAINERS, which doesn't exist yet at this point in
 # the import chain (engines.train imports pointcept.models before defining
 # TRAINERS, so importing the trainer here triggers a circular import).
-# The training config (configs/lartpc/shower-cluster-sonata-v1.py) imports it
+# The training config (configs/lartpc/shower_origin/archive/shower-cluster-sonata-v1.py) imports it
 # explicitly, which runs after engines.train is fully initialized.
 
 __all__ = [

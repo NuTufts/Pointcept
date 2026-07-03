@@ -21,7 +21,7 @@ set -eu
 WORKDIR=/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/kpv2_pointcept
 container=/cluster/tufts/wongjiradlabnu/larbys/larbys-container/pointcept_cuml.sif
 
-CONFIG=${CONFIG:-configs/lartpc/larformer-keypoint2-fullcascade.py}
+CONFIG=${CONFIG:-configs/lartpc/larformer/stage4_keypoint/larformer-keypoint2-fullcascade.py}
 #INPUT_LIST=${INPUT_LIST:-lartpc_data_prep/larformer_keypoint_v2/inputlists/merged_sp_mcc9_v29e_dl_run3b_bnb_nu_overlay_50event_test.txt}
 #OUTPUT_DIR=${OUTPUT_DIR:-${WORKDIR}/lartpc_data_prep/larformer_keypoint_v2/output/test_50events_with_score_maps/}
 

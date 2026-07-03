@@ -18,7 +18,7 @@ container=/cluster/tufts/wongjiradlabnu/larbys/larbys-container/pointcept_cuml.s
 # setup singularity on the node
 module load apptainer
 
-CONFIG="/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept/configs/lartpc/pretrain-sonata-v7-extbnb-larmatch.py"
+CONFIG="/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept/configs/lartpc/sonata_pretrain/pretrain-sonata-v7-extbnb-larmatch.py"
 
 # resume checkpoints
 #CHECKPOINT="/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept/sonata/lartpc_v7_h200_extbnb_larmatch_lowerlr/model/epoch_6.pth"

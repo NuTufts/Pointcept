@@ -16,7 +16,7 @@ to the keys and load them strict=False into a fresh Sonata-v1m1 wrapper.
 
 Usage:
     ./run_in_container.sh python tools/fold_lora_into_backbone.py \\
-        --config     configs/lartpc/lorafinetune-sonata-v1m1-lartpc-v6-deghost.py \\
+        --config     configs/lartpc/lora_finetune/archive/lorafinetune-sonata-v1m1-lartpc-v6-deghost.py \\
         --checkpoint exp/.../model/model_best.pth \\
         --output     sonata/deghost_lora_folded.pth
 

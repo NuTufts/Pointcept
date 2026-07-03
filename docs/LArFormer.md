@@ -25,7 +25,7 @@ Stage-3 `LArFormer`):
 |---|---|---|---|
 | 1 | Deghost (per-SP real/ghost) | [`SonataLoRADeghostSegmentor`](../pointcept/models/lora_sonata_deghost.py) (LoRA-finetuned Sonata) | **Trained**, frozen in the cascade. (A LArFormer-flavored alternative exists: `larformer-deghost-v0*.py`.) |
 | 2 | Event slicing (cosmic slices + nu slice) | `LArFormer` slicer, ptv3hybrid-crosslevel variant | **Trained.** The iter-75750 checkpoint built the Stage-1+2 training cache for Stage 3 (note: that exact ckpt is not in this tree; see [LARFORMER_DATAPREP.md](../lartpc_data_prep/larformer_scripts/LARFORMER_DATAPREP.md) "checkpoint provenance"). |
-| 3 | Particle instance segmentation of the nu slice (7-class + per-query origin point) | `LArFormer` particle segmenter, ptv3crosslevel variant | **In production training** (active config: [`larformer-particle-v1-cached-ptv3crosslevel-decaylrsched.py`](../configs/lartpc/larformer-particle-v1-cached-ptv3crosslevel-decaylrsched.py), run `resume3_cosinedecay`). val `mask_iou_mean` ≈ 0.69, matched-origin L2 ≈ 10–13 cm and improving. |
+| 3 | Particle instance segmentation of the nu slice (7-class + per-query origin point) | `LArFormer` particle segmenter, ptv3crosslevel variant | **In production training** (active config: [`larformer-particle-v1-cached-ptv3crosslevel-decaylrsched.py`](../configs/lartpc/larformer/stage3_particle/larformer-particle-v1-cached-ptv3crosslevel-decaylrsched.py), run `resume3_cosinedecay`). val `mask_iou_mean` ≈ 0.69, matched-origin L2 ≈ 10–13 cm and improving. |
 
 Stage-3 training run lineage (all wandb `pointcept-larformer-stage3`):
 `..._lr1e4_bugfixed` (flat 1e-4) → `..._resume2` (LR cut to 5e-5) →
@@ -281,7 +281,7 @@ The decoder's per-query class head and Hungarian matcher stay essentially as tod
 
 ## 5. Loss budget defaults
 
-Inheriting from `ShowerClusteringLoss`, generalized. Default weights below are the spec defaults; the v1 cascaded-slicer configs have tuned values noted in the rightmost column (see [`larformer-slicer-v1-cascaded-loradeghost.py`](../configs/lartpc/larformer-slicer-v1-cascaded-loradeghost.py) for the canonical set).
+Inheriting from `ShowerClusteringLoss`, generalized. Default weights below are the spec defaults; the v1 cascaded-slicer configs have tuned values noted in the rightmost column (see [`larformer-slicer-v1-cascaded-loradeghost.py`](../configs/lartpc/larformer/stage2_slicer/archive/larformer-slicer-v1-cascaded-loradeghost.py) for the canonical set).
 
 | Component                                          | Spec default | Slicer-v1 value | Notes                                              |
 |----------------------------------------------------|--------------|-----------------|----------------------------------------------------|
@@ -347,8 +347,8 @@ Open spec, expected to land per-stage as the cascade is built:
 
 Two cascade variants exist:
 
-- [`larformer-slicer-v1-cascaded.py`](../configs/lartpc/larformer-slicer-v1-cascaded.py) — LArFormer-flavored Stage-1 deghoster (per-token cls on the spacepoint level, class 1 = real). The deghoster is a separately-trained `LArFormer` checkpoint produced from [`larformer-deghost-v0.py`](../configs/lartpc/larformer-deghost-v0.py).
-- [`larformer-slicer-v1-cascaded-loradeghost.py`](../configs/lartpc/larformer-slicer-v1-cascaded-loradeghost.py) — uses the existing trained [`SonataLoRADeghostSegmentor`](../pointcept/models/lora_sonata_deghost.py) as Stage 1 (LoRA-finetuned Sonata-v1m1, class 0 = real via the HasmatchAsGhost convention). `CascadedSlicer._run_deghoster_p_real` accepts either output convention and picks the right softmax column based on `deghoster_class_index_real` on the cascade config. **This is the active variant for the current debug effort** because the LoRA deghoster is already trained and gives `real_recall=0.65` / `ghost_reject=0.83` at τ=0.5 on the dev sample.
+- [`larformer-slicer-v1-cascaded.py`](../configs/lartpc/larformer/stage2_slicer/archive/larformer-slicer-v1-cascaded.py) — LArFormer-flavored Stage-1 deghoster (per-token cls on the spacepoint level, class 1 = real). The deghoster is a separately-trained `LArFormer` checkpoint produced from [`larformer-deghost-v0.py`](../configs/lartpc/larformer/stage1_deghost/archive/larformer-deghost-v0.py).
+- [`larformer-slicer-v1-cascaded-loradeghost.py`](../configs/lartpc/larformer/stage2_slicer/archive/larformer-slicer-v1-cascaded-loradeghost.py) — uses the existing trained [`SonataLoRADeghostSegmentor`](../pointcept/models/lora_sonata_deghost.py) as Stage 1 (LoRA-finetuned Sonata-v1m1, class 0 = real via the HasmatchAsGhost convention). `CascadedSlicer._run_deghoster_p_real` accepts either output convention and picks the right softmax column based on `deghoster_class_index_real` on the cascade config. **This is the active variant for the current debug effort** because the LoRA deghoster is already trained and gives `real_recall=0.65` / `ghost_reject=0.83` at τ=0.5 on the dev sample.
 
 ---
 
@@ -519,7 +519,7 @@ Each phase ends with a runnable training config and at least one overfit / sanit
 | **P3 — Fragment builder** | Port `FragmentPool` + content enricher into `builders/fragment.py`; reproduce `ShowerClusteringMask2Former` behavior | **Done** | Smoke test in `smoke_test_larformer_p3.py`. |
 | **P4 — `LArFormerDataset`** | Pluggable `gt_source`; slice GT via `slice_labels.py`; collate handles optional fragments | **Done** | `gt_source="slice"` + `"shower_trunk"` + `"deghost"` all working. `gt_source="particle"` (P7) raises `NotImplementedError`. |
 | **P4b — GT visualizer** | Extract `build_levels` + `build_per_level_gt` into pure helpers (§11); wire `tools/visualize_larformer_gt.py` | **Done** | Visualizer at [`tools/visualize_larformer_gt.py`](../tools/visualize_larformer_gt.py), extended in v1 with a prediction-panel mode (see §15). |
-| **P5 — Stage 1: deghoster** | Per-level cls head on the spacepoint level; train on `hasmatch` | **Done (LArFormer flavor); LoRA variant adopted for cascade** | Both [`larformer-deghost-v0.py`](../configs/lartpc/larformer-deghost-v0.py) (LArFormer-flavored) and the LoRA-finetuned [`SonataLoRADeghostSegmentor`](../pointcept/models/lora_sonata_deghost.py) work as Stage 1. v1 cascade defaults to the LoRA variant (see §6 implementation note). |
+| **P5 — Stage 1: deghoster** | Per-level cls head on the spacepoint level; train on `hasmatch` | **Done (LArFormer flavor); LoRA variant adopted for cascade** | Both [`larformer-deghost-v0.py`](../configs/lartpc/larformer/stage1_deghost/archive/larformer-deghost-v0.py) (LArFormer-flavored) and the LoRA-finetuned [`SonataLoRADeghostSegmentor`](../pointcept/models/lora_sonata_deghost.py) work as Stage 1. v1 cascade defaults to the LoRA variant (see §6 implementation note). |
 | **P6 — Stage 2: slicer** | Slicer config, frozen Stage 1 wired in-model via `CascadedSlicer`, query-set predicts slices | **Done — trained** | Debug history in §15 (the mirror-merge pathology drove §§16–18: TokenRefiner, mixed query selection, mask denoising). Production variant: `larformer-slicer-v1-cascaded-ptv3hybrid-crosslevel.py`; the iter-75750 checkpoint built the Stage-3 training cache. Flash-match loss still not wired (out of v1 scope; see Event_Slicer_Spec.md). |
 | **P7 — Stage 3: particle clusterer** | Particle config, frozen stages 1+2 (model-side cascade + cached training path) | **Done — in production training** | Full design + as-built record: [LArFormer_particlesegment_stage.md](LArFormer_particlesegment_stage.md) §13. Training campaign + open issues: [LArFormer_Stage3_TrainingStability.md](LArFormer_Stage3_TrainingStability.md). See §0a for the run lineage. |
 
@@ -538,7 +538,7 @@ Phases 1–4 are model + dataset plumbing and can be done without committing to 
 
 ### Setup
 
-- **Config in active iteration:** [`configs/lartpc/larformer-slicer-v1-cascaded-loradeghost.py`](../configs/lartpc/larformer-slicer-v1-cascaded-loradeghost.py).
+- **Config in active iteration:** [`configs/lartpc/larformer/stage2_slicer/archive/larformer-slicer-v1-cascaded-loradeghost.py`](../configs/lartpc/larformer/stage2_slicer/archive/larformer-slicer-v1-cascaded-loradeghost.py).
 - **Stage-1 deghoster:** frozen `SonataLoRADeghostSegmentor` from `sonata/lora_deghost_v6_hasmatch/model/epoch_30.pth` (HasmatchAsGhost convention, class 0 = real).
 - **Stage-2 slicer:** Sonata-v1m1 backbone (frozen, initialized from `sonata/lartpc_v6_h200_noghosts_pretrain_logspace_resume/model/epoch_42.pth`) + Mask2Former decoder (`token_dim=256`, `num_queries=64`, `num_heads=4`, 6-layer scale pattern: `voxel_20cm → voxel_10cm → voxel_10cm → voxel_5cm → spacepoint → spacepoint`).
 - **Training data:** 10-event dev sample, single `_DEFAULT_LIST` used for train/val/test (intentional — this run is for overfit + failure-mode characterization, not generalization).
@@ -666,7 +666,7 @@ To use it, set `USE_PTV3_DECODER_LEVELS = True` in the cascaded-loradeghost conf
 - `unfreeze_decoder=True` → frees parameters whose name contains `.dec.` so the decoder is trainable from random init (the encoder stays frozen on the pretrain weights). `_encode` skips its `no_grad` wrapper when the decoder is trainable so the gradient graph spans the decoder.
 - `token_refiner=None` (Identity) — the PTv3 decoder IS the refiner in this setup. A non-Identity refiner could also stack on top as a hybrid.
 
-A standalone config preset lives at [`configs/lartpc/larformer-slicer-v1-cascaded-ptv3decoder.py`](../configs/lartpc/larformer-slicer-v1-cascaded-ptv3decoder.py).
+A standalone config preset lives at [`configs/lartpc/larformer/stage2_slicer/archive/larformer-slicer-v1-cascaded-ptv3decoder.py`](../configs/lartpc/larformer/stage2_slicer/archive/larformer-slicer-v1-cascaded-ptv3decoder.py).
 
 **Caveat — PTv3 pyramid is finer than user-defined voxels.** PT-v3m2's strides `(2,2,2,2)` apply to the input grid_coord, which the dataset emits at `backbone_grid_size_cm=0.25`. So dec1/dec2/dec3 have effective grids of 0.5/1/2 cm respectively. Compared with `voxel_5/10/20cm`, the PTv3 pyramid pools *much less aggressively* on LArTPC-spaced data (real spacepoints sit ~1–3 cm apart, finer than dec3's 2 cm grid). To get the PTv3 pyramid to pool as coarsely as `voxel_20cm` would require bumping `backbone_grid_size_cm` substantially (changing the encoder's input grid, a non-trivial decision).
 
@@ -727,7 +727,7 @@ DINO and Mask-DINO solve both with **mixed query selection**: replace the learna
 
 LArTPC slices vary enormously in size. One long cosmic produces hundreds of high-score `voxel_8cm` tokens; smaller tracks produce a handful. Pure DINO-style top-K would happily put dozens of queries on the longest cosmic and miss several smaller tracks entirely. The selection pipeline therefore has a diversity step:
 
-1. **Score** every token in the chosen source level (`voxel_8cm` by default) by `1 - p(no_object)` from that level's already-trained per-token cls head. No new supervision needed — the cls head is supervised by [`larformer-slicer-v1-cascaded-ptv3hybrid_perlevel.py`](../configs/lartpc/larformer-slicer-v1-cascaded-ptv3hybrid_perlevel.py) anyway.
+1. **Score** every token in the chosen source level (`voxel_8cm` by default) by `1 - p(no_object)` from that level's already-trained per-token cls head. No new supervision needed — the cls head is supervised by [`larformer-slicer-v1-cascaded-ptv3hybrid_perlevel.py`](../configs/lartpc/larformer/stage2_slicer/archive/larformer-slicer-v1-cascaded-ptv3hybrid_perlevel.py) anyway.
 2. **Top-M filter:** keep the M = K × `score_filter_multiplier` (default 4) highest-scoring tokens.
 3. **FPS** (farthest-point sampling) from the M survivors picks K spatially-diverse anchors. FPS is seeded with the highest-score token (index 0 of the topk result), so the most confident candidate is always selected.
 

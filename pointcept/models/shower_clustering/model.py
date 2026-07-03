@@ -40,7 +40,7 @@ class ShowerClusteringMask2Former(nn.Module):
 
     Args:
         backbone: dict — Sonata backbone config (built via Pointcept's
-            MODELS registry; see configs/lartpc/shower-cluster-sonata-v1.py).
+            MODELS registry; see configs/lartpc/shower_origin/archive/shower-cluster-sonata-v1.py).
         backbone_out_channels: D output of the backbone (1088 for v6 Sonata).
         token_dim: internal token dimension (default 256).
         num_queries: N learnable queries (default 64).

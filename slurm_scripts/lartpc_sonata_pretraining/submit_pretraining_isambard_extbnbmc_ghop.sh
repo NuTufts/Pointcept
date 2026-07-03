@@ -16,7 +16,7 @@ set -u
 
 # set the location of your copy of the repo here
 WORKDIR=/home/u6jo/twongj01.u6jo/ubpointcept/pointcept
-CONFIG=${WORKDIR}/configs/lartpc/pretrain-sonata-v8-extbnb-mc-combined-larmatch.py
+CONFIG=${WORKDIR}/configs/lartpc/sonata_pretrain/archive/pretrain-sonata-v8-extbnb-mc-combined-larmatch.py
 SQASHFILE=/projects/u6jo/datasets/combined_pretrain-sonata-v7-extbnb-larmatch.sqsh
 
 # location of the sl7 container here

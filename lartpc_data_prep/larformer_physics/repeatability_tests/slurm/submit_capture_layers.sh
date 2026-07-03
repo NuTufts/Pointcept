@@ -55,7 +55,7 @@ REPREFIXED=${CAPTURE_DIR}/\$(basename \${LARFORMER_PARTICLE_CKPT%.pth}).particle
     --in \${LARFORMER_PARTICLE_CKPT} --out \${REPREFIXED}
 echo 'GPU:'; nvidia-smi --query-gpu=name --format=csv,noheader
 python3 ${REPEAT}/capture_deghost_layers.py \
-    --config \${LARFORMER_CASCADE_CONFIG:-${POINTCEPT}/configs/lartpc/larformer-particle-fullcascade-ptv3crosslevel.py} \
+    --config \${LARFORMER_CASCADE_CONFIG:-${POINTCEPT}/configs/lartpc/larformer/stage3_particle/larformer-particle-fullcascade-ptv3crosslevel.py} \
     --weights \${REPREFIXED} \
     --input-list ${EVENT_LIST} \
     --out-dir ${CAPTURE_DIR} \

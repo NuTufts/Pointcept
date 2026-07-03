@@ -92,13 +92,13 @@ FILE INFORMATION:
 File 1:
   Path: pointceptdata_dlmerged_coriska_bnb_nue_fileno000228_entry000003.h5
   Backend: flash_attn
-  Config: configs/lartpc/pretrain-sonata-v1m1-lartpc.py
+  Config: configs/lartpc/sonata_pretrain/archive/pretrain-sonata-v1m1-lartpc.py
   Checkpoint: epoch_80.pth
 
 File 2:
   Path: /cluster/tufts/wongjiradlab//larbys/data/ub_on_tufts/hdf5/bnb_nue_corsika/000/002/pointceptdata_dlmerged_coriska_bnb_nue_fileno000228_entry000003.h5
   Backend: xformers
-  Config: configs/lartpc/pretrain-sonata-v1m1-lartpc.py
+  Config: configs/lartpc/sonata_pretrain/archive/pretrain-sonata-v1m1-lartpc.py
   Checkpoint: epoch_80.pth
 
 TENSOR INFORMATION:
@@ -173,13 +173,13 @@ FILE INFORMATION:
 File 1:
   Path: pointceptdata_dlmerged_coriska_bnb_nue_fileno000228_entry000003.h5
   Backend: flash_attn
-  Config: configs/lartpc/pretrain-sonata-v1m1-lartpc.py
+  Config: configs/lartpc/sonata_pretrain/archive/pretrain-sonata-v1m1-lartpc.py
   Checkpoint: epoch_80.pth
 
 File 2:
   Path: pointceptdata_dlmerged_coriska_bnb_nue_fileno000228_entry000003.h5
   Backend: flash_attn
-  Config: configs/lartpc/pretrain-sonata-v1m1-lartpc.py
+  Config: configs/lartpc/sonata_pretrain/archive/pretrain-sonata-v1m1-lartpc.py
   Checkpoint: epoch_80.pth
 
 TENSOR INFORMATION:

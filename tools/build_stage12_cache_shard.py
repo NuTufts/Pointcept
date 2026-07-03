@@ -13,7 +13,7 @@ skipped on re-run. Delete the markers to force a re-cache.
 Usage (single-node test on the 10-event dev list):
 
     python tools/build_stage12_cache_shard.py \\
-        --config configs/lartpc/larformer-particle-v1.py \\
+        --config configs/lartpc/larformer/stage3_particle/larformer-particle-v1.py \\
         --inputlist /abs/devdata_mergedh5_pi0filter_10files.txt \\
         --cache-root /tmp/stage12_cache_v2 \\
         --split val --shard-id 0 --n-shards 1 \\
@@ -23,7 +23,7 @@ SLURM submission (one shard per array task):
 
     #SBATCH --array=0-127       # 128 shards
     python tools/build_stage12_cache_shard.py \\
-        --config configs/lartpc/larformer-particle-v1.py \\
+        --config configs/lartpc/larformer/stage3_particle/larformer-particle-v1.py \\
         --inputlist /path/to/h5list_train.txt \\
         --cache-root /path/to/stage12_cache_v2 \\
         --split train \\

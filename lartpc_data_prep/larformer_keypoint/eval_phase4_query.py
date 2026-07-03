@@ -40,7 +40,7 @@ from pointcept.models.LArFormer.keypoint_eval import (
 )
 from lartpc_data_prep.keypoint_labels import KPTYPE_TRACK_START
 
-CONFIG = "configs/lartpc/larformer-keypoint-query-v1.py"
+CONFIG = "configs/lartpc/larformer/stage4_keypoint/archive/larformer-keypoint-query-v1.py"
 # 1 cm = precision target (GT proximity sigma = 3 cm); 3/10 cm = context.
 THR = [1.0, 3.0, 10.0]
 

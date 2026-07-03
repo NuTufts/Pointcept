@@ -24,7 +24,7 @@ unmatched get pred_slice_id = -1 (= "unassigned").
 
 Usage:
     ./run_in_container.sh python tools/run_slicer_inference.py \\
-        --config configs/lartpc/larformer-slicer-v1-cascaded-loradeghost.py \\
+        --config configs/lartpc/larformer/stage2_slicer/archive/larformer-slicer-v1-cascaded-loradeghost.py \\
         --weights exp/larformer_slicer_v1_cascaded_loradeghost/model/model_last.pth \\
         --input-list devdata_mergedh5_pi0filter_10files.txt \\
         --output-dir exp/larformer_slicer_v1_cascaded_loradeghost/inference \\

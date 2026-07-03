@@ -26,7 +26,7 @@ from pointcept.models.LArFormer.keypoint_particle_evaluator import (
     LArFormerKeypointEvaluator,
 )
 
-CONFIG = "configs/lartpc/larformer-keypoint-query-v1.py"
+CONFIG = "configs/lartpc/larformer/stage4_keypoint/archive/larformer-keypoint-query-v1.py"
 
 
 class _RecWriter:

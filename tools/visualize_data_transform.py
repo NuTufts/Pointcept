@@ -13,14 +13,14 @@ A button allows sampling a new random entry.
 
 Usage:
     python tools/visualize_data_transform.py \
-        -c configs/lartpc/pretrain-sonata-v1m1-lartpc-v6.py
+        -c configs/lartpc/sonata_pretrain/archive/pretrain-sonata-v1m1-lartpc-v6.py
 
     python tools/visualize_data_transform.py \
         -c configs/lartpc/pretrain-sonata-v1m1-lartpc-v5-p100.py \
         --data-list /path/to/my_filelist.txt
 
     python tools/visualize_data_transform.py \
-        -c configs/lartpc/pretrain-sonata-v1m1-lartpc-v6.py \
+        -c configs/lartpc/sonata_pretrain/archive/pretrain-sonata-v1m1-lartpc-v6.py \
         -e 42 --port 8051 --mask-size 5.0 --mask-ratio 0.7
 """
 

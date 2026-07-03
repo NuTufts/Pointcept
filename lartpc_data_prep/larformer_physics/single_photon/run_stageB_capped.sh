@@ -32,7 +32,7 @@ mkdir -p "${OUTPUT_DIR}"
 LARFORMER_SCRIPTS=${POINTCEPT_DIR}/lartpc_data_prep/larformer_scripts
 CLASS_PROB_THRESHOLD=${CLASS_PROB_THRESHOLD:-0.3}
 LARFORMER_GT_SOURCE=${LARFORMER_GT_SOURCE:-deghost}
-LARFORMER_CASCADE_CONFIG=${LARFORMER_CASCADE_CONFIG:-${POINTCEPT_DIR}/configs/lartpc/larformer-particle-fullcascade-ptv3crosslevel.py}
+LARFORMER_CASCADE_CONFIG=${LARFORMER_CASCADE_CONFIG:-${POINTCEPT_DIR}/configs/lartpc/larformer/stage3_particle/larformer-particle-fullcascade-ptv3crosslevel.py}
 
 echo "=========================================================="
 echo "Stage B (capped cascade)"

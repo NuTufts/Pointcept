@@ -433,7 +433,7 @@ Both are feasible locally.
   files) is present and **all 20 dev-cache `source_h5` basenames resolve**.
   Run the augment tool in-place.
 * **Remake from scratch (full Stage 1+2, needs GPU):** the Stage-3 config
-  (`configs/lartpc/larformer-particle-v1.py`) and all three checkpoints it
+  (`configs/lartpc/larformer/stage3_particle/larformer-particle-v1.py`) and all three checkpoints it
   needs are present locally — deghoster `epoch_30.pth` (383M), Sonata pretrain
   `epoch_42.pth` (1.5G), slicer `model_ptv3crosslevel_iter_75750.pth` (1.4G).
   The builder now embeds keypoints automatically.
@@ -459,7 +459,7 @@ so no extra masking is needed.
   `frac_pos`. Eval returns per-event `kpscores_pred`. `loss_kind="bce"` and
   an optional offset/vote head are left as future toggles.
 * Registered in `pointcept/models/LArFormer/__init__.py`.
-* `configs/lartpc/larformer-keypoint-v1.py` — scale-up training config
+* `configs/lartpc/larformer/stage4_keypoint/archive/larformer-keypoint-v1.py` — scale-up training config
   (frozen Sonata + cache dataset `emit_keypoints=True`, `source_set_filter=
   "stage2_pass"`, `LArFormerTrainer` for the collate, minimal hooks,
   `evaluate=False`). Builds + runs a train/eval forward (verified).

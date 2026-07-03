@@ -55,7 +55,7 @@ cd ${WORKDIR_PATH}
 echo "Environment setup complete"
 
 # Default paths (can be overridden by env vars)
-SHOWER_ORIGIN_CONFIG=${SHOWER_ORIGIN_CONFIG:-${POINTCEPT_DIR}/configs/lartpc/shower-origin-sonata-v1m1-v3-reco-fragments-p1cmp075.py}
+SHOWER_ORIGIN_CONFIG=${SHOWER_ORIGIN_CONFIG:-${POINTCEPT_DIR}/configs/lartpc/shower_origin/archive/shower-origin-sonata-v1m1-v3-reco-fragments-p1cmp075.py}
 SHOWER_ORIGIN_CKPT=${SHOWER_ORIGIN_CKPT:-${POINTCEPT_DIR}/shower_origin/sonata_v1m1_v3_v6backbone_pax_pi0filter_recofragments/model/model_epoch165.pth}
 DEVICE=${DEVICE:-cuda}
 

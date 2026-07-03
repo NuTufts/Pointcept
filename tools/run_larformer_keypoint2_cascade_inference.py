@@ -5,7 +5,7 @@ merged_h5 events, then the attempt-2 keypoint model on the nu slice, and writes
 per-event keypoints (per-particle start/end + the dense nu vertex) in DETECTOR
 CM to an H5 per event.
 
-Driven by a SINGLE config (configs/lartpc/larformer-keypoint2-fullcascade.py):
+Driven by a SINGLE config (configs/lartpc/larformer/stage4_keypoint/larformer-keypoint2-fullcascade.py):
   --config       : the full-cascade keypoint config. It assembles the
                    `CascadedKeypoint` model (cascade + keypoint model), the raw
                    merged_h5 test dataset, and the two checkpoint paths
@@ -400,7 +400,7 @@ def main():
                                  formatter_class=argparse.RawTextHelpFormatter)
     ap.add_argument("--config", required=True,
                     help="single full-cascade keypoint config "
-                         "(configs/lartpc/larformer-keypoint2-fullcascade.py)")
+                         "(configs/lartpc/larformer/stage4_keypoint/larformer-keypoint2-fullcascade.py)")
     ap.add_argument("--input-list", required=True)
     ap.add_argument("--output-dir", default="kp2_cascade_out")
     ap.add_argument("--particle-weights", default=None,

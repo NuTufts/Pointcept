@@ -22,5 +22,5 @@ module load apptainer/1.2.4-suid
 apptainer exec --nv --bind /cluster:/cluster $container bash -c "cd ${WORKDIR}/../ && \
   source setenv_pointcept_only.sh && \
   cd ${WORKDIR} && \
-  python tools/train.py --config configs/lartpc/shower-cluster-sonata-v1.py --num-gpus 4"
+  python tools/train.py --config configs/lartpc/shower_origin/archive/shower-cluster-sonata-v1.py --num-gpus 4"
 

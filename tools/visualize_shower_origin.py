@@ -16,10 +16,10 @@ A "Next Sample" button loads the next entry; "Go" jumps to a specific index.
 
 Usage:
     python tools/visualize_shower_origin.py \
-        -c configs/lartpc/shower-origin-sonata-v1m1-v3.py
+        -c configs/lartpc/shower_origin/archive/shower-origin-sonata-v1m1-v3.py
 
     python tools/visualize_shower_origin.py \
-        -c configs/lartpc/shower-origin-sonata-v1m1-v3.py \
+        -c configs/lartpc/shower_origin/archive/shower-origin-sonata-v1m1-v3.py \
         --data-list /path/to/filelist.txt --port 8052
 """
 
@@ -499,7 +499,7 @@ if n_entries == 0:
         print(f"  First file: {dataset.data_list[0]}")
     print("\n  Try using --data-list to point to a file list with shower fragment HDF5 files.")
     print("  Example: python tools/visualize_shower_origin.py "
-          "-c configs/lartpc/shower-origin-sonata-v1m1-v3.py "
+          "-c configs/lartpc/shower_origin/archive/shower-origin-sonata-v1m1-v3.py "
           "--data-list /path/to/shower_origin_filelist.txt")
     sys.exit(1)
 
