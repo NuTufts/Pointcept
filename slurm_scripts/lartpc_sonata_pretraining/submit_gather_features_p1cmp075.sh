@@ -19,5 +19,5 @@ container=/cluster/tufts/wongjiradlabnu/larbys/larbys-container/pointcept_cuml.s
 module load apptainer/1.2.4-suid
 
 # run job script inside container
-apptainer exec --nv --bind /cluster:/cluster $container bash -c "cd ${WORKDIR} && source run_feature_extractor.sh"
+apptainer exec --nv --bind /cluster:/cluster $container bash -c "cd ${WORKDIR} && source slurm_scripts/lartpc_sonata_pretraining/run_feature_extractor.sh"
 

@@ -21,4 +21,4 @@ module load apptainer
 
 # run job script inside container
 apptainer exec --nv --bind /cluster:/cluster \
-    $container bash -c "cd ${WORKDIR} && source run_lora_finetune_lartpc_deghost_extbnb.sh"
+    $container bash -c "cd ${WORKDIR} && source slurm_scripts/lora/run_lora_finetune_lartpc_deghost_extbnb.sh"

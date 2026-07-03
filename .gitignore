@@ -21,3 +21,5 @@ Dockerfile
 *.pth
 *.txt
 *.err
+output/
+plots/
