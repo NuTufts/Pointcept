@@ -135,6 +135,31 @@ def build_nu_keep_mask(
     return torch.cat(per_event_masks, dim=0)
 
 
+def build_forced_keep_mask(slicer_predictions, n_sp_per_event, spec, nu_class_id,
+                           mask_prob_threshold, spacepoint_level="spacepoint",
+                           device=None):
+    """Keep mask for a CHOSEN slice, built from THIS forward's slicer predictions
+    so it always matches the current filtered batch (avoids cross-forward
+    nondeterminism). Single-event (B == 1). `spec`:
+      "nu"        -> union of nu-class queries (== build_nu_keep_mask), or
+      ("q", qi)   -> just query index qi's mask (regardless of its class), i.e. one
+                     cosmic slice selected by stable query slot.
+    """
+    if spec == "nu":
+        return build_nu_keep_mask(slicer_predictions, n_sp_per_event, nu_class_id,
+                                  mask_prob_threshold, spacepoint_level, device)
+    _, qi = spec
+    n_sp = [int(x) for x in n_sp_per_event.detach().cpu().tolist()]
+    n_filt = n_sp[0] if n_sp else 0
+    pred = slicer_predictions[0] if slicer_predictions else {}
+    ml = (pred.get("mask_logits") or {}).get(spacepoint_level)
+    if ml is None or ml.shape[1] != n_filt or int(qi) >= ml.shape[0]:
+        dev = device or (ml.device if ml is not None else torch.device("cpu"))
+        return torch.zeros(n_filt, dtype=torch.bool, device=dev)
+    keep = ml[int(qi)] > _prob_to_logit(float(mask_prob_threshold))
+    return keep.to(device) if device is not None else keep
+
+
 def recenter_coord_norm_to_per_event_centroid(
     batch: dict, coord_norm_key: str = "coord_norm",
 ) -> dict:

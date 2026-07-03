@@ -65,6 +65,7 @@ from pointcept.models.builder import MODELS, build_model
 
 from .cascade_particle_filter import (
     build_nu_keep_mask,
+    build_forced_keep_mask,
     filter_batch_for_particle_segmenter,
     slicer_predictions_empty,
 )
@@ -278,14 +279,22 @@ class CascadedParticleSegmenter(nn.Module):
         # target in {0..6} and CUDA-assert. We only need the slicer's
         # PREDICTIONS here, not its eval loss, so dropping the GT skips
         # that branch cleanly.
-        slicer_input = {k: v for k, v in data_dict.items()
-                        if k not in ("gt_instances_per_event",
-                                     "n_gt_instances")}
-        ctx = (torch.no_grad() if self.freeze_cascaded_slicer
-               else nullcontext())
-        self.cascaded_slicer.eval()
-        with ctx:
-            slicer_out = self.cascaded_slicer(slicer_input)
+        # Eval-only: a caller may inject a pre-computed slicer output so several
+        # Stage-3 passes (e.g. per-slice) share ONE slicer forward -- the slicer's
+        # query->slice assignment is NOT stable across separate forwards, so
+        # re-running it per pass would make each pass see a different slice.
+        forced_sl = getattr(self, "_force_slicer_out", None)
+        if (not self.training) and forced_sl is not None:
+            slicer_out = forced_sl
+        else:
+            slicer_input = {k: v for k, v in data_dict.items()
+                            if k not in ("gt_instances_per_event",
+                                         "n_gt_instances")}
+            ctx = (torch.no_grad() if self.freeze_cascaded_slicer
+                   else nullcontext())
+            self.cascaded_slicer.eval()
+            with ctx:
+                slicer_out = self.cascaded_slicer(slicer_input)
 
         slicer_predictions = slicer_out.get("predictions", [])
         filtered_batch = slicer_out.get("filtered_batch", None)
@@ -300,15 +309,28 @@ class CascadedParticleSegmenter(nn.Module):
                     else self._empty_eval_output(slicer_out))
 
         # ---- Stage 2 → 3 boundary -----------------------------------
-        # Build the per-SP nu-keep mask from the slicer's predictions.
-        keep = build_nu_keep_mask(
-            slicer_predictions=slicer_predictions,
-            n_sp_per_event=filtered_batch["n_spacepoints"],
-            nu_class_id=self.nu_class_id,
-            mask_prob_threshold=self.mask_prob_threshold,
-            spacepoint_level=self.spacepoint_level,
-            device=device,
-        )
+        # Build the per-SP nu-keep mask from the slicer's predictions -- UNLESS a
+        # caller injected an explicit keep mask (eval-only, e.g. an inference tool
+        # running Stage 3 on a chosen slice instead of the nu union). The forced
+        # mask must be aligned with `filtered_batch["offset"]`; deterministic eval
+        # (fixed deghost tau) guarantees the same filtered batch on a re-run.
+        forced = getattr(self, "_force_slice", None)
+        if (not self.training) and forced is not None:
+            keep = build_forced_keep_mask(
+                slicer_predictions=slicer_predictions,
+                n_sp_per_event=filtered_batch["n_spacepoints"],
+                spec=forced, nu_class_id=self.nu_class_id,
+                mask_prob_threshold=self.mask_prob_threshold,
+                spacepoint_level=self.spacepoint_level, device=device)
+        else:
+            keep = build_nu_keep_mask(
+                slicer_predictions=slicer_predictions,
+                n_sp_per_event=filtered_batch["n_spacepoints"],
+                nu_class_id=self.nu_class_id,
+                mask_prob_threshold=self.mask_prob_threshold,
+                spacepoint_level=self.spacepoint_level,
+                device=device,
+            )
         keep_frac = (float(keep.float().mean().item())
                      if keep.numel() > 0 else 0.0)
 

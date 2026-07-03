@@ -48,13 +48,26 @@ def predicted_masks_to_instances(
     min_points: int = 3,
     gt_instances: Optional[List[dict]] = None,
     iou_match_thresh: float = 0.3,
+    loose_fallback: bool = False,
+    loose_class_id: Optional[int] = None,
 ) -> List[dict]:
     """Convert one event's predicted particle masks into keypoint-decoder
     instances. Deduped + confidence-floored via the SAME path as the particle
     masks (no drift). When `gt_instances` is given, each predicted instance is
     IoU-matched to a GT instance and inherits its origin/end keypoints (training
     on predicted masks). Returns a list of dicts with at least `truth_indices`
-    (event-local SP indices, long) + `pred_class`."""
+    (event-local SP indices, long) + `pred_class`.
+
+    `loose_fallback`: if the normal (above-`class_prob_floor`) decode yields NOTHING
+    for the event, return the SINGLE best below-floor query (with >= `min_points`),
+    even though it's below the floor. Ranking:
+      - `loose_class_id` given -> highest P(class=loose_class_id): targeted search,
+        e.g. loose_class_id=gamma surfaces the most photon-like query.
+      - `loose_class_id` None    -> highest object-ness 1 - P(no_object) (any class).
+    The instance is flagged `loose_pass=True` (+ `loose_conf` = the ranking score
+    used) so a consumer can tell it was recovered loosely. `pred_class` is still the
+    query's best non-no_object class argmax. Normal above-threshold behaviour is
+    unchanged."""
     if class_logits.shape[0] == 0 or sp_mask_logits.shape[1] == 0:
         return []
     eff = dedup_query_effective_argmax(
@@ -77,6 +90,29 @@ def predicted_masks_to_instances(
                     m[t] = True
             gt_masks.append(m)
 
+    def _attach_gt(inst, q):
+        if not gt_masks:
+            return
+        pm = pred_bool[q]
+        best_iou, best_j = 0.0, -1
+        for j, gm in enumerate(gt_masks):
+            inter = int((pm & gm).sum().item())
+            if inter == 0:
+                continue
+            union = int((pm | gm).sum().item())
+            iou = inter / max(union, 1)
+            if iou > best_iou:
+                best_iou, best_j = iou, j
+        if best_j >= 0 and best_iou >= iou_match_thresh:
+            g = gt_instances[best_j]
+            for k in ("origin_coord_norm", "start_coord_norm", "has_start",
+                      "end_coord_norm", "has_end", "primary_trackid"):
+                if k in g:
+                    inst[k] = g[k]
+            if "truth_indices" in g:      # GT point set (for the GT viz)
+                inst["gt_truth_indices"] = g["truth_indices"]
+            inst["match_iou"] = best_iou
+
     out: List[dict] = []
     for q in range(eff.shape[0]):
         if int(eff[q]) == int(no_object_class_id):
@@ -87,28 +123,30 @@ def predicted_masks_to_instances(
         inst = {"truth_indices": idx.long(),
                 "primary_trackid": -1,
                 "pred_class": int(eff[q])}
-        if gt_masks:
-            pm = pred_bool[q]
-            best_iou, best_j = 0.0, -1
-            for j, gm in enumerate(gt_masks):
-                inter = int((pm & gm).sum().item())
-                if inter == 0:
-                    continue
-                union = int((pm | gm).sum().item())
-                iou = inter / max(union, 1)
-                if iou > best_iou:
-                    best_iou, best_j = iou, j
-            if best_j >= 0 and best_iou >= iou_match_thresh:
-                g = gt_instances[best_j]
-                for k in ("origin_coord_norm", "start_coord_norm", "has_start",
-                          "end_coord_norm", "has_end", "primary_trackid"):
-                    if k in g:
-                        inst[k] = g[k]
-                # GT particle's own point set (for the side-by-side GT viz).
-                if "truth_indices" in g:
-                    inst["gt_truth_indices"] = g["truth_indices"]
-                inst["match_iou"] = best_iou
+        _attach_gt(inst, q)
         out.append(inst)
+
+    if not out and loose_fallback:
+        probs = class_logits.softmax(dim=-1)                    # (Q, C)
+        obj_probs = probs.clone()
+        obj_probs[:, int(no_object_class_id)] = -1.0
+        obj_cls = obj_probs.argmax(dim=-1)                      # best object class
+        if (loose_class_id is not None
+                and 0 <= int(loose_class_id) < probs.shape[1]
+                and int(loose_class_id) != int(no_object_class_id)):
+            rank = probs[:, int(loose_class_id)]                # targeted: P(class)
+        else:
+            rank = 1.0 - probs[:, int(no_object_class_id)]      # object-ness
+        for q in torch.argsort(rank, descending=True).tolist():
+            idx = pred_bool[q].nonzero(as_tuple=False).reshape(-1)
+            if int(idx.numel()) < min_points:
+                continue
+            inst = {"truth_indices": idx.long(), "primary_trackid": -1,
+                    "pred_class": int(obj_cls[q]),
+                    "loose_pass": True, "loose_conf": float(rank[q])}
+            _attach_gt(inst, q)
+            out.append(inst)
+            break
     return out
 
 
@@ -128,6 +166,8 @@ class CascadedKeypoint(nn.Module):
         mask_thresh: float = 0.0,
         min_points: int = 3,
         iou_match_thresh: float = 0.3,
+        loose_fallback: bool = False,
+        loose_class_id: Optional[int] = 1,   # gamma; None -> rank by object-ness
     ):
         super().__init__()
         cascade = dict(cascade)
@@ -150,6 +190,9 @@ class CascadedKeypoint(nn.Module):
         self.mask_thresh = float(mask_thresh)
         self.min_points = int(min_points)
         self.iou_match_thresh = float(iou_match_thresh)
+        self.loose_fallback = bool(loose_fallback)
+        self.loose_class_id = (int(loose_class_id)
+                               if loose_class_id is not None else None)
 
     def _load_cascade_weight(self, path: str) -> None:
         sd = torch.load(path, map_location="cpu")
@@ -190,7 +233,9 @@ class CascadedKeypoint(nn.Module):
                     class_prob_floor=self.class_prob_floor,
                     dedup_iou_threshold=self.dedup_iou_threshold,
                     mask_thresh=self.mask_thresh, min_points=self.min_points,
-                    gt_instances=gt, iou_match_thresh=self.iou_match_thresh))
+                    gt_instances=gt, iou_match_thresh=self.iou_match_thresh,
+                    loose_fallback=getattr(self, "loose_fallback", False),
+                    loose_class_id=getattr(self, "loose_class_id", 1)))
             ps_batch = dict(ps_batch)
             # Feed PREDICTED instances to the per-particle pass via a dedicated
             # key (NOT gt_instances_per_event) so the keypoint model's

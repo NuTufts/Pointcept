@@ -1555,14 +1555,30 @@ def main():
     dataset = build_dataset(ds_cfg)
     print(f"Loaded {args.split} dataset: {len(dataset)} events")
 
-    # Levels source — cascade configs nest them under model.slicer.levels.
-    if cfg.model.get("type") == "CascadedSlicer":
-        levels_cfg = cfg.model.slicer.levels
-        token_dim = int(cfg.model.slicer.token_dim)
-        print("Detected CascadedSlicer config; using model.slicer.levels.")
+    # Levels source — the various cascade configs nest the LArFormer that owns
+    # the levels at different depths. Walk down to it by model type:
+    #   CascadedSlicer            -> model.slicer                (nu-slice levels)
+    #   CascadedParticleSegmenter -> model.particle_segmenter    (per-particle)
+    #   CascadedKeypoint          -> model.cascade.particle_segmenter
+    # For the particle/keypoint cascades we visualize the PARTICLE-segmenter GT
+    # (per-particle instance masks e/gamma/mu/pi/p) — the level set the reco eval
+    # is about. Plain (non-cascade) configs expose model.levels directly.
+    mtype = cfg.model.get("type")
+    if mtype == "CascadedKeypoint":
+        larformer = cfg.model.cascade.particle_segmenter
+        print("Detected CascadedKeypoint config; using "
+              "model.cascade.particle_segmenter levels.")
+    elif mtype == "CascadedParticleSegmenter":
+        larformer = cfg.model.particle_segmenter
+        print("Detected CascadedParticleSegmenter config; using "
+              "model.particle_segmenter levels.")
+    elif mtype == "CascadedSlicer":
+        larformer = cfg.model.slicer
+        print("Detected CascadedSlicer config; using model.slicer levels.")
     else:
-        levels_cfg = cfg.model.levels
-        token_dim = int(cfg.model.token_dim)
+        larformer = cfg.model
+    levels_cfg = larformer.levels
+    token_dim = int(larformer.token_dim)
     level_names = [L["name"] for L in levels_cfg]
     print(f"Levels declared in config: {level_names}")
 

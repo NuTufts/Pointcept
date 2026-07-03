@@ -87,6 +87,18 @@ DEF_MSP_LIST = os.path.join(_HERE, "inputlists", "merged_sp_valdata_all.txt")
 DEF_KP_LIST = os.path.join(_HERE, "outputlists", "keypoint2_out_valdata_all.txt")
 DEF_NURECO_DIR = os.path.join(_HERE, "output", "nu_reco_valdata_all")
 
+# full-event slice_id encoding (matches the inference sidecar):
+#   -4 no sliceid file, -3 pre-filtered (lm_score/subsample), -2 ghost (deghosted),
+#   -1 kept but unclustered, NU_SID(-5) nu slice, q>=0 cosmic slice = slicer query
+#   index q (so it matches the per-slice keypoint2 labels 'cosmicQQ').
+NU_SID = -5
+# category -> (marker, label, rgba); marker "cosmic" matches any q>=0.
+SLICE_CATS = [(-3, "pre-filtered", "rgba(60,60,60,0.25)"),
+              (-2, "ghost (deghosted)", "rgba(150,150,150,0.4)"),
+              (-1, "kept, unclustered", "rgba(230,170,40,1)"),
+              (NU_SID, "nu slice", "rgba(60,200,90,1)"),
+              ("cosmic", "cosmic slice", "rgba(70,110,220,1)")]
+
 # stage -> (label, rgba)
 STAGE_STYLE = {
     "segmented":       ("segmented (kept)",     "rgba(60,200,90,1)"),
@@ -150,9 +162,13 @@ class Context:
     """Holds the lists / indices shared across events (built once)."""
 
     def __init__(self, cascade_dir, msp_list_path, kp_list_path, nureco_dir,
-                 browse_list_path=None):
+                 browse_list_path=None, slice_id_dir=None, all_slices_dir=None):
         self.cascade_dir = cascade_dir
         self.nureco_dir = nureco_dir
+        self.slice_id_dir = slice_id_dir
+        self._sliceid_scan = None       # lazy {src_basename: sliceid_path}
+        self.all_slices_dir = all_slices_dir
+        self._all_slices_scan = None    # lazy {src_basename: {slice_label: path}}
         # The full (sorted) merged_sp list is the RESOLUTION index: cascade files
         # are named keypoint2_event{i:05d} by sorted-position in THIS list, so it
         # must always be the full valdata_all list even when browsing a subset.
@@ -237,14 +253,65 @@ class Context:
                 return out
         return None
 
+    # -- slice-id sidecars (full-event per-spacepoint slice_id) ------------
+    def _scan_sliceid(self):
+        if self._sliceid_scan is not None:
+            return self._sliceid_scan
+        m = {}
+        if self.slice_id_dir and os.path.isdir(self.slice_id_dir):
+            for p in glob.glob(os.path.join(self.slice_id_dir,
+                                            "sliceid_event*.h5")):
+                try:
+                    with h5py.File(p, "r") as f:
+                        src = _attr_str(f.attrs, "src_file")
+                    if src:
+                        m.setdefault(os.path.basename(src), p)
+                except Exception:
+                    continue
+        self._sliceid_scan = m
+        return m
+
+    def sliceid_file_for(self, msp_basename):
+        return self._scan_sliceid().get(msp_basename)
+
+    # -- per-slice keypoint2 outputs (--all-slices study) ------------------
+    def _scan_all_slices(self):
+        if self._all_slices_scan is not None:
+            return self._all_slices_scan
+        m = {}
+        if self.all_slices_dir and os.path.isdir(self.all_slices_dir):
+            for p in glob.glob(os.path.join(self.all_slices_dir,
+                                            "keypoint2_event*.h5")):
+                try:
+                    with h5py.File(p, "r") as f:
+                        src = _attr_str(f.attrs, "src_file")
+                        label = _attr_str(f.attrs, "slice_label") or "?"
+                    if src:
+                        m.setdefault(os.path.basename(src), {})[label] = p
+                except Exception:
+                    continue
+        self._all_slices_scan = m
+        return m
+
+    def slices_for(self, msp_basename):
+        """{slice_label: keypoint2_path} of the per-slice Stage-3 outputs."""
+        return self._scan_all_slices().get(msp_basename, {})
+
 
 # ---------------------------------------------------------------------------
 # Event loading + per-spacepoint stage derivation
 # ---------------------------------------------------------------------------
-def load_event(ctx, msp_path):
-    """Load truth + cascade + nu_reco for one event; derive per-point stage."""
+def load_event(ctx, msp_path, slice_label=None):
+    """Load truth + cascade + nu_reco for one event; derive per-point stage.
+
+    slice_label: if given (e.g. 'nu', 'cosmic07'), use that per-slice Stage-3
+    output (from the --all-slices study) as the cascade file instead of the
+    default nu-slice keypoint2 -- so the segmenter/keypoint reco shown is what the
+    stages produced for THAT slice. No nu_reco exists per cosmic slice.
+    """
     msp_base = os.path.basename(msp_path)
-    ev = {"msp_path": msp_path, "msp_base": msp_base, "warnings": []}
+    ev = {"msp_path": msp_path, "msp_base": msp_base, "warnings": [],
+          "slice_label": slice_label}
 
     # ---- truth (merged_sp) ----
     with h5py.File(msp_path, "r") as f:
@@ -269,7 +336,14 @@ def load_event(ctx, msp_path):
     n = len(pos)
 
     # ---- cascade (deghost+slice + segmenter) ----
-    kp_path = ctx.cascade_file_for(msp_base)
+    if slice_label:
+        kp_path = ctx.slices_for(msp_base).get(slice_label)
+        if kp_path is None:
+            ev["warnings"].append(f"slice '{slice_label}' not found; "
+                                  "using default nu slice")
+            kp_path = ctx.cascade_file_for(msp_base)
+    else:
+        kp_path = ctx.cascade_file_for(msp_base)
     ev["kp_path"] = kp_path
     in_slice = np.zeros(n, bool)
     seg = np.zeros(n, bool)
@@ -333,6 +407,26 @@ def load_event(ctx, msp_path):
                 j = m[np.argmax(en[m])]
                 ev["attached"][int(t)] = dict(
                     reco_ke=reco_ke(en[j], int(cl[j])), pred_cls=int(cl[j]))
+
+    # ---- full-event slice_id sidecar (deghost/nu/cosmic per spacepoint) ----
+    # td_sid = slice_id per triplet_data point (KD-matched to the cascade cloud):
+    #   -4 no sliceid file, -3 not in cascade input (pre-filtered), else the
+    #   sidecar's slice_id (-2 ghost, -1 unclustered, 0 nu, >=1 cosmic).
+    ev["td_sid"] = np.full(n, -4, np.int64)
+    ev["has_sliceid"] = False
+    sidp = ctx.sliceid_file_for(msp_base)
+    if sidp:
+        try:
+            with h5py.File(sidp, "r") as f:
+                sid_coord = np.asarray(f["full_slice/coord_cm"][()], np.float32)
+                sid_id = np.asarray(f["full_slice/slice_id"][()], np.int64)
+            if len(sid_coord):
+                d, idx = cKDTree(sid_coord).query(pos, k=1)
+                matched = d < 0.3
+                ev["td_sid"] = np.where(matched, sid_id[idx], -3).astype(np.int64)
+                ev["has_sliceid"] = True
+        except Exception as ex:
+            ev["warnings"].append(f"sliceid load: {ex}")
 
     # ---- per-particle stage summary (nu-origin, has spacepoints) ----
     ev["particle_rows"] = _particle_rows(ev)
@@ -674,6 +768,51 @@ def figure_for_event(ev, color_by, focus_tid, show_cosmic, show_ghost,
         if (~claimed).any():
             traces.append(_scatter(sc[~claimed], "rgba(200,200,200,0.35)",
                                    "slice (no instance)", size * 0.8))
+
+    elif color_by == "slice_id":
+        # every spacepoint colored by which slice the cascade put it in: nu,
+        # cosmic, kept-but-unclustered, ghost (deghosted), or pre-filtered. Shows
+        # directly whether a lost photon was deghosted or mis-sliced as cosmic.
+        if not ev.get("has_sliceid"):
+            if nu.any():
+                traces.append(_scatter(pos[nu], "rgba(240,50,50,1)",
+                                       "nu truth (no sliceid file)", size))
+        else:
+            sid = ev["td_sid"]
+            for si, (cat, lab, clr) in enumerate(SLICE_CATS):
+                m = (sid >= 0) if cat == "cosmic" else (sid == cat)
+                if m.any():
+                    faint = cat in (-3, -2)
+                    traces.append(_scatter(
+                        pos[_subsample(m, other_cap * 2, si + 10)], clr,
+                        lab, size * (0.7 if faint else 1.0)))
+
+    elif color_by == "slice_each":
+        # every INDIVIDUAL slice a distinct color (each cosmic slice its own hue),
+        # so you can see whether the photon forms one coherent cosmic slice or is
+        # split across several. ghost/pre-filtered gray, unclustered amber, nu green.
+        if not ev.get("has_sliceid"):
+            if nu.any():
+                traces.append(_scatter(pos[nu], "rgba(240,50,50,1)",
+                                       "nu truth (no sliceid file)", size))
+        else:
+            sid = ev["td_sid"]
+            for s in sorted(set(int(x) for x in sid)):
+                m = sid == s
+                if s == NU_SID:
+                    clr, lab = "rgba(60,200,90,1)", "nu slice"
+                elif s >= 0:
+                    clr, lab = track_color(s * 7 + 3), f"cosmic{s:02d}"
+                elif s == -1:
+                    clr, lab = "rgba(230,170,40,1)", "unclustered"
+                elif s == -2:
+                    clr, lab = "rgba(140,140,140,0.25)", "ghost"
+                else:
+                    clr, lab = "rgba(90,90,90,0.2)", "pre-filtered"
+                faint = s in (-2, -3, -4)
+                traces.append(_scatter(
+                    pos[_subsample(m, other_cap * 2, abs(s) + 20)], clr,
+                    f"{lab} ({int(m.sum())})", size * (0.7 if faint else 1.0)))
     else:
         if nu.any():
             traces.append(_scatter(pos[nu], "rgba(240,50,50,1)", "nu", size))
@@ -698,7 +837,9 @@ def figure_for_event(ev, color_by, focus_tid, show_cosmic, show_ghost,
         traces.extend(reco_geometry_traces(ev, color_mode=ray_color,
                                            highlight_gt=hl))
 
+    sl = ev.get("slice_label")
     title = (f"{ev['msp_base']}  |  "
+             f"{('SLICE=' + sl + '  ') if sl else ''}"
              f"cascade={'yes' if ev['kp_path'] else 'MISSING'}  "
              f"nu_reco={'yes' if ev.get('nureco') else 'none'}")
     fig = go.Figure(data=traces, layout=go.Layout(
@@ -799,6 +940,57 @@ def why_unattached(ev):
     ], style={"fontSize": "12px"})
 
 
+def slice_breakdown(ev):
+    """Charge-weighted breakdown of where each true nu particle's ionization went
+    (pre-filtered / ghost / unclustered / nu-slice / cosmic-slice), from the
+    full-event slice_id sidecar. Answers 'was the photon deghosted or mis-sliced
+    as cosmic?' per particle."""
+    if not ev.get("has_sliceid"):
+        return None
+    sid, tid = ev["td_sid"], ev["td_tid"]
+    rows = []
+    for r in ev["particle_rows"]:
+        if r["origin"] != ORIGIN_NU or r["name"] not in SPECIES_RECO:
+            continue
+        idx = np.where(tid == r["trackid"])[0]
+        if idx.size == 0:
+            continue
+        # dedup ONCE over the particle's points so per-category shares partition
+        # its charge (sum to 100%); slicing subsets separately would double-count
+        # pixels shared across categories.
+        _, qc = dedup_charge(ev["td_pixval"][idx], ev["td_tick"][idx],
+                             ev["td_uw"][idx], ev["td_vw"][idx], ev["td_yw"][idx])
+        qtot = float(qc.sum())
+        if qtot <= 0:
+            continue
+        sidp = sid[idx]
+        parts = []
+        for cat, lab, _c in SLICE_CATS:
+            if cat == "cosmic":   # break down by INDIVIDUAL cosmic slice (query id)
+                cids = sorted(set(int(x) for x in sidp[sidp >= 0]),
+                              key=lambda ci: -float(qc[sidp == ci].sum()))
+                for ci in cids:
+                    f = float(qc[sidp == ci].sum()) / qtot
+                    if f > 0.02:
+                        parts.append(f"cosmic{ci:02d} {100 * f:.0f}%")
+                continue
+            m = sidp == cat
+            f = float(qc[m].sum()) / qtot
+            if f > 0.005:
+                parts.append(f"{lab} {100 * f:.0f}%")
+        rows.append(html.Li([html.B(f"{r['name']} {r['ke']:.0f} MeV "
+                                    f"(trk {r['trackid']}): "),
+                             "  |  ".join(parts) or "(no charge)"],
+                            style={"marginBottom": "2px"}))
+    if not rows:
+        return None
+    return html.Div([
+        html.B("charge by slice — where each true particle's ionization landed:"),
+        html.Ul(rows, style={"marginTop": "3px"}),
+    ], style={"fontSize": "12px", "borderTop": "1px solid #eee",
+              "marginTop": "4px", "paddingTop": "4px"})
+
+
 # ---------------------------------------------------------------------------
 # Dash app
 # ---------------------------------------------------------------------------
@@ -806,13 +998,14 @@ _CTX = None
 _CACHE = {}
 
 
-def _get_event(index):
-    if index in _CACHE:
-        return _CACHE[index]
+def _get_event(index, slice_label=None):
+    key = (index, slice_label)
+    if key in _CACHE:
+        return _CACHE[key]
     path = _CTX.browse[index]
-    ev = load_event(_CTX, path)
-    _CACHE.clear()          # keep memory small: only the current event
-    _CACHE[index] = ev
+    ev = load_event(_CTX, path, slice_label=slice_label)
+    _CACHE.clear()          # keep memory small: only the current (event, slice)
+    _CACHE[key] = ev
     return ev
 
 
@@ -840,13 +1033,23 @@ def build_app(initial_index):
                               "truth_origin"},
                              {"label": "predicted class", "value": "pred_class"},
                              {"label": "reco particles (attached?)", "value":
-                              "reco_particles"}],
+                              "reco_particles"},
+                             {"label": "slice_id (deghost/cosmic)", "value":
+                              "slice_id"},
+                             {"label": "each slice (per-id)", "value":
+                              "slice_each"}],
                          value="slice_stage"),
             html.Label(" focus trk "),
             dcc.Dropdown(id="focus", clearable=False, value="__all__",
                          style={"width": "220px", "display": "inline-block",
                                 "verticalAlign": "middle"},
                          options=[{"label": "(all)", "value": "__all__"}]),
+            html.Label(" slice "),
+            dcc.Dropdown(id="slice", clearable=False, value="__default__",
+                         style={"width": "180px", "display": "inline-block",
+                                "verticalAlign": "middle"},
+                         options=[{"label": "(default nu)",
+                                   "value": "__default__"}]),
         ], style={"display": "flex", "gap": "6px", "alignItems": "center",
                   "flexWrap": "wrap"}),
         html.Div([
@@ -922,21 +1125,36 @@ def build_app(initial_index):
                          "value": str(r["trackid"])})
         return opts, "__all__"
 
+    # index -> per-slice dropdown options (the --all-slices Stage-3 outputs)
+    @app.callback(Output("slice", "options"), Output("slice", "value"),
+                  Input("index", "value"))
+    def _slice_opts(index):
+        base = os.path.basename(_CTX.browse[int(index or 0)])
+        opts = [{"label": "(default nu)", "value": "__default__"}]
+        slices = _CTX.slices_for(base)
+        for lab in sorted(slices, key=lambda s: (s != "nu", s)):
+            opts.append({"label": lab, "value": lab})
+        return opts, "__default__"
+
     # main render
     @app.callback(Output("graph", "figure"), Output("stats", "children"),
                   Output("info", "children"), Output("diag", "children"),
                   Input("index", "value"), Input("color_by", "value"),
                   Input("focus", "value"), Input("toggles", "value"),
                   Input("ray_color", "value"),
-                  Input("size", "value"), Input("cap", "value"))
-    def _render(index, color_by, focus, toggles, ray_color, size, cap):
-        ev = _get_event(int(index or 0))
+                  Input("size", "value"), Input("cap", "value"),
+                  Input("slice", "value"))
+    def _render(index, color_by, focus, toggles, ray_color, size, cap, slice_lab):
+        sl = None if slice_lab in (None, "__default__") else slice_lab
+        ev = _get_event(int(index or 0), slice_label=sl)
         toggles = toggles or []
         fig = figure_for_event(
             ev, color_by, focus, "cosmic" in toggles, "ghost" in toggles,
             "vtx" in toggles, "reco" in toggles, float(size), int(cap),
             ray_color=ray_color or "correct")
-        return fig, stats_table(ev), info_block(ev, _CTX), why_unattached(ev)
+        diag = [d for d in (why_unattached(ev), slice_breakdown(ev))
+                if d is not None]
+        return fig, stats_table(ev), info_block(ev, _CTX), diag
 
     return app
 
@@ -956,13 +1174,22 @@ def main():
                          "events); cascade files still resolve via --merged-sp-list")
     ap.add_argument("--keypoint2-list", default=DEF_KP_LIST)
     ap.add_argument("--nu-reco-dir", default=DEF_NURECO_DIR)
+    ap.add_argument("--slice-id-dir", default=None,
+                    help="dir of sliceid_event*.h5 sidecars (full-event slice_id); "
+                         "enables the 'slice_id' color mode + charge-by-slice panel")
+    ap.add_argument("--all-slices-dir", default=None,
+                    help="dir of per-slice keypoint2_event{i}_{slice}_*.h5 outputs "
+                         "(--all-slices study); enables the 'slice' dropdown to view "
+                         "the Stage-3 reco of a chosen (e.g. cosmic) slice")
     ap.add_argument("--host", default="0.0.0.0")
     ap.add_argument("--port", type=int, default=8050)
     args = ap.parse_args()
 
     _CTX = Context(args.cascade_dir, args.merged_sp_list,
                    args.keypoint2_list, args.nu_reco_dir,
-                   browse_list_path=args.browse_list)
+                   browse_list_path=args.browse_list,
+                   slice_id_dir=args.slice_id_dir,
+                   all_slices_dir=args.all_slices_dir)
     if not _CTX.browse:
         raise SystemExit("empty/missing merged_sp browse list")
     print(f">>> resolve-list {len(_CTX.msp_sorted)} events, browsing "
