@@ -401,7 +401,7 @@ about standardizing and gating the software stack, not inflating error bars.
 | What | Where |
 |------|-------|
 | `--deterministic` flag + `set_deterministic()` | `tools/run_larformer_stage3_inference.py` |
-| Stage-B env knob `DETERMINISTIC=1` | `lartpc_data_prep/larformer_physics/single_photon/run_stageB_capped.sh` |
+| Stage-B env knob `DETERMINISTIC=1` | `lartpc/larformer_analysis/physics/single_photon/run_stageB_capped.sh` |
 | Same-GPU bit-exact validation (4× run + diff) | `.../single_photon/slurm/submit_determinism_test.sh`, `determinism_diff.py` |
 | Pinned single-node sweep (+ `base_dup` control) | `.../single_photon/slurm/submit_deghost_compare_3k_pin.sh` |
 | **Tier-A stage-by-stage tensor capture** (no model edits) | `tools/capture_cascade_tensors.py` |

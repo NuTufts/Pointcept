@@ -18,7 +18,7 @@ Reads the same merged_h5 files that `ShowerClusteringDataset` does, but:
       "slice"          — one instance per event slice. Cosmic primaries each
                           get a slice; all origin==1 (nu) primaries are
                           merged per nu_vertex into one slice. Backed by
-                          `lartpc_data_prep/slice_labels.py`.
+                          `lartpc/data_prep/labels/slice_labels.py`.
       "deghost"        — empty `gt_instances` list. Stage-1 deghosting
                           doesn't need queries / set prediction; only the
                           per-level cls head (`label_src="hasmatch"` or
@@ -207,7 +207,7 @@ class LArFormerDataset(DefaultDataset):
                 f"('shower_trunk', 'slice', 'deghost', 'particle'); "
                 f"got {gt_source!r}"
             )
-        # S3.0: gt_source="particle" wires lartpc_data_prep.slice_labels.
+        # S3.0: gt_source="particle" wires lartpc.data_prep.labels.slice_labels.
         # compute_particle_labels into the per-event GT pipeline. See
         # `_gt_from_particles` and `docs/LArFormer_particlesegment_stage.md`.
         if shower_trunk_label_source not in ("truth", "fragment", "union"):
@@ -381,7 +381,7 @@ class LArFormerDataset(DefaultDataset):
         can mask them. The start point is already carried as
         `origin_coord_norm`.
         """
-        from lartpc_data_prep.keypoint_labels import (
+        from lartpc.data_prep.labels.keypoint_labels import (
             endpoint_by_trackid, KPTYPE_TRACK_END,
             KPTYPE_TRACK_START, KPTYPE_SHOWER,
         )
@@ -556,7 +556,7 @@ class LArFormerDataset(DefaultDataset):
         sp_kpoffsets_k = None
         if self.emit_keypoints:
             if mckp is not None:
-                from lartpc_data_prep.keypoint_labels import compute_kpscores
+                from lartpc.data_prep.labels.keypoint_labels import compute_kpscores
                 # Offsets returned in cm; normalize by coord_scale so they
                 # live in the same frame as coord_norm (predicted_kp =
                 # coord_norm + offset).
@@ -584,7 +584,7 @@ class LArFormerDataset(DefaultDataset):
 
         # ---- 4. (Optional) per-SP slice_id -------------------------
         if mpt is not None:
-            from lartpc_data_prep.slice_labels import compute_slice_labels
+            from lartpc.data_prep.labels.slice_labels import compute_slice_labels
             slice_info = compute_slice_labels(
                 mpt, sp_trackid_k, sp_hasmatch=sp_hasmatch_k,
                 merge_nu_slices=self.merge_nu_slices,
@@ -860,7 +860,7 @@ class LArFormerDataset(DefaultDataset):
         """
         if mpt is None:
             return []
-        from lartpc_data_prep.slice_labels import compute_particle_labels
+        from lartpc.data_prep.labels.slice_labels import compute_particle_labels
         kwargs = dict(nu_origin=self.particle_nu_origin)
         if self.particle_ke_thresholds is not None:
             kwargs["ke_thresholds"] = self.particle_ke_thresholds

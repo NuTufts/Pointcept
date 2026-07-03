@@ -1,7 +1,7 @@
 from larlite import larlite
 
 
-infile = "/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept/lartpc_data_prep/lantern_scripts/tmp_workdir/lantern_bnb_nue_corsika_jobid0000_line00426/merged_dlreco_with_ssnet.root"
+infile = "/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept/lartpc/data_prep/training_data/tmp_workdir/lantern_bnb_nue_corsika_jobid0000_line00426/merged_dlreco_with_ssnet.root"
 io = larlite.storage_manager( larlite.storage_manager.kREAD )
 io.add_in_filename(infile)
 io.open()

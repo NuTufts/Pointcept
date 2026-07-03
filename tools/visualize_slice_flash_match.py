@@ -35,7 +35,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from detectoroutline import DetectorOutline  # noqa: E402
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
-from lartpc_data_prep.slice_labels import compute_slice_labels  # noqa: E402
+from lartpc.data_prep.labels.slice_labels import compute_slice_labels  # noqa: E402
 
 
 PDG_NAMES = {

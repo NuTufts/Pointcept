@@ -57,7 +57,7 @@ import torch
 # Side-effect: register dataset / model types referenced in configs.
 import pointcept.datasets  # noqa: F401
 import pointcept.models    # noqa: F401
-from lartpc_data_prep.keypoint_labels import copy_mckeypoints_group
+from lartpc.data_prep.labels.keypoint_labels import copy_mckeypoints_group
 from pointcept.datasets.builder import build_dataset
 from pointcept.datasets.larformer import larformer_collate
 from pointcept.models.builder import build_model

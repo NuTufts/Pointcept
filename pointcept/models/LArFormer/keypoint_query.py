@@ -1,6 +1,6 @@
 """Query-based keypoint head + loss for the LArFormer keypoint module (Phase 2).
 
-Design 2A (see lartpc_data_prep/larformer_keypoint/README.md §4): a per-query
+Design 2A (see lartpc/larformer_analysis/archive/keypoint_v1/README.md §4): a per-query
 head that turns a Stage-3 particle query's embedding into a typed 3D keypoint:
 
     start (3)        — the particle's start point (= the existing origin head)

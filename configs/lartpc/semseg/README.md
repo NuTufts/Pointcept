@@ -8,4 +8,4 @@ LArFormer cascade.
 - `semseg-pt-v3m1-1-novoxel.py` — no-voxelization variant.
 - `archive/` — Sonata-finetune generations (`semseg-sonata-v1m1-lartpc-finetune.py`
   and the v2–v5 decoder-finetune variants) evaluating pre-trained backbones via
-  full finetuning. Analysis lived in `lartpc_data_prep/semseg_analysis/`.
+  full finetuning. Analysis lived in `lartpc/larformer_analysis/archive/semseg_analysis/`.

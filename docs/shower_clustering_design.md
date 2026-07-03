@@ -151,7 +151,7 @@ Stratified by truth-instance point count:
 
 ### 4d. GT instance definition — RESOLVED (2026-05-04)
 
-The new merge-step output (test files in `pointcept/lartpc_data_prep/lantern_scripts/tmp_workdir/lantern_bnb_nu_pi0filter_corsika_jobid0000_line00001/`) preserves `mc_particle_tree` (`trackid`, `parent_trackid`, `pid`, `process_code`, `start_pos`, `energy_mev`, `origin`). This unblocks **option (a)** from the previous design discussion: walk the Geant4 tree to define GT instances.
+The new merge-step output (test files in `pointcept/lartpc/data_prep/training_data/tmp_workdir/lantern_bnb_nu_pi0filter_corsika_jobid0000_line00001/`) preserves `mc_particle_tree` (`trackid`, `parent_trackid`, `pid`, `process_code`, `start_pos`, `energy_mev`, `origin`). This unblocks **option (a)** from the previous design discussion: walk the Geant4 tree to define GT instances.
 
 **GT instance algorithm:**
 1. Take the set of unique non-(-1) trackids appearing in `shower_fragments/trackid` — these are shower trunks per the merge step's plurality voting.

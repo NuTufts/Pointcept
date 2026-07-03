@@ -39,7 +39,7 @@ import torch
 from pointcept.engines.hooks.builder import HOOKS
 from pointcept.engines.hooks.default import HookBase
 
-from lartpc_data_prep.keypoint_labels import KPTYPE_NU_VERTEX
+from lartpc.data_prep.labels.keypoint_labels import KPTYPE_NU_VERTEX
 from .keypoint2_particle import KP_CLS_START, KP_CLS_END
 
 

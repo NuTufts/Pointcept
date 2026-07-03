@@ -1,7 +1,7 @@
 """LArFormerKeypoint — Phase-1 dense per-spacepoint keypoint-score model.
 
 The simplest member of the LArFormer keypoint family (see
-`lartpc_data_prep/larformer_keypoint/README.md`): a (frozen) backbone +
+`lartpc/larformer_analysis/archive/keypoint_v1/README.md`): a (frozen) backbone +
 `KeypointScoreHead` predicting the per-SP `(N, n_types)` keypoint
 proximity-score field, trained against the `kpscores` GT with weighted MSE.
 

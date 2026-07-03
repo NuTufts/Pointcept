@@ -12,7 +12,7 @@ visualization time.
 
 Use case: slice instance segmentation (one slice per cosmic primary, one
 merged slice per nu_vertex). gt_source="slice" pulls slice GT via
-lartpc_data_prep.slice_labels.
+lartpc.data_prep.labels.slice_labels.
 
 Edit `data.{train,val}.data_list_file` to point at your own H5 list.
 """

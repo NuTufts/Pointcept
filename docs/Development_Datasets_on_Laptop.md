@@ -6,7 +6,7 @@ This is a list of datasets on the local machine twongjrad@pop-os used for develo
 
 ### BNB nu charged pion + Corsika Sample
 
-These are files that have been processed by the driver script `run_lantern_wconfig.sh` (located in `lartpc_data_prep/lantern_scripts/`) using the config file `bnbnu_chargedpiplus_corsika.conf` (located in `lartpc_data_prep/lantern_scripts/lantern_configs/`).
+These are files that have been processed by the driver script `run_lantern_wconfig.sh` (located in `lartpc/data_prep/training_data/`) using the config file `bnbnu_chargedpiplus_corsika.conf` (located in `lartpc/data_prep/training_data/lantern_configs/`).
 
   /mnt/ddrive/data/ub_on_tufts/h5/bnb_nu_chargedpiplus_corsika/
 
@@ -30,5 +30,5 @@ We do not have a copy of ROOT source files for this data set. However, we have p
   /mnt/ddrive/data/ub_on_tufts/h5/bnb_nu_pi0filter_corsika/flashinfo_h5
 
 The flashinfo files were created by running Step 5 in the lantern data preparation process.
-The script for that step is `run_flashinfo_wconfig.sh` (located in `lartpc_data_prep/lantern_scripts/`).
+The script for that step is `run_flashinfo_wconfig.sh` (located in `lartpc/data_prep/training_data/`).
 

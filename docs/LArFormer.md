@@ -24,7 +24,7 @@ Stage-3 `LArFormer`):
 | Stage | Task | Model | Status |
 |---|---|---|---|
 | 1 | Deghost (per-SP real/ghost) | [`SonataLoRADeghostSegmentor`](../pointcept/models/lora_sonata_deghost.py) (LoRA-finetuned Sonata) | **Trained**, frozen in the cascade. (A LArFormer-flavored alternative exists: `larformer-deghost-v0*.py`.) |
-| 2 | Event slicing (cosmic slices + nu slice) | `LArFormer` slicer, ptv3hybrid-crosslevel variant | **Trained.** The iter-75750 checkpoint built the Stage-1+2 training cache for Stage 3 (note: that exact ckpt is not in this tree; see [LARFORMER_DATAPREP.md](../lartpc_data_prep/larformer_scripts/LARFORMER_DATAPREP.md) "checkpoint provenance"). |
+| 2 | Event slicing (cosmic slices + nu slice) | `LArFormer` slicer, ptv3hybrid-crosslevel variant | **Trained.** The iter-75750 checkpoint built the Stage-1+2 training cache for Stage 3 (note: that exact ckpt is not in this tree; see [LARFORMER_DATAPREP.md](../lartpc/data_prep/uboone_official/LARFORMER_DATAPREP.md) "checkpoint provenance"). |
 | 3 | Particle instance segmentation of the nu slice (7-class + per-query origin point) | `LArFormer` particle segmenter, ptv3crosslevel variant | **In production training** (active config: [`larformer-particle-v1-cached-ptv3crosslevel-decaylrsched.py`](../configs/lartpc/larformer/stage3_particle/larformer-particle-v1-cached-ptv3crosslevel-decaylrsched.py), run `resume3_cosinedecay`). val `mask_iou_mean` ≈ 0.69, matched-origin L2 ≈ 10–13 cm and improving. |
 
 Stage-3 training run lineage (all wandb `pointcept-larformer-stage3`):
@@ -47,9 +47,9 @@ mask-IoU dedup (with merge tracking) addresses it (stability doc §7).
 | [`docs/Event_Slicer_Spec.md`](Event_Slicer_Spec.md) | Stage-2 slicer: physics background, data schema, flash-matching design (flash-match loss **not implemented**; mask+cls slicer is) |
 | [`docs/LArFormer_particlesegment_stage.md`](LArFormer_particlesegment_stage.md) | Stage 3: GT definition, cascade conditioning, loss budget, **as-built implementation status (§13)** — the most detailed per-file record |
 | [`docs/LArFormer_Stage3_TrainingStability.md`](LArFormer_Stage3_TrainingStability.md) | Stage-3 training-loss diagnosis; LR-schedule swap (`DelayedCosineLR`); per-batch probe diagnostics (`loss_diag_*`, `grad_norm`); inference query dedup (R8); recommendation tracker |
-| [`lartpc_data_prep/larformer_scripts/LARFORMER_DATAPREP.md`](../lartpc_data_prep/larformer_scripts/LARFORMER_DATAPREP.md) | **Production inference workflow**: `merged_dlreco.root` → per-event H5 → full-cascade `stage3pred_*.h5`, config-driven, SLURM-ready |
-| [`lartpc_data_prep/larformer_particle_analysis/README.md`](../lartpc_data_prep/larformer_particle_analysis/README.md) | Stage-3 val/test analysis: per-event distill + metric aggregation (evaluator scalars + size-stratified extras) on SLURM |
-| [`lartpc_data_prep/larformer_analysis/README.md`](../lartpc_data_prep/larformer_analysis/README.md) | Stage-2 slicer val/test analysis (same pattern) |
+| [`lartpc/data_prep/uboone_official/LARFORMER_DATAPREP.md`](../lartpc/data_prep/uboone_official/LARFORMER_DATAPREP.md) | **Production inference workflow**: `merged_dlreco.root` → per-event H5 → full-cascade `stage3pred_*.h5`, config-driven, SLURM-ready |
+| [`lartpc/larformer_analysis/particle_eval/README.md`](../lartpc/larformer_analysis/particle_eval/README.md) | Stage-3 val/test analysis: per-event distill + metric aggregation (evaluator scalars + size-stratified extras) on SLURM |
+| [`lartpc/larformer_analysis/slicer_eval/README.md`](../lartpc/larformer_analysis/slicer_eval/README.md) | Stage-2 slicer val/test analysis (same pattern) |
 | [`docs/LArTPC_HDF5_Data_Format.md`](LArTPC_HDF5_Data_Format.md) | Per-spacepoint truth fields used as `label_src` values |
 | [`docs/shower_clustering_design.md`](shower_clustering_design.md) | Predecessor architecture LArFormer generalizes |
 
@@ -367,7 +367,7 @@ A **new** dataset, registered alongside `ShowerClusteringDataset` (which stays u
 The instance-source plug is a callable `(per_sp_truth, mc_particle_tree) → list[gt_instance_dict]`. Implementations:
 
 - `shower_trunk`: existing logic from `ShowerClusteringDataset` (trunks → descendant sets).
-- `slice`: existing [`lartpc_data_prep/slice_labels.py`](../lartpc_data_prep/slice_labels.py) — one instance per cosmic primary, one merged nu instance.
+- `slice`: existing [`lartpc/data_prep/labels/slice_labels.py`](../lartpc/data_prep/labels/slice_labels.py) — one instance per cosmic primary, one merged nu instance.
 - `particle`: one instance per Geant4 primary trajectory; filtered to the input slice for stage 3.
 - `deghost`: pseudo-empty (no instance segmentation needed; only the per-SP cls head is trained). A single "all-real" instance can stand in for the matcher or queries are disabled entirely.
 
@@ -877,7 +877,7 @@ The ctor enforces that `mixed_query_selection` is also enabled — otherwise `se
 - Event slicer requirements (the primary stage-2 use case):
   [`docs/Event_Slicer_Spec.md`](Event_Slicer_Spec.md).
 - Slice ground-truth builder used by `gt_source="slice"`:
-  [`lartpc_data_prep/slice_labels.py`](../lartpc_data_prep/slice_labels.py).
+  [`lartpc/data_prep/labels/slice_labels.py`](../lartpc/data_prep/labels/slice_labels.py).
 - LArTPC H5 schema (per-spacepoint truth fields used as `label_src` values):
   [`docs/LArTPC_HDF5_Data_Format.md`](LArTPC_HDF5_Data_Format.md).
 - Visualizer patterns to reuse for the per-level GT viewer (§11):

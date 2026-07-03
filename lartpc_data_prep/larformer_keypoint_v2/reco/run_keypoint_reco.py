@@ -35,7 +35,7 @@ else:
                                 best_nu_vertex)
 
 THRS = (1.0, 3.0, 10.0)
-# GT keypoint types (lartpc_data_prep/keypoint_labels.py)
+# GT keypoint types (lartpc/data_prep/labels/keypoint_labels.py)
 NU_TYPE = 0
 OBJECT_TYPES = (1, 2, 3, 4, 5)   # track_start/end, shower, michel, delta
 

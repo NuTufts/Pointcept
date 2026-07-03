@@ -36,7 +36,7 @@ from .keypoint_eval import (
     decode_dense_votes, decode_nu_vertex, reconcile_keypoints,
     dedup_query_effective_argmax,
 )
-from lartpc_data_prep.keypoint_labels import (
+from lartpc.data_prep.labels.keypoint_labels import (
     KEYPOINT_TYPE_NAMES, KPTYPE_NU_VERTEX,
 )
 

@@ -4,9 +4,9 @@ Trains a LArFormerKeypoint (frozen Sonata backbone + KeypointScoreHead) to
 regress the per-spacepoint `(N, 6)` keypoint proximity-score field
 (`kpscores`) on the nu-candidate spacepoints from the stage-12 cache.
 
-See lartpc_data_prep/larformer_keypoint/README.md (Phase 1). The overfit
+See lartpc/larformer_analysis/archive/keypoint_v1/README.md (Phase 1). The overfit
 milestone is validated by
-lartpc_data_prep/larformer_keypoint/train_phase1_overfit.py; this config is
+lartpc/larformer_analysis/archive/keypoint_v1/train_phase1_overfit.py; this config is
 the scale-up training run.
 
 Run:

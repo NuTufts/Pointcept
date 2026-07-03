@@ -2,7 +2,7 @@
 
 All fits localize the MEAN of an isotropic 3D Gaussian of FIXED width ``sigma``
 (= the 3 cm width the GT keypoint scores were generated with,
-``lartpc_data_prep/keypoint_labels.py``) from a set of points carrying a score
+``lartpc/data_prep/labels/keypoint_labels.py``) from a set of points carrying a score
 field ``y_j ~ A * exp(-||x_j - mu||^2 / (2 sigma^2))``.
 
 The fitters are written to be robust to the truncated / one-sided support that

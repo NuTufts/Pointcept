@@ -64,8 +64,8 @@ coord_scale = 1036.0 * 3**0.5 / 2.0 / 5.0  # ~179.55
 # =============================================================================
 # Data files
 # =============================================================================
-TRAIN_FILE_LIST = "/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept/lartpc_data_prep/shower_origin_reco_scripts/h5list_showeroriginreco_ncpi0filter_validated_train.txt"
-VAL_FILE_LIST = "/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept/lartpc_data_prep/shower_origin_reco_scripts/h5list_showeroriginreco_ncpi0filter_validated_val.txt"
+TRAIN_FILE_LIST = "/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept/lartpc/larformer_analysis/archive/shower_origin_reco_scripts/h5list_showeroriginreco_ncpi0filter_validated_train.txt"
+VAL_FILE_LIST = "/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept/lartpc/larformer_analysis/archive/shower_origin_reco_scripts/h5list_showeroriginreco_ncpi0filter_validated_val.txt"
 
 #TRAIN_FILE_LIST="/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept/h5list_showeroriginreco_smallsampletest.txt"
 #VAL_FILE_LIST="/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept/h5list_showeroriginreco_smallsampletest.txt"

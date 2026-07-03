@@ -124,7 +124,7 @@ GT instances are constructed by walking the MC particle tree (`entry_0/mc_partic
 
 A particle below threshold gets merged into its parent's instance (its SPs are assigned to the parent's slice_id). This avoids over-fragmenting events with many low-energy δ-rays / brems while still capturing the visible secondaries that matter for π0 reco (the γ's), high-energy bremsstrahlung off the μ, etc.
 
-**Implementation:** new function in `lartpc_data_prep/slice_labels.py`:
+**Implementation:** new function in `lartpc/data_prep/labels/slice_labels.py`:
 
 ```python
 def compute_particle_labels(mpt_group, sp_trackid, sp_hasmatch,
@@ -139,7 +139,7 @@ A new `gt_source="particle"` plug in `LArFormerDataset` calls this routine.
 
 ### 2b. SP → GT assignment
 
-Per-SP truth has `trackid`. Each SP gets assigned to its above-threshold ancestor's slice id via the merging logic above. Existing `lartpc_data_prep/slice_labels.py` machinery is the foundation; the new routine just plugs in a different walk termination.
+Per-SP truth has `trackid`. Each SP gets assigned to its above-threshold ancestor's slice id via the merging logic above. Existing `lartpc/data_prep/labels/slice_labels.py` machinery is the foundation; the new routine just plugs in a different walk termination.
 
 ### 2c. Cosmic-leakage SPs → `no_object`
 
@@ -293,7 +293,7 @@ New tool: `tools/run_full_cascade_inference.py` runs Stages 1 → 2 → 3 end-to
 - Per-event topology classification
 - Per-particle metrics
 
-Reuses the analyzer-side pipeline architecture from [`lartpc_data_prep/larformer_analysis/`](../lartpc_data_prep/larformer_analysis/) — Stage 3 outputs a per-event H5, an aggregator builds an event_summary.h5, plots produce per-category headlines.
+Reuses the analyzer-side pipeline architecture from [`lartpc/larformer_analysis/slicer_eval/`](../lartpc/larformer_analysis/slicer_eval/) — Stage 3 outputs a per-event H5, an aggregator builds an event_summary.h5, plots produce per-category headlines.
 
 ---
 
@@ -354,9 +354,9 @@ Most of the design choices are now decided. What's still open:
 - Stage 2 spec: [`LArFormer.md`](LArFormer.md) §6 (cascade), §7 (dataset)
 - Stage 2 mask-denoising: [`LArFormer.md`](LArFormer.md) §18
 - Stage 2 mixed query selection: [`LArFormer.md`](LArFormer.md) §17
-- Existing `compute_slice_labels` (which `compute_particle_labels` will extend): [`lartpc_data_prep/slice_labels.py`](../lartpc_data_prep/slice_labels.py)
-- Analyzer-side category definitions: [`lartpc_data_prep/larformer_analysis/lib/categorize.py`](../lartpc_data_prep/larformer_analysis/lib/categorize.py)
-- Per-event analysis pattern (template for S3.8): [`lartpc_data_prep/larformer_analysis/`](../lartpc_data_prep/larformer_analysis/)
+- Existing `compute_slice_labels` (which `compute_particle_labels` will extend): [`lartpc/data_prep/labels/slice_labels.py`](../lartpc/data_prep/labels/slice_labels.py)
+- Analyzer-side category definitions: [`lartpc/larformer_analysis/slicer_eval/lib/categorize.py`](../lartpc/larformer_analysis/slicer_eval/lib/categorize.py)
+- Per-event analysis pattern (template for S3.8): [`lartpc/larformer_analysis/slicer_eval/`](../lartpc/larformer_analysis/slicer_eval/)
 - Stage 2 cascade wrapper (template for `CascadedParticleSegmenter`): [`pointcept/models/LArFormer/cascaded.py`](../pointcept/models/LArFormer/cascaded.py)
 
 ---
@@ -387,7 +387,7 @@ files involved, and any deltas from the original plan.
 
 ### 13.1 S3.0 — Particle GT extraction ✅
 
-- [`lartpc_data_prep/slice_labels.py`](../lartpc_data_prep/slice_labels.py):
+- [`lartpc/data_prep/labels/slice_labels.py`](../lartpc/data_prep/labels/slice_labels.py):
   `compute_particle_labels(mpt_group, sp_trackid, sp_hasmatch, ...)`
   with constants `DEFAULT_PARTICLE_KE_THRESH_MeV = {11: 10, 22: 10,
   13: 30, 211: 30, 2112: 60, 2212: 60, 321: 60}`,
@@ -402,7 +402,7 @@ files involved, and any deltas from the original plan.
   `primary_start_pos_sce` alongside the raw `primary_start_pos`.
   Falls back to the raw start_pos when the H5 lacks the SCE field, so
   older files still load.
-- Audit: [`lartpc_data_prep/audit_particle_labels.py`](../lartpc_data_prep/audit_particle_labels.py).
+- Audit: [`lartpc/data_prep/validation/audit_particle_labels.py`](../lartpc/data_prep/validation/audit_particle_labels.py).
 - Dataset plug: `gt_source="particle"` in
   [`pointcept/datasets/larformer.py`](../pointcept/datasets/larformer.py)
   (method `_gt_from_particles`). Knobs:
@@ -1020,7 +1020,7 @@ covers:
 
 ### 13.12 Validation analysis pipeline ✅
 
-[`lartpc_data_prep/larformer_particle_analysis/`](../lartpc_data_prep/larformer_particle_analysis/README.md)
+[`lartpc/larformer_analysis/particle_eval/`](../lartpc/larformer_analysis/particle_eval/README.md)
 — split-level efficiency/purity validation on SLURM: per-event
 distillation of `stage3pred_*.h5` into per-pair records
 (`analyze_event.py`), aggregation into the
@@ -1033,7 +1033,7 @@ output schema and usage.
 
 ### 13.13 Production data-prep / inference workflow ✅
 
-[`lartpc_data_prep/larformer_scripts/LARFORMER_DATAPREP.md`](../lartpc_data_prep/larformer_scripts/LARFORMER_DATAPREP.md)
+[`lartpc/data_prep/uboone_official/LARFORMER_DATAPREP.md`](../lartpc/data_prep/uboone_official/LARFORMER_DATAPREP.md)
 — the config-driven two-stage pipeline that takes raw
 `merged_dlreco.root` (sim or data) to full-cascade `stage3pred_*.h5`
 without LArMatch/SSNet/lantern: Stage A conversion via

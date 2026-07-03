@@ -149,7 +149,7 @@ removes the ~9 MeV Ar-capture cascade but is only **necessary, not sufficient**
 for detectability — the real "≥20 MeV in a *single ionization cluster*" cut needs
 per-cluster ionization, which the ntuple does **not** carry and must be computed
 on the official sim files (see [`MicroBooNE_Datasets_on_Tufts.md`](MicroBooNE_Datasets_on_Tufts.md)
-and the single-photon study under `lartpc_data_prep/larformer_physics/single_photon/`).
+and the single-photon study under `lartpc/larformer_analysis/physics/single_photon/`).
 
 ---
 
@@ -199,7 +199,7 @@ Two verified facts make the lookup cheap (no full 15k-file scan needed):
 Recipe: for each selected signal event, derive its run directory, `glob` the
 `merged_dlreco_*.root` files there, read each one's `larlite_id_tree`, map
 `(run,subrun) → path`, and confirm the event. The worked implementation is
-`lartpc_data_prep/larformer_physics/single_photon/map_signal_to_files.py`
+`lartpc/larformer_analysis/physics/single_photon/map_signal_to_files.py`
 (validated: 20/20 selected events resolved, 100% confirmed, against 9 unique files).
 
 ---
@@ -223,7 +223,7 @@ Full per-branch docs: gen2ntuple `README.md`.
 
 ## Quick reference: running the readers in this repo
 
-The single-photon study scripts (`lartpc_data_prep/larformer_physics/single_photon/`)
+The single-photon study scripts (`lartpc/larformer_analysis/physics/single_photon/`)
 are the canonical worked example:
 
 ```bash

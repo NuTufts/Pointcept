@@ -1,6 +1,6 @@
 """Dense per-spacepoint keypoint heads for the LArFormer keypoint module.
 
-Phase 1 (see lartpc_data_prep/larformer_keypoint/README.md):
+Phase 1 (see lartpc/larformer_analysis/archive/keypoint_v1/README.md):
 
     KeypointScoreHead — per-SP MLP predicting the (N, n_types) keypoint
     proximity-score field (the `kpscores` target). Trained against the

@@ -7,7 +7,7 @@ doesn't, something structural in the pipeline is broken.
 
 Differences from the production config:
   - Train and val both point at the same single-event filelist
-    (Pointcept/lartpc_data_prep/deghost_analysis/overfit_one.txt).
+    (Pointcept/lartpc/larformer_analysis/archive/deghost_analysis/overfit_one.txt).
   - batch_size = batch_size_val = 1; no DDP scaling.
   - No random augmentations (RandomRotate/Flip/Jitter, Multiplicative
     strength jitter) so the same input is presented every epoch.
@@ -65,7 +65,7 @@ biased_spherecrop_radius = 20.0
 
 TRAIN_FILE_LIST = (
     "/home/twongjirad/working/larbys/gen2/container_u22/Pointcept/"
-    "lartpc_data_prep/deghost_analysis/overfit_one.txt"
+    "lartpc/larformer_analysis/archive/deghost_analysis/overfit_one.txt"
 )
 VAL_FILE_LIST = TRAIN_FILE_LIST   # same single event for train & val
 

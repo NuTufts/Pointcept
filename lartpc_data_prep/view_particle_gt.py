@@ -43,7 +43,7 @@ from plotly.subplots import make_subplots
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, REPO_ROOT)
 
-from lartpc_data_prep.slice_labels import (  # noqa: E402
+from lartpc.data_prep.labels.slice_labels import (  # noqa: E402
     GHOST_SLICE_ID,
     compute_particle_labels,
 )

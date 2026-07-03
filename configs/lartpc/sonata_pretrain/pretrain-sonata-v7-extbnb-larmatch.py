@@ -70,8 +70,8 @@ enable_wandb = True
 wandb_project = "pointcept"
 save_path = "sonata/lartpc_v7_h200_extbnb_larmatch_lowerlr"
 
-TRAIN_FILE_LIST="/cluster/tufts/wongjiradlab/twongj01/mphys/Pointcept/lartpc_data_prep/extbnb_larmatch/hdlist_extbnb_larmatch_run3_g1_sonata_validated.txt"
-VAL_FILE_LIST="/cluster/tufts/wongjiradlab/twongj01/mphys/Pointcept/lartpc_data_prep/extbnb_larmatch/hdlist_extbnb_larmatch_run3_g1_sonata_validated.txt"
+TRAIN_FILE_LIST="/cluster/tufts/wongjiradlab/twongj01/mphys/Pointcept/lartpc/larformer_analysis/archive/extbnb_larmatch/hdlist_extbnb_larmatch_run3_g1_sonata_validated.txt"
+VAL_FILE_LIST="/cluster/tufts/wongjiradlab/twongj01/mphys/Pointcept/lartpc/larformer_analysis/archive/extbnb_larmatch/hdlist_extbnb_larmatch_run3_g1_sonata_validated.txt"
 true_points_only=False
 
 # Larmatch score filtering: each sample draws a threshold uniformly from this range

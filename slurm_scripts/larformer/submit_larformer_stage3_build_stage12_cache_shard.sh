@@ -30,12 +30,12 @@ NSHARDS=10
 OUTPUT_ROOT="/cluster/tufts/wongjiradlab/larbys/data/ub_on_tufts/hdf5/larformer_cache_stage12_highermaxsp_ptv3crosslevelslicer_iter_75750/"
 
 # Training set: 410000 events
-TRAIN_FILE_LIST="/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept/lartpc_data_prep/lantern_scripts/h5lists/h5list_mcall_lantern_train.txt"
+TRAIN_FILE_LIST="/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept/lartpc/data_prep/training_data/h5lists/h5list_mcall_lantern_train.txt"
 INPUTLIST=${TRAIN_FILE_LIST}
 SPLIT="train"
 
 # Validation set: 10000 events
-# VAL_FILE_LIST="/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept/lartpc_data_prep/lantern_scripts/h5lists/h5list_mcall_lantern_val.txt"
+# VAL_FILE_LIST="/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept/lartpc/data_prep/training_data/h5lists/h5list_mcall_lantern_val.txt"
 # INPUTLIST=${VAL_FILE_LIST}
 # SPLIT="val"
 

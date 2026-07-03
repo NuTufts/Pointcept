@@ -3,7 +3,7 @@
 Derived from `larformer-particle-v1-cached-ptv3crosslevel.py` (the trained
 Stage-3 particle segmenter) wrapped into a `CascadedParticleSegmenter` so it
 runs end-to-end on RAW per-event merged_h5 (the output of
-`lartpc_data_prep/larformer_scripts/convert_dlmerged_to_larformer_h5.py`).
+`lartpc/data_prep/uboone_official/convert_dlmerged_to_larformer_h5.py`).
 
 Used by:
     tools/run_larformer_stage3_inference.py --input-mode full-cascade

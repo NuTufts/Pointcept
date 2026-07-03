@@ -36,13 +36,13 @@ del _trainer_module
 # completes (~1 day per pi0 sample, in flight as of 2026-05-04).
 _DEFAULT_TRAIN_LIST = (
     "/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept/"
-    "lartpc_data_prep/lantern_scripts/h5lists/"
+    "lartpc/data_prep/training_data/h5lists/"
     "h5list_bnbnu_pi0filter_validated_train.txt"
     #"h5list_showercluster_testsample.txt"
 )
 _DEFAULT_VAL_LIST = (
     "/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept/"
-    "lartpc_data_prep/lantern_scripts/h5lists/"
+    "lartpc/data_prep/training_data/h5lists/"
     "h5list_bnbnu_pi0filter_validated_val.txt"
     #"h5list_showercluster_testsample.txt"
 )

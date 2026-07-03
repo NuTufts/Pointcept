@@ -11,4 +11,4 @@ All configs are in `archive/`:
 - `shower-cluster-sonata-v1.py`, `-h200.py` — shower-clustering trainings
   (see `docs/shower_clustering_design.md`).
 
-Related analysis: `lartpc_data_prep/shower_origin_reco_scripts/`.
+Related analysis: `lartpc/larformer_analysis/archive/shower_origin_reco_scripts/`.

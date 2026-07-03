@@ -38,7 +38,7 @@ import h5py
 
 # Make `lartpc_data_prep` importable when run from the repo root.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from lartpc_data_prep.keypoint_labels import copy_mckeypoints_group  # noqa: E402
+from lartpc.data_prep.labels.keypoint_labels import copy_mckeypoints_group  # noqa: E402
 
 
 MCKP_PATH = "entry_0/mckeypoints"

@@ -33,7 +33,7 @@ residual max falls below threshold. We want the same algorithm, in PyTorch,
 operating on the larformer cascade outputs.
 
 This matters because the network's GT scores are *generated* as a sum/max of
-Gaussians (`lartpc_data_prep/keypoint_labels.py`):
+Gaussians (`lartpc/data_prep/labels/keypoint_labels.py`):
 
 ```
 kpscore_t(sp) = exp( -0.5 * (d_t / sigma)^2 )   for d_t = ||sp - nearest kp of type t||
@@ -440,7 +440,7 @@ floor for trusting a peak.
   the existing vote-head machinery for §4.1 Method 3.
 - `larflow/larflow/Reco/KeypointReco.cxx`: `_fit_cluster_CARUANA` (the fit math),
   the subtraction term, the pass loop structure, `KPCluster` field set.
-- `lartpc_data_prep/keypoint_labels.py`: σ and the keypoint-type enum — the
+- `lartpc/data_prep/labels/keypoint_labels.py`: σ and the keypoint-type enum — the
   generative model we invert.
 - `tools/run_larformer_keypoint2_cascade_inference.py`: `--save-score-maps`
   writer (the input format), `_decode_event` (the `to_cm` affine, for Option B).

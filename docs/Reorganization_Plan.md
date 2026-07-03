@@ -31,7 +31,7 @@ reco *and* flash-matching outputs. It can remain staged while under development,
 target output is selection-performance understanding for different neutrino interaction
 types, with **emphasis on single-photon events**. Two prior threads feed this:
 
-- `lartpc_data_prep/larformer_physics/single_photon` — worked from particle-segmenter
+- `lartpc/larformer_analysis/physics/single_photon` — worked from particle-segmenter
   output only, exploring the flash-matching machinery.
 - `lartpc_data_prep/larformer_keypoint_v2` — efficiency post nu-interaction reco, also
   exploring alternate event slices + eventual flash matching to select single-photon
@@ -150,12 +150,12 @@ lartpc/
 **Scope A — training data (current pipeline, generation 2).** Newer sim files
 generated with MicroBooNE code; richer truth for spacepoint ground-truth labels;
 generation 2 added LANTERN truepoint scores for augmentation / curriculum focus.
-Pipeline lives in `lartpc_data_prep/lantern_scripts/` (step1 lantern → step234
+Pipeline lives in `lartpc/data_prep/training_data/` (step1 lantern → step234
 pointcept conversion → step5 flashinfo, with per-sample corsika configs).
 
 **Scope B — official MicroBooNE sim/data.** Different truth handling; feeds the
 exploratory physics analysis (`larformer_physics/single_photon`). Pipeline lives in
-`lartpc_data_prep/larformer_scripts/` (stepA convert → stepB cascade inference,
+`lartpc/data_prep/uboone_official/` (stepA convert → stepB cascade inference,
 documented in `LARFORMER_DATAPREP.md`).
 
 ```

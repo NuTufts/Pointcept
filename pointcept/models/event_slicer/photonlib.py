@@ -1,7 +1,7 @@
 """GPU lookup-table flash predictor for the MicroBooNE event slicer.
 
 Wraps the densified UBPhotonLib visibility table (built once by
-``lartpc_data_prep/build_photonlib_cache.py``) as a torch module so the
+``lartpc/data_prep/labels/build_photonlib_cache.py``) as a torch module so the
 forward pass for "given a cluster of spacepoints, predict its (32,) PE flash"
 is a few index_select + segment-sum ops on the GPU.
 

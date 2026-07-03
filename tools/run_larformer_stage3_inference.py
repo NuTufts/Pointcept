@@ -102,9 +102,9 @@ def flash_recovery_keep(ev_pred, filtered_batch, input_h5_path, no_object_class_
     chi2 <= chi2_max and OOB <= oob_max. Returns an (n_sp,) bool tensor (or None if
     no in-time beam flash). The observed flash + raw charge come from input_h5_path."""
     import h5py
-    from lartpc_data_prep.larformer_analysis.lib.flash_predict import (
+    from lartpc.larformer_analysis.slicer_eval.lib.flash_predict import (
         predict_slice_pe, select_charge_y_with_uv_fallback_np)
-    from lartpc_data_prep.larformer_analysis.lib.flash_chi2 import neyman_chi2
+    from lartpc.larformer_analysis.slicer_eval.lib.flash_chi2 import neyman_chi2
 
     sp_mask = ev_pred["mask_logits"]["spacepoint"]          # (Q, n_sp) logits
     Q, n_sp = sp_mask.shape

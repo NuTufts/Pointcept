@@ -55,7 +55,7 @@ The pipeline above has been implemented as Steps 5-7, extending the existing 4-s
 
 ### New files
 
-#### `lartpc_data_prep/shower_fragment_merger.py` — Core merging algorithm
+#### `lartpc/data_prep/labels/shower_fragment_merger.py` — Core merging algorithm
 
 Pure numpy module (no PyTorch dependency). Implements the fragment-to-shower merging algorithm:
 
@@ -105,7 +105,7 @@ ROOT TTree schema (`shower_reco` tree, one entry per event):
 
 One ROOT file per input H5 file. Files can be merged downstream via `hadd`.
 
-#### `lartpc_data_prep/shower_origin_reco_scripts/run_step567_pointcept.sh` — Container shell script
+#### `lartpc/larformer_analysis/archive/shower_origin_reco_scripts/run_step567_pointcept.sh` — Container shell script
 
 Runs inside the pointcept container (analogous to `run_step234_pointcept.sh`). Configuration via environment variables:
 - `SHOWER_ORIGIN_CONFIG`, `SHOWER_ORIGIN_CKPT` — model config and checkpoint paths
@@ -116,15 +116,15 @@ Separate from step234 so merger parameters can be iterated independently without
 
 ### Modified files
 
-#### `lartpc_data_prep/convert_larlite_to_showerorigin_h5.py`
+#### `lartpc/data_prep/archive/shower_origin/convert_larlite_to_showerorigin_h5.py`
 
 Added (run, subrun, event) extraction from the larlite `storage_manager` after `io.go_to(ientry)` via `io.run_id()`, `io.subrun_id()`, `io.event_id()`. These are written as attributes on the `entry_0` group in each H5 file. Requires rerunning Steps 2-4 to populate existing H5 files with RSE attributes.
 
-#### `lartpc_data_prep/merge_reco_truth_showerorigin.py`
+#### `lartpc/data_prep/archive/gen1/merge_reco_truth_showerorigin.py`
 
 Propagates `run`, `subrun`, `event` attributes from the reco H5 `entry_0` group into the merged output H5.
 
-#### `lartpc_data_prep/shower_origin_reco_scripts/run_showerorigin_reco.sh`
+#### `lartpc/larformer_analysis/archive/shower_origin_reco_scripts/run_showerorigin_reco.sh`
 
 Added:
 - Configuration variables at top: `SHOWER_ORIGIN_CONFIG`, `SHOWER_ORIGIN_CKPT`, `DEVICE`, `ROOT_OUTPUT_DIR`

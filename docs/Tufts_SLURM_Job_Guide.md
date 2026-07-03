@@ -6,7 +6,7 @@ partitions, modules, or conventions. Grounded in the submit scripts already in
 these repos:
 
 - `ub_showerorigin_reco/scripts/submit_showerorigin_reco.sh` (apptainer, array, 3-level output hash)
-- `pointcept/lartpc_data_prep/larformer_particle_analysis/slurm/submit_valtest.sh` (self-resubmitting array, GPU)
+- `pointcept/lartpc/larformer_analysis/particle_eval/slurm/submit_valtest.sh` (self-resubmitting array, GPU)
 - `gen2ntuple/tufts_submit_ntuple_job_example.sh` (singularity, CPU array)
 
 ---
@@ -130,7 +130,7 @@ For the **wongjiradlab P100 fallback**, use `--partition=wongjiradlab
 sbatch my_submit.sh                 # plain array
 sbatch --array=0-4 my_submit.sh     # override array at submit time
 # config-driven drivers in these repos:
-sbatch lartpc_data_prep/larformer_particle_analysis/slurm/submit_valtest.sh <conf>
+sbatch lartpc/larformer_analysis/particle_eval/slurm/submit_valtest.sh <conf>
 ```
 
 For a **capped first pass**, submit a small array (`--array=0-4`) before scaling up.

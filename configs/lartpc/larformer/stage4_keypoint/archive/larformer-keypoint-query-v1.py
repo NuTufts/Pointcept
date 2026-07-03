@@ -6,7 +6,7 @@ with the Phase-2 keypoint head turned ON (`enable_keypoint_head=True`). Each
 matched particle query additionally predicts its start (= the existing origin
 head), end (track-like particles), an end-existence gate, and per-axis
 log-variance; supervised via `keypoint_query_loss` (β-NLL) on the existing
-query→GT Hungarian match. See lartpc_data_prep/larformer_keypoint/README.md §4.
+query→GT Hungarian match. See lartpc/larformer_analysis/archive/keypoint_v1/README.md §4.
 
 Deltas vs the cached Stage-3 config this is copied from:
   - model.enable_keypoint_head = True  (+ keypoint loss weights, coord_scale)

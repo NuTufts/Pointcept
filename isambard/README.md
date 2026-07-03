@@ -43,7 +43,7 @@ The file lists below are the canonical inputs to `submit_build.sh` /
 scripts handle that by sharding files into one `.sqsh` per leaf directory.
 
 - **`pretrain-sonata-v7-extbnb-larmatch`** — larmatch-deghosted cosmic data:
-  `/cluster/tufts/wongjiradlab/twongj01/mphys/Pointcept/lartpc_data_prep/extbnb_larmatch/hdlist_extbnb_larmatch_run3_g1_sonata_validated.txt`
+  `/cluster/tufts/wongjiradlab/twongj01/mphys/Pointcept/lartpc/larformer_analysis/archive/extbnb_larmatch/hdlist_extbnb_larmatch_run3_g1_sonata_validated.txt`
 - **`pretrain-sonata-v6-extbnb`** — full no-larmatch cosmic data:
   `/cluster/tufts/wongjiradlab/hmcgui01/mphys/Pointcept/lartpc_data_prep/extbnb_g1_g2_100_filenames_only.txt`
 - **lartpc v6 simulated** — full simulated data set used for the v6 model
@@ -163,7 +163,7 @@ cd /cluster/tufts/wongjiradlab/twongj01/mphys/Pointcept/isambard
 
 # Smoke-test on a few shards first
 sbatch submit_build.sh \
-  /cluster/tufts/wongjiradlab/twongj01/mphys/Pointcept/lartpc_data_prep/extbnb_larmatch/hdlist_extbnb_larmatch_run3_g1_sonata_validated.txt \
+  /cluster/tufts/wongjiradlab/twongj01/mphys/Pointcept/lartpc/larformer_analysis/archive/extbnb_larmatch/hdlist_extbnb_larmatch_run3_g1_sonata_validated.txt \
   /cluster/tufts/wongjiradlab/larbys/data/ \
   --limit 3
 ```
@@ -174,7 +174,7 @@ chained build:
 
 ```bash
 sbatch submit_build.sh --chain --max-chain 5 \
-  /cluster/tufts/wongjiradlab/twongj01/mphys/Pointcept/lartpc_data_prep/extbnb_larmatch/hdlist_extbnb_larmatch_run3_g1_sonata_validated.txt \
+  /cluster/tufts/wongjiradlab/twongj01/mphys/Pointcept/lartpc/larformer_analysis/archive/extbnb_larmatch/hdlist_extbnb_larmatch_run3_g1_sonata_validated.txt \
   /cluster/tufts/wongjiradlab/larbys/data/
 ```
 
@@ -194,7 +194,7 @@ daily) so the next chained successor inherits a valid cert when it starts.
 
 ```bash
 sbatch submit_transfer_shards.sh --chain --max-chain 30 \
-  /cluster/tufts/wongjiradlab/twongj01/mphys/Pointcept/lartpc_data_prep/extbnb_larmatch/hdlist_extbnb_larmatch_run3_g1_sonata_validated.txt
+  /cluster/tufts/wongjiradlab/twongj01/mphys/Pointcept/lartpc/larformer_analysis/archive/extbnb_larmatch/hdlist_extbnb_larmatch_run3_g1_sonata_validated.txt
 ```
 
 What happens:

@@ -576,7 +576,7 @@ for ientry in range(io.get_entries()):
 
 ### Step 2: Convert Larlite ROOT to ShowerOriginDataset HDF5
 
-**Script**: `lartpc_data_prep/convert_larlite_to_showerorigin_h5.py`
+**Script**: `lartpc/data_prep/archive/shower_origin/convert_larlite_to_showerorigin_h5.py`
 
 Since this is reco data (no MC truth), shower fragments are created by:
 1. Selecting shower-like hits using `hit.renormed_shower_score >= threshold`
@@ -588,7 +588,7 @@ Truth-only fields (`originpt`, `type`, `pret0shiftedoriginpt`) are filled with p
 **Usage:**
 
 ```bash
-python lartpc_data_prep/convert_larlite_to_showerorigin_h5.py \
+python lartpc/data_prep/archive/shower_origin/convert_larlite_to_showerorigin_h5.py \
     --input-larlite output_larlite.root \
     --output-dir ./showerorigin_h5/ \
     --input-larcv output_larcv.root \
@@ -821,7 +821,7 @@ The model operates in normalized coordinates. To convert predicted distances bac
 | File | Description |
 |---|---|
 | `pointcept/datasets/shower_origin.py` | `ShowerOriginDataset` with multi-shower support, dual format loading |
-| `lartpc_data_prep/convert_larlite_to_showerorigin_h5.py` | Larlite ROOT → ShowerOriginDataset HDF5 conversion |
+| `lartpc/data_prep/archive/shower_origin/convert_larlite_to_showerorigin_h5.py` | Larlite ROOT → ShowerOriginDataset HDF5 conversion |
 | `scripts/slurm/prep_shower_origin_data.sh` | SLURM array job for data prep |
 | `scripts/slurm/train_shower_origin.sh` | SLURM training job |
 
@@ -904,7 +904,7 @@ Peak distance in cm: value × coord_scale (179.55).
 - [ ] **Phase 3 (cont.)**: Production
   - [ ] Full-scale data prep via SLURM (all available ROOT files → HDF5 → shower_fragments)
   - [ ] Multi-GPU training run on full dataset
-  - [ ] Consider validation check for new shower fragment data (past version used `lartpc_data_prep/validate_hdf5_files.py`)
+  - [ ] Consider validation check for new shower fragment data (past version used `lartpc/data_prep/validation/validate_hdf5_files.py`)
 - [ ] **Phase 4**: Evaluation
   - [ ] Analyze prediction quality on held-out data (origin localization error, inside/outside accuracy)
   - [ ] Ablation: with/without virtual grid

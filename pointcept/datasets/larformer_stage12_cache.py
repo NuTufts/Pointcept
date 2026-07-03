@@ -432,7 +432,7 @@ class LArFormerStage12CacheDataset(DefaultDataset):
         nu_vertex_norm = None
         if self.emit_keypoints:
             if mckp is not None:
-                from lartpc_data_prep.keypoint_labels import (
+                from lartpc.data_prep.labels.keypoint_labels import (
                     compute_kpscores, endpoint_by_trackid,
                     KPTYPE_TRACK_END, KPTYPE_NU_VERTEX,
                     KPTYPE_TRACK_START, KPTYPE_SHOWER,

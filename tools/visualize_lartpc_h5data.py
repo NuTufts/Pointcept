@@ -27,7 +27,7 @@ from plotly.subplots import make_subplots
 from detectoroutline import DetectorOutline
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
-from lartpc_data_prep.slice_labels import compute_slice_labels, GHOST_SLICE_ID
+from lartpc.data_prep.labels.slice_labels import compute_slice_labels, GHOST_SLICE_ID
 
 
 # PDG code to particle name mapping

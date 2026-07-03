@@ -23,7 +23,7 @@ normalized frame are included.
 
 import numpy as np
 
-from lartpc_data_prep.keypoint_labels import (
+from lartpc.data_prep.labels.keypoint_labels import (
     KEYPOINT_TYPE_NAMES, N_KEYPOINT_TYPES, KPTYPE_NU_VERTEX,
     KPTYPE_TRACK_START, KPTYPE_TRACK_END, KPTYPE_SHOWER,
 )

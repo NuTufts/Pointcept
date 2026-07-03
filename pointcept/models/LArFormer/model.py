@@ -330,7 +330,7 @@ class LArFormer(nn.Module):
         # slice-level nu vertex (decoded from the dense score/offset field).
         # Supervised by the per-SP `kpscores` / `kpoffsets` the keypoint
         # datasets emit. Cheap; backbone can stay frozen (the dense field is
-        # learnable from frozen features — see lartpc_data_prep/larformer_keypoint).
+        # learnable from frozen features — see lartpc/larformer_analysis/archive/keypoint_v1).
         self.enable_keypoint_dense_head = bool(enable_keypoint_dense_head)
         self.kp_dense_score_head = None
         self.kp_dense_offset_head = None

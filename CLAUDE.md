@@ -53,6 +53,7 @@ cd libs/pointgroup_ops && python setup.py install && cd ../..
   - `engines/` - Training/testing engines and hooks
   - `utils/` - Utilities (config, logging, registry)
 - `configs/` - Configuration files organized by dataset (lartpc/, scannet/, s3dis/, etc.)
+- `lartpc/` - LArTPC-specific work: `data_prep/` (training-data + official-uboone HDF5 pipelines), `larformer_analysis/` (stage/physics performance analysis)
 - `tools/` - Entry points (train.py, test.py)
 - `scripts/` - Shell scripts for training/testing
 - `libs/` - Custom CUDA extensions (pointops, pointgroup_ops)
