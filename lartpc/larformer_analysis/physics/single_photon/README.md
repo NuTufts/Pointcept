@@ -14,9 +14,9 @@ We want to define a selection based on the LArFormer outputs and estimate the tr
 ## References
 
 - LArFormer model information: [`docs/LArFormer.md`](../../../docs/LArFormer.md)
-- MicroBooNE data set information: [`docs/MicroBooNE_Datasets_on_Tufts.md`](../../../docs/MicroBooNE_Datasets_on_Tufts.md)
-- Flat-ntuple parsing spec: [`docs/Gen2_Flat_Ntuple_Spec.md`](../../../docs/Gen2_Flat_Ntuple_Spec.md)
-- Cluster job submission: [`docs/Tufts_SLURM_Job_Guide.md`](../../../docs/Tufts_SLURM_Job_Guide.md)
+- MicroBooNE data set information: [`docs/reference/MicroBooNE_Datasets_on_Tufts.md`](../../../docs/reference/MicroBooNE_Datasets_on_Tufts.md)
+- Flat-ntuple parsing spec: [`docs/reference/Gen2_Flat_Ntuple_Spec.md`](../../../docs/reference/Gen2_Flat_Ntuple_Spec.md)
+- Cluster job submission: [`docs/reference/Tufts_SLURM_Job_Guide.md`](../../../docs/reference/Tufts_SLURM_Job_Guide.md)
 - LArFormer cascade data pipeline: [`larformer_scripts/LARFORMER_DATAPREP.md`](../../larformer_scripts/LARFORMER_DATAPREP.md)
 
 ## Steps
@@ -35,7 +35,7 @@ Photons mostly come from π⁰s (from the ν interaction or secondary hadronic
 interactions) and become *single-photon* topologies when only one photon is
 "visible." We define visible as **≥20 MeV of ionization deposited in a single
 cluster**. That quantity is not in the flat ntuples, so the study runs in two
-passes over two data tiers (see [`MicroBooNE_Datasets_on_Tufts.md`](../../../docs/MicroBooNE_Datasets_on_Tufts.md)):
+passes over two data tiers (see [`MicroBooNE_Datasets_on_Tufts.md`](../../../docs/reference/MicroBooNE_Datasets_on_Tufts.md)):
 
 - **Pass 1 (flat ntuples)** — a loose truth pre-selection to *count* candidate
   signal and *isolate* the official files that contain it. The ntuple can't
@@ -362,7 +362,7 @@ Analysis scripts: `select_visible_photon_events.py`, `match_predictions_to_truth
 `run_stageB_capped.sh` env knobs `DETERMINISTIC=1` / `DEGHOST_THRESHOLD_VAL` / `FLASH_RECOVER_K`,
 sweep `slurm/submit_deghost_compare_3k_pin.sh`.
 
-### Reproducibility & determinism (`docs/LArFormer_Reproducibility.md`)
+### Reproducibility & determinism (`docs/reference/LArFormer_Reproducibility.md`)
 
 Inference is non-deterministic by default; `run_larformer_stage3_inference.py --deterministic`
 (env `DETERMINISTIC=1`) fixes it. Established facts:

@@ -7,4 +7,4 @@ The identically-scoped `merge_reco_truth_showerorigin.py` lives in
 
 Related: configs in `configs/lartpc/shower_origin/`, analysis in
 `lartpc/larformer_analysis/archive/shower_origin_reco_scripts/`, spec in
-`docs/shower_origin_spec.md`.
+`docs/reference/shower_origin_spec.md`.

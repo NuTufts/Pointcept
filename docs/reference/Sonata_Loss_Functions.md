@@ -1,5 +1,7 @@
 # Sonata Loss Functions
 
+> **Status: REFERENCE** — The three Sonata SSL losses explained.
+
 This document explains the loss functions used in the Sonata self-supervised pre-training framework and how to interpret their values during training.
 
 ## Overview

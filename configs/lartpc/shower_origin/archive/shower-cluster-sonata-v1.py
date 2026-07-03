@@ -1,6 +1,6 @@
 """
 Config for the shower-clustering Mask2Former model. Phases 2–8 of the design
-(see pointcept/docs/shower_clustering_design.md).
+(see pointcept/docs/reference/shower_clustering_design.md).
 
 Builds:
   - ShowerClusteringDataset                   (Phase 2)
@@ -158,7 +158,7 @@ data = dict(
 # =============================================================================
 # Model — Phase 7 assembly. ShowerClusteringMask2Former wires backbone +
 # tokenizer + decoder + loss into one nn.Module registered with the MODELS
-# registry. See pointcept/docs/shower_clustering_design.md.
+# registry. See pointcept/docs/reference/shower_clustering_design.md.
 # =============================================================================
 # V3 uses 'flash_attn' on H200 and 'xformers' on P100. We default to
 # 'xformers' so the same config works on either, since the user prototypes

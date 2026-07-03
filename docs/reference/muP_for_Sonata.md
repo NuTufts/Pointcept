@@ -1,5 +1,7 @@
 # Implementing muP (Maximal Update Parameterization) for Sonata
 
+> **Status: REFERENCE** — muP (maximal update parameterization) design for Sonata pre-training.
+
 ## Context
 
 We are pre-training a Sonata self-supervised model on LArTPC data using config `configs/lartpc/sonata_pretrain/archive/pretrain-sonata-v1m1-lartpc-v6.py`. The backbone is PT-v3m2 (PointTransformerV3 mode 2) with encoder channels `(48, 96, 192, 384, 512)` and OnlineCluster heads. Currently, all Linear layers use `trunc_normal_(std=0.02)` initialization and a single base learning rate (with layer-wise decay). This is Standard Parameterization (SP), where optimal hyperparameters (especially learning rate) change as you scale model width. muP would let you tune hyperparameters on a small/narrow model and transfer them to your full-size model, saving significant GPU time on HP searches.

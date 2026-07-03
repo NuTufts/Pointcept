@@ -1,6 +1,6 @@
 """
 Mask2Former-style decoder for the shower-clustering model. Phase 4 of the
-design (see pointcept/docs/shower_clustering_design.md §3, Phase 4).
+design (see pointcept/docs/reference/shower_clustering_design.md §3, Phase 4).
 
 Inputs (per event, no batch dim — model wraps batching) — for each scale we
 get tokens AND their normalized 3D coords. The decoder owns position

@@ -1,5 +1,7 @@
 # Creating a Custom Pointcept Dataset for LArTPC Data
 
+> **Status: REFERENCE** — Guide to the available LArTPC training datasets.
+
 This guide documents how to integrate Liquid Argon TPC (LArTPC) point cloud data with the Pointcept repository for training PointTransformerV3 and other models.
 
 ## Overview
@@ -247,4 +249,4 @@ Enable instance segmentation by including instance labels in training.
 
 - Dataset: `pointcept/datasets/lartpc.py`
 - Config: `configs/lartpc/semseg-pt-v3-lartpc.py`
-- This guide: `docs/LArTPC_Dataset_Guide.md`
+- This guide: `docs/reference/LArTPC_Dataset_Guide.md`

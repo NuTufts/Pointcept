@@ -1,6 +1,6 @@
 """
 ShowerClusteringDataset — input pipeline for the Mask2Former-style shower
-clustering model. See `pointcept/docs/shower_clustering_design.md` (Phase 2).
+clustering model. See `pointcept/docs/reference/shower_clustering_design.md` (Phase 2).
 
 Each sample is one event from a merged H5 (post the new merge step that
 preserves `mc_particle_tree`). Per `__getitem__` the dataset returns a dict:

@@ -1,6 +1,6 @@
 """
 Config for the shower-clustering Mask2Former model. Phases 2–8 of the design
-(see pointcept/docs/shower_clustering_design.md).
+(see pointcept/docs/reference/shower_clustering_design.md).
 
 Builds:
   - ShowerClusteringDataset                   (Phase 2)

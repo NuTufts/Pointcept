@@ -1,5 +1,7 @@
 # W&B Sweeps for muP Proxy Model Hyperparameter Optimization
 
+> **Status: WORKLOG (2026-03)** — W&B sweep setup for the muP proxy-model tuning campaign.
+
 ## Context
 
 With muP implemented for the Sonata model, optimal hyperparameters (LR, weight decay, temperatures) tuned on a narrow proxy model transfer to the full-width model. This document describes how to use W&B Sweeps to efficiently search the HP space on a cheap proxy, then apply those HPs to the full model.
@@ -391,4 +393,4 @@ model = dict(
 | Sweep YAML (to create) | `configs/sweeps/mup_proxy_sweep.yaml` |
 | SLURM script (to create) | `submit_mup_sweep.sh` |
 | Coord check | `tools/mup_coord_check.py` |
-| muP documentation | `docs/muP_for_Sonata.md` |
+| muP documentation | `docs/reference/muP_for_Sonata.md` |

@@ -32,7 +32,7 @@ Stage-3 training run lineage (all wandb `pointcept-larformer-stage3`):
 `..._resume2B_resetoptim` (optimizer reset — shown to be a no-op) →
 `..._resume3_cosinedecay` (**active**: cosine decay 5e-5 → 1e-6 + per-batch
 diagnostic logging). The loss-instability analysis that drove these is in
-[LArFormer_Stage3_TrainingStability.md](LArFormer_Stage3_TrainingStability.md)
+[LArFormer_Stage3_TrainingStability.md](devlog/LArFormer_Stage3_TrainingStability.md)
 — short version: the rising/oscillating train loss is an artifact of
 adaptive hard-negative sampling + Hungarian-assignment churn, not model
 degradation; val IoU rises throughout. The dominant *prediction* error is a
@@ -44,14 +44,18 @@ mask-IoU dedup (with merge tracking) addresses it (stability doc §7).
 | Doc | Covers |
 |---|---|
 | **this file** (`docs/LArFormer.md`) | Core abstractions (levels, builders, scale patterns, supervision, cascade), file/config/tool maps, design history §§15–18 |
-| [`docs/Event_Slicer_Spec.md`](Event_Slicer_Spec.md) | Stage-2 slicer: physics background, data schema, flash-matching design (flash-match loss **not implemented**; mask+cls slicer is) |
-| [`docs/LArFormer_particlesegment_stage.md`](LArFormer_particlesegment_stage.md) | Stage 3: GT definition, cascade conditioning, loss budget, **as-built implementation status (§13)** — the most detailed per-file record |
-| [`docs/LArFormer_Stage3_TrainingStability.md`](LArFormer_Stage3_TrainingStability.md) | Stage-3 training-loss diagnosis; LR-schedule swap (`DelayedCosineLR`); per-batch probe diagnostics (`loss_diag_*`, `grad_norm`); inference query dedup (R8); recommendation tracker |
+| [`docs/reference/Event_Slicer_Spec.md`](reference/Event_Slicer_Spec.md) | Stage-2 slicer: physics background, data schema, flash-matching design (flash-match loss **not implemented**; mask+cls slicer is) |
+| [`docs/reference/LArFormer_particlesegment_stage.md`](reference/LArFormer_particlesegment_stage.md) | Stage 3: GT definition, cascade conditioning, loss budget, **as-built implementation status (§13)** — the most detailed per-file record |
+| [`docs/devlog/LArFormer_Stage3_TrainingStability.md`](devlog/LArFormer_Stage3_TrainingStability.md) | Stage-3 training-loss diagnosis; LR-schedule swap (`DelayedCosineLR`); per-batch probe diagnostics (`loss_diag_*`, `grad_norm`); inference query dedup (R8); recommendation tracker |
 | [`lartpc/data_prep/uboone_official/LARFORMER_DATAPREP.md`](../lartpc/data_prep/uboone_official/LARFORMER_DATAPREP.md) | **Production inference workflow**: `merged_dlreco.root` → per-event H5 → full-cascade `stage3pred_*.h5`, config-driven, SLURM-ready |
 | [`lartpc/larformer_analysis/particle_eval/README.md`](../lartpc/larformer_analysis/particle_eval/README.md) | Stage-3 val/test analysis: per-event distill + metric aggregation (evaluator scalars + size-stratified extras) on SLURM |
 | [`lartpc/larformer_analysis/slicer_eval/README.md`](../lartpc/larformer_analysis/slicer_eval/README.md) | Stage-2 slicer val/test analysis (same pattern) |
-| [`docs/LArTPC_HDF5_Data_Format.md`](LArTPC_HDF5_Data_Format.md) | Per-spacepoint truth fields used as `label_src` values |
-| [`docs/shower_clustering_design.md`](shower_clustering_design.md) | Predecessor architecture LArFormer generalizes |
+| [`docs/reference/LArTPC_HDF5_Data_Format.md`](reference/LArTPC_HDF5_Data_Format.md) | Per-spacepoint truth fields used as `label_src` values |
+| [`docs/reference/shower_clustering_design.md`](reference/shower_clustering_design.md) | Predecessor architecture LArFormer generalizes |
+| [`configs/lartpc/README.md`](../configs/lartpc/README.md) | **Production configuration chain** — which config trained each deployed checkpoint, per stage |
+| [`lartpc/larformer_reco/README.md`](../lartpc/larformer_reco/README.md) + [`specs/`](../lartpc/larformer_reco/specs/) | Stage-4 keypoints + downstream nu-interaction reconstruction (vertices, trajfit, 4-momenta, eval) |
+| [`lartpc/flashmatch/README.md`](../lartpc/flashmatch/README.md) | Shared flash-matching library (flash_predict, flash_chi2, photonlib cache) |
+| [`docs/Reorganization_Plan.md`](Reorganization_Plan.md) | Repo layout: where everything lives and why (2026-07 reorganization) |
 
 ### 0c. Code map
 
@@ -74,7 +78,8 @@ pointcept/models/LArFormer/
 ├── particle_evaluator.py     # LArFormerParticleEvaluator (Stage-3 val metrics)
 ├── inference.py              # shared per-event extraction + panoptic assignment +
 │                             #   query dedup (dedup_queries) + H5 read/write schema
-├── viz_inference.py          # shared plotly figure/color helpers for the visualizers
+│                             # (viz_inference.py — the shared plotly figure/color helpers —
+│                             #   moved to lartpc/viz/larformer_inference.py)
 ├── cascaded.py               # CascadedSlicer (Stage 1+2 wrapper)
 ├── cascade_filter.py         # deghost-threshold batch filtering helpers
 ├── cascaded_particle.py      # CascadedParticleSegmenter (Stage 1+2+3 wrapper)
@@ -139,7 +144,7 @@ The result is a model that's hard to repurpose for related tasks (deghosting, ev
 The same scaffold then carries three downstream tasks for the MicroBooNE Gen-2 pipeline:
 
 1. **Deghosting** — per-spacepoint binary `real / ghost`.
-2. **Event slicing** — per-spacepoint instance assignment into cosmic-primary slices + a merged nu-vertex slice (see [Event_Slicer_Spec.md](Event_Slicer_Spec.md)).
+2. **Event slicing** — per-spacepoint instance assignment into cosmic-primary slices + a merged nu-vertex slice (see [Event_Slicer_Spec.md](reference/Event_Slicer_Spec.md)).
 3. **Particle clustering of the neutrino slice** — instance segmentation of the nu slice into per-particle trajectories.
 
 These are trained sequentially as a **cascade**: deghoster first, then slicer with frozen deghoster, then particle clusterer with frozen upstream. The cascade pattern is described in §6.
@@ -487,7 +492,7 @@ Logged here so they're not forgotten:
 - **Inter-level information flow (UNet-style pyramid).** Each level is built independently from spacepoint features via pooling. This is OK because the Sonata backbone is itself PTv3 with 2 levels of upsampling, so the per-SP features already encode some multi-scale context. Add a small encoder pyramid if level-specific aux losses plateau.
 - **LoRA-wrapped backbone in-config.** §8.
 - **Joint fine-tuning across cascade stages.** §6 — for now, one stage at a time, downstream training freezes upstream.
-- **Flash-match loss for the slicer.** Specced in [Event_Slicer_Spec.md](Event_Slicer_Spec.md). A `FlashMatchHead` stub is in the file layout but its loss term is out of v1; the slicer trains on mask + cls + query CE only for the first pass.
+- **Flash-match loss for the slicer.** Specced in [Event_Slicer_Spec.md](reference/Event_Slicer_Spec.md). A `FlashMatchHead` stub is in the file layout but its loss term is out of v1; the slicer trains on mask + cls + query CE only for the first pass.
 - **Pre-computed multi-resolution voxel grids in the dataset.** Decided to keep voxelization model-side. Revisit if dataloader becomes the bottleneck.
 - **Custom builders beyond spacepoint / voxel / fragment.** Easy to add later via the registry.
 - **Shared-backbone cascade (the "deghost-decoder" path).** v0 `CascadedSlicer` runs two independent Sonata backbones (one per stage, ~400M params total, two forward passes per training step). The clean alternative is to keep the backbone vanilla + train the **deghoster as a per-SP decoder head** on top of those shared features instead of LoRA-tuning the backbone — then the slicer reads the same backbone features, one pass total. Cost: retrain the deghoster from scratch with a non-LoRA architecture (e.g., a PTv3 decoder block per `larformer-deghost-v0-ptv3decoder.py` or a deeper per-SP MLP). Benefits: 1× backbone compute, naturally extensible to a single-pass 3-stage model. Revisit when (a) the trained Stage-1 deghoster reaches good val mIoU with the LoRA approach AND (b) the 2× backbone cost becomes a practical bottleneck.
@@ -521,7 +526,7 @@ Each phase ends with a runnable training config and at least one overfit / sanit
 | **P4b — GT visualizer** | Extract `build_levels` + `build_per_level_gt` into pure helpers (§11); wire `tools/viz/visualize_larformer_gt.py` | **Done** | Visualizer at [`tools/viz/visualize_larformer_gt.py`](../tools/viz/visualize_larformer_gt.py), extended in v1 with a prediction-panel mode (see §15). |
 | **P5 — Stage 1: deghoster** | Per-level cls head on the spacepoint level; train on `hasmatch` | **Done (LArFormer flavor); LoRA variant adopted for cascade** | Both [`larformer-deghost-v0.py`](../configs/lartpc/larformer/stage1_deghost/archive/larformer-deghost-v0.py) (LArFormer-flavored) and the LoRA-finetuned [`SonataLoRADeghostSegmentor`](../pointcept/models/lora_sonata_deghost.py) work as Stage 1. v1 cascade defaults to the LoRA variant (see §6 implementation note). |
 | **P6 — Stage 2: slicer** | Slicer config, frozen Stage 1 wired in-model via `CascadedSlicer`, query-set predicts slices | **Done — trained** | Debug history in §15 (the mirror-merge pathology drove §§16–18: TokenRefiner, mixed query selection, mask denoising). Production variant: `larformer-slicer-v1-cascaded-ptv3hybrid-crosslevel.py`; the iter-75750 checkpoint built the Stage-3 training cache. Flash-match loss still not wired (out of v1 scope; see Event_Slicer_Spec.md). |
-| **P7 — Stage 3: particle clusterer** | Particle config, frozen stages 1+2 (model-side cascade + cached training path) | **Done — in production training** | Full design + as-built record: [LArFormer_particlesegment_stage.md](LArFormer_particlesegment_stage.md) §13. Training campaign + open issues: [LArFormer_Stage3_TrainingStability.md](LArFormer_Stage3_TrainingStability.md). See §0a for the run lineage. |
+| **P7 — Stage 3: particle clusterer** | Particle config, frozen stages 1+2 (model-side cascade + cached training path) | **Done — in production training** | Full design + as-built record: [LArFormer_particlesegment_stage.md](reference/LArFormer_particlesegment_stage.md) §13. Training campaign + open issues: [LArFormer_Stage3_TrainingStability.md](devlog/LArFormer_Stage3_TrainingStability.md). See §0a for the run lineage. |
 
 Phases 1–4 are model + dataset plumbing and can be done without committing to any downstream task. Phases 5–7 are the cascade itself and depend on having sufficient training data and the upstream stages working.
 
@@ -534,7 +539,7 @@ Phases 1–4 are model + dataset plumbing and can be done without committing to 
 > status always start at §0. Note for posterity: the duplicate-query
 > failure mode dissected here for the slicer reappeared in Stage 3 as
 > μ/π duplicate pairs — see
-> [LArFormer_Stage3_TrainingStability.md](LArFormer_Stage3_TrainingStability.md) §7.
+> [LArFormer_Stage3_TrainingStability.md](devlog/LArFormer_Stage3_TrainingStability.md) §7.
 
 ### Setup
 
@@ -873,13 +878,13 @@ The ctor enforces that `mixed_query_selection` is also enabled — otherwise `se
 - Existing dataset being extended:
   [`pointcept/datasets/shower_clustering.py`](../pointcept/datasets/shower_clustering.py).
 - Shower-clustering design notes (the architecture LArFormer generalizes):
-  [`docs/shower_clustering_design.md`](shower_clustering_design.md).
+  [`docs/reference/shower_clustering_design.md`](reference/shower_clustering_design.md).
 - Event slicer requirements (the primary stage-2 use case):
-  [`docs/Event_Slicer_Spec.md`](Event_Slicer_Spec.md).
+  [`docs/reference/Event_Slicer_Spec.md`](reference/Event_Slicer_Spec.md).
 - Slice ground-truth builder used by `gt_source="slice"`:
   [`lartpc/data_prep/labels/slice_labels.py`](../lartpc/data_prep/labels/slice_labels.py).
 - LArTPC H5 schema (per-spacepoint truth fields used as `label_src` values):
-  [`docs/LArTPC_HDF5_Data_Format.md`](LArTPC_HDF5_Data_Format.md).
+  [`docs/reference/LArTPC_HDF5_Data_Format.md`](reference/LArTPC_HDF5_Data_Format.md).
 - Visualizer patterns to reuse for the per-level GT viewer (§11):
   [`tools/viz_archive/visualize_shower_clustering.py`](../tools/viz_archive/visualize_shower_clustering.py),
   [`tools/viz_archive/visualize_slice_flash_match.py`](../tools/viz_archive/visualize_slice_flash_match.py),

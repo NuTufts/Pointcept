@@ -1,6 +1,6 @@
 """
 Top-level shower-clustering Mask2Former model. Phase 7 of the design
-(see pointcept/docs/shower_clustering_design.md §3).
+(see pointcept/docs/reference/shower_clustering_design.md §3).
 
 Wires four pieces together:
     1. (frozen) Sonata backbone        — per-spacepoint features

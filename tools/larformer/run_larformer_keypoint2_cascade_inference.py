@@ -441,7 +441,7 @@ def main():
                     help="Bit-exact inference on a fixed GPU/driver/lib stack "
                          "(TF32 off, deterministic algorithms, seeded, "
                          "CUBLAS_WORKSPACE_CONFIG). See "
-                         "docs/LArFormer_Reproducibility.md. ~1.3-2x slower.")
+                         "docs/reference/LArFormer_Reproducibility.md. ~1.3-2x slower.")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--save-slice-ids", action="store_true",
                     help="Also write a per-event sidecar sliceid_event{i}.h5 with "

@@ -2,7 +2,7 @@
 MID-RUN LR-SCHEDULE SWAP: flat 5e-5 -> DelayedCosineLR decay to 1e-6.
 
 Copy of `larformer-particle-v1-cached-ptv3crosslevel.py` implementing
-recommendation R1 of `docs/LArFormer_Stage3_TrainingStability.md`.
+recommendation R1 of `docs/devlog/LArFormer_Stage3_TrainingStability.md`.
 Model / data / loss are UNCHANGED; the only experimental deltas are:
 
   - Resumes from the flat-LR run's mid-epoch checkpoint

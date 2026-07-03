@@ -7,7 +7,7 @@ these whenever the model/inference path changes or when moving to a **new cluste
 
 They use the **1g+0X selection** as the test analysis (`../single_photon/`,
 `run_stageB_capped.sh` + `analyze_1g0X.py`) rather than duplicating it. The full
-story of what these tests found is in `pointcept/docs/LArFormer_Reproducibility.md`.
+story of what these tests found is in `pointcept/docs/reference/LArFormer_Reproducibility.md`.
 
 ## Background: three layers of reproducibility
 
@@ -60,7 +60,7 @@ the inference tools (`run_larformer_stage3_inference.py` cached + full-cascade
 modes, and `run_larformer_keypoint2_cascade_inference.py`) now **re-seed before
 each event** (`reseed_per_event()`, `--deterministic` only) so an event is
 independent of its batch-mates. This membership test is the regression guard for
-that. See `docs/LArFormer_Reproducibility.md` §3.2.
+that. See `docs/reference/LArFormer_Reproducibility.md` §3.2.
 
 ### 3. Cross-GPU conformance (`slurm/submit_capture.sh` + `cross_gpu_diff.py`)
 Capture the per-event decision tensors on two nodes/SKUs, then diff. Use to clear a

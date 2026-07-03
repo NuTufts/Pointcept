@@ -1,11 +1,13 @@
 # Event Slicer Spec
 
+> **Status: REFERENCE** — Stage-2 event-slicer design specification.
+
 **Status (2026-06-11):** this is the original pre-implementation spec for
 the Stage-2 event slicer; it remains the reference for the physics
 background, the slice ground-truth definition, the per-entry/flash H5 data
 schemas, and the flash-matching design. **What got built:** the slicer was
 implemented as LArFormer Stage 2 (mask + per-level cls + query CE — see
-[LArFormer.md](LArFormer.md) §0 for the project hub and current state) and
+[LArFormer.md](../LArFormer.md) §0 for the project hub and current state) and
 trained via the `larformer-slicer-v1-cascaded*` config family; the
 ptv3hybrid-crosslevel variant is the production checkpoint feeding Stage 3.
 **What did NOT get built (yet):** the flash-match loss and the
@@ -132,7 +134,7 @@ ground truth without rerunning data production.
   `nu_vertices`, so the same code generalizes.
 
 **Implementation:**
-[`Pointcept/lartpc/data_prep/labels/slice_labels.py`](../lartpc/data_prep/labels/slice_labels.py)
+[`Pointcept/lartpc/data_prep/labels/slice_labels.py`](../../lartpc/data_prep/labels/slice_labels.py)
 walks the graph and returns `slice_id (N,)` + per-slice metadata
 (`primary_trackid`, `primary_origin`, `primary_pid`, `primary_start_pos`,
 `primary_n_spacepoints`, `slice_member_trackids`). Called on-the-fly from the
@@ -140,7 +142,7 @@ data loader / visualizer — overhead is negligible (~hundreds of nodes per
 event).
 
 **Visualization:**
-[`Pointcept/tools/viz/visualize_lartpc_h5data.py`](../tools/viz/visualize_lartpc_h5data.py)
+[`Pointcept/tools/viz/visualize_lartpc_h5data.py`](../../tools/viz/visualize_lartpc_h5data.py)
 exposes a `Slice (Truth Instance)` color mode in the 3D dropdown. The nu
 slice is rendered red; cosmic slices are spread across HSV; ghosts /
 orphans are gray. The nu_vertex (gold diamond) and each cosmic primary's
@@ -164,7 +166,7 @@ There should be an origin flag in the spacepoint truth labels that tells us if a
 ## Data schema (per-entry H5)
 
 Each H5 file produced by
-[`Pointcept/lartpc/data_prep/archive/gen1/process_dlmerged_to_hdf5_event_files.py`](../lartpc/data_prep/archive/gen1/process_dlmerged_to_hdf5_event_files.py)
+[`Pointcept/lartpc/data_prep/archive/gen1/process_dlmerged_to_hdf5_event_files.py`](../../lartpc/data_prep/archive/gen1/process_dlmerged_to_hdf5_event_files.py)
 contains one `entry_0` group per event with the following structure (sizes
 are from the entry-1 example used throughout this doc, N=358 510 spacepoints,
 M=333 MC nodes):
@@ -222,7 +224,7 @@ entry_0/                                            attrs: run, subrun, event
 ```
 
 Derived (computed on-the-fly by
-[`lartpc/data_prep/labels/slice_labels.py`](../lartpc/data_prep/labels/slice_labels.py)):
+[`lartpc/data_prep/labels/slice_labels.py`](../../lartpc/data_prep/labels/slice_labels.py)):
 
 ```
 slice_id            (N,) int64    primary_trackid per spacepoint (−1 ghost/orphan)
@@ -237,7 +239,7 @@ slice_member_trackids list[list[int]]  the primaries collapsed into each slice
 ## Flash auxiliary H5 schema
 
 Produced by
-[`prepare_flashinfo_h5.py`](../lartpc/flashmatch/prepare_flashinfo_h5.py) from
+[`prepare_flashinfo_h5.py`](../../lartpc/flashmatch/prepare_flashinfo_h5.py) from
 the source dlmerged ROOT file plus the paired merged H5. One file per entry,
 in a parallel hashed-dirs tree alongside the merged H5 (separate location so
 the flash side can be reprocessed without touching the merged data). All
@@ -327,7 +329,7 @@ outside `[2400, 8448]`, flag the slice. Per user note: these slices have
 loss should down-weight rather than drop them.
 
 **Visualization:**
-[`Pointcept/tools/viz_archive/visualize_slice_flash_match.py`](../tools/viz_archive/visualize_slice_flash_match.py)
+[`Pointcept/tools/viz_archive/visualize_slice_flash_match.py`](../../tools/viz_archive/visualize_slice_flash_match.py)
 takes a paired merged H5 + flashinfo H5, exposes a dropdown of all slices
 (each labeled with origin, PID, point count, matched flash, ΣPE, and a
 boundary-crossing tag), and shows the selected slice's spacepoints in 3D
@@ -336,7 +338,7 @@ plus the matched flash's PE pattern on a 2D y-z PMT map.
 **Open follow-ups:**
 - The `mc_particle_tree` group in the merged H5 still drops the t component
   of `MCPGNode.start`. A TODO comment is in place at
-  [`SimChTripletLabelMaker.cxx:1081`](../../ubdl/larflow/larflow/PrepFlowMatchData/SimChTripletLabelMaker.cxx#L1081)
+  [`SimChTripletLabelMaker.cxx:1081`](../../../ubdl/larflow/larflow/PrepFlowMatchData/SimChTripletLabelMaker.cxx#L1081)
   to add `mc_particle_tree/start_t_ns` next time the merged H5 is
   reprocessed. Once that lands, the flash-prep script will no longer need to
   open the ROOT file just to read the time.
@@ -389,15 +391,15 @@ flash-specific `dx`.
 
 **Implementation files:**
 
-- [`Pointcept/lartpc/flashmatch/build_photonlib_cache.py`](../lartpc/flashmatch/build_photonlib_cache.py)
+- [`Pointcept/lartpc/flashmatch/build_photonlib_cache.py`](../../lartpc/flashmatch/build_photonlib_cache.py)
   — one-time converter: reads the ROOT TTree via PyROOT's `RDataFrame`,
   densifies, saves
   `Pointcept/lartpc_data_prep/dat/photonlib_v6_70kV.npz` with grid metadata.
-- [`Pointcept/pointcept/models/event_slicer/photonlib.py`](../pointcept/models/event_slicer/photonlib.py)
+- [`Pointcept/pointcept/models/event_slicer/photonlib.py`](../../pointcept/models/event_slicer/photonlib.py)
   — `PhotonLibLookup` torch module + the Y-with-UV-fallback helper.
   Buffers (`vis_table`, `cryo_origin_tpc`, `voxel_len_cm`, `nvoxels_dim`) are
   registered so `.to(device)` / `.half()` Just Work.
-- [`Pointcept/lartpc/data_prep/labels/test_photonlib_torch.py`](../lartpc/data_prep/labels/test_photonlib_torch.py)
+- [`Pointcept/lartpc/data_prep/labels/test_photonlib_torch.py`](../../lartpc/data_prep/labels/test_photonlib_torch.py)
   — three sanity tests:
   1. **Trilinear parity vs C++ UBPhotonLib**: 300 random TPC points × 32
      OpDets = 9600 comparisons, **100% match** at machine precision
@@ -423,7 +425,7 @@ pe_pairs = pl.predict_flash_pairs(pos_xyz, q_emitted, cluster_id,
 ```
 
 **Running the viewer with predictions:**
-[`tools/viz_archive/visualize_slice_flash_match.py`](../tools/viz_archive/visualize_slice_flash_match.py)
+[`tools/viz_archive/visualize_slice_flash_match.py`](../../tools/viz_archive/visualize_slice_flash_match.py)
 accepts a `--photonlib-cache` flag which enables a third panel (right of
 the observed PMT view) showing the predicted PE pattern for the selected
 slice. Both panels share their `log10(PE+1)` color scale so the patterns
@@ -456,7 +458,7 @@ python tools/viz_archive/visualize_slice_flash_match.py \
 
 ### Per-event data production (offline)
 
-Five stages, driven by [`lantern_scripts/run_lantern_wconfig.sh`](../lartpc/data_prep/training_data/run_lantern_wconfig.sh)
+Five stages, driven by [`lantern_scripts/run_lantern_wconfig.sh`](../../lartpc/data_prep/training_data/run_lantern_wconfig.sh)
 (see "Production workflow" below for details).
 
 ```
@@ -527,18 +529,18 @@ same path and exposes `Slice (Truth Instance)` as a 3D color mode.
 All per-line work — find input ROOT, run Steps 1-5 inside the right
 container, copy outputs to the final tree, write sentinels — is driven by
 config-sourced shell wrappers in
-[`lartpc/data_prep/training_data/`](../lartpc/data_prep/training_data/).
+[`lartpc/data_prep/training_data/`](../../lartpc/data_prep/training_data/).
 
 ### Scripts
 
 | Script | Role |
 |---|---|
-| [`run_lantern_wconfig.sh`](../lartpc/data_prep/training_data/run_lantern_wconfig.sh) | **Integrated** driver. Loops lines from `INPUTLIST` (or `RERUN_LINES_FILE`), creates a per-file workdir, runs Steps 1, 2-4, then 5 (each inside its target container via `apptainer exec`), `cp`s outputs to their final trees, writes sentinels. |
-| [`run_flashinfo_wconfig.sh`](../lartpc/data_prep/training_data/run_flashinfo_wconfig.sh) | **Standalone** driver for Step 5 only. Same line-loop / RERUN / SLURM-array structure, but reads merged H5s from the existing `MERGEFILE_OUTPUT_DIR` tree (not the workdir) and writes directly into `FLASHINFO_OUTPUT_DIR`. Use this to (re)process flashinfo for datasets whose Steps 1-4 are already done. |
-| [`run_step1_lantern_wconfig.sh`](../lartpc/data_prep/training_data/run_step1_lantern_wconfig.sh) | Step 1 subscript (runs inside lantern container). |
-| [`run_step234_pointcept_wconfig.sh`](../lartpc/data_prep/training_data/run_step234_pointcept_wconfig.sh) | Steps 2-4 subscript (runs inside pointcept container). |
-| [`run_step5_flashinfo_pointcept_wconfig.sh`](../lartpc/data_prep/training_data/run_step5_flashinfo_pointcept_wconfig.sh) | Step 5 subscript (runs inside pointcept container). Auto-detects integrated vs standalone mode. |
-| [`_wconfig_common.sh`](../lartpc/data_prep/training_data/_wconfig_common.sh) | Shared bootstrap for the per-stage subscripts (re-execs into the right container when invoked outside one, handles standalone-mode arg parsing). |
+| [`run_lantern_wconfig.sh`](../../lartpc/data_prep/training_data/run_lantern_wconfig.sh) | **Integrated** driver. Loops lines from `INPUTLIST` (or `RERUN_LINES_FILE`), creates a per-file workdir, runs Steps 1, 2-4, then 5 (each inside its target container via `apptainer exec`), `cp`s outputs to their final trees, writes sentinels. |
+| [`run_flashinfo_wconfig.sh`](../../lartpc/data_prep/training_data/run_flashinfo_wconfig.sh) | **Standalone** driver for Step 5 only. Same line-loop / RERUN / SLURM-array structure, but reads merged H5s from the existing `MERGEFILE_OUTPUT_DIR` tree (not the workdir) and writes directly into `FLASHINFO_OUTPUT_DIR`. Use this to (re)process flashinfo for datasets whose Steps 1-4 are already done. |
+| [`run_step1_lantern_wconfig.sh`](../../lartpc/data_prep/training_data/run_step1_lantern_wconfig.sh) | Step 1 subscript (runs inside lantern container). |
+| [`run_step234_pointcept_wconfig.sh`](../../lartpc/data_prep/training_data/run_step234_pointcept_wconfig.sh) | Steps 2-4 subscript (runs inside pointcept container). |
+| [`run_step5_flashinfo_pointcept_wconfig.sh`](../../lartpc/data_prep/training_data/run_step5_flashinfo_pointcept_wconfig.sh) | Step 5 subscript (runs inside pointcept container). Auto-detects integrated vs standalone mode. |
+| [`_wconfig_common.sh`](../../lartpc/data_prep/training_data/_wconfig_common.sh) | Shared bootstrap for the per-stage subscripts (re-execs into the right container when invoked outside one, handles standalone-mode arg parsing). |
 
 ### Step 5 modes (where it reads merged H5 / writes flashinfo)
 
@@ -549,7 +551,7 @@ config-sourced shell wrappers in
 | **Standalone one-off** | `source run_step5_flashinfo_pointcept_wconfig.sh <config> <lineno>` | same as batch | same | same |
 
 The Python script
-[`prepare_flashinfo_h5.py`](../lartpc/flashmatch/prepare_flashinfo_h5.py) is
+[`prepare_flashinfo_h5.py`](../../lartpc/flashmatch/prepare_flashinfo_h5.py) is
 the same in all three: it just takes `--input-dlmerged --merged-dir
 --output-dir --tag --fileno` and doesn't care where those paths live. In
 batch mode it opens larlite once, builds the channel→opdet map once, and
@@ -644,10 +646,10 @@ This will be important information needed for implementation of the data loader 
    Each aux file holds the per-entry flashes, MC particle start times (read
    from larlite MCTrack/MCShower since `mc_particle_tree` doesn't carry the
    time component), and a greedy slice↔flash match table. Producer:
-   [`prepare_flashinfo_h5.py`](../lartpc/flashmatch/prepare_flashinfo_h5.py)
+   [`prepare_flashinfo_h5.py`](../../lartpc/flashmatch/prepare_flashinfo_h5.py)
    (single-entry and `--batch` modes). Integrated into the `lantern_scripts/`
    pipeline as **Step 5**, with a standalone driver
-   [`run_flashinfo_wconfig.sh`](../lartpc/data_prep/training_data/run_flashinfo_wconfig.sh)
+   [`run_flashinfo_wconfig.sh`](../../lartpc/data_prep/training_data/run_flashinfo_wconfig.sh)
    for reprocessing datasets that already have merged H5s. See the
    "Flash auxiliary H5 schema" and "Production workflow" sections.
 2. ~~What is the status of the ground truth slice information for the spacepoints?~~ **Resolved
@@ -656,9 +658,9 @@ This will be important information needed for implementation of the data loader 
    `parent_trackid` to a primary, then merge `origin==1` primaries that
    share a nu_vertex. See the "Spacepoint Ground Truth Labels" section
    above. Implementation:
-   [`lartpc/data_prep/labels/slice_labels.py`](../lartpc/data_prep/labels/slice_labels.py).
+   [`lartpc/data_prep/labels/slice_labels.py`](../../lartpc/data_prep/labels/slice_labels.py).
    Visualization: `Slice (Truth Instance)` color mode in
-   [`tools/viz/visualize_lartpc_h5data.py`](../tools/viz/visualize_lartpc_h5data.py).
+   [`tools/viz/visualize_lartpc_h5data.py`](../../tools/viz/visualize_lartpc_h5data.py).
    Open follow-ups noted there: highest-edep trackid resolution (currently
    first non-(-1)), and adding `start_t` to `MCPGNode` for slice↔flash
    matching.

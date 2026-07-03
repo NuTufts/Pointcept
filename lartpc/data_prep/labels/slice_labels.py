@@ -218,7 +218,7 @@ def compute_slice_labels(mpt_group, sp_trackid, sp_hasmatch=None,
 
 # ----------------------------------------------------------------------------
 # Per-particle labels (Stage 3 particle segmenter — see
-# docs/LArFormer_particlesegment_stage.md §2a)
+# docs/reference/LArFormer_particlesegment_stage.md §2a)
 # ----------------------------------------------------------------------------
 
 # Per-PDG (by abs(pid)) minimum KE to count as a separate GT instance.

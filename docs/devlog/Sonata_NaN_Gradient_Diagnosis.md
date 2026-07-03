@@ -1,5 +1,7 @@
 # Sonata Training NaN/Inf Gradient Diagnosis and Fixes
 
+> **Status: RESOLVED (2026-03)** — NaN-gradient debugging trail for Sonata pre-training; fix landed, kept for history.
+
 **Date:** 2026-03-30
 **Config:** `configs/lartpc/sonata_pretrain/archive/pretrain-sonata-v6-extbnb.py`
 **Jobs:** `larsonata.v6.extbnb.373354.pax008` (epochs 1-7), `larsonata.v6.extbnb.resume.epoch7.382201.pax008` (resumed epoch 8, crashed)

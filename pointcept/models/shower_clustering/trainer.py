@@ -4,7 +4,7 @@ shower_clustering_collate for the train/val DataLoaders. The default trainer
 hard-codes point_collate_fn / collate_fn, which don't know how to batch our
 per-event lists of variable-size fragment indices and GT instance dicts.
 
-Phase 8 of the design (see pointcept/docs/shower_clustering_design.md).
+Phase 8 of the design (see pointcept/docs/reference/shower_clustering_design.md).
 """
 
 from functools import partial

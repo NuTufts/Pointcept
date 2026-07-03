@@ -9,7 +9,7 @@ size-stratified extras the evaluator doesn't compute.
 Sibling of [`../larformer_analysis/`](../larformer_analysis/) (the
 Stage-2 *slicer* analysis, same pattern). Model/architecture context:
 [`docs/LArFormer.md`](../../docs/LArFormer.md) (hub) and
-[`docs/LArFormer_particlesegment_stage.md`](../../docs/LArFormer_particlesegment_stage.md)
+[`docs/reference/LArFormer_particlesegment_stage.md`](../../docs/reference/LArFormer_particlesegment_stage.md)
 (Stage-3 design + as-built status).
 
 ## Pipeline
@@ -103,7 +103,7 @@ root attrs: run, subrun, event, name, model_tag, n_sp_post,
 - The pair metrics are **raw-model** (Hungarian-matched, full-mask IoU)
   — they are unaffected by the inference-side query dedup
   (`--dedup-iou-threshold`, see
-  [`docs/LArFormer_Stage3_TrainingStability.md`](../../docs/LArFormer_Stage3_TrainingStability.md)
+  [`docs/devlog/LArFormer_Stage3_TrainingStability.md`](../../docs/devlog/LArFormer_Stage3_TrainingStability.md)
   §7), which only changes the per-SP panoptic *assignment* keys. A
   post-dedup assigned-IoU metric is a planned follow-up (R8.5 there).
 - For metric definitions shared with training-time eval, the source of

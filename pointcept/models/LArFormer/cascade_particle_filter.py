@@ -4,7 +4,7 @@ particle segmenter consumes.
 The Stage-3 particle segmenter operates on a subset of the post-deghoster
 spacepoints: those whose membership in a model-predicted nu slice (with a
 **loosened** mask-prob threshold τ_loose) is high enough to be plausibly
-part of the nu interaction. See `docs/LArFormer_particlesegment_stage.md`
+part of the nu interaction. See `docs/reference/LArFormer_particlesegment_stage.md`
 §3 for the design rationale (loosened τ recovers under-clustered SPs that
 panoptic-argmax dropped).
 

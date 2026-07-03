@@ -132,7 +132,7 @@ def per_pair_iou(
 
 # ---------------------------------------------------------------------------
 # Query dedup — greedy mask-IoU NMS with merge tracking
-# (docs/LArFormer_Stage3_TrainingStability.md §7, recommendation R8)
+# (docs/devlog/LArFormer_Stage3_TrainingStability.md §7, recommendation R8)
 # ---------------------------------------------------------------------------
 
 def dedup_queries(

@@ -1,10 +1,12 @@
 # LArFormer Stage 3 — Training-Loss Stability Analysis & Remediation Plan
 
+> **Status: WORKLOG (2026-06)** — Stage-3 training-loss diagnosis and LR-schedule fixes; conclusions folded into the Stage-3 production recipe.
+
 Status doc for the rising/oscillating training losses observed in the Stage-3
 particle-segmenter runs (`wandb: pointcept-larformer-stage3`). Use the
 checkboxes in §4 to track implementation.
 
-- **Config under analysis:** [`configs/lartpc/larformer/stage3_particle/larformer-particle-v1-cached-ptv3crosslevel.py`](../configs/lartpc/larformer/stage3_particle/larformer-particle-v1-cached-ptv3crosslevel.py)
+- **Config under analysis:** [`configs/lartpc/larformer/stage3_particle/larformer-particle-v1-cached-ptv3crosslevel.py`](../../configs/lartpc/larformer/stage3_particle/larformer-particle-v1-cached-ptv3crosslevel.py)
 - **Runs:** (brown) base_lr=1e-4 flat; (blue) resume with `reset_lr=5e-5`;
   (purple) same checkpoint, `reset_optimizer=True`.
 - **Symptom:** `loss_mask_primary`, `loss_dice_primary`, `loss_cls`, and the
@@ -32,7 +34,7 @@ The config sets `_IMPORTANCE_BUDGET=0.75` with `HARD_NEG_FRACTION_OF_IMPORT=0.5`
 i.e. per matched pair, of ~4096 sampled negatives: ~1536 are *boundary-halo*
 points (smallest |σ−0.5|), ~1536 are the **most-confident false positives**
 (topk σ over a 3×-oversampled bg pool), ~1024 random
-([`_importance_sample_negatives`](../pointcept/models/LArFormer/losses.py)).
+([`_importance_sample_negatives`](../../pointcept/models/LArFormer/losses.py)).
 
 Early in training all logits are small, so even "hard" negatives cost ~0.7 nats.
 As the model sharpens, the hard-neg branch reliably finds the residual handful
@@ -61,7 +63,7 @@ schedule changes at epoch 3 — it's the crossover where loss growth on residual
 The matcher cost is mask-dominated (`cost_mask=5, cost_dice=5` vs
 `cost_class=2`) and is evaluated on a **freshly randomized** balanced sample of
 `num_sample_points=8192` tokens every forward
-([`LArFormerLoss.forward`](../pointcept/models/LArFormer/losses.py), the
+([`LArFormerLoss.forward`](../../pointcept/models/LArFormer/losses.py), the
 `_balanced_point_sample` call before `self.matcher(...)`). With 32 queries,
 ~3 GT instances, and queries still partially overlapping the same particle,
 near-tied costs flip assignment iter-to-iter; every flip spikes cls/mask/origin
@@ -71,7 +73,7 @@ gradients of this kind.
 
 **Smoking gun in the existing plots:** the denoising-path losses, which use
 *direct GT assignment with no Hungarian matching*
-([`compute_dn_loss`](../pointcept/models/LArFormer/losses.py)), fall smoothly
+([`compute_dn_loss`](../../pointcept/models/LArFormer/losses.py)), fall smoothly
 the whole run (`loss_dn_cls` 1.0→~0.3, `loss_dn_origin` likewise) while the
 Hungarian-matched `loss_cls` bottoms at ~3.4 and rises to ~3.9. Same heads,
 same decoder weights, same data — only the assignment mechanism differs.
@@ -80,7 +82,7 @@ same decoder weights, same data — only the assignment mechanism differs.
 
 Post-warmup the LR is held flat. **Additionally: the `FlatWithDecayLR` plateau
 mode was inert in all three runs.** Its `step_epoch()` is only called by the
-[`LREpochScheduler`](../pointcept/engines/hooks/misc.py) hook, which is **not
+[`LREpochScheduler`](../../pointcept/engines/hooks/misc.py) hook, which is **not
 in the config's `hooks` list** — nothing else calls `step_epoch` (verified by
 grep over `engines/` and `models/LArFormer/`). So the configured
 plateau/gamma/patience knobs did nothing; `params/lr` stayed exactly flat at
@@ -217,7 +219,7 @@ matcher-sanitization warnings.
   `total_steps = len(train_loader) × eval_epoch // gradient_accumulation_steps`
   (≈ 25 625 iters/epoch × 20 epochs ≈ 512.5k for this config).
 - `CheckpointLoader(extend_scheduler=True)`
-  ([hooks/misc.py](../pointcept/engines/hooks/misc.py)) already supports a
+  ([hooks/misc.py](../../pointcept/engines/hooks/misc.py)) already supports a
   mid-run scheduler **swap**: on resume it does *not* load the saved scheduler
   state; it builds the scheduler from the *new* config, preserves the new
   scheduler's `initial_lr`/`max_lr` against the optimizer-state load, and
@@ -233,7 +235,7 @@ decay from 5e-5. We want the cosine to *begin* at the checkpoint.
 
 ### 5.3 New scheduler: `DelayedCosineLR` (~20 lines)
 
-Add to [`pointcept/utils/scheduler.py`](../pointcept/utils/scheduler.py),
+Add to [`pointcept/utils/scheduler.py`](../../pointcept/utils/scheduler.py),
 implemented as a `LambdaLR` (pure function of step → safe under the
 fast-forward, clean `state_dict` round-trip):
 
@@ -346,7 +348,7 @@ deltas only:
 `InformationWriter.after_step` logs **every 0-d tensor** in the model's
 training output dict to wandb as `train_batch/<key>`; the model's per-event
 aggregator prefixes loss-dict keys with `loss_`
-([model.py](../pointcept/models/LArFormer/model.py), training-branch
+([model.py](../../pointcept/models/LArFormer/model.py), training-branch
 aggregation). So diagnostics are added purely by inserting extra scalar
 entries into the dict `LArFormerLoss.forward` returns — no trainer or hook
 changes needed (except the grad-norm item, §6.3-D).

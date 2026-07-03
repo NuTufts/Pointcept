@@ -209,7 +209,7 @@ class LArFormerDataset(DefaultDataset):
             )
         # S3.0: gt_source="particle" wires lartpc.data_prep.labels.slice_labels.
         # compute_particle_labels into the per-event GT pipeline. See
-        # `_gt_from_particles` and `docs/LArFormer_particlesegment_stage.md`.
+        # `_gt_from_particles` and `docs/reference/LArFormer_particlesegment_stage.md`.
         if shower_trunk_label_source not in ("truth", "fragment", "union"):
             raise ValueError(
                 f"shower_trunk_label_source must be 'truth' / 'fragment' "

@@ -24,6 +24,6 @@ Earlier pre-training generations, kept for provenance:
   `logspace-resume` config (data-presentation bug).
 - `pretrain-sonata-v1m1-lartpc-v6-mup.py`, `-mup-proxy.py` — μP (maximal update
   parameterization) study; inherit from `./pretrain-sonata-v1m1-lartpc-v6.py`, so all
-  three must stay in this folder together. See `docs/muP_for_Sonata.md`.
+  three must stay in this folder together. See `docs/reference/muP_for_Sonata.md`.
 - `pretrain-sonata-v6-extbnb.py`, `pretrain-sonata-v8-extbnb-mc-combined-larmatch.py`
   — extbnb-dataset experiments before/after the production v7.

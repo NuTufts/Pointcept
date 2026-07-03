@@ -1,5 +1,7 @@
 # MinkowskiEngine Migration Guide
 
+> **Status: REFERENCE** — Sparse-convolution backend migration notes.
+
 This document describes what would be needed to replace spconv with MinkowskiEngine for CPU inference support.
 
 ## Background
@@ -296,7 +298,7 @@ Use the following prompt to start the MinkowskiEngine migration project:
 
 ```
 I want to implement CPU inference support for the PT-v3 model by replacing spconv
-with MinkowskiEngine. Please read docs/MinkowskiEngine_Migration_Guide.md for the
+with MinkowskiEngine. Please read docs/reference/MinkowskiEngine_Migration_Guide.md for the
 research and planning that was done previously.
 
 The goal is to create a backend abstraction layer that allows switching between

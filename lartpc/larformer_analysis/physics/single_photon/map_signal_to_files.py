@@ -8,7 +8,7 @@ produced, so fileid no longer points to the right file (verified: fileid=0 event
 are run 16934, but filelist line 0 is run 14121). We therefore match on the robust
 identifier (run, subrun, event) using the official files' `larlite_id_tree`.
 
-KEY FACTS this relies on (see docs/Gen2_Flat_Ntuple_Spec.md):
+KEY FACTS this relies on (see docs/reference/Gen2_Flat_Ntuple_Spec.md):
   - The on-disk path encodes the run: run R -> zero-pad to 8 digits -> split into
     four 2-digit dirs, e.g. run 16934 -> 00016934 -> <data_root>/00/01/69/34/ .
     All files for a run live in that one directory.

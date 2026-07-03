@@ -2,7 +2,7 @@
 Shower-Clustering Evaluator Hook
 
 Validation metrics for the Mask2Former-style shower clustering model
-(Phase 8.b of the design — see pointcept/docs/shower_clustering_design.md).
+(Phase 8.b of the design — see pointcept/docs/reference/shower_clustering_design.md).
 
 Computes per-epoch (or per-N-step) val metrics:
 

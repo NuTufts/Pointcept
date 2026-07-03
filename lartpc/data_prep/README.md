@@ -42,4 +42,4 @@ Data QA: `validate_hdf5_files.py`, `audit_particle_labels.py`, `test_particle_la
   LANTERN step). Superseded by `training_data/`. The python scripts here are older
   copies of the ones now living in `training_data/`.
 - `shower_origin/` — shower-origin dataset production (exploratory project; see
-  `docs/shower_origin_spec.md`).
+  `docs/reference/shower_origin_spec.md`).

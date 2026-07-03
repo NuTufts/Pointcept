@@ -7,7 +7,7 @@ NO model code is modified. This script re-runs the exact full-cascade forward
 instead of writing a stage3pred H5, serializes the decision tensors to one .npz
 per event.
 
-What is captured per event (see the decision chain in docs/LArFormer_Reproducibility.md):
+What is captured per event (see the decision chain in docs/reference/LArFormer_Reproducibility.md):
 
   Stage 1 (deghoster) — input is IDENTICAL across GPUs (deterministic loader),
     so this is the CLEAN, un-confounded measurement of pure GPU divergence:

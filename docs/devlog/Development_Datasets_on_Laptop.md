@@ -1,5 +1,7 @@
 # Development Datasets on Laptop
 
+> **Status: WORKLOG (2026-06)** — Dataset locations on a personal development laptop; not cluster-relevant.
+
 This is a list of datasets on the local machine twongjrad@pop-os used for developing LArFormer training tasks.
 
 ## mergedh5 datasets

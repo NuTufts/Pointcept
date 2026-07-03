@@ -1,5 +1,7 @@
 # Submitting & Monitoring SLURM Jobs on the Tufts Cluster
 
+> **Status: REFERENCE** — Practical Tufts cluster / SLURM / container guide.
+
 A practical guide for **running batch jobs on Tufts**, written so an agent (or a
 new person) can submit a job array, watch it, and collect results without guessing
 partitions, modules, or conventions. Grounded in the submit scripts already in

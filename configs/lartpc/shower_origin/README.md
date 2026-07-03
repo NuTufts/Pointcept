@@ -7,8 +7,8 @@ informed the LArFormer design; not part of the production cascade.
 All configs are in `archive/`:
 
 - `shower-origin-sonata-v1m1-v3.py` and `-p1cmp075` / `-reco-fragments` variants —
-  successive shower-origin trainings (see `docs/shower_origin_spec.md`).
+  successive shower-origin trainings (see `docs/reference/shower_origin_spec.md`).
 - `shower-cluster-sonata-v1.py`, `-h200.py` — shower-clustering trainings
-  (see `docs/shower_clustering_design.md`).
+  (see `docs/reference/shower_clustering_design.md`).
 
 Related analysis: `lartpc/larformer_analysis/archive/shower_origin_reco_scripts/`.

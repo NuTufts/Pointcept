@@ -53,7 +53,8 @@ cd libs/pointgroup_ops && python setup.py install && cd ../..
   - `engines/` - Training/testing engines and hooks
   - `utils/` - Utilities (config, logging, registry)
 - `configs/` - Configuration files organized by dataset (lartpc/, scannet/, s3dis/, etc.)
-- `lartpc/` - LArTPC-specific work: `data_prep/` (training-data + official-uboone HDF5 pipelines), `larformer_analysis/` (stage/physics performance analysis)
+- `lartpc/` - LArTPC-specific work: `data_prep/` (training-data + official-uboone HDF5 pipelines), `larformer_reco/` (nu-interaction reconstruction), `larformer_analysis/` (stage/physics performance analysis), `flashmatch/` + `viz/` (shared libraries)
+- `docs/` - `LArFormer.md` (project hub), `reference/` (maintained specs), `devlog/` (dated work logs)
 - `tools/` - Entry points (train.py, test.py)
 - `scripts/` - Shell scripts for training/testing
 - `libs/` - Custom CUDA extensions (pointops, pointgroup_ops)
@@ -140,4 +141,4 @@ The code in this repository is assumed to be run within a singularity/apptainer 
 
 ## Data set Information
 
-- MicroBooNE datasets on the Tufts cluster are described in `docs/MicroBooNE_Datasets_on_Tufts.md`
+- MicroBooNE datasets on the Tufts cluster are described in `docs/reference/MicroBooNE_Datasets_on_Tufts.md`

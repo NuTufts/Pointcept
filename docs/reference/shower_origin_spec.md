@@ -1,5 +1,7 @@
 # Shower Origin Model — Consolidated Specification
 
+> **Status: REFERENCE** — Shower-origin prediction spec (exploratory project; see also devlog/shower_origin_integrating_into_event_selection.md).
+
 Predicting the 3D origin point and inside/outside-TPC classification of electromagnetic (photon) showers in MicroBooNE LArTPC data.
 
 ---
@@ -840,7 +842,7 @@ The model operates in normalized coordinates. To convert predicted distances bac
 | `tools/viz_archive/visualize_shower_origin_inference.py` | Interactive inference visualization |
 | `tools/viz_archive/visualize_shower_origin_reco.py` | Reco HDF5 3D viewer |
 | `tools/viz_archive/vis_shower_fragments.py` | Raw HDF5 3D viewer |
-| `docs/LArTPC_HDF5_Data_Format.md` | HDF5 schema documentation |
+| `docs/reference/LArTPC_HDF5_Data_Format.md` | HDF5 schema documentation |
 | `docs/shower_fragment_origin_spec.md` | Shower fragment origin implementation specification |
 
 ---

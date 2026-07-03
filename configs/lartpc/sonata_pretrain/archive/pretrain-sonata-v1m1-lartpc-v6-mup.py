@@ -10,7 +10,7 @@ This config extends pretrain-sonata-v1m1-lartpc-v6.py with muP scaling:
 The benefit of muP is that hyperparameters tuned on a narrow proxy model
 (e.g., 4x narrower) transfer directly to the full-width model.
 
-See docs/muP_for_Sonata.md for full explanation.
+See docs/reference/muP_for_Sonata.md for full explanation.
 """
 
 _base_ = ["./pretrain-sonata-v1m1-lartpc-v6.py"]

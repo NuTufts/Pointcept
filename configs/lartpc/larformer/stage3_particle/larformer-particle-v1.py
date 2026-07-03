@@ -6,7 +6,7 @@ the nu-candidate spacepoints into per-particle masks.
 
 This config is BOTH the S3.2 benchmark target (loaded by
 `tools/larformer/benchmark_larformer_s3_cascade.py`) AND the eventual S3.3
-training config. See `docs/LArFormer_particlesegment_stage.md` for the
+training config. See `docs/reference/LArFormer_particlesegment_stage.md` for the
 design.
 
 Stage 2 → Stage 3 boundary (set in the outer CascadedParticleSegmenter):

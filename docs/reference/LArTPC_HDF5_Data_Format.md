@@ -1,5 +1,7 @@
 # LArTPC HDF5 Data Format Documentation
 
+> **Status: REFERENCE** — HDF5 schema for spacepoint training data.
+
 This document describes the structure of HDF5 files produced by `SimChTripletLabelMaker` from the `ubdl/larflow` package. These files contain 3D space points (triplets) and 2D wire plane images for training point cloud neural networks on Liquid Argon Time Projection Chamber (LArTPC) data.
 
 ## File Structure Overview
@@ -459,5 +461,5 @@ These HDF5 files are produced by `SimChTripletLabelMaker` from the `ubdl/larflow
 
 ## Related Documentation
 
-- `docs/LArTPC_Dataset_Guide.md` - Guide to using LArTPCDataset in Pointcept
+- `docs/reference/LArTPC_Dataset_Guide.md` - Guide to using LArTPCDataset in Pointcept
 - `pointcept/datasets/lartpc.py` - Dataset class implementation

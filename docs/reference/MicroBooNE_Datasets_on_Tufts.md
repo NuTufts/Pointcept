@@ -1,5 +1,7 @@
 # MicroBooNE Datasets on Tufts
 
+> **Status: REFERENCE** — MicroBooNE data locations on the Tufts cluster.
+
 Data sets on the Tufts cluster are used to study the effectiveness of the models to analyze MicroBooNE data.
 
 We split them into different named datasets, corresponding to different detector conditions and simulation configurations.

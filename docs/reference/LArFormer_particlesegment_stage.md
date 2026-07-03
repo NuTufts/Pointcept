@@ -1,12 +1,14 @@
 # LArFormer Stage 3 — Particle segmenter
 
+> **Status: REFERENCE** — Stage-3 particle-segmenter spec + as-built record.
+
 **Status:** IMPLEMENTED and in production training (2026-06-11). §§1–11 are
 the design plan (decisions there held up well); **§13 is the as-built
 record** — start there for what actually exists. The active training
 campaign, its loss-stability analysis, the per-batch diagnostics, and the
 inference-side query dedup live in
-[LArFormer_Stage3_TrainingStability.md](LArFormer_Stage3_TrainingStability.md).
-Project hub: [LArFormer.md](LArFormer.md) §0.
+[LArFormer_Stage3_TrainingStability.md](../devlog/LArFormer_Stage3_TrainingStability.md).
+Project hub: [LArFormer.md](../LArFormer.md) §0.
 
 **Scope:** instance segmentation of the spacepoints inside a (model-selected) neutrino slice into individual particles. Same architecture pattern as the Stage-2 event slicer; new decoder / refiner / head weights; GT comes from per-particle truth instead of per-slice truth.
 
@@ -293,7 +295,7 @@ New tool: `tools/run_full_cascade_inference.py` runs Stages 1 → 2 → 3 end-to
 - Per-event topology classification
 - Per-particle metrics
 
-Reuses the analyzer-side pipeline architecture from [`lartpc/larformer_analysis/slicer_eval/`](../lartpc/larformer_analysis/slicer_eval/) — Stage 3 outputs a per-event H5, an aggregator builds an event_summary.h5, plots produce per-category headlines.
+Reuses the analyzer-side pipeline architecture from [`lartpc/larformer_analysis/slicer_eval/`](../../lartpc/larformer_analysis/slicer_eval/) — Stage 3 outputs a per-event H5, an aggregator builds an event_summary.h5, plots produce per-category headlines.
 
 ---
 
@@ -351,13 +353,13 @@ Most of the design choices are now decided. What's still open:
 
 ## 11. References
 
-- Stage 2 spec: [`LArFormer.md`](LArFormer.md) §6 (cascade), §7 (dataset)
-- Stage 2 mask-denoising: [`LArFormer.md`](LArFormer.md) §18
-- Stage 2 mixed query selection: [`LArFormer.md`](LArFormer.md) §17
-- Existing `compute_slice_labels` (which `compute_particle_labels` will extend): [`lartpc/data_prep/labels/slice_labels.py`](../lartpc/data_prep/labels/slice_labels.py)
-- Analyzer-side category definitions: [`lartpc/larformer_analysis/slicer_eval/lib/categorize.py`](../lartpc/larformer_analysis/slicer_eval/lib/categorize.py)
-- Per-event analysis pattern (template for S3.8): [`lartpc/larformer_analysis/slicer_eval/`](../lartpc/larformer_analysis/slicer_eval/)
-- Stage 2 cascade wrapper (template for `CascadedParticleSegmenter`): [`pointcept/models/LArFormer/cascaded.py`](../pointcept/models/LArFormer/cascaded.py)
+- Stage 2 spec: [`LArFormer.md`](../LArFormer.md) §6 (cascade), §7 (dataset)
+- Stage 2 mask-denoising: [`LArFormer.md`](../LArFormer.md) §18
+- Stage 2 mixed query selection: [`LArFormer.md`](../LArFormer.md) §17
+- Existing `compute_slice_labels` (which `compute_particle_labels` will extend): [`lartpc/data_prep/labels/slice_labels.py`](../../lartpc/data_prep/labels/slice_labels.py)
+- Analyzer-side category definitions: [`lartpc/larformer_analysis/slicer_eval/lib/categorize.py`](../../lartpc/larformer_analysis/slicer_eval/lib/categorize.py)
+- Per-event analysis pattern (template for S3.8): [`lartpc/larformer_analysis/slicer_eval/`](../../lartpc/larformer_analysis/slicer_eval/)
+- Stage 2 cascade wrapper (template for `CascadedParticleSegmenter`): [`pointcept/models/LArFormer/cascaded.py`](../../pointcept/models/LArFormer/cascaded.py)
 
 ---
 
@@ -376,7 +378,7 @@ Most of the design choices are now decided. What's still open:
   - Recenter pos_emb input to slice centroid for v1 (§1f); backbone features already carry absolute-position context, so pos_emb's job is to add slice-internal "where am I" information orthogonal to that.
 - **Rev 4 (2026-06-03)**: implementation status — S3.0 through S3.3+S3.6 plumbing landed. See §13 for the as-built design.
 - **Rev 5 (2026-06-08)**: S3.8 inference dump + visualization landed (§13.10). Shared per-event extractor module (`pointcept/models/LArFormer/inference.py`) ensures the slicer's output schema is byte-identical between standalone slicer inference and the slicer half of a full-cascade Stage-3 run. The Stage-3 visualizer (`tools/viz/visualize_stage3_larformer_from_cached.py`) gained a prediction overlay panel with byte-identical color matching to the GT panel, camera sync, side-by-side layout toggle, particle-symbol legend labels, and rich hover text including per-SP query id + full per-class probability distribution.
-- **Rev 6 (2026-06-11)**: status flipped to "implemented / in production training". Added §13.11 (training campaign + loss-stability tracker + inference query dedup — details in [LArFormer_Stage3_TrainingStability.md](LArFormer_Stage3_TrainingStability.md)), §13.12 (validation analysis pipeline), §13.13 (production dataprep workflow). Cross-links to the LArFormer.md §0 project hub.
+- **Rev 6 (2026-06-11)**: status flipped to "implemented / in production training". Added §13.11 (training campaign + loss-stability tracker + inference query dedup — details in [LArFormer_Stage3_TrainingStability.md](../devlog/LArFormer_Stage3_TrainingStability.md)), §13.12 (validation analysis pipeline), §13.13 (production dataprep workflow). Cross-links to the LArFormer.md §0 project hub.
 
 ---
 
@@ -387,7 +389,7 @@ files involved, and any deltas from the original plan.
 
 ### 13.1 S3.0 — Particle GT extraction ✅
 
-- [`lartpc/data_prep/labels/slice_labels.py`](../lartpc/data_prep/labels/slice_labels.py):
+- [`lartpc/data_prep/labels/slice_labels.py`](../../lartpc/data_prep/labels/slice_labels.py):
   `compute_particle_labels(mpt_group, sp_trackid, sp_hasmatch, ...)`
   with constants `DEFAULT_PARTICLE_KE_THRESH_MeV = {11: 10, 22: 10,
   13: 30, 211: 30, 2112: 60, 2212: 60, 321: 60}`,
@@ -402,9 +404,9 @@ files involved, and any deltas from the original plan.
   `primary_start_pos_sce` alongside the raw `primary_start_pos`.
   Falls back to the raw start_pos when the H5 lacks the SCE field, so
   older files still load.
-- Audit: [`lartpc/data_prep/validation/audit_particle_labels.py`](../lartpc/data_prep/validation/audit_particle_labels.py).
+- Audit: [`lartpc/data_prep/validation/audit_particle_labels.py`](../../lartpc/data_prep/validation/audit_particle_labels.py).
 - Dataset plug: `gt_source="particle"` in
-  [`pointcept/datasets/larformer.py`](../pointcept/datasets/larformer.py)
+  [`pointcept/datasets/larformer.py`](../../pointcept/datasets/larformer.py)
   (method `_gt_from_particles`). Knobs:
   `particle_class_map` (defaults to `{11: 0, 22: 1, 13: 2, 211: 3,
   2212: 4}` with everything else → class 5 = `other_track`),
@@ -432,14 +434,14 @@ files involved, and any deltas from the original plan.
 
 ### 13.2 S3.1 — Model-side cascade ✅
 
-- [`pointcept/models/LArFormer/cascaded_particle.py`](../pointcept/models/LArFormer/cascaded_particle.py):
+- [`pointcept/models/LArFormer/cascaded_particle.py`](../../pointcept/models/LArFormer/cascaded_particle.py):
   `CascadedParticleSegmenter` wraps `CascadedSlicer` + a Stage-3
   `LArFormer`. Cascade composition (per §1b / §3):
 
   1. Run frozen `cascaded_slicer` in eval/no-grad → slicer per-event
      predictions + `filtered_batch` (post-deghoster).
   2. `build_nu_keep_mask(...)` (in
-     [`cascade_particle_filter.py`](../pointcept/models/LArFormer/cascade_particle_filter.py))
+     [`cascade_particle_filter.py`](../../pointcept/models/LArFormer/cascade_particle_filter.py))
      OR-reduces per-SP nu mask probabilities over the slicer's nu
      queries and thresholds at `τ_loose`.
   3. `filter_batch_for_particle_segmenter(...)` slices per-SP fields,
@@ -468,7 +470,7 @@ files involved, and any deltas from the original plan.
 
 ### 13.3 S3.2 — Benchmark + caching decision ✅
 
-- [`tools/larformer/benchmark_larformer_s3_cascade.py`](../tools/larformer/benchmark_larformer_s3_cascade.py):
+- [`tools/larformer/benchmark_larformer_s3_cascade.py`](../../tools/larformer/benchmark_larformer_s3_cascade.py):
   config-driven benchmark with two modes:
   - **full**: end-to-end `CascadedParticleSegmenter` per iter.
   - **cached**: precompute Stage 1+2 once per sample, time only
@@ -490,7 +492,7 @@ files involved, and any deltas from the original plan.
 ### 13.4 S3.3 — Pure-cascade training (from cache) ✅
 
 The **cache** is the Stage-3-only training format. Schema (per
-[`tools/larformer/build_stage12_cache_event.py`](../tools/larformer/build_stage12_cache_event.py)
+[`tools/larformer/build_stage12_cache_event.py`](../../tools/larformer/build_stage12_cache_event.py)
 format_version=2):
 
 ```
@@ -547,11 +549,11 @@ delta-pass), so values in practice are {0, 2, 4, 5, 6, 7}.
 
 **Build pipeline**:
 
-- [`tools/larformer/build_stage12_cache_event.py`](../tools/larformer/build_stage12_cache_event.py):
+- [`tools/larformer/build_stage12_cache_event.py`](../../tools/larformer/build_stage12_cache_event.py):
   single-event entry. CLI takes config + inputlist + sample_idx +
   output path. The importable `build_cache_event(...)` is what shard
   drivers call.
-- [`tools/larformer/build_stage12_cache_shard.py`](../tools/larformer/build_stage12_cache_shard.py):
+- [`tools/larformer/build_stage12_cache_shard.py`](../../tools/larformer/build_stage12_cache_shard.py):
   SLURM-array driver. Stride layout `indices = range(shard_id, N,
   n_shards)`. Output path
   `<cache_root>/<split>/<idx//1000>/<idx//100>/<basename>__event<idx>.h5`
@@ -559,13 +561,13 @@ delta-pass), so values in practice are {0, 2, 4, 5, 6, 7}.
   — skips events that already have an `.h5` or a `.skipped` marker.
   Failed-empty events get a `.skipped` marker rather than no file, so
   re-runs don't keep retrying.
-- [`tools/viz/visualize_stage12_cache.py`](../tools/viz/visualize_stage12_cache.py):
+- [`tools/viz/visualize_stage12_cache.py`](../../tools/viz/visualize_stage12_cache.py):
   3-panel Plotly HTML viewer (cached SPs by `source_mask`, by particle
   GT instance, by `stage2_nu_mask_prob` with false-negative rings).
 
 **Cache-reader dataset**:
 
-[`pointcept/datasets/larformer_stage12_cache.py`](../pointcept/datasets/larformer_stage12_cache.py):
+[`pointcept/datasets/larformer_stage12_cache.py`](../../pointcept/datasets/larformer_stage12_cache.py):
 `LArFormerStage12CacheDataset` reads the cache and emits dicts in the
 same shape as `LArFormerDataset` (so `larformer_collate` and the
 existing trainer plumbing work unchanged). Key knobs:
@@ -593,11 +595,11 @@ existing trainer plumbing work unchanged). Key knobs:
 
 **Trainer**:
 
-- [`pointcept/models/LArFormer/trainer.py`](../pointcept/models/LArFormer/trainer.py):
+- [`pointcept/models/LArFormer/trainer.py`](../../pointcept/models/LArFormer/trainer.py):
   `LArFormerTrainer` already drove `larformer_collate`. Added
   `build_train_dn_loader()` + `_dual_run_step()` (§13.6).
 
-- [`pointcept/models/LArFormer/particle_evaluator.py`](../pointcept/models/LArFormer/particle_evaluator.py):
+- [`pointcept/models/LArFormer/particle_evaluator.py`](../../pointcept/models/LArFormer/particle_evaluator.py):
   `LArFormerParticleEvaluator` subclasses
   `LArFormerSlicerEvaluator`. Defaults to the 7-class taxonomy and
   `best_metric = "mask_iou_mean"`. Drops `nu_recall` / `nu_purity` /
@@ -618,7 +620,7 @@ existing trainer plumbing work unchanged). Key knobs:
 
 **Production config**:
 
-[`configs/lartpc/larformer/stage3_particle/archive/larformer-particle-v1-cached.py`](../configs/lartpc/larformer/stage3_particle/archive/larformer-particle-v1-cached.py):
+[`configs/lartpc/larformer/stage3_particle/archive/larformer-particle-v1-cached.py`](../../configs/lartpc/larformer/stage3_particle/archive/larformer-particle-v1-cached.py):
 
 - `model = dict(type="LArFormer", backbone_weight=sonata_pretrain, ...)`
   — standalone particle segmenter (no cascade wrapper at train time).
@@ -991,7 +993,7 @@ panoptic-slicer diagnostics on the same events.
 ### 13.11 Production training campaign + loss-stability work (2026-06)
 
 Documented separately in
-[LArFormer_Stage3_TrainingStability.md](LArFormer_Stage3_TrainingStability.md)
+[LArFormer_Stage3_TrainingStability.md](../devlog/LArFormer_Stage3_TrainingStability.md)
 — kept there because it's an active tracker, not settled design. It
 covers:
 
@@ -1010,7 +1012,7 @@ covers:
   π-classifying query co-covering one true track and fragmenting it
   under the panoptic argmax — and the **inference-side query dedup**
   that fixes it: `dedup_queries` in
-  [`pointcept/models/LArFormer/inference.py`](../pointcept/models/LArFormer/inference.py),
+  [`pointcept/models/LArFormer/inference.py`](../../pointcept/models/LArFormer/inference.py),
   exposed as `--dedup-iou-threshold` (default 0.6) on
   `tools/larformer/run_larformer_stage3_inference.py`, with merge tracking under
   new `stage3_queries/dedup_*` H5 keys (new keys only — the §13.10
@@ -1020,7 +1022,7 @@ covers:
 
 ### 13.12 Validation analysis pipeline ✅
 
-[`lartpc/larformer_analysis/particle_eval/`](../lartpc/larformer_analysis/particle_eval/README.md)
+[`lartpc/larformer_analysis/particle_eval/`](../../lartpc/larformer_analysis/particle_eval/README.md)
 — split-level efficiency/purity validation on SLURM: per-event
 distillation of `stage3pred_*.h5` into per-pair records
 (`analyze_event.py`), aggregation into the
@@ -1033,7 +1035,7 @@ output schema and usage.
 
 ### 13.13 Production data-prep / inference workflow ✅
 
-[`lartpc/data_prep/uboone_official/LARFORMER_DATAPREP.md`](../lartpc/data_prep/uboone_official/LARFORMER_DATAPREP.md)
+[`lartpc/data_prep/uboone_official/LARFORMER_DATAPREP.md`](../../lartpc/data_prep/uboone_official/LARFORMER_DATAPREP.md)
 — the config-driven two-stage pipeline that takes raw
 `merged_dlreco.root` (sim or data) to full-cascade `stage3pred_*.h5`
 without LArMatch/SSNet/lantern: Stage A conversion via

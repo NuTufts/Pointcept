@@ -1,6 +1,6 @@
 """Shower-clustering Mask2Former model components.
 
-See pointcept/docs/shower_clustering_design.md.
+See pointcept/docs/reference/shower_clustering_design.md.
 """
 
 from .tokenizer import (

@@ -11,7 +11,7 @@ straight from the `SimChTripletLabelMaker` triplet proposals.
 
 See the model design in [`../../docs/LArFormer.md`](../../docs/LArFormer.md)
 (§0 is the project hub) and
-[`../../docs/LArFormer_particlesegment_stage.md`](../../docs/LArFormer_particlesegment_stage.md).
+[`../../docs/reference/LArFormer_particlesegment_stage.md`](../../docs/reference/LArFormer_particlesegment_stage.md).
 For split-level validation metrics on the resulting `stage3pred_*.h5`
 files, see
 [`../larformer_particle_analysis/README.md`](../larformer_particle_analysis/README.md).
@@ -72,7 +72,7 @@ queries — characteristically a μ + π pair hedging one ambiguous track —
 are merged before the per-SP panoptic assignment, with the absorbed
 query's class hypothesis recorded under `stage3_queries/dedup_*` and the
 pre-dedup assignment preserved in `stage3/pred_query_nodedup`. Design +
-schema: [`../../docs/LArFormer_Stage3_TrainingStability.md`](../../docs/LArFormer_Stage3_TrainingStability.md) §7.
+schema: [`../../docs/devlog/LArFormer_Stage3_TrainingStability.md`](../../docs/devlog/LArFormer_Stage3_TrainingStability.md) §7.
 
 ### Visualizing the output
 
@@ -98,7 +98,7 @@ Runs in the pointcept container, CPU-only (no GPU needed). Built on the same
 
 **Pure-inference, GT-less.** The whole cascade runs with `gt_source="deghost"`
 + `--no-gt`. The frozen 3-class slicer cannot consume 7-class particle GT in
-its eval matcher (CUDA-asserts — see `docs/LArFormer_particlesegment_stage.md`
+its eval matcher (CUDA-asserts — see `docs/reference/LArFormer_particlesegment_stage.md`
 §13.2). GT-matched evaluation metrics are a separate concern: for those, use
 the **cached** inference path (`tools/larformer/build_stage12_cache_shard.py` →
 `run_larformer_stage3_inference.py --input-mode cached`), which has the

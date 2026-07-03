@@ -1,6 +1,8 @@
 # Integrating Inferfence Output of the Shower Origin Model into a MicroBooNE Photon Selection
 
-For background information about the overall Shower Origin project, see the specfication file in `docs/shower_origin_spec.md.
+> **Status: WORKLOG (2026-04)** — Notes on integrating shower-origin predictions into event selection; see reference/shower_origin_spec.md for the maintained spec.
+
+For background information about the overall Shower Origin project, see the specfication file in `docs/reference/shower_origin_spec.md.
 
 The shower origin model when trained on reco clusters seems to perform decently well, with 80% classification accuracy and a median distance between the predicted origin and ground truth origin of ~1.5 cm.
 

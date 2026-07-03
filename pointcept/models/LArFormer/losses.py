@@ -884,7 +884,7 @@ class LArFormerLoss(nn.Module):
         #       decoder stack (init vs final) — within-iteration proxy for
         #       assignment stability.
         #
-        # See docs/LArFormer_Stage3_TrainingStability.md §6. The model
+        # See docs/devlog/LArFormer_Stage3_TrainingStability.md §6. The model
         # prefixes these with "loss_", so they log as
         # train_batch/loss_diag_* (and, via the evaluator's eval_loss
         # accumulation, val/loss_diag_*).

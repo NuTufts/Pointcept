@@ -1,6 +1,13 @@
 # Repository Reorganization Plan
 
-**Status:** PLAN — drafted 2026-07-03 on branch `nutufts_larformer_reorganization`.
+**Status:** EXECUTED 2026-07-03 on branch `nutufts_larformer_reorganization`
+(phases 1–6; commits 19128b3, 8514c84, 00e8c3a, 8fb5ca7, 74b1ec6, and the docs
+restructure). Kept as the record of the layout and its rationale. Deviations from
+the plan as drafted: `trajfit/` stayed flat (no kinematics/shower subfolders) and
+kept `mcs_rdp`/`run_elpigraph` (production dependencies); the eval-plotting split
+and reco `config.py` were deferred; shower-origin docs were cross-linked rather
+than merged; `lartpc_data_prep/inputlists/` (untracked training lists referenced
+by external checkouts) stayed put.
 **Scope:** configs, data prep, reconstruction post-processing, analysis, visualization, docs.
 **Non-goals:** no changes to model code in `pointcept/models/LArFormer/` (already well-structured); no algorithmic rewrites — moves, import fixes, and de-duplication only.
 

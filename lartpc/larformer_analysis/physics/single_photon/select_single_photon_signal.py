@@ -21,7 +21,7 @@ photon of any energy, EDep anywhere).
 NOTE: the ntuple is already pre-filtered to the Wire-Cell fiducial volume
 (>3 cm from the SCE-corrected detector edge), which is a SUBSET of the TPC box.
 So this count is a lower bound for the full TPC; the box cut here is mostly a
-sanity/explicitness cut. See docs/Gen2_Flat_Ntuple_Spec.md.
+sanity/explicitness cut. See docs/reference/Gen2_Flat_Ntuple_Spec.md.
 
 Outputs (into --outdir):
   signal_events.csv   one row per signal event (run,subrun,event,fileid,...)

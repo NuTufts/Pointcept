@@ -1,5 +1,7 @@
 # Shower Clustering Model — Design and Implementation Plan
 
+> **Status: REFERENCE** — Mask2Former shower-clustering design (predecessor generalized by LArFormer).
+
 **Status:** Phase 1 in progress. First diagnostics on 500 NC pi0 training events done 2026-05-04.
 **Owner:** taritree.wongjirad@tufts.edu
 **Replaces:** `ShowerOriginPredictorV3` (per-point regression and slot-attention origin prediction).
@@ -10,10 +12,10 @@ This document is the living design reference. Update as decisions change or phas
 
 ## 1. Motivation
 
-`ShowerOriginPredictorV3` (defined in [pointcept/models/shower_origin/shower_origin_model.py:769](../pointcept/models/shower_origin/shower_origin_model.py)) classifies fragments well — inside / outside / cosmic accuracies are all >90%. But:
+`ShowerOriginPredictorV3` (defined in [pointcept/models/shower_origin/shower_origin_model.py:769](../../pointcept/models/shower_origin/shower_origin_model.py)) classifies fragments well — inside / outside / cosmic accuracies are all >90%. But:
 
 - The **regression head** (predicted origin coord per slot) is much noisier than the origin scores. It does not localize the start point reliably.
-- **Start-point labeling is too inconsistent across fragments of the same shower** to drive the cone-based merger in [ub_showerorigin_reco/ubshowerorginreco/shower_fragment_merger.py](../../ub_showerorigin_reco/ubshowerorginreco/shower_fragment_merger.py).
+- **Start-point labeling is too inconsistent across fragments of the same shower** to drive the cone-based merger in [ub_showerorigin_reco/ubshowerorginreco/shower_fragment_merger.py](../../../ub_showerorigin_reco/ubshowerorginreco/shower_fragment_merger.py).
 - This kills downstream reconstruction even though the per-fragment classification is strong.
 
 V3's slot attention forces a single head to do classification *and* origin regression *and* implicit instance assignment. Mask2Former's bipartite-matching set-prediction framework decouples these and lets the strong classification signal carry without being dragged down by the regression target.
@@ -93,7 +95,7 @@ V3's slot attention forces a single head to do classification *and* origin regre
 | Class label set | 5 classes from V3 + 1 `no_object` slot | unchanged from V3 |
 | GT mask source | `trackid` from `shower_fragments` group → all spacepoints with that trackid | already present in merged H5 from `merge_reco_truth_showerorigin.py` |
 | Inference granularity | full event in one pass | feature cache makes it cheap; no chunked-and-stitched query merging needed |
-| Replaces cone merger | yes — model output IS the merged shower | Steps 5–7 of the [pipeline](../../ub_showerorigin_reco/CLAUDE.md) collapse to "run model, write TTree" |
+| Replaces cone merger | yes — model output IS the merged shower | Steps 5–7 of the [pipeline](../../../ub_showerorigin_reco/CLAUDE.md) collapse to "run model, write TTree" |
 
 ### New code location
 
@@ -413,7 +415,7 @@ Default config has `use_importance_sampling=False` to preserve the v4 baseline; 
 ## 7. Reference: data schema and labels
 
 ### Origin classes (5)
-From [merge_reco_truth_showerorigin.py:34](../../ub_showerorigin_reco/ubshowerorginreco/merge_reco_truth_showerorigin.py):
+From [merge_reco_truth_showerorigin.py:34](../../../ub_showerorigin_reco/ubshowerorginreco/merge_reco_truth_showerorigin.py):
 
 | ID | Label | Meaning |
 |---|---|---|
@@ -425,7 +427,7 @@ From [merge_reco_truth_showerorigin.py:34](../../ub_showerorigin_reco/ubshoweror
 
 A 6th class `no_object` is added at the model level for unmatched queries.
 
-### Merged H5 keys used (from [pointcept/datasets/shower_origin.py:8](../pointcept/datasets/shower_origin.py))
+### Merged H5 keys used (from [pointcept/datasets/shower_origin.py:8](../../pointcept/datasets/shower_origin.py))
 
 Per event under `entry_<i>/shower_fragments`:
 - `trackid` — true particle ID per fragment (multiple fragments share trackid → same shower)

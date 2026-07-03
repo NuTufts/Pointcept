@@ -31,7 +31,7 @@ sidecar ``src_file`` attribute -- do not assume line i <-> event{i:05d}.
         --all-slices-dir output/all_slices_singlephoton
 
 Reproducibility: run the inference with --deterministic on a conforming (A100/L40S)
-node, else these numbers churn run-to-run (docs/LArFormer_Reproducibility.md).
+node, else these numbers churn run-to-run (docs/reference/LArFormer_Reproducibility.md).
 Pure h5py / numpy / scipy.
 """
 import os

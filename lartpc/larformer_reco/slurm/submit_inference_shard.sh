@@ -10,7 +10,7 @@
 # REPRODUCIBILITY: runs with --deterministic (set_deterministic + reseed_per_event)
 # pinned to A100 (Ampere -- the conforming family). Without this the slicer's
 # query->slice assignment + downstream hard cuts churn ~9% run-to-run. See
-# docs/LArFormer_Reproducibility.md. reseed_per_event makes each event's output
+# docs/reference/LArFormer_Reproducibility.md. reseed_per_event makes each event's output
 # independent of its position, so sharding is safe (bit-identical to a serial run).
 #
 # Clean the output dir ONCE before submitting the array (the orchestrator does

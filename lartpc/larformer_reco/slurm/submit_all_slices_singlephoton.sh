@@ -19,7 +19,7 @@
 #SBATCH --partition=gpu,preempt,wongjiradlab
 # Pin to A100 (Ampere): the ONLY conforming family for a repeatable measurement.
 # H100/H200 (Hopper) diverge ~1.9% at the event level -- see
-# docs/LArFormer_Reproducibility.md sec 4.3. L40S also conforms if you need it.
+# docs/reference/LArFormer_Reproducibility.md sec 4.3. L40S also conforms if you need it.
 #SBATCH --gres=gpu:a100:1
 #SBATCH --requeue
 
@@ -41,7 +41,7 @@ EXTRA_ARGS=""
 # DETERMINISTIC=1 (default) -> --deterministic: set_deterministic() before build +
 #   reseed_per_event() each event (TF32 off, deterministic algorithms, seeded).
 #   REQUIRED for a repeatable slice/instance assignment -- without it, the slicer's
-#   query->slice mapping churns run-to-run (docs/LArFormer_Reproducibility.md).
+#   query->slice mapping churns run-to-run (docs/reference/LArFormer_Reproducibility.md).
 #   Set DETERMINISTIC=0 only for fast exploration where run-to-run drift is OK.
 [ "${DETERMINISTIC:-1}" = "1" ] && EXTRA_ARGS="${EXTRA_ARGS} --deterministic"
 

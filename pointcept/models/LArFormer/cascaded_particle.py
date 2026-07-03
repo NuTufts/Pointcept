@@ -8,7 +8,7 @@ the slicer's predictions with a **loosened** mask-prob threshold
 filtered down to those SPs and (optionally) recentered to the per-event
 slice centroid before being handed to the particle segmenter.
 
-See `docs/LArFormer_particlesegment_stage.md` for the full design
+See `docs/reference/LArFormer_particlesegment_stage.md` for the full design
 (§1b cascade location, §3 input-set definition, §1f recentering).
 
 Cascade composition:

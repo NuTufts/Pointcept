@@ -1,7 +1,7 @@
 """
 Phase 1 fragment-characterization for the shower-clustering Mask2Former design.
 
-See pointcept/docs/shower_clustering_design.md §5 (Phase 1) for context. The
+See pointcept/docs/reference/shower_clustering_design.md §5 (Phase 1) for context. The
 diagnostics here decide:
     - whether to keep the voxel scale (yes if non-shower context matters)
     - whether to keep spacepoint refinement (depends on fragment IoU CDF)

@@ -1,5 +1,7 @@
 # Gen2 Flat Ntuple — Parsing Spec
 
+> **Status: REFERENCE** — Flat-ntuple data format specification.
+
 Practical spec for reading the **DL Gen2 flat ntuples** (the "ntuple" datasets in
 [`MicroBooNE_Datasets_on_Tufts.md`](MicroBooNE_Datasets_on_Tufts.md)). These are
 plain flat ROOT files — no custom C++ classes, so **no `ubdl`/`larcv`/`larlite`

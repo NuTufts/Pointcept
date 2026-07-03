@@ -459,7 +459,7 @@ denoising; runnable end-to-end via `larformer-keypoint2-particle-v1.py`).
       isn't handed pseudo-instances; (2) it carries `ps_coord/ps_coord_norm/
       ps_offset` in the eval output for the cm decode. `pred_class` propagated
       into the per-particle result so the H5 carries the cascade PID.
-  - **Reproducibility (2026-06-17; see docs/LArFormer_Reproducibility.md).** The
+  - **Reproducibility (2026-06-17; see docs/reference/LArFormer_Reproducibility.md).** The
     inference tool got a `--deterministic` flag that calls `set_deterministic()`
     BEFORE building the model (TF32 off, deterministic algorithms,
     CUBLAS_WORKSPACE_CONFIG, seeds) — this pins `torch.sort` in `SerializedPooling`

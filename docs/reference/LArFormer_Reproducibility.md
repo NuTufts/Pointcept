@@ -1,5 +1,7 @@
 # LArFormer Cascade Inference Reproducibility
 
+> **Status: REFERENCE** — Training-run reproducibility (seeds, RNG, checkpoints).
+
 How to make LArFormer cascade inference repeatable for physics, what makes it
 *not* repeatable by default, and the limits of that repeatability across
 different GPUs. Written from the single-photon (1γ+0X) study, where a small
@@ -414,4 +416,4 @@ systematic); `{H100, H200}` a separate Hopper family that diverges ~1.9% at
 event level from Ampere/Ada. pax003 diverged historically (driver unconfirmed —
 node down at re-check).
 
-Related: `docs/LArFormer.md`, `docs/LArFormer_Stage3_TrainingStability.md`.
+Related: `docs/LArFormer.md`, `docs/devlog/LArFormer_Stage3_TrainingStability.md`.

@@ -423,7 +423,7 @@ offset/query heads address. Run inside the pointcept container
 * Test: `lartpc/larformer_analysis/archive/keypoint_v1/test_phase0_cache.py` — **PASS**
   on a copy-augmented dev cache (peaks <0.5 cm from GT, endpoints + nu vertex
   present).
-* (Optional, not done) note in `docs/LArTPC_HDF5_Data_Format.md` that
+* (Optional, not done) note in `docs/reference/LArTPC_HDF5_Data_Format.md` that
   `kpscores` is a *derived* target (computed from `mckeypoints`), not stored.
 
 **Source-data availability on this machine (answer to "can we update/remake?"):**
