@@ -239,8 +239,11 @@ def stage_codes(rec, lowcov=STAGE_LOWCOV):
 def print_summary(rec):
     """Per-species efficiency + failure-stage breakdown in coarse KE bins."""
     bins = [0, 50, 100, 200, 400, 800, 1e9]
+    # class-correct efficiency (attached AND right predicted class) = eff_B minus
+    # the mis-ID gap; None if the stage inputs aren't in the table.
+    ok = (stage_codes(rec) == 0) if "has_instance" in rec else None
     print("\nspecies | KE bin[MeV] |   N  | eff_A(seg70) | eff_B(attach) | "
-          "eff_C(chgQ50)")
+          "eff_C(chgQ50) | eff_B+PID(class)")
     for si, sp in enumerate(SPECIES):
         m = rec["species"] == si
         if m.sum() == 0:
@@ -252,8 +255,10 @@ def print_summary(rec):
                 continue
             eA = rec["found_A"][b].mean(); eB = rec["found_B"][b].mean()
             eC = rec["found_C"][b].mean()
+            ePID = ok[b].mean() if ok is not None else float("nan")
             print(f"{sp:>6} | {lo:5.0f}-{hi if hi < 1e8 else 9999:<5.0f} | "
-                  f"{N:5d} | {eA:5.2f}        | {eB:5.2f}         | {eC:5.2f}")
+                  f"{N:5d} | {eA:5.2f}        | {eB:5.2f}         | {eC:5.2f}"
+                  f"        | {ePID:5.2f}")
     if "has_instance" in rec:
         print_stage_breakdown(rec, bins)
 
@@ -431,20 +436,28 @@ def _plots(rec, outdir):
     os.makedirs(outdir, exist_ok=True)
     edges = np.linspace(0, 1000, 21)
     ctr = 0.5 * (edges[:-1] + edges[1:])
+    # class-correct ("ok" in the stage breakdown): attached AND the predicted
+    # class matches the true species. eff_B is class-AGNOSTIC (attach only), so
+    # this curve exposes the mis-ID gap (e.g. low-KE electrons called gamma).
+    ok = (stage_codes(rec) == 0) if "has_instance" in rec else None
     for si, sp in enumerate(SPECIES):
         m = rec["species"] == si
         if m.sum() < 5:
             continue
         # efficiency vs KE
         fig, ax = plt.subplots(figsize=(5, 4))
-        for key, lab in (("found_C", "C: charge slice >=50%"),
-                         ("found_A", "A: seg >=70%"),
-                         ("found_B", "B: attached")):
+        curves = [(rec["found_C"], "C: charge slice >=50%"),
+                  (rec["found_A"], "A: seg >=70%"),
+                  (rec["found_B"], "B: attached (any class)")]
+        if ok is not None:
+            curves.append((ok, "B+PID: attached & class-correct"))
+        for arr, lab in curves:
+            arr = np.asarray(arr).astype(float)
             eff, err = [], []
             for lo, hi in zip(edges[:-1], edges[1:]):
                 b = m & (rec["true_ke"] >= lo) & (rec["true_ke"] < hi)
                 N = b.sum()
-                e = rec[key][b].mean() if N else np.nan
+                e = arr[b].mean() if N else np.nan
                 eff.append(e)
                 err.append(np.sqrt(e * (1 - e) / N) if N else 0)
             ax.errorbar(ctr, eff, yerr=err, marker="o", ms=3, label=lab)
