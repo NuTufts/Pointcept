@@ -17,7 +17,10 @@
 #SBATCH --cpus-per-task=4
 #SBATCH --time=08:00:00
 #SBATCH --partition=gpu,preempt,wongjiradlab
-#SBATCH --gres=gpu:1
+# Pin to A100 (Ampere): the ONLY conforming family for a repeatable measurement.
+# H100/H200 (Hopper) diverge ~1.9% at the event level -- see
+# docs/LArFormer_Reproducibility.md sec 4.3. L40S also conforms if you need it.
+#SBATCH --gres=gpu:a100:1
 #SBATCH --requeue
 
 set -eu
@@ -34,7 +37,13 @@ SLICE_MIN_POINTS=${SLICE_MIN_POINTS:-20}
 #   recover the single below-threshold query with highest P(gamma) (loose_class_id=1),
 #   flagged loose_pass in the output. loose_conf holds that P(gamma).
 EXTRA_ARGS=""
-[ "${LOOSE:-0}" = "1" ] && EXTRA_ARGS="--loose-fallback"
+[ "${LOOSE:-0}" = "1" ] && EXTRA_ARGS="${EXTRA_ARGS} --loose-fallback"
+# DETERMINISTIC=1 (default) -> --deterministic: set_deterministic() before build +
+#   reseed_per_event() each event (TF32 off, deterministic algorithms, seeded).
+#   REQUIRED for a repeatable slice/instance assignment -- without it, the slicer's
+#   query->slice mapping churns run-to-run (docs/LArFormer_Reproducibility.md).
+#   Set DETERMINISTIC=0 only for fast exploration where run-to-run drift is OK.
+[ "${DETERMINISTIC:-1}" = "1" ] && EXTRA_ARGS="${EXTRA_ARGS} --deterministic"
 
 mkdir -p "${OUTPUT_DIR}" "${WORKDIR}/logs/all_slices"
 # Clean prior per-slice outputs: slicer query indices differ run-to-run (GPU
