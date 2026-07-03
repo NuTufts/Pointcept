@@ -14,7 +14,7 @@ Run:
         --num-gpus 1 --options save_path=exp/larformer_keypoint_v1
 
 NOTE: the cache must be augmented with the mckeypoints group first
-(tools/augment_stage12_cache_keypoints.py) — the dev cache already is.
+(tools/larformer/augment_stage12_cache_keypoints.py) — the dev cache already is.
 """
 
 _base_ = ["../../../../_base_/default_runtime.py"]

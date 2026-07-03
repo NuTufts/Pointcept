@@ -6,7 +6,7 @@
 #
 # Runs the full LArFormer cascade (LoRA deghoster -> ptv3crosslevel slicer ->
 # ptv3crosslevel particle segmenter) on the per-event merged_*.h5 produced by
-# Stage A, via tools/run_larformer_stage3_inference.py --input-mode full-cascade.
+# Stage A, via tools/larformer/run_larformer_stage3_inference.py --input-mode full-cascade.
 # Writes stage3pred_*.h5 (slicer half + particle half) into the workdir.
 #
 # Two invocation modes:
@@ -104,7 +104,7 @@ fi
 # Always GT-less (see LARFORMER_GT_SOURCE rationale above).
 NOGT="--no-gt"
 
-CMD="python3 ${POINTCEPT_DIR}/tools/run_larformer_stage3_inference.py \
+CMD="python3 ${POINTCEPT_DIR}/tools/larformer/run_larformer_stage3_inference.py \
     --input-mode full-cascade \
     --config ${LARFORMER_CASCADE_CONFIG} \
     --weights ${REPREFIXED_CKPT} \

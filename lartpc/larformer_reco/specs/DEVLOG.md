@@ -392,7 +392,7 @@ Running the frozen segmenter LIVE (`main_source="predicted"`) ~2x'd batch time
 (1.8→3.6 s). To avoid that, precompute the deduped predicted masks ONCE into the
 cache and read them at train time (NO live segmenter, NO second backbone in
 VRAM; batch time back to ~1.7 s).
-- `tools/augment_stage12_cache_pred_masks.py` (GPU): for each event it loads the
+- `tools/larformer/augment_stage12_cache_pred_masks.py` (GPU): for each event it loads the
   exact trainer input via `LArFormerStage12CacheDataset` (same filter+recenter),
   runs the frozen segmenter, dedups via the SAME `predicted_masks_to_instances`,
   IoU-matches GT, and writes `entry_0/pred_instances/instance_<k>/`
@@ -441,7 +441,7 @@ denoising; runnable end-to-end via `larformer-keypoint2-particle-v1.py`).
     this machine: deghoster `lora_deghost_v6_hasmatch/epoch_30`, sonata backbone
     `lartpc_v6_..._epoch_42`, slicer `..._iter_75750`, particle `epoch_6`, +
     raw merged_h5 (`devdata_mergedh5_pi0filter*.txt`). New tool
-    `tools/run_larformer_keypoint2_cascade_inference.py` builds `CascadedKeypoint`
+    `tools/larformer/run_larformer_keypoint2_cascade_inference.py` builds `CascadedKeypoint`
     (cascade self-loads deghoster+slicer+sonata; `--particle-weights` →
     particle_segmenter; `--keypoint-weights` → keypoint_model), runs on raw
     events, decodes per-particle start/end + dense nu-vertex to DETECTOR CM
@@ -491,20 +491,20 @@ denoising; runnable end-to-end via `larformer-keypoint2-particle-v1.py`).
     predicted particle's points vote a GT trackid and GT keypoints come from
     `mckeypoints` (start = type track_start/shower, end = track_end, nu-vertex =
     type 0). Enable with `--with-gt` (default; `--no-gt` for real data).
-    `tools/visualize_keypoint2_cascade.py` renders an interactive Plotly HTML:
+    `tools/viz/visualize_keypoint2_cascade.py` renders an interactive Plotly HTML:
     LEFT = predicted particles + predicted start/end + nu-vertex with a dropdown
     (All / individual particle; the selected one is colour-highlighted, the rest
     drawn small+grey for context); RIGHT (when GT present) = the trackid-matched
     GT particle + GT keypoints (empty if no match). Validated end-to-end on real
     events: 6/6 and 5/5 particles matched, sensible PIDs (e/gamma/p), figure
     structure correct (dropdown buttons, two scenes, context greying).
-    A **Dash** version `tools/visualize_keypoint2_cascade_dash.py` serves a whole
+    A **Dash** version `tools/viz/visualize_keypoint2_cascade_dash.py` serves a whole
     directory of event H5s as a live app (Event + Particle dropdowns → callback
     rebuilds the 3D figure; camera preserved via `uirevision`). Both share the
     trace/visibility logic (`_assemble_traces` / `_visibility` /
     `figure_for_view` in the static tool). Smoke-tested: app builds (2 callbacks),
     server returns HTTP 200 and serves all layout components.
-    `python tools/visualize_keypoint2_cascade_dash.py <dir> --port 8050`.
+    `python tools/viz/visualize_keypoint2_cascade_dash.py <dir> --port 8050`.
   - **START target = VISIBLE start, not origin (2026-06-18; CHANGES THE LOSS —
     requires retraining).** Originally the per-particle decoder's start target
     was the instance `origin_coord_norm` (the particle BIRTH point). For a SHOWER

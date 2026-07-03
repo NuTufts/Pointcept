@@ -425,7 +425,7 @@ Per-event slicing logic is the same as today: the backbone runs flat-batched onc
 
 ## 11. Ground-truth visualizer
 
-A standalone tool, [`tools/visualize_larformer_gt.py`](../tools/visualize_larformer_gt.py) (TBD), for visually checking the GT labels produced at each level. The design constraint: **the visualizer must not reimplement any of the level construction or GT lifting** — it queries the same code paths the model and loss use. If the visualizer and the trainer ever disagree, the bug is in shared code, not in two parallel implementations.
+A standalone tool, [`tools/viz/visualize_larformer_gt.py`](../tools/viz/visualize_larformer_gt.py) (TBD), for visually checking the GT labels produced at each level. The design constraint: **the visualizer must not reimplement any of the level construction or GT lifting** — it queries the same code paths the model and loss use. If the visualizer and the trainer ever disagree, the bug is in shared code, not in two parallel implementations.
 
 ### What it shows
 
@@ -437,7 +437,7 @@ For each event in a user-selected sample, for each level declared in the config:
 - Per-spacepoint overlay showing `sp_to_level_id` (helpful for sanity-checking voxel binning or fragment membership).
 - Side panel listing instance metadata (origin_type / pid / primary_trackid / origin_coord, depending on `gt_source`).
 
-The 3D widget reuses the same plotly conventions as [`tools/visualize_lartpc_h5data.py`](../tools/visualize_lartpc_h5data.py) for consistency. For spacepoint-in-detector rendering patterns (TPC bounds, axis orientation, hover tooltips, instance-color cycling), refer to [`tools/visualize_shower_clustering.py`](../tools/visualize_shower_clustering.py) and [`tools/visualize_slice_flash_match.py`](../tools/visualize_slice_flash_match.py) — both are already-working examples of the same rough idiom (load H5 → render coords + per-point labels in a detector-frame 3D scatter).
+The 3D widget reuses the same plotly conventions as [`tools/viz/visualize_lartpc_h5data.py`](../tools/viz/visualize_lartpc_h5data.py) for consistency. For spacepoint-in-detector rendering patterns (TPC bounds, axis orientation, hover tooltips, instance-color cycling), refer to [`tools/viz_archive/visualize_shower_clustering.py`](../tools/viz_archive/visualize_shower_clustering.py) and [`tools/viz_archive/visualize_slice_flash_match.py`](../tools/viz_archive/visualize_slice_flash_match.py) — both are already-working examples of the same rough idiom (load H5 → render coords + per-point labels in a detector-frame 3D scatter).
 
 ### Required convenience hooks (drives a small API contract)
 
@@ -469,7 +469,7 @@ def build_per_level_gt(
 ### Usage
 
 ```bash
-python tools/visualize_larformer_gt.py \
+python tools/viz/visualize_larformer_gt.py \
     --config       configs/larformer/larformer-slicer-v1.py \
     --h5           /path/to/merged_..._entry000000.h5 \
     --level        voxel_10cm,spacepoint \
@@ -518,7 +518,7 @@ Each phase ends with a runnable training config and at least one overfit / sanit
 | **P2 — Multi-level voxel** | Add 2–3 voxel levels; verify per-level mask aux losses + scale-pattern dispatch | **Done** | Smoke test in `smoke_test_larformer_p2.py`. |
 | **P3 — Fragment builder** | Port `FragmentPool` + content enricher into `builders/fragment.py`; reproduce `ShowerClusteringMask2Former` behavior | **Done** | Smoke test in `smoke_test_larformer_p3.py`. |
 | **P4 — `LArFormerDataset`** | Pluggable `gt_source`; slice GT via `slice_labels.py`; collate handles optional fragments | **Done** | `gt_source="slice"` + `"shower_trunk"` + `"deghost"` all working. `gt_source="particle"` (P7) raises `NotImplementedError`. |
-| **P4b — GT visualizer** | Extract `build_levels` + `build_per_level_gt` into pure helpers (§11); wire `tools/visualize_larformer_gt.py` | **Done** | Visualizer at [`tools/visualize_larformer_gt.py`](../tools/visualize_larformer_gt.py), extended in v1 with a prediction-panel mode (see §15). |
+| **P4b — GT visualizer** | Extract `build_levels` + `build_per_level_gt` into pure helpers (§11); wire `tools/viz/visualize_larformer_gt.py` | **Done** | Visualizer at [`tools/viz/visualize_larformer_gt.py`](../tools/viz/visualize_larformer_gt.py), extended in v1 with a prediction-panel mode (see §15). |
 | **P5 — Stage 1: deghoster** | Per-level cls head on the spacepoint level; train on `hasmatch` | **Done (LArFormer flavor); LoRA variant adopted for cascade** | Both [`larformer-deghost-v0.py`](../configs/lartpc/larformer/stage1_deghost/archive/larformer-deghost-v0.py) (LArFormer-flavored) and the LoRA-finetuned [`SonataLoRADeghostSegmentor`](../pointcept/models/lora_sonata_deghost.py) work as Stage 1. v1 cascade defaults to the LoRA variant (see §6 implementation note). |
 | **P6 — Stage 2: slicer** | Slicer config, frozen Stage 1 wired in-model via `CascadedSlicer`, query-set predicts slices | **Done — trained** | Debug history in §15 (the mirror-merge pathology drove §§16–18: TokenRefiner, mixed query selection, mask denoising). Production variant: `larformer-slicer-v1-cascaded-ptv3hybrid-crosslevel.py`; the iter-75750 checkpoint built the Stage-3 training cache. Flash-match loss still not wired (out of v1 scope; see Event_Slicer_Spec.md). |
 | **P7 — Stage 3: particle clusterer** | Particle config, frozen stages 1+2 (model-side cascade + cached training path) | **Done — in production training** | Full design + as-built record: [LArFormer_particlesegment_stage.md](LArFormer_particlesegment_stage.md) §13. Training campaign + open issues: [LArFormer_Stage3_TrainingStability.md](LArFormer_Stage3_TrainingStability.md). See §0a for the run lineage. |
@@ -547,8 +547,8 @@ Phases 1–4 are model + dataset plumbing and can be done without committing to 
 
 ### Tooling added during the debug iteration
 
-- [`tools/run_slicer_inference.py`](../tools/run_slicer_inference.py) — reads an input list + a `CascadedSlicer` checkpoint and writes a per-event HDF5 with `pre/post/queries/gt/meta` groups (pre- and post-deghost SPs, query predictions, matched GT slice IDs, run/subrun/event ids). Used both for offline mIoU measurement (matches the in-training evaluator) and as the source-of-truth for the visualizer's prediction panel.
-- [`tools/visualize_larformer_gt.py`](../tools/visualize_larformer_gt.py) — extended with a `--slicerpred-dir` mode that overlays the inference script's HDF5 output as a second 3D scene stacked under the GT scene. Color modes: `pred_correct` (matched / mismatched / unmatched), `pred_slice_id`, `slice_id_gt`, `pred_class`, `p_real`. Track-ID color cycling is shared between GT and pred for visual alignment.
+- [`tools/larformer/run_slicer_inference.py`](../tools/larformer/run_slicer_inference.py) — reads an input list + a `CascadedSlicer` checkpoint and writes a per-event HDF5 with `pre/post/queries/gt/meta` groups (pre- and post-deghost SPs, query predictions, matched GT slice IDs, run/subrun/event ids). Used both for offline mIoU measurement (matches the in-training evaluator) and as the source-of-truth for the visualizer's prediction panel.
+- [`tools/viz/visualize_larformer_gt.py`](../tools/viz/visualize_larformer_gt.py) — extended with a `--slicerpred-dir` mode that overlays the inference script's HDF5 output as a second 3D scene stacked under the GT scene. Color modes: `pred_correct` (matched / mismatched / unmatched), `pred_slice_id`, `slice_id_gt`, `pred_class`, `p_real`. Track-ID color cycling is shared between GT and pred for visual alignment.
 
 ### Current results & failure mode
 
@@ -719,7 +719,7 @@ After §16 added a learned `TokenRefiner` between the backbone and the decoder, 
 
 1. **Matching instability.** Hungarian assignments shuffle across iterations because the K decoder queries are initialized from a single learnable embedding bank — at init they're nearly indistinguishable, so which query "owns" which GT slice flips depending on small perturbations in the per-token features. The decoder spends many epochs untangling query identities before mask losses can specialize.
 
-2. **Over-claim.** Instrumented via the `pair_iou` vs `argmax_iou` gap from `tools/run_slicer_inference.py` (v2 fields) and aggregated by [`tools/measure_overclaim.py`](../tools/measure_overclaim.py). Multiple queries compete to claim the same easy SPs of a confident track. With identical init, queries cluster on whichever GT slice has the cleanest signal; spatial diversity has to emerge from training alone.
+2. **Over-claim.** Instrumented via the `pair_iou` vs `argmax_iou` gap from `tools/larformer/run_slicer_inference.py` (v2 fields) and aggregated by [`tools/measure_overclaim.py`](../tools/measure_overclaim.py). Multiple queries compete to claim the same easy SPs of a confident track. With identical init, queries cluster on whichever GT slice has the cleanest signal; spatial diversity has to emerge from training alone.
 
 DINO and Mask-DINO solve both with **mixed query selection**: replace the learnable query bank with the top-K most "object-like" tokens picked from the encoder/refiner output, and seed each query's positional prior with the picked token's coordinates. Each query now starts at a concrete spatial anchor with a meaningful content vector — matching is more stable (queries are pre-specialized to a region) and over-claim drops (anchors are spread, not piled on top of each other).
 
@@ -731,7 +731,7 @@ LArTPC slices vary enormously in size. One long cosmic produces hundreds of high
 2. **Top-M filter:** keep the M = K × `score_filter_multiplier` (default 4) highest-scoring tokens.
 3. **FPS** (farthest-point sampling) from the M survivors picks K spatially-diverse anchors. FPS is seeded with the highest-score token (index 0 of the topk result), so the most confident candidate is always selected.
 
-The smoke test [`tools/smoke_test_larformer_p7_mixed_query.py`](../tools/smoke_test_larformer_p7_mixed_query.py) verifies that on a synthetic event with one dominant high-score cluster and four smaller clusters, FPS gives ~1.6× the mean-nearest-neighbor distance of pure top-K.
+The smoke test [`tools/smoke_tests/smoke_test_larformer_p7_mixed_query.py`](../tools/smoke_tests/smoke_test_larformer_p7_mixed_query.py) verifies that on a synthetic event with one dominant high-score cluster and four smaller clusters, FPS gives ~1.6× the mean-nearest-neighbor distance of pure top-K.
 
 ### Decoder wiring
 
@@ -847,7 +847,7 @@ The ctor enforces that `mixed_query_selection` is also enabled — otherwise `se
 
 ### Smoke test
 
-[`tools/smoke_test_larformer_p8_mask_denoising.py`](../tools/smoke_test_larformer_p8_mask_denoising.py) covers, in isolation from the heavy backbone:
+[`tools/smoke_tests/smoke_test_larformer_p8_mask_denoising.py`](../tools/smoke_tests/smoke_test_larformer_p8_mask_denoising.py) covers, in isolation from the heavy backbone:
 
 1. `MaskDenoiser` direct construction — Q_dn shape, `gt_target_idx` / `group_id` structure, jitter within 4σ, cap enforcement, empty / no_object filtering.
 2. `build_self_attn_mask` structure — regular ↔ regular allowed, regular ↔ DN blocked, DN cross-group blocked.
@@ -881,6 +881,6 @@ The ctor enforces that `mixed_query_selection` is also enabled — otherwise `se
 - LArTPC H5 schema (per-spacepoint truth fields used as `label_src` values):
   [`docs/LArTPC_HDF5_Data_Format.md`](LArTPC_HDF5_Data_Format.md).
 - Visualizer patterns to reuse for the per-level GT viewer (§11):
-  [`tools/visualize_shower_clustering.py`](../tools/visualize_shower_clustering.py),
-  [`tools/visualize_slice_flash_match.py`](../tools/visualize_slice_flash_match.py),
-  [`tools/visualize_lartpc_h5data.py`](../tools/visualize_lartpc_h5data.py).
+  [`tools/viz_archive/visualize_shower_clustering.py`](../tools/viz_archive/visualize_shower_clustering.py),
+  [`tools/viz_archive/visualize_slice_flash_match.py`](../tools/viz_archive/visualize_slice_flash_match.py),
+  [`tools/viz/visualize_lartpc_h5data.py`](../tools/viz/visualize_lartpc_h5data.py).

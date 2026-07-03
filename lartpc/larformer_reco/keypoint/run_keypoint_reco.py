@@ -2,7 +2,7 @@
 
 Standalone post-processor (Option A in ``../keypoint_reco_spec.md``): reads the
 ``--save-score-maps`` output of
-``tools/run_larformer_keypoint2_cascade_inference.py``, runs the greedy
+``tools/larformer/run_larformer_keypoint2_cascade_inference.py``, runs the greedy
 peel-and-fit reco on each head's dense score field, writes per-event reco H5s,
 and (with ``--eval``, on sim) reports start/object + nu-vertex resolution vs the
 GT keypoints — micro-averaged, in the style of ``eval_keypoint2_inference.py``.

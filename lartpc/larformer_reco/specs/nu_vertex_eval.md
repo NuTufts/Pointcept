@@ -15,7 +15,7 @@ resulting position resolution and vertex multiplicity.
 ## 1. What it consumes
 
 The cascade inference tool
-(`tools/run_larformer_keypoint2_cascade_inference.py --save-score-maps`) writes
+(`tools/larformer/run_larformer_keypoint2_cascade_inference.py --save-score-maps`) writes
 one H5 per event slice. Example data lives in
 [`reco_dev_data/keypoint2_out/`](reco_dev_data/keypoint2_out). These files are
 **self-contained** — they carry both the network output and the truth, so the

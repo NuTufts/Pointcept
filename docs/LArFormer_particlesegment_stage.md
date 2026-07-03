@@ -375,7 +375,7 @@ Most of the design choices are now decided. What's still open:
 - **Rev 3 (2026-05-30)**: coordinate system decision:
   - Recenter pos_emb input to slice centroid for v1 (§1f); backbone features already carry absolute-position context, so pos_emb's job is to add slice-internal "where am I" information orthogonal to that.
 - **Rev 4 (2026-06-03)**: implementation status — S3.0 through S3.3+S3.6 plumbing landed. See §13 for the as-built design.
-- **Rev 5 (2026-06-08)**: S3.8 inference dump + visualization landed (§13.10). Shared per-event extractor module (`pointcept/models/LArFormer/inference.py`) ensures the slicer's output schema is byte-identical between standalone slicer inference and the slicer half of a full-cascade Stage-3 run. The Stage-3 visualizer (`tools/visualize_stage3_larformer_from_cached.py`) gained a prediction overlay panel with byte-identical color matching to the GT panel, camera sync, side-by-side layout toggle, particle-symbol legend labels, and rich hover text including per-SP query id + full per-class probability distribution.
+- **Rev 5 (2026-06-08)**: S3.8 inference dump + visualization landed (§13.10). Shared per-event extractor module (`pointcept/models/LArFormer/inference.py`) ensures the slicer's output schema is byte-identical between standalone slicer inference and the slicer half of a full-cascade Stage-3 run. The Stage-3 visualizer (`tools/viz/visualize_stage3_larformer_from_cached.py`) gained a prediction overlay panel with byte-identical color matching to the GT panel, camera sync, side-by-side layout toggle, particle-symbol legend labels, and rich hover text including per-SP query id + full per-class probability distribution.
 - **Rev 6 (2026-06-11)**: status flipped to "implemented / in production training". Added §13.11 (training campaign + loss-stability tracker + inference query dedup — details in [LArFormer_Stage3_TrainingStability.md](LArFormer_Stage3_TrainingStability.md)), §13.12 (validation analysis pipeline), §13.13 (production dataprep workflow). Cross-links to the LArFormer.md §0 project hub.
 
 ---
@@ -468,7 +468,7 @@ files involved, and any deltas from the original plan.
 
 ### 13.3 S3.2 — Benchmark + caching decision ✅
 
-- [`tools/benchmark_larformer_s3_cascade.py`](../tools/benchmark_larformer_s3_cascade.py):
+- [`tools/larformer/benchmark_larformer_s3_cascade.py`](../tools/larformer/benchmark_larformer_s3_cascade.py):
   config-driven benchmark with two modes:
   - **full**: end-to-end `CascadedParticleSegmenter` per iter.
   - **cached**: precompute Stage 1+2 once per sample, time only
@@ -490,7 +490,7 @@ files involved, and any deltas from the original plan.
 ### 13.4 S3.3 — Pure-cascade training (from cache) ✅
 
 The **cache** is the Stage-3-only training format. Schema (per
-[`tools/build_stage12_cache_event.py`](../tools/build_stage12_cache_event.py)
+[`tools/larformer/build_stage12_cache_event.py`](../tools/larformer/build_stage12_cache_event.py)
 format_version=2):
 
 ```
@@ -547,11 +547,11 @@ delta-pass), so values in practice are {0, 2, 4, 5, 6, 7}.
 
 **Build pipeline**:
 
-- [`tools/build_stage12_cache_event.py`](../tools/build_stage12_cache_event.py):
+- [`tools/larformer/build_stage12_cache_event.py`](../tools/larformer/build_stage12_cache_event.py):
   single-event entry. CLI takes config + inputlist + sample_idx +
   output path. The importable `build_cache_event(...)` is what shard
   drivers call.
-- [`tools/build_stage12_cache_shard.py`](../tools/build_stage12_cache_shard.py):
+- [`tools/larformer/build_stage12_cache_shard.py`](../tools/larformer/build_stage12_cache_shard.py):
   SLURM-array driver. Stride layout `indices = range(shard_id, N,
   n_shards)`. Output path
   `<cache_root>/<split>/<idx//1000>/<idx//100>/<basename>__event<idx>.h5`
@@ -559,7 +559,7 @@ delta-pass), so values in practice are {0, 2, 4, 5, 6, 7}.
   — skips events that already have an `.h5` or a `.skipped` marker.
   Failed-empty events get a `.skipped` marker rather than no file, so
   re-runs don't keep retrying.
-- [`tools/visualize_stage12_cache.py`](../tools/visualize_stage12_cache.py):
+- [`tools/viz/visualize_stage12_cache.py`](../tools/viz/visualize_stage12_cache.py):
   3-panel Plotly HTML viewer (cached SPs by `source_mask`, by particle
   GT instance, by `stage2_nu_mask_prob` with false-negative rings).
 
@@ -699,7 +699,7 @@ To run Stage 3 from a freshly-built training set:
 # 1) Build cache shards (one SLURM array task per shard, GPU each).
 #    Per-event cost ≈ 2 s (single forward of the cascade in eval).
 #SBATCH --array=0-127
-python tools/build_stage12_cache_shard.py \
+python tools/larformer/build_stage12_cache_shard.py \
     --config configs/lartpc/larformer/stage3_particle/larformer-particle-v1.py \
     --inputlist /path/to/h5list_train.txt \
     --cache-root /path/to/stage12_cache_v2 \
@@ -718,7 +718,7 @@ python tools/train.py --config configs/lartpc/larformer/stage3_particle/archive/
 full training run):
 
 ```bash
-python tools/visualize_stage12_cache.py \
+python tools/viz/visualize_stage12_cache.py \
     --cache /path/to/stage12_cache_v2/train/.../event_000000.h5 \
     --output /tmp/cache.html --browser
 ```
@@ -774,7 +774,7 @@ module. Exports:
 
 - `slicer_predict_event(model, sample, batched, no_object_class_id)` —
   runs the cascade forward and returns the canonical slicerpred dict.
-  Extracted from the pre-refactor `tools/run_slicer_inference.py`
+  Extracted from the pre-refactor `tools/larformer/run_slicer_inference.py`
   verbatim. Schema-regression-tested (46 canonical keys).
 - `slicer_predict_event_from_out(out, sample, no_object_class_id)` —
   same body but accepts an already-computed cascade output dict, so the
@@ -801,14 +801,14 @@ whose max softmax cls probability falls below the floor are demoted to
 `stage3_queries/class_argmax` still records their raw argmax for
 diagnostics.
 
-#### Slicer CLI — `tools/run_slicer_inference.py`
+#### Slicer CLI — `tools/larformer/run_slicer_inference.py`
 
 Refactored to be a thin CLI (~150 lines, down from ~650). Imports
 `slicer_predict_event` from the helpers module; no behavioral change.
 Output naming and schema are unchanged so existing slicer-side
 analysis scripts continue to work.
 
-#### Stage-3 CLI — `tools/run_larformer_stage3_inference.py`
+#### Stage-3 CLI — `tools/larformer/run_larformer_stage3_inference.py`
 
 Two input modes:
 
@@ -842,7 +842,7 @@ Operator commands:
 
 ```bash
 # Cached-mode (production training-loop iteration)
-python tools/run_larformer_stage3_inference.py \
+python tools/larformer/run_larformer_stage3_inference.py \
     --config configs/lartpc/larformer/stage3_particle/larformer-particle-v1-cached-ptv3crosslevel.py \
     --weights exp/.../model/model_last.pth \
     --cache-dir exp/cache_stage12_ptv3crosslevelslicer_iter_75750/val \
@@ -851,7 +851,7 @@ python tools/run_larformer_stage3_inference.py \
     --split val
 
 # Full-cascade on real data with no GT (Q8 use case)
-python tools/run_larformer_stage3_inference.py \
+python tools/larformer/run_larformer_stage3_inference.py \
     --input-mode full-cascade \
     --config configs/lartpc/larformer/stage3_particle/larformer-particle-v1.py \
     --weights exp/.../model/model_last.pth \
@@ -897,7 +897,7 @@ Stage-3 meta (`stage3_meta/`): identity + summary counters +
 predicted origins to cm without round-tripping the config) +
 `has_gt`.
 
-#### Visualization — `tools/visualize_stage3_larformer_from_cached.py`
+#### Visualization — `tools/viz/visualize_stage3_larformer_from_cached.py`
 
 Extended with two flags:
 
@@ -912,13 +912,13 @@ Extended with two flags:
   the top bar.
 
 The prediction panel's figure builders live in
-`pointcept/models/LArFormer/viz_inference.py` (color/threshold/symbol
+`lartpc/viz/larformer_inference.py` (color/threshold/symbol
 helpers + `figure_for_stage3_prediction`) — the tool itself is a
 thin Dash app.
 
 **Color matching between GT and prediction panels.** The viz's
-`pointcept/models/LArFormer/viz_inference.py:track_id_color` is
-byte-identical to `tools/visualize_larformer_gt.py:_track_id_color`
+`lartpc/viz/larformer_inference.py:track_id_color` is
+byte-identical to `tools/viz/visualize_larformer_gt.py:_track_id_color`
 when alpha = 1 (`abs(int(tid))` hash, saturation 0.80, value 0.95,
 `{:g}` alpha format suppresses the `.0` so `rgba(...,1)` matches
 exactly). In the pred panel's `pred_particle_idx` color mode, each
@@ -979,7 +979,7 @@ id), `pred_mask_prob` (continuous Plasma colorbar), `particle_class_id_gt`
 The full-cascade `stage3pred_*.h5` files carry the slicer half at the
 top level (`pre/`, `post/`, `queries/`, `gt/`, `meta/`, `levels/`)
 with the slicer's canonical schema. So
-`tools/visualize_larformer_gt.py --slicerpred-dir <dir>` works on a
+`tools/viz/visualize_larformer_gt.py --slicerpred-dir <dir>` works on a
 full-cascade output directory unchanged — the slicer viz's
 prediction-panel callbacks find files matching its
 `slicerpred_<basename>.h5` pattern, but because the schema is also
@@ -1012,7 +1012,7 @@ covers:
   that fixes it: `dedup_queries` in
   [`pointcept/models/LArFormer/inference.py`](../pointcept/models/LArFormer/inference.py),
   exposed as `--dedup-iou-threshold` (default 0.6) on
-  `tools/run_larformer_stage3_inference.py`, with merge tracking under
+  `tools/larformer/run_larformer_stage3_inference.py`, with merge tracking under
   new `stage3_queries/dedup_*` H5 keys (new keys only — the §13.10
   schema is otherwise unchanged; `stage3/pred_query` becomes the
   post-dedup assignment and `stage3/pred_query_nodedup` preserves the
@@ -1038,5 +1038,5 @@ output schema and usage.
 `merged_dlreco.root` (sim or data) to full-cascade `stage3pred_*.h5`
 without LArMatch/SSNet/lantern: Stage A conversion via
 `SimChTripletLabelMaker`, Stage B `CascadedParticleSegmenter`
-inference, plus `tools/visualize_full_cascade.py` for camera-synced
+inference, plus `tools/viz/visualize_full_cascade.py` for camera-synced
 prediction-vs-truth event displays.

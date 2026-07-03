@@ -202,7 +202,7 @@ particle_levels = [
              #   label_src: per-SP `particle_class_id` (0..5 visible
              #     classes, -1 = SP not in any GT particle = Stage-2
              #     false positive). Must be present in the cache —
-             #     run `tools/augment_stage12_cache_particle_class_id.py`
+             #     run `tools/larformer/augment_stage12_cache_particle_class_id.py`
              #     to write it.
              #
              #   reduce: "soft_presence" produces a per-voxel uniform-

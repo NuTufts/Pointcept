@@ -12,7 +12,7 @@ Run everything from the **repo root** inside the pointcept container with
 ## Pipeline
 
 ```
-tools/run_larformer_keypoint2_cascade_inference.py     (GPU; slurm/submit_inference_shard.sh)
+tools/larformer/run_larformer_keypoint2_cascade_inference.py     (GPU; slurm/submit_inference_shard.sh)
   → keypoint2_event*.h5
 scripts/run_nu_reco.py                                 (CPU; slurm/submit_nu_reco_shard.sh)
   → nu_reco_shard*.h5

@@ -4,7 +4,7 @@ One SLURM task processes a CHUNK of `--stride` consecutive filenos from
 a Stage-0 rerun_lines file:
   - selects all manifest rows for those filenos
   - writes a single combined inputlist of merged H5s
-  - runs `tools/run_slicer_inference.py` ONCE for the chunk (amortizes
+  - runs `tools/larformer/run_slicer_inference.py` ONCE for the chunk (amortizes
     the model-load + warm-up cost across multiple filenos)
   - loops `analyze_event.py` per surviving event
 

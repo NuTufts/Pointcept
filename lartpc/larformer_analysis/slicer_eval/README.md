@@ -49,7 +49,7 @@ We then make a truncated input list for each dataset config.
 
 ### LArMatch Inference
 
-The script for running the inference is `tools/run_slicer_inference.py`.  This takes in an input list of h5 files and outputs h5 files per event into an output directory.  This step is all set. We will not really have multiple GPU nodes to work with, so we probably need to run serially one 2xL40s node.
+The script for running the inference is `tools/larformer/run_slicer_inference.py`.  This takes in an input list of h5 files and outputs h5 files per event into an output directory.  This step is all set. We will not really have multiple GPU nodes to work with, so we probably need to run serially one 2xL40s node.
 
 ### Analysis Scripts
 
@@ -64,7 +64,7 @@ In order to make the flash prediction in this script, we have a UB Photon librar
 
 An example of making the flash prediction using ground truth spacepoint slices is in
 
-  tools/visualize_slice_flash_match.py
+  tools/viz_archive/visualize_slice_flash_match.py
 
 When comparing the predicted and observed flash agreement between the different predicted masks, we will use the chi-2 between the predicted and observed flash. For many of the spacepoints, they will exist outside of the TPC due to time mismatch of when the particles that made the slice went through the detector and the time of the in-time flash.  We need to either (1) automaticaly reject spacepoint slices with some fraction of points outside the TPC, or (2) add some kind of penalty to the chi-2 for spacepoints outside the TPC. 
 
@@ -102,7 +102,7 @@ section below.
 |---|---|
 | Stage 0 — `build_valtest_rootlists.py` (rerun_lines + manifest) | ✅ |
 | Stage 1 — extended `prepare_flashinfo_h5.py` (event_truth + nu_showers) | ✅ |
-| Stage 2 — `tools/run_slicer_inference.py` (with 0-GT crash fix) | ✅ |
+| Stage 2 — `tools/larformer/run_slicer_inference.py` (with 0-GT crash fix) | ✅ |
 | Stage 3 — `analyze_event.py` (M1/M3/M4 + over-claim) | ✅ |
 | Stage 4 — `aggregate_metrics.py` (event_summary.h5 + post-hoc γ) | ✅ |
 | Stage 5 — `plot_metrics.py` (per-cat histograms + headline table) | ✅ |
@@ -628,7 +628,7 @@ under cap; `STRIDE=25` → 60 tasks if you want to finish faster.
 
 ### 0-GT inference crash fix
 
-`tools/run_slicer_inference.py:_per_sp_predicted_slice` crashed when
+`tools/larformer/run_slicer_inference.py:_per_sp_predicted_slice` crashed when
 processing events with 0 GT instances (cosmic-only / fully-filtered
 events). `np.where(matched_k >= 0, primary_trackid[matched_k.clip(min=0)],
 -1)` evaluates both branches even when the predicate is False

@@ -109,7 +109,7 @@ V3's slot attention forces a single head to do classification *and* origin regre
 
 ### 4a. Phase 1 findings (2026-05-04, n=500 NC pi0 events)
 
-Run via `lartpc_data_prep/characterize_fragments.py`, output in `pointcept/exp/shower_clustering/phase1_smoke_500events/`.
+Run via `tools/viz_archive/characterize_fragments.py`, output in `pointcept/exp/shower_clustering/phase1_smoke_500events/`.
 
 Headline numbers from the merged H5 (training data: `bnb_nu_pi0filter_corsika`):
 
@@ -218,7 +218,7 @@ Each phase is a checkable milestone. Update checkboxes and add notes as you go.
 
 Goal: Quantify the fragment quality, build per-event GT instances from `trackid`, and confirm the design's assumptions before writing model code.
 
-- [x] **`pointcept/lartpc_data_prep/characterize_fragments.py`** — implemented, supports per-event diagnostics, stratified IoU by instance size, orphan→fragment distance, fragment purity, summary H5 + plots.
+- [x] **`pointcept/tools/viz_archive/characterize_fragments.py`** — implemented, supports per-event diagnostics, stratified IoU by instance size, orphan→fragment distance, fragment purity, summary H5 + plots.
 - [x] Run on 500 events from `bnb_nu_pi0filter_corsika` training H5s. Outputs in `pointcept/exp/shower_clustering/phase1_smoke_500events/`. See §4a above for results.
 - [x] **Decision: keep voxel scale (mandatory, see §4c), keep spacepoint refinement (45% orphan rate makes it critical), 5 cm voxel size confirmed, DBSCAN params unchanged (bottleneck is upstream SSNet, not DBSCAN).**
 
@@ -240,7 +240,7 @@ Goal: Quantify the fragment quality, build per-event GT instances from `trackid`
 - [x] **Smoke test on 3 test events** + **collate function on 2-event batch**. Numbers in §4d.
 - [x] **Registered with Pointcept's DATASETS builder** in `pointcept/datasets/__init__.py`.
 - [x] **Draft config** at `pointcept/configs/lartpc/shower_origin/archive/shower-cluster-sonata-v1.py` (dataset params + Sonata backbone stub + Mask2Former model placeholder).
-- [x] **Visualizer** at `pointcept/tools/visualize_shower_clustering.py` — 4-panel Dash app (GT instances / fragments / SSNet / lm_score) with detector outline, MicroBooNE-style figure layout matching `tools/visualize_larmatch_h5data.py`. Reads the same config so what's shown is exactly what the model will see.
+- [x] **Visualizer** at `pointcept/tools/viz_archive/visualize_shower_clustering.py` — 4-panel Dash app (GT instances / fragments / SSNet / lm_score) with detector outline, MicroBooNE-style figure layout matching `tools/viz_archive/visualize_larmatch_h5data.py`. Reads the same config so what's shown is exactly what the model will see.
 
 ### Phase 2b — Optional voxel-level feature cache *(deferred until profiling)*
 

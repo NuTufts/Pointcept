@@ -620,19 +620,19 @@ python lartpc/data_prep/archive/shower_origin/convert_larlite_to_showerorigin_h5
 
 **Output file naming:** `showerorigin_<input_basename>_entry<NNNNNN>.h5`
 
-### Reco Visualization: `tools/visualize_shower_origin_reco.py`
+### Reco Visualization: `tools/viz_archive/visualize_shower_origin_reco.py`
 
 Interactive Dash/Plotly 3D viewer for inspecting the reco HDF5 output.
 
 ```bash
 # Single file
-python tools/visualize_shower_origin_reco.py --input /path/to/event.h5
+python tools/viz_archive/visualize_shower_origin_reco.py --input /path/to/event.h5
 
 # Directory of files
-python tools/visualize_shower_origin_reco.py --input-dir ./showerorigin_h5/
+python tools/viz_archive/visualize_shower_origin_reco.py --input-dir ./showerorigin_h5/
 
 # File list
-python tools/visualize_shower_origin_reco.py --data-list /path/to/filelist.txt
+python tools/viz_archive/visualize_shower_origin_reco.py --data-list /path/to/filelist.txt
 ```
 
 **Panels:**
@@ -787,10 +787,10 @@ The model operates in normalized coordinates. To convert predicted distances bac
 ## Inference and Visualization
 
 - **Batch inference**: `tools/run_shower_origin_inference.py`
-- **Interactive visualization (MC data)**: `tools/visualize_shower_origin_inference.py`
-- **Data loader visualization**: `tools/visualize_shower_origin.py` — Dash 3-panel viewer: shower mask, origin_distance, Gaussian target
-- **Reco data visualization**: `tools/visualize_shower_origin_reco.py`
-- **Raw HDF5 viewer**: `lartpc_data_prep/vis_shower_fragments.py`
+- **Interactive visualization (MC data)**: `tools/viz_archive/visualize_shower_origin_inference.py`
+- **Data loader visualization**: `tools/viz_archive/visualize_shower_origin.py` — Dash 3-panel viewer: shower mask, origin_distance, Gaussian target
+- **Reco data visualization**: `tools/viz_archive/visualize_shower_origin_reco.py`
+- **Raw HDF5 viewer**: `tools/viz_archive/vis_shower_fragments.py`
 
 ---
 
@@ -836,10 +836,10 @@ The model operates in normalized coordinates. To convert predicted distances bac
 
 | File | Description |
 |---|---|
-| `tools/visualize_shower_origin.py` | Dash 3-panel viewer for data loader output |
-| `tools/visualize_shower_origin_inference.py` | Interactive inference visualization |
-| `tools/visualize_shower_origin_reco.py` | Reco HDF5 3D viewer |
-| `lartpc_data_prep/vis_shower_fragments.py` | Raw HDF5 3D viewer |
+| `tools/viz_archive/visualize_shower_origin.py` | Dash 3-panel viewer for data loader output |
+| `tools/viz_archive/visualize_shower_origin_inference.py` | Interactive inference visualization |
+| `tools/viz_archive/visualize_shower_origin_reco.py` | Reco HDF5 3D viewer |
+| `tools/viz_archive/vis_shower_fragments.py` | Raw HDF5 3D viewer |
 | `docs/LArTPC_HDF5_Data_Format.md` | HDF5 schema documentation |
 | `docs/shower_fragment_origin_spec.md` | Shower fragment origin implementation specification |
 

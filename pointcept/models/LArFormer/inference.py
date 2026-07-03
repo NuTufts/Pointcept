@@ -4,7 +4,7 @@ This module hosts the per-event prediction extraction code that both
 inference CLIs use:
 
   - `slicer_predict_event(...)` — builds the per-event dict that
-    `tools/run_slicer_inference.py` writes per event. Output schema is
+    `tools/larformer/run_slicer_inference.py` writes per event. Output schema is
     the canonical "slicerpred" schema consumed by
     `visualize_larformer_gt.py` (and any analyzer that walks per-event
     HDF5).
@@ -21,7 +21,7 @@ inference CLIs use:
     `stage3/...`, `stage3_queries/...`, etc.).
 
 The slicer functions were extracted verbatim from
-`tools/run_slicer_inference.py` so the slicer CLI's behavior is
+`tools/larformer/run_slicer_inference.py` so the slicer CLI's behavior is
 unchanged after the refactor. Stage-3 functions mirror the slicer
 structure key-for-key under `stage3/` prefixes so a stage3pred file
 written in full-cascade mode is also a valid slicerpred file (the

@@ -62,7 +62,7 @@ import plotly.graph_objects as go
 # detectoroutline lives one dir up (lartpc_data_prep/).
 _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.abspath(os.path.join(_HERE, "..", "..", "..")))
-from lartpc_data_prep.detectoroutline import DetectorOutline  # noqa: E402
+from lartpc.viz.detector import DetectorOutline  # noqa: E402
 
 # reuse the reco's de-double-counted calorimetric charge (trajfit/calo.py):
 # each wire pixel's ADC is split among the spacepoints sharing it, so summing the

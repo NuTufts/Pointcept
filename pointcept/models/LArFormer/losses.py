@@ -16,7 +16,7 @@ Deep supervision: families 1 and 2 are summed over the init prediction +
 every decoder layer. Family 3 is computed once per event (level tokens
 don't change through the decoder).
 
-Public helpers (also used by `tools/visualize_larformer_gt.py`):
+Public helpers (also used by `tools/viz/visualize_larformer_gt.py`):
 
     build_per_level_instance_mask(level_out, gt_instances)
         → (K, M_level) float in {0, 1}

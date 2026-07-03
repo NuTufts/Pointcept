@@ -52,7 +52,7 @@ The data loader is deterministic for full-cascade inference:
   (`np.random.permutation`, `pointcept/datasets/larformer.py:440`) but it only
   fires when `max_spacepoints` is set **and** exceeded. The full-cascade
   inference forces `ds_cfg["max_spacepoints"] = None`
-  (`tools/run_larformer_stage3_inference.py`, `run_full_cascade_mode`), so it
+  (`tools/larformer/run_larformer_stage3_inference.py`, `run_full_cascade_mode`), so it
   never runs. **(If you reuse the dataset with a `max_spacepoints` cap, this
   becomes a real per-run input-level source — seed it.)**
 - The larmatch-score pre-filter uses a *fixed* `lm_score_val_threshold` for the
@@ -118,7 +118,7 @@ different slicer and segmenter inputs.
 
 ## 3. The fix: bit-exact on a fixed GPU
 
-`tools/run_larformer_stage3_inference.py` provides `--deterministic`, which calls
+`tools/larformer/run_larformer_stage3_inference.py` provides `--deterministic`, which calls
 `set_deterministic()` **before the model is built**:
 
 ```python
@@ -151,7 +151,7 @@ in the cascade path has a deterministic implementation.
 
 ```bash
 # direct
-python tools/run_larformer_stage3_inference.py ... --deterministic
+python tools/larformer/run_larformer_stage3_inference.py ... --deterministic
 
 # via the single-photon Stage-B wrapper (also exports CUBLAS_WORKSPACE_CONFIG)
 DETERMINISTIC=1 source run_stageB_capped.sh <config> <list> <outdir>
@@ -200,7 +200,7 @@ in a trio differed by **up to 985 cm with an endpoint-existence flip** — a
 discrete amplifier flip (§2.3), purely from processing position.
 
 **Fix — re-seed before every event** (`reseed_per_event()` in
-`tools/run_larformer_stage3_inference.py`, called at the top of each event loop
+`tools/larformer/run_larformer_stage3_inference.py`, called at the top of each event loop
 in `--deterministic` mode):
 
 ```python
@@ -400,7 +400,7 @@ about standardizing and gating the software stack, not inflating error bars.
 
 | What | Where |
 |------|-------|
-| `--deterministic` flag + `set_deterministic()` | `tools/run_larformer_stage3_inference.py` |
+| `--deterministic` flag + `set_deterministic()` | `tools/larformer/run_larformer_stage3_inference.py` |
 | Stage-B env knob `DETERMINISTIC=1` | `lartpc/larformer_analysis/physics/single_photon/run_stageB_capped.sh` |
 | Same-GPU bit-exact validation (4× run + diff) | `.../single_photon/slurm/submit_determinism_test.sh`, `determinism_diff.py` |
 | Pinned single-node sweep (+ `base_dup` control) | `.../single_photon/slurm/submit_deghost_compare_3k_pin.sh` |

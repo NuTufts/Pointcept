@@ -33,9 +33,9 @@ configs/lartpc/
 
 | Purpose | Config | Used by |
 |---|---|---|
-| Full-cascade keypoint2 inference | `larformer/stage4_keypoint/larformer-keypoint2-fullcascade.py` | `tools/run_larformer_keypoint2_cascade_inference.py`, keypoint_v2 submit scripts |
+| Full-cascade keypoint2 inference | `larformer/stage4_keypoint/larformer-keypoint2-fullcascade.py` | `tools/larformer/run_larformer_keypoint2_cascade_inference.py`, keypoint_v2 submit scripts |
 | Full-cascade Stage-3 inference (official data pipeline) | `larformer/stage3_particle/larformer-particle-fullcascade-ptv3crosslevel.py` | Default in `lartpc/data_prep/uboone_official/run_stepB_cascade_wconfig.sh` |
-| Stage-1+2 cache building | `larformer/stage3_particle/larformer-particle-v1.py` | `tools/build_stage12_cache_{event,shard}.py`, `tools/benchmark_larformer_s3_cascade.py` |
+| Stage-1+2 cache building | `larformer/stage3_particle/larformer-particle-v1.py` | `tools/build_stage12_cache_{event,shard}.py`, `tools/larformer/benchmark_larformer_s3_cascade.py` |
 
 ## Conventions
 

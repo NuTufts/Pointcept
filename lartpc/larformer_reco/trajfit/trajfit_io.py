@@ -1,7 +1,7 @@
 """Per-instance track loader for the trajectory-fitting spike.
 
 Yields one record per predicted particle instance from a `keypoint2_out` event
-H5 (the product of tools/run_larformer_keypoint2_cascade_inference.py), with
+H5 (the product of tools/larformer/run_larformer_keypoint2_cascade_inference.py), with
 optional enrichment from the parent `merged_sp` event H5 (charge weights + MC
 truth). See `../trajectory_fitting_brief.md` §2 for the schema.
 

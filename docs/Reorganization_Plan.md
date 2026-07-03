@@ -19,7 +19,7 @@ for the config reorg: it should be obvious from the directory layout alone.
 | LArFormer Stage 2 — event slicing | `larformer-slicer-v1-cascaded-ptv3hybrid-crosslevel.py` | |
 | LArFormer Stage 3 — particle segmentation | `larformer-particle-v1-cached-ptv3crosslevel-decaylrsched.py` | Final decay-LR run, warm-started from a flat-LR run of `larformer-particle-v1-cached-ptv3crosslevel.py` |
 | LArFormer Stage 4 — keypoints | `larformer-keypoint2-particle-predmask-cached-v1.py` | |
-| Full-cascade inference (keypoint2) | `larformer-keypoint2-fullcascade.py` | Used by `tools/run_larformer_keypoint2_cascade_inference.py` |
+| Full-cascade inference (keypoint2) | `larformer-keypoint2-fullcascade.py` | Used by `tools/larformer/run_larformer_keypoint2_cascade_inference.py` |
 | Full-cascade inference (stage 3, official data pipeline) | `larformer-particle-fullcascade-ptv3crosslevel.py` | Default in `larformer_scripts/run_stepB_cascade_wconfig.sh` |
 | Stage-1+2 cache building | `larformer-particle-v1.py` | Referenced by `tools/build_stage12_cache_{event,shard}.py`, `benchmark_larformer_s3_cascade.py` |
 
@@ -270,7 +270,7 @@ Convert **lazily**: only the actively used displays (`visualize_lartpc_h5data.py
 `visualize_larformer_gt.py`, `visualize_keypoint2_cascade_*`, the cascade reco
 visualizer) are rewritten against it. The Sonata t-SNE/UMAP/PCA family and other
 stage-specific one-offs move untouched to `tools/viz_archive/`. Also move
-`pointcept/models/LArFormer/viz_inference.py` out of the model package into this area.
+`lartpc/viz/larformer_inference.py` out of the model package into this area.
 
 ## 7. Documentation restructure
 

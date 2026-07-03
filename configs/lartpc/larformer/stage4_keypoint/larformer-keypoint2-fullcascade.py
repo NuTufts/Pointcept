@@ -1,7 +1,7 @@
 """LArFormer Keypoint v2 — SINGLE-CONFIG full-cascade INFERENCE.
 
 Wires the whole attempt-2 keypoint inference pipeline from ONE config so that
-`tools/run_larformer_keypoint2_cascade_inference.py` needs only `--config`
+`tools/larformer/run_larformer_keypoint2_cascade_inference.py` needs only `--config`
 (replacing the old --cascade-config + --keypoint-config + --particle-weights +
 --keypoint-weights quartet).
 

@@ -524,7 +524,7 @@ posteriors can be done offline via `dedup_winner_idx`.
    floor; thread `dedup_iou_threshold` kwarg through
    `stage3_predict_event` as well; emit §7.4 keys.
 3. CLI: `--dedup-iou-threshold` (default 0.6; `0` disables) in
-   `tools/run_larformer_stage3_inference.py`, forwarded in BOTH
+   `tools/larformer/run_larformer_stage3_inference.py`, forwarded in BOTH
    cached and full-cascade modes; stamp into `stage3_meta`.
 4. Validate on the val cache with the current checkpoint:
    - before/after visual on the known duplicate events

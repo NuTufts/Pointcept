@@ -6,7 +6,7 @@ runs end-to-end on RAW per-event merged_h5 (the output of
 `lartpc/data_prep/uboone_official/convert_dlmerged_to_larformer_h5.py`).
 
 Used by:
-    tools/run_larformer_stage3_inference.py --input-mode full-cascade
+    tools/larformer/run_larformer_stage3_inference.py --input-mode full-cascade
 
 Cascade composition (all frozen at inference):
     Stage 1  SonataLoRADeghostSegmentor   (per-SP real/ghost)

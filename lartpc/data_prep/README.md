@@ -14,7 +14,7 @@ Steps (each a `*_wconfig.sh` driven by a per-sample config in `lantern_configs/`
 2–4. `run_step234_pointcept_wconfig.sh` — `convert_larlite_to_pointcept_h5.py`,
    `process_dlmerged_to_hdf5_event_files.py`, `merge_reco_truth_showerorigin.py`
 5. `run_step5_flashinfo_pointcept_wconfig.sh` — flash-info H5
-   (`../labels/prepare_flashinfo_h5.py`)
+   (`lartpc/flashmatch/prepare_flashinfo_h5.py`)
 
 ## uboone_official/ — official MicroBooNE sim/data
 
@@ -28,7 +28,8 @@ to H5 (`convert_dlmerged_to_larformer_h5.py`), Stage B runs full-cascade inferen
 
 Shared ground-truth label makers: `slice_labels.py` (particle/slice labels — imported
 by scripts as `lartpc.data_prep.labels.slice_labels`), `keypoint_labels.py`,
-`shower_fragment_merger.py`, `prepare_flashinfo_h5.py`, `build_photonlib_cache.py`.
+`shower_fragment_merger.py`. Flash-info and photon-library tools moved to
+`lartpc/flashmatch/`.
 
 ## validation/
 

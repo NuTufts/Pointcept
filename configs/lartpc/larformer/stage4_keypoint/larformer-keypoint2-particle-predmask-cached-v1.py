@@ -3,13 +3,13 @@ cache (fast variant of larformer-keypoint2-particle-predmask-v1.py).
 
 Same training as the live predicted-mask config — per-particle MAIN path on the
 segmenter's PREDICTED masks, DN path on GT masks — but the predicted masks are
-READ from the cache (precomputed by tools/augment_stage12_cache_pred_masks.py)
+READ from the cache (precomputed by tools/larformer/augment_stage12_cache_pred_masks.py)
 instead of running the frozen segmenter live each step. So NO second backbone in
 VRAM and NO ~2x per-step cost.
 
 PREREQUISITE: augment the (no-cap) cache with predicted masks first:
     for SPLIT in train val; do
-      python tools/augment_stage12_cache_pred_masks.py \\
+      python tools/larformer/augment_stage12_cache_pred_masks.py \\
         --keypoint-config configs/lartpc/larformer/stage4_keypoint/larformer-keypoint2-particle-v1.py \\
         --cache-root <CACHE_ROOT>/$SPLIT \\
         --particle-config configs/lartpc/larformer/stage3_particle/larformer-particle-fullcascade-ptv3crosslevel.py \\

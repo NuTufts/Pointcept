@@ -112,7 +112,7 @@ if [ -n "${FLASH_RECOVER_K:-}" ] && [ "${FLASH_RECOVER_K}" -gt 0 ] 2>/dev/null; 
     echo "  flash recover: K=${FLASH_RECOVER_K} chi2<=${FLASH_RECOVER_CHI2_MAX:-500} oob<=${FLASH_RECOVER_OOB_MAX:-0.05} augment_all=${FLASH_RECOVER_AUGMENT_ALL:-0}"
 fi
 
-python3 "${POINTCEPT_DIR}/tools/run_larformer_stage3_inference.py" \
+python3 "${POINTCEPT_DIR}/tools/larformer/run_larformer_stage3_inference.py" \
     --input-mode full-cascade \
     --config "${LARFORMER_CASCADE_CONFIG}" \
     --weights "${REPREFIXED_CKPT}" \

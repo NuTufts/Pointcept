@@ -27,7 +27,7 @@ import torch
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _REPO = os.path.abspath(os.path.join(_HERE, "..", "..", "..", ".."))  # pointcept repo root
 sys.path.insert(0, _REPO)                          # for pointcept.*
-sys.path.insert(0, os.path.join(_REPO, "tools"))   # for run_larformer_stage3_inference
+sys.path.insert(0, os.path.join(_REPO, "tools", "larformer"))   # for run_larformer_stage3_inference
 from run_larformer_stage3_inference import (   # noqa: E402
     set_deterministic, _move_batch, _resolve_cascaded_slicer)
 

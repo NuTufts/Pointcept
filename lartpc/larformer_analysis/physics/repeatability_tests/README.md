@@ -22,7 +22,7 @@ that call `torch.randperm` per event and were **not gated by eval mode**, so at
 inference each consumed the global RNG and made an event's output depend on its
 predecessors:
 1. `shuffle_orders=True` on the deghoster PTv3 — fixed in the config + a defensive
-   disable in `tools/run_larformer_stage3_inference.py` (`run_full_cascade_mode`).
+   disable in `tools/larformer/run_larformer_stage3_inference.py` (`run_full_cascade_mode`).
 2. `CrossLevelAttn.max_source_tokens_per_level` token subsample — fixed by gating
    `_maybe_subsample` on `not self.training` (`pointcept/models/LArFormer/refiners/cross_level.py`).
 
@@ -110,7 +110,7 @@ attention (→ `shuffle_orders`) and the slicer `token_refiner` (→ `max_source
 - `../single_photon/analyze_1g0X.py` — `reco_label` (used by `determinism_diff.py`).
 - `../single_photon/workdir_scale/cascade_inputs_1g0X.txt` — the test event list.
 - `../../larformer_scripts/larformer_configs/single_photon_scale1500.conf` — checkpoints/paths.
-- `pointcept/tools/run_larformer_stage3_inference.py` — `set_deterministic` + cascade helpers (imported by the capture scripts).
+- `pointcept/tools/larformer/run_larformer_stage3_inference.py` — `set_deterministic` + cascade helpers (imported by the capture scripts).
 - Container `pointcept_cuml.sif`; the `ubdl` env. **Edit the hard-coded paths at the top of each `slurm/*.sh` for a new cluster.**
 
 ## New-cluster checklist (e.g. Polaris)

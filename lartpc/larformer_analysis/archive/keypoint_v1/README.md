@@ -403,7 +403,7 @@ offset/query heads address. Run inside the pointcept container
 `python lartpc/larformer_analysis/archive/keypoint_v1/test_phase0_dataloader.py`.
 
 **Cache path — ✅ DONE (verified):**
-* `tools/augment_stage12_cache_keypoints.py` — copies `entry_0/mckeypoints`
+* `tools/larformer/augment_stage12_cache_keypoints.py` — copies `entry_0/mckeypoints`
   from each cache file's source merged_h5 (resolved via the `source_h5` attr,
   indexed by basename under `--merged-root`) into the cache. In-place or
   `--output-dir` copy mode; idempotent; multiprocessing. CPU-only, ~280
@@ -718,7 +718,7 @@ pending real training):**
   the query head is actually trained via the config.)
 
 **Full-cascade inference integration — DONE (step 3):**
-* `tools/run_larformer_fullcascade_inference.py` — extends the stage-3 script's
+* `tools/larformer/run_larformer_fullcascade_inference.py` — extends the stage-3 script's
   full-cascade path (deghoster + slicer + particle segmenter) and writes
   KEYPOINTS into each per-event H5 under `keypoints/...`
   (`pos_cm`/`type`/`score`/`source`/`class_id`/`query_id`/`kind`, +
@@ -757,7 +757,7 @@ pending real training):**
   keypoint heads — pipeline validated; values become meaningful after the
   query head is trained via `larformer-keypoint-query-v1.py`.)
 
-**Visualization — DONE:** `tools/visualize_full_cascade.py` now reads
+**Visualization — DONE:** `tools/viz/visualize_full_cascade.py` now reads
 `keypointpred_*.h5` (as well as `stage3pred_*.h5`) and overlays the predicted
 keypoints on the PREDICTION scene — one legend trace per type (query
 start/end + shower, dense vertex/michel/delta) with type-specific
@@ -784,7 +784,7 @@ between the particle masks and the keypoints.
   * `LArFormerKeypointEvaluator` (`dedup_iou_threshold=0.6`, set in
     `larformer-keypoint-query-v1.py`) — computes `eff` in `_on_event_processed`
     and passes it to `decode_query_points`.
-  * `tools/run_larformer_fullcascade_inference.py::decode_keypoints_for_event` —
+  * `tools/larformer/run_larformer_fullcascade_inference.py::decode_keypoints_for_event` —
     computes `eff` from `ev_pred["mask_logits"]["spacepoint"]` (guarded on the
     mask existing and `--dedup-iou-threshold > 0`) and passes `effective_argmax`
     to `decode_event_keypoints`. Uses the same `--dedup-iou-threshold` the
@@ -856,7 +856,7 @@ Update this as work lands. Format: `[ ]` todo, `[~]` in progress, `[x]` done.
 | 4 | End-to-end dense eval on dev cache | [x] | **nu_vertex R=1.0 @~0.2cm** (overfit) — validates vertex-from-dense |
 | 4 | Query-head eval + dense/query reconcile | [x] | `eval_phase4_query.py`; track_start P@10cm=0.86; reconcile unit-tested |
 | 4 | Training-loop keypoint evaluator hook | [x] | `LArFormerKeypointEvaluator`; logs val/kp_R/P per type; `test_phase4_eval_hook.py` PASS |
-| 4 | Full-cascade inference integration (keypoints in H5) | [x] | `tools/run_larformer_fullcascade_inference.py`; validated on raw event |
+| 4 | Full-cascade inference integration (keypoints in H5) | [x] | `tools/larformer/run_larformer_fullcascade_inference.py`; validated on raw event |
 | 4 | ROOT output integration | [deferred] | not needed yet (per user); H5 `keypoints/` is the deliverable |
 
 ---

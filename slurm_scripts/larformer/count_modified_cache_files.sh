@@ -3,7 +3,7 @@
 # Count (and optionally list) cache .h5 files modified after a timestamp.
 #
 # Use this to watch the in-place augment job
-# (tools/augment_stage12_cache_pred_masks_shard.py) make progress: it rewrites
+# (tools/larformer/augment_stage12_cache_pred_masks_shard.py) make progress: it rewrites
 # each file as it adds pred_instances, so "modified after launch time" == "done".
 #
 # Usage:

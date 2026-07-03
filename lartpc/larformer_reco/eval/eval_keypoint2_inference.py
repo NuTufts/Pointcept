@@ -1,7 +1,7 @@
 """Quantify keypoint-2 performance from the cascade INFERENCE output.
 
 Reads the per-event H5 files written by
-`tools/run_larformer_keypoint2_cascade_inference.py` and computes the SAME
+`tools/larformer/run_larformer_keypoint2_cascade_inference.py` and computes the SAME
 per-particle keypoint metrics as the training-time evaluator
 (`LArFormerLevelKeypointEvaluator`), so you get a number instead of eyeballing
 the 3D viz — and you can compare runs (e.g. `--particle-source predicted` vs

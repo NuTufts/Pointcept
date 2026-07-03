@@ -18,7 +18,7 @@ cascade's dense per-level score outputs.
 ## 1. Motivation
 
 The cascade inference tool
-(`tools/run_larformer_keypoint2_cascade_inference.py`) already emits a
+(`tools/larformer/run_larformer_keypoint2_cascade_inference.py`) already emits a
 *single* decoded nu vertex (score-weighted centroid of spacepoints above a
 threshold) and *per-particle* start/end points (from the query decoder). What it
 does **not** do is reconstruct **all** keypoints directly from the dense score
@@ -88,7 +88,7 @@ uncorrelated by construction.) See `_fit_cluster_CARUANA` for the goodness-of-fi
 ## 3. Inputs — the cascade dense score maps
 
 The new tool consumes the **score-map** output of
-`tools/run_larformer_keypoint2_cascade_inference.py --save-score-maps`
+`tools/larformer/run_larformer_keypoint2_cascade_inference.py --save-score-maps`
 (see `_decode_event` / `_write_event_h5` in that file). Per event H5:
 
 ```
@@ -442,7 +442,7 @@ floor for trusting a peak.
   the subtraction term, the pass loop structure, `KPCluster` field set.
 - `lartpc/data_prep/labels/keypoint_labels.py`: σ and the keypoint-type enum — the
   generative model we invert.
-- `tools/run_larformer_keypoint2_cascade_inference.py`: `--save-score-maps`
+- `tools/larformer/run_larformer_keypoint2_cascade_inference.py`: `--save-score-maps`
   writer (the input format), `_decode_event` (the `to_cm` affine, for Option B).
 
 New code: the `reco/` package in §5 (no ROOT / larflow link).

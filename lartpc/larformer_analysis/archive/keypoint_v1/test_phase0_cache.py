@@ -5,7 +5,7 @@ LArFormerStage12CacheDataset(emit_keypoints=True) and verifies the same
 properties as the raw-path test: `kpscores` (N,6) in [0,1] aligned to the
 cache's coord, per-type peaks near GT keypoints, per-instance endpoints, and a
 nu vertex. Run AFTER augmenting the cache with
-tools/augment_stage12_cache_keypoints.py.
+tools/larformer/augment_stage12_cache_keypoints.py.
 
     python lartpc/larformer_analysis/archive/keypoint_v1/test_phase0_cache.py <cache_root>
 """

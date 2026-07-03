@@ -53,7 +53,7 @@ to head against the same truth and metrics (Section 7).
 
 ### 2.1 The two file types and how they relate
 Trajectory fitting consumes **`keypoint2_out/`** (one H5 per event, the cascade-inference product of
-`tools/run_larformer_keypoint2_cascade_inference.py`). **`merged_sp/`** (one H5 per event, the raw
+`tools/larformer/run_larformer_keypoint2_cascade_inference.py`). **`merged_sp/`** (one H5 per event, the raw
 upstream event the cascade ran on) is the **truth source**; it is *optional* for fitting and *required
 only* for richer evaluation (charge weights, full MC tree, true kink vertices). A `keypoint2_out`
 file names its parent via the root attr `src_file` (= the basename of the `merged_sp` file).

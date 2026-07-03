@@ -1,7 +1,7 @@
 #!/bin/bash
 #
 # Inspect the pred_instances group written by
-# tools/augment_stage12_cache_pred_masks_shard.py in a few cache .h5 files.
+# tools/larformer/augment_stage12_cache_pred_masks_shard.py in a few cache .h5 files.
 #
 # For each file it prints the entry_0/pred_instances group attrs (provenance:
 # segmenter_weight, dedup params, shard) and a summary of the first few

@@ -1,7 +1,7 @@
 """Read the cascade ``--save-score-maps`` H5 and write reco keypoints.
 
 Input format — written by
-``tools/run_larformer_keypoint2_cascade_inference.py --save-score-maps``
+``tools/larformer/run_larformer_keypoint2_cascade_inference.py --save-score-maps``
 (see ``_write_event_h5`` there)::
 
     score_maps/<head>/coords_cm   (M,3)   token positions, detector cm

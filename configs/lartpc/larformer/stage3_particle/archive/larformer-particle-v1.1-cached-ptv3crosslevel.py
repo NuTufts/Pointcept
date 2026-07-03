@@ -19,7 +19,7 @@ Deltas from `larformer-particle-v1-cached-ptv3crosslevel.py` (v1.0):
     `reduce="amax"` with a label_remap that pushed everything to
     no_object — a degenerate signal. v1.1 reads `particle_class_id`
     (the per-SP class label written to caches by
-    `tools/augment_stage12_cache_particle_class_id.py`) and uses
+    `tools/larformer/augment_stage12_cache_particle_class_id.py`) and uses
     `reduce="soft_presence"`, which produces a per-voxel uniform-over-
     present-classes target. Easier to learn than the count-proportional
     `soft_distribution` variant; doesn't ask the model to memorize the
@@ -62,7 +62,7 @@ Notes:
     decoder all start random, so gradients can spike in the first
     ~hundred iters.
   - Caches MUST be augmented with `entry_0/particle_class_id` (run
-    `tools/augment_stage12_cache_particle_class_id.py` on the cache
+    `tools/larformer/augment_stage12_cache_particle_class_id.py` on the cache
     root) before training. Without that, the dataset emits all -1 for
     `particle_class_id` and the cls supervision becomes a no-op.
 """
@@ -207,7 +207,7 @@ particle_levels = [
             #   label_src: per-SP `particle_class_id` (0..5 visible
             #     classes, -1 = SP not in any GT particle = Stage-2
             #     false positive). Must be present in the cache —
-            #     run `tools/augment_stage12_cache_particle_class_id.py`
+            #     run `tools/larformer/augment_stage12_cache_particle_class_id.py`
             #     to write it.
             #
             #   reduce: "soft_presence" produces a per-voxel uniform-

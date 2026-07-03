@@ -31,9 +31,9 @@ from collections import Counter, defaultdict
 
 REPO = "/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept"
 sys.path.insert(0, REPO)
-from lartpc.larformer_analysis.slicer_eval.lib.flash_predict import (   # noqa: E402
+from lartpc.flashmatch.flash_predict import (   # noqa: E402
     predict_many_slices_pe, select_charge_y_with_uv_fallback_np)
-from lartpc.larformer_analysis.slicer_eval.lib.flash_chi2 import neyman_chi2  # noqa: E402
+from lartpc.flashmatch.flash_chi2 import neyman_chi2  # noqa: E402
 
 PHOTON_PDG = 22
 VOX = 1.0

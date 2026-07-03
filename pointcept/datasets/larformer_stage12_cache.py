@@ -1,7 +1,7 @@
 """Stage-1+2 cache reader for Stage-3 LArFormer training.
 
 Reads per-event HDF5 cache files produced by
-`tools/build_stage12_cache_event.py` and emits dicts in the SAME shape
+`tools/larformer/build_stage12_cache_event.py` and emits dicts in the SAME shape
 as `LArFormerDataset`, so the existing `larformer_collate` and the
 particle segmenter's forward path can consume them unchanged.
 
@@ -180,7 +180,7 @@ class LArFormerStage12CacheDataset(DefaultDataset):
         self.backbone_grid_size_cm = float(backbone_grid_size_cm)
         # Keypoint module: compute the dense kpscores target + per-instance
         # endpoints + nu-vertex on-the-fly from the cache's `mckeypoints`
-        # group (added by tools/augment_stage12_cache_keypoints.py or the
+        # group (added by tools/larformer/augment_stage12_cache_keypoints.py or the
         # updated cache builder). Off by default; mirrors LArFormerDataset.
         self.emit_keypoints = bool(emit_keypoints)
         self.keypoint_sigma_cm = float(keypoint_sigma_cm)
@@ -333,7 +333,7 @@ class LArFormerStage12CacheDataset(DefaultDataset):
             source_mask = e0["source_mask"][:].astype(np.uint8)
             stage2_prob = e0["stage2_nu_mask_prob"][:].astype(np.float32)
             # Per-SP particle class id, added by
-            # `tools/augment_stage12_cache_particle_class_id.py`. Older
+            # `tools/larformer/augment_stage12_cache_particle_class_id.py`. Older
             # caches (built before the augment tool ran) lack this field
             # — fall back to all -1 (= cls loss ignore_index) so the
             # dataset still loads. If the user runs a config that needs

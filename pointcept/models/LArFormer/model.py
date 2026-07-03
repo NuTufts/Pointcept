@@ -930,7 +930,7 @@ class LArFormer(nn.Module):
         # by `LArFormerStage12CacheDataset` (= dataset emits 0..5 for
         # visible particles, -1 = no GT). Available only on caches that
         # have been processed by
-        # `tools/augment_stage12_cache_particle_class_id.py`.
+        # `tools/larformer/augment_stage12_cache_particle_class_id.py`.
         for k in ("hasmatch", "origin_label", "ssnet_label",
                   "trackid", "pid", "slice_id", "particle_class_id",
                   "kpscores", "kpoffsets"):

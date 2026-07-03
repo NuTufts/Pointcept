@@ -4,7 +4,7 @@
 # (deghoster + slicer + Stage-3 particle segmenter + keypoint model) over a large
 # input list. The list is split into NSHARDS contiguous chunks; each array task
 # processes one chunk via --start-event / --n-events on
-# tools/run_larformer_keypoint2_cascade_inference.py.
+# tools/larformer/run_larformer_keypoint2_cascade_inference.py.
 #
 # Output filenames carry the GLOBAL dataset index (keypoint2_event{i:05d}_{ei}.h5),
 # so all shards can safely write into the SAME OUTPUT_DIR without collisions.
@@ -83,7 +83,7 @@ nvidia-modprobe -u -c=0 2>/dev/null || true
 apptainer exec --nv --bind /cluster:/cluster "${container}" bash -c "
   cd ${WORKDIR} && \
   source setenv_pointcept_only.sh && \
-  python3 tools/run_larformer_keypoint2_cascade_inference.py \
+  python3 tools/larformer/run_larformer_keypoint2_cascade_inference.py \
     --config ${CONFIG} \
     --input-list ${INPUT_LIST} \
     --output-dir ${OUTPUT_DIR} \

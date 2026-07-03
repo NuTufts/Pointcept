@@ -1,7 +1,7 @@
 """Per-event analyzer for the LArFormer Stage-3 particle segmenter.
 
 Thin transformer: reads a `stage3pred_<stem>.h5` produced by
-`tools/run_larformer_stage3_inference.py`, distills the few records
+`tools/larformer/run_larformer_stage3_inference.py`, distills the few records
 needed for validation metrics, writes either
 `perevent_<stem>.h5` (event has GT and inference succeeded) or
 `skipped_<stem>.h5` (no GT, or event was dropped) into `--output-dir`.

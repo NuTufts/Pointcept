@@ -1,6 +1,6 @@
 """Per-level merger-rate aggregator for slicer predictions.
 
-Reads the `slicerpred_*.h5` files produced by `tools/run_slicer_inference.py`
+Reads the `slicerpred_*.h5` files produced by `tools/larformer/run_slicer_inference.py`
 and reports, at each emitted level (spacepoint + every voxel level), the
 fraction of predicted slices that over-cluster — i.e. claim a meaningful
 fraction of tokens from more than one GT slice.

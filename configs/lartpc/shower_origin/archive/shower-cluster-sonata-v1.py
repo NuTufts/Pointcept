@@ -12,7 +12,7 @@ Defaults are tuned for a Phase 8 one-event smoke test on a single P100:
 batch_size=1, epoch=1, num_worker=0, evaluate=False. Bump these for real
 training runs.
 
-The visualizer at tools/visualize_shower_clustering.py reads this config so
+The visualizer at tools/viz_archive/visualize_shower_clustering.py reads this config so
 the GT labels shown match what the model sees during training.
 """
 

@@ -70,7 +70,7 @@ for attempt in 1 2 3; do
   apptainer exec --nv --bind /cluster:/cluster "${container}" bash -c "
     cd ${WORKDIR} && \
     source setenv_pointcept_only.sh && \
-    python3 tools/run_larformer_keypoint2_cascade_inference.py \
+    python3 tools/larformer/run_larformer_keypoint2_cascade_inference.py \
       --config ${CONFIG} \
       --input-list ${INPUT_LIST} \
       --output-dir ${OUTPUT_DIR} \

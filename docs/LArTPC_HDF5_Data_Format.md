@@ -432,10 +432,10 @@ with h5py.File('data.h5', 'r') as f:
 
 ## Visualization Tool
 
-A visualization tool is available at `tools/visualize_lartpc_h5data.py`:
+A visualization tool is available at `tools/viz/visualize_lartpc_h5data.py`:
 
 ```bash
-python tools/visualize_lartpc_h5data.py /path/to/file.h5 --port 8050
+python tools/viz/visualize_lartpc_h5data.py /path/to/file.h5 --port 8050
 ```
 
 Features:

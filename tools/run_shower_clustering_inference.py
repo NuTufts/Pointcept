@@ -4,7 +4,7 @@ Inference script for ShowerClusteringMask2Former.
 Loads a trained checkpoint, runs the model on a test dataset, writes one
 HDF5 file per event under --output-dir. The per-event H5 schema (see
 write_event_h5 below) is the contract consumed by
-tools/visualize_shower_clustering_inference.py.
+tools/viz_archive/visualize_shower_clustering_inference.py.
 
 Per-spacepoint and per-pair quantities the visualizer needs are
 pre-computed here so the viewer is just dataframe-style reads, not model

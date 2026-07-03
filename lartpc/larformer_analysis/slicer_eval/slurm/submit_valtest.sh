@@ -14,7 +14,7 @@
 # What it does (per SLURM array task):
 #   - reads the SLURM_ARRAY_TASK_ID-th line from RERUN_LINES_FILE (= a fileno)
 #   - selects manifest rows for that fileno
-#   - runs `tools/run_slicer_inference.py` once on those merged H5s
+#   - runs `tools/larformer/run_slicer_inference.py` once on those merged H5s
 #   - runs `analyze_event.py` per surviving event
 #
 # Notes:

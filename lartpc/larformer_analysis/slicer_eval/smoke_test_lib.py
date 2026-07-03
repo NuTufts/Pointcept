@@ -35,9 +35,8 @@ REPO_ROOT = os.path.abspath(
 )
 sys.path.insert(0, REPO_ROOT)
 
-from lartpc.larformer_analysis.slicer_eval.lib import (  # noqa: E402
-    categorize, flash_chi2, flash_predict,
-)
+from lartpc.larformer_analysis.slicer_eval.lib import categorize  # noqa: E402
+from lartpc.flashmatch import flash_chi2, flash_predict  # noqa: E402
 
 
 # Single test event triple — confirmed present locally.

@@ -7,7 +7,7 @@ Two input modes (chosen via --input-mode):
                in-training evaluator sees). Each task gets a contiguous
                slice [task_id*stride : (task_id+1)*stride] of the
                sorted event list, runs Stage-3 inference once on the
-               whole slice via `tools/run_larformer_stage3_inference.py
+               whole slice via `tools/larformer/run_larformer_stage3_inference.py
                --input-mode cached --cache-file-list <list>`, then loops
                `analyze_event.py` per resulting `stage3pred_*.h5`.
 

@@ -19,7 +19,7 @@ equivalent to plurality here; we use amax for consistency with the slicer
 config's priority-pool idiom.
 
 Visualizer compatibility: this config is fully readable by
-`tools/visualize_larformer_gt.py` (the viz never touches the decoder).
+`tools/viz/visualize_larformer_gt.py` (the viz never touches the decoder).
 """
 
 _base_ = ["../../../../_base_/default_runtime.py"]

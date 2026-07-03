@@ -16,7 +16,7 @@ Stage-2 *slicer* analysis, same pattern). Model/architecture context:
 
 ```
 stage3pred_<stem>.h5            per-event inference output
-  (tools/run_larformer_stage3_inference.py — cached or full-cascade mode)
+  (tools/larformer/run_larformer_stage3_inference.py — cached or full-cascade mode)
         │
         ▼  analyze_event.py     one event → perevent_<stem>.h5
                                 (or skipped_<stem>.h5: no GT / dropped)

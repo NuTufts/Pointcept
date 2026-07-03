@@ -28,15 +28,15 @@ import plotly.graph_objects as go
 
 REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", ".."))
 sys.path.insert(0, REPO)
-from lartpc.larformer_analysis.slicer_eval.lib.flash_predict import (   # noqa: E402
+from lartpc.flashmatch.flash_predict import (   # noqa: E402
     predict_many_slices_pe, select_charge_y_with_uv_fallback_np)
-from lartpc.larformer_analysis.slicer_eval.lib.flash_chi2 import neyman_chi2  # noqa: E402
+from lartpc.flashmatch.flash_chi2 import neyman_chi2  # noqa: E402
 
-# Cascade spacepoint displays (same as tools/visualize_full_cascade.py).
+# Cascade spacepoint displays (same as tools/viz/visualize_full_cascade.py).
 import atexit                                                          # noqa: E402
 import tempfile                                                       # noqa: E402
 from pointcept.models.LArFormer.inference import load_event_h5        # noqa: E402
-from pointcept.models.LArFormer.viz_inference import (                # noqa: E402
+from lartpc.viz.larformer_inference import (                # noqa: E402
     figure_for_cascade_slices, figure_for_stage3_prediction,
     figure_for_cascade_gt, cascade_nu_color_options)
 
@@ -46,7 +46,7 @@ _VIZ_CACHE = {}   # stage3pred path -> (pred_dict, gt_dict)
 def _compute_gt(merged_path):
     """Build the GT dict for figure_for_cascade_gt from a merged_h5 (reads it
     twice through LArFormerDataset for slice + particle GT). None if no MC truth.
-    Replicated from tools/visualize_full_cascade.py."""
+    Replicated from tools/viz/visualize_full_cascade.py."""
     from pointcept.datasets.larformer import LArFormerDataset
     with h5py.File(merged_path, "r") as f:
         if "entry_0" not in f or "mc_particle_tree" not in f["entry_0"]:

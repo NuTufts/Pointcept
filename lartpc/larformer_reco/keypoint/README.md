@@ -30,7 +30,7 @@ from the residual field → repeat until the running max drops below
 
 ```bash
 # 1. produce score maps:
-python tools/run_larformer_keypoint2_cascade_inference.py \
+python tools/larformer/run_larformer_keypoint2_cascade_inference.py \
     --config configs/lartpc/larformer/stage4_keypoint/larformer-keypoint2-fullcascade.py \
     --input-list <list> --output-dir kp2_out --save-score-maps
 

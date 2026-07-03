@@ -4,7 +4,7 @@ Companion to `larformer-particle-v1.py` (which defined the production
 CascadedParticleSegmenter, used for inference and for cache building).
 This config trains JUST the Stage-3 particle segmenter LArFormer using
 per-event HDF5 caches produced by
-`tools/build_stage12_cache_shard.py`.
+`tools/larformer/build_stage12_cache_shard.py`.
 
 Key delta from `larformer-particle-v1.py`:
 

@@ -8,10 +8,13 @@ lartpc/
 ├── data_prep/            # HDF5 production: training data + official MicroBooNE sim/data
 ├── larformer_reco/       # nu-interaction reconstruction (keypoints, trajfit, eval)
 ├── larformer_analysis/   # model/reco performance analysis (slicer, particle, physics)
-└── (planned)
-    ├── flashmatch/       # shared flash-matching library (from larformer_analysis/slicer_eval/lib)
-    └── viz/              # shared event-display utilities
+├── flashmatch/           # shared flash-matching library (flash_predict, flash_chi2, photonlib)
+└── viz/                  # shared event-display utilities (detector geometry, LArFormer viz)
 ```
+
+Event-display scripts: `tools/viz/` (active) and `tools/viz_archive/` (one-offs);
+LArFormer inference/cache tools: `tools/larformer/`; model smoke tests:
+`tools/smoke_tests/`.
 
 Everything here runs inside the pointcept apptainer container
 (`run_in_tufts_pointcept_container.sh`) with `PYTHONPATH=<repo root>`, except the

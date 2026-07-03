@@ -35,7 +35,7 @@ OUTPUT_ROOT="/cluster/tufts/wongjiradlab/larbys/data/ub_on_tufts/hdf5/larformer_
 
 # start job inside container
 #SBATCH --array=0-63
-# python tools/augment_stage12_cache_pred_masks_shard.py \
+# python tools/larformer/augment_stage12_cache_pred_masks_shard.py \
 #   --keypoint-config configs/lartpc/larformer/stage4_keypoint/larformer-keypoint2-particle-v1.py \
 #   --cache-root /path/to/stage123_cache/train \
 #   --particle-config configs/lartpc/larformer/stage3_particle/larformer-particle-fullcascade-ptv3crosslevel.py \
@@ -44,7 +44,7 @@ OUTPUT_ROOT="/cluster/tufts/wongjiradlab/larbys/data/ub_on_tufts/hdf5/larformer_
 
 apptainer exec --nv --bind /cluster:/cluster $container bash -c "cd ${WORKDIR} && \
   source setenv_pointcept_only.sh && \
-  python3 tools/augment_stage12_cache_pred_masks_shard.py \
+  python3 tools/larformer/augment_stage12_cache_pred_masks_shard.py \
   --keypoint-config ${KP_CONFIG} \
   --cache-root ${CACHE_ROOT} \
   --particle-config ${PARTICLE_CONFIG} \

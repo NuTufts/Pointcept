@@ -23,7 +23,7 @@ files, see
 | Stage | Container | Entrypoint | Output |
 |-------|-----------|------------|--------|
 | A | pointcept | [`convert_dlmerged_to_larformer_h5.py`](convert_dlmerged_to_larformer_h5.py) | `merged_<TAG>_fileno<NNNNN>_entry<N>.h5` |
-| B | pointcept (GPU) | [`run_larformer_stage3_inference.py --input-mode full-cascade`](../../tools/run_larformer_stage3_inference.py) | `stage3pred_<basename>.h5` |
+| B | pointcept (GPU) | [`run_larformer_stage3_inference.py --input-mode full-cascade`](../../tools/larformer/run_larformer_stage3_inference.py) | `stage3pred_<basename>.h5` |
 
 ### Stage A — convert
 
@@ -59,8 +59,8 @@ slicer → ptv3crosslevel particle segmenter) in a single forward via
 `stage3pred_*.h5` carries both the slicer half (`pre/ post/ queries/ gt/
 meta/ levels/`) and the particle half (`stage3/ stage3_queries/ stage3_gt/
 stage3_levels/ stage3_meta/`). Visualize with
-[`tools/visualize_stage3_larformer_from_cached.py --stage3pred-dir`] and
-[`tools/visualize_larformer_gt.py --slicerpred-dir`].
+[`tools/viz/visualize_stage3_larformer_from_cached.py --stage3pred-dir`] and
+[`tools/viz/visualize_larformer_gt.py --slicerpred-dir`].
 
 Config: [`../../configs/lartpc/larformer/stage3_particle/larformer-particle-fullcascade-ptv3crosslevel.py`](../../configs/lartpc/larformer/stage3_particle/larformer-particle-fullcascade-ptv3crosslevel.py)
 (derived from the trained cached config `larformer-particle-v1-cached-ptv3crosslevel.py`).
@@ -76,7 +76,7 @@ schema: [`../../docs/LArFormer_Stage3_TrainingStability.md`](../../docs/LArForme
 
 ### Visualizing the output
 
-[`tools/visualize_full_cascade.py`](../../tools/visualize_full_cascade.py) —
+[`tools/viz/visualize_full_cascade.py`](../../tools/viz/visualize_full_cascade.py) —
 two camera-synced 3D rows: PREDICTION (predicted slices colored by query, with
 the nu-candidate slice rendered as the Stage-3 particle segmentation) and
 GROUND TRUTH (truth slices + nu-slice truth particles). Because Stage B runs
@@ -85,22 +85,22 @@ GT-less, the truth panel is recomputed from the source `merged_h5` via
 enable it. Real-data events (no `mc_particle_tree`) show an empty GT panel.
 
 ```bash
-python tools/visualize_full_cascade.py \
+python tools/viz/visualize_full_cascade.py \
     --stage3pred-dir OUTPUT_DIR/000/000 \
     --merged-dir     OUTPUT_DIR/000/000        # optional, for the GT row
 # open http://<host>:8051
 ```
 
 Runs in the pointcept container, CPU-only (no GPU needed). Built on the same
-`pointcept/models/LArFormer/viz_inference.py` color/figure helpers as
-`tools/visualize_stage3_larformer_from_cached.py` and the slicer overlay in
-`tools/visualize_larformer_gt.py`.
+`lartpc/viz/larformer_inference.py` color/figure helpers as
+`tools/viz/visualize_stage3_larformer_from_cached.py` and the slicer overlay in
+`tools/viz/visualize_larformer_gt.py`.
 
 **Pure-inference, GT-less.** The whole cascade runs with `gt_source="deghost"`
 + `--no-gt`. The frozen 3-class slicer cannot consume 7-class particle GT in
 its eval matcher (CUDA-asserts — see `docs/LArFormer_particlesegment_stage.md`
 §13.2). GT-matched evaluation metrics are a separate concern: for those, use
-the **cached** inference path (`tools/build_stage12_cache_shard.py` →
+the **cached** inference path (`tools/larformer/build_stage12_cache_shard.py` →
 `run_larformer_stage3_inference.py --input-mode cached`), which has the
 `particle_class_id` augmentation and slice-level GT.
 

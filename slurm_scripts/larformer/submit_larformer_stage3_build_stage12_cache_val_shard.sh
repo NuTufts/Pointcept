@@ -38,7 +38,7 @@ SPLIT="val"
 apptainer exec --nv --bind /cluster:/cluster $container bash -c "cd ${WORKDIR} && \
   cd /cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/kpv2_pointcept/ && \
   source setenv_pointcept_only.sh && \
-  python3 tools/build_stage12_cache_shard.py --config ${CONFIG} \
+  python3 tools/larformer/build_stage12_cache_shard.py --config ${CONFIG} \
   --n-shards ${NSHARDS} --shard-id $SLURM_ARRAY_TASK_ID \
   --inputlist ${INPUTLIST} \
   --cache-root ${OUTPUT_ROOT} \

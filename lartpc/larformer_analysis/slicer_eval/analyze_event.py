@@ -3,7 +3,7 @@
 Inputs (per event):
   --merged-h5      MicroBooNE merged H5 (GT triplet + slice info)
   --flashinfo-h5   Extended flashinfo H5 (in-time flash + event_truth)
-  --inference-h5   slicerpred_*.h5 from tools/run_slicer_inference.py
+  --inference-h5   slicerpred_*.h5 from tools/larformer/run_slicer_inference.py
   --output-h5      Where to write the per-event metrics H5
 
 Output: a single `perevent_<run>_<sub>_<evt>.h5` (or, when `--fileno` and
@@ -45,7 +45,7 @@ What it computes:
                when ALL non-rejected slices are sorted by chi-2 asc.
     - M4_nu  = same restricted to model-nu slices.
 
-Defaults are tuned to match `tools/visualize_slice_flash_match.py`'s
+Defaults are tuned to match `tools/viz_archive/visualize_slice_flash_match.py`'s
 γ + readout-factor conventions. Pass --gamma-beam / --gamma-cosmic to
 override.
 
@@ -72,9 +72,8 @@ REPO_ROOT = os.path.abspath(
 )
 sys.path.insert(0, REPO_ROOT)
 
-from lartpc.larformer_analysis.slicer_eval.lib import (  # noqa: E402
-    categorize, flash_chi2, flash_predict,
-)
+from lartpc.larformer_analysis.slicer_eval.lib import categorize  # noqa: E402
+from lartpc.flashmatch import flash_chi2, flash_predict  # noqa: E402
 
 
 DEFAULT_OOB_THRESHOLDS = np.array([0.0, 0.05, 0.10, 0.20, 0.50],

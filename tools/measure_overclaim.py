@@ -1,6 +1,6 @@
 """Per-pair over-claim summary across slicer prediction HDF5s.
 
-Reads `slicerpred_*.h5` files produced by `tools/run_slicer_inference.py`
+Reads `slicerpred_*.h5` files produced by `tools/larformer/run_slicer_inference.py`
 and reports, for each matched (query, GT) pair:
 
   - `pair_iou`   = IoU of the matched query's FULL above-threshold mask
@@ -25,7 +25,7 @@ Requires the inference HDF5 to carry the v2 fields:
   gt/pair_iou, gt/argmax_iou, gt/pred_n_pts, gt/n_truth_points,
   gt/primary_trackid, gt/origin_type, gt/matched_query
 
-(Re-run `tools/run_slicer_inference.py` with the current script version
+(Re-run `tools/larformer/run_slicer_inference.py` with the current script version
 if your HDF5s are missing `gt/argmax_iou` or `gt/pred_n_pts`.)
 
 Usage:
@@ -158,7 +158,7 @@ def main():
               f"diagnostic fields — re-run inference to regenerate)")
     if not all_pair_iou:
         sys.exit("No HDF5s had both pair_iou and argmax_iou. Re-run "
-                 "tools/run_slicer_inference.py with the latest script "
+                 "tools/larformer/run_slicer_inference.py with the latest script "
                  "version.")
 
     pair_iou = np.concatenate(all_pair_iou)

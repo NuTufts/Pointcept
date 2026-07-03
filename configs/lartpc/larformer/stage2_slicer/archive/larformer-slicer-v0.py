@@ -2,7 +2,7 @@
 LArFormer Stage-2 slicer config (v0 / pre-training).
 
 Defines the dataset + model levels used by:
-    - the GT visualizer at tools/visualize_larformer_gt.py
+    - the GT visualizer at tools/viz/visualize_larformer_gt.py
     - (future) a full training run, once a Stage-2 trainer + evaluator land
 
 The model block here is the LArFormer config the trainer / evaluator will

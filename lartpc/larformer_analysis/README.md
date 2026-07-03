@@ -6,9 +6,9 @@ Performance analysis of the LArFormer cascade stages and downstream physics.
 
 - `slicer_eval/` — Stage-2 event-slicer val/test evaluation: 5-stage pipeline
   (manifests → flashinfo → inference+analysis → aggregation → plots) with flash-match
-  χ² ranking and γ tuning. The flash-matching library in `slicer_eval/lib/`
-  (`flash_predict.py`, `flash_chi2.py`) is slated to become the shared
-  `lartpc/flashmatch/` package.
+  χ² ranking and γ tuning. The flash-matching library now lives in the shared
+  `lartpc/flashmatch/` package; `slicer_eval/lib/` keeps the truth
+  categorization (`categorize.py`).
 - `particle_eval/` — Stage-3 particle-segmenter val/test evaluation (mask IoU,
   class accuracy, origin error; per-pair parquet records).
 - `physics/` — physics-level studies:
