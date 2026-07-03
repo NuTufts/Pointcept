@@ -94,7 +94,7 @@ model = dict(
 # =============================================================================
 # The keypoint model trained on a cache rebuilt with a HIGH spacepoint cap; only
 # very noisy events hit it. Match that here so the live nu-slice density tracks
-# training (see lartpc_data_prep/larformer_keypoint_v2/README.md).
+# training (see lartpc/larformer_reco/README.md).
 max_spacepoints = 500_000
 
 _test = dict(_casc.data.test)

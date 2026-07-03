@@ -1,7 +1,7 @@
 """LArFormer Keypoint v2 — Phase 1: slice-level dense classifier.
 
 A SEPARATE keypoint encoder–decoder (attempt 2; see
-lartpc_data_prep/larformer_keypoint_v2/README.md). This config is the
+lartpc/larformer_reco/README.md). This config is the
 slice-level half only:
 
   - own PTv3 backbone: encoder FROZEN (Sonata pretrain), decoder TRAINABLE

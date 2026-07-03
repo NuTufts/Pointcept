@@ -45,8 +45,8 @@ WORKDIR=/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/kpv2_pointcept
 container=/cluster/tufts/wongjiradlabnu/larbys/larbys-container/pointcept_cuml.sif
 
 CONFIG=${CONFIG:-configs/lartpc/larformer/stage4_keypoint/larformer-keypoint2-fullcascade.py}
-INPUT_LIST=${INPUT_LIST:-lartpc_data_prep/larformer_keypoint_v2/inputlists/merged_sp_valdata_all.txt}
-OUTPUT_DIR=${OUTPUT_DIR:-${WORKDIR}/lartpc_data_prep/larformer_keypoint_v2/output/valdata_all_with_score_maps/}
+INPUT_LIST=${INPUT_LIST:-lartpc/larformer_reco/inputlists/merged_sp_valdata_all.txt}
+OUTPUT_DIR=${OUTPUT_DIR:-${WORKDIR}/lartpc/larformer_reco/output/valdata_all_with_score_maps/}
 
 # Stage-3 particle ckpt + keypoint ckpt default from the config; override here.
 PARTICLE_WEIGHTS=${PARTICLE_WEIGHTS:-}

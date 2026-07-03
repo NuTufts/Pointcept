@@ -480,7 +480,7 @@ def main():
                          "defaults this to 500000 to match the training cache "
                          "(only very noisy events hit it); lower it only to "
                          "diagnose density effects. See "
-                         "lartpc_data_prep/larformer_keypoint_v2/README.md.")
+                         "lartpc/larformer_reco/README.md.")
     args = ap.parse_args()
 
     # MUST run before the model is built / any cuBLAS call (sets env + flags).

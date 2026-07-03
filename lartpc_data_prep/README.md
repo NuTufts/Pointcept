@@ -13,11 +13,12 @@ This directory has been reorganized (see `docs/Reorganization_Plan.md` §3):
 Data processing uses code from the [larflow](https://github.com/nutufts/larflow)
 repository, part of the [ubdl](https://github.com/larbys/ubdl) stack.
 
-## Still here (pending later reorg phases)
+- Nu-interaction reconstruction post-processing (former `larformer_keypoint_v2/`)
+  → `lartpc/larformer_reco/`
 
-- `larformer_keypoint_v2/` — nu-interaction reconstruction post-processing;
-  moving to `lartpc/larformer_reco/` in a later phase.
+## Still here (pending the shared-viz-library phase)
+
 - `detectoroutline.py` + `vis_lartpc_hdfdata.py`, `view_particle_gt.py`,
   `vis_shower_fragments.py`, `characterize_fragments.py` — visualization/diagnostic
-  scripts; moving to the shared viz library phase.
+  scripts.
 - `inputlists/` — dataset list files.

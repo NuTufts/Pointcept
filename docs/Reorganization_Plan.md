@@ -33,7 +33,7 @@ types, with **emphasis on single-photon events**. Two prior threads feed this:
 
 - `lartpc/larformer_analysis/physics/single_photon` — worked from particle-segmenter
   output only, exploring the flash-matching machinery.
-- `lartpc_data_prep/larformer_keypoint_v2` — efficiency post nu-interaction reco, also
+- `lartpc/larformer_reco` — efficiency post nu-interaction reco, also
   exploring alternate event slices + eventual flash matching to select single-photon
   events efficiently.
 

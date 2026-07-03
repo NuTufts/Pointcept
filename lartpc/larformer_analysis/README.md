@@ -25,4 +25,4 @@ Performance analysis of the LArFormer cascade stages and downstream physics.
 | `deghost_analysis/` | Ghost-point-removal performance evaluation. |
 | `shower_origin_reco_scripts/` | Shower-origin reconstruction validation (exploratory project). |
 | `extbnb_larmatch/` | ExtBNB + LArMatch H5 conversion/validation for Sonata pre-training data. |
-| `keypoint_v1/` | Keypoint attempt 1: heads on the frozen Stage-3 particle masker. Plateaued short of the 1 cm target; superseded by keypoint v2 (`lartpc_data_prep/larformer_keypoint_v2`, moving to `lartpc/larformer_reco/`). |
+| `keypoint_v1/` | Keypoint attempt 1: heads on the frozen Stage-3 particle masker. Plateaued short of the 1 cm target; superseded by keypoint v2 (`lartpc/larformer_reco`, moving to `lartpc/larformer_reco/`). |

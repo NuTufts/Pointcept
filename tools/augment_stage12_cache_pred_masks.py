@@ -3,7 +3,7 @@
 
 WHY: the per-particle keypoint decoder can train its MAIN path on the frozen
 particle segmenter's PREDICTED masks (so it sees the SAME imperfect masks as at
-inference — see lartpc_data_prep/larformer_keypoint_v2/README.md). Running that
+inference — see lartpc/larformer_reco/README.md). Running that
 segmenter LIVE each step (`main_source="predicted"`) ~doubles batch time. This
 tool precomputes the deduped predicted masks ONCE and stores them in the cache;
 training then reads them (`main_source="predicted_cached"` +
