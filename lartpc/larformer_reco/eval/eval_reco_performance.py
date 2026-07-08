@@ -39,6 +39,8 @@ sys.path.insert(0, os.path.abspath(os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "..", "..", "..")))
 from lartpc.larformer_reco.utils import read_list  # noqa: E402
 from lartpc.larformer_reco.trajfit.calo import dedup_charge  # noqa: E402
+from lartpc.larformer_reco.trajfit.particle_momentum import (  # noqa: E402
+    load_shower_calib)
 
 PID2SP = {11: "e", -11: "e", 22: "gamma", 13: "mu", -13: "mu",
           211: "pi", -211: "pi", 2212: "p"}
@@ -247,9 +249,12 @@ def stage_codes(rec, lowcov=STAGE_LOWCOV):
     return out
 
 
-def print_summary(rec):
+def print_summary(rec, gamma_min_evis=0.0):
     """Per-species efficiency + failure-stage breakdown in coarse KE bins."""
     bins = [0, 50, 100, 200, 400, 800, 1e9]
+    if gamma_min_evis > 0:
+        print(f"\n(gamma denominator: E_vis > {gamma_min_evis:.0f} MeV; "
+              "unconverted/escaping photons excluded)")
     # class-correct efficiency (attached AND right predicted class) = eff_B minus
     # the mis-ID gap; None if the stage inputs aren't in the table.
     ok = (stage_codes(rec) == 0) if "has_instance" in rec else None
@@ -301,18 +306,25 @@ def merge_shards(glob_pat, out, plots):
     if not paths:
         raise SystemExit(f"no shard npz matched {glob_pat!r}")
     parts = {k: [] for k in RECORD_KEYS}
+    meta = {"gamma_min_evis": 0.0, "gamma_evis_calib": 0.0}
     for p in paths:
         with np.load(p, allow_pickle=True) as z:
             for k in RECORD_KEYS:
                 parts[k].append(z[k])
+            for k in meta:
+                if k in z.files:
+                    meta[k] = float(z[k])
     rec = {k: np.concatenate(parts[k]) if parts[k] else np.array([])
            for k in RECORD_KEYS}
-    np.savez(out, species_names=np.array(SPECIES), **rec)
+    np.savez(out, species_names=np.array(SPECIES),
+             gamma_min_evis=np.float64(meta["gamma_min_evis"]),
+             gamma_evis_calib=np.float64(meta["gamma_evis_calib"]), **rec)
     print(f">>> merged {len(paths)} shards -> {len(rec['species'])} true "
           f"particles -> {out}", flush=True)
-    print_summary(rec)
+    print_summary(rec, gamma_min_evis=meta["gamma_min_evis"])
     if plots:
-        _plots(rec, plots)
+        _plots(rec, plots, gamma_min_evis=meta["gamma_min_evis"],
+               a_gamma=meta["gamma_evis_calib"])
 
 
 def main():
@@ -323,6 +335,13 @@ def main():
     ap.add_argument("--nu-reco-dir")
     ap.add_argument("--out", default="eval_records.npz")
     ap.add_argument("--plots", default=None, help="dir for PNGs (needs matplotlib)")
+    ap.add_argument("--gamma-min-evis", type=float, default=20.0,
+                help="photon DENOMINATOR visibility cut [MeV]: nu-origin "
+                     "photons whose de-double-counted charge maps to less "
+                     "visible energy than this (reco gamma calo calib) are "
+                     "excluded -- unconverted/escaping photons should not "
+                     "count as reco failures. 0 disables. Photons only; "
+                     "other species keep the full true-KE denominator.")
     ap.add_argument("--stream", default="nu",
                 help="which reco stream to evaluate: 'nu' (default) or "
                      "'flashmatch'. Requires a stream-specific keypoint2 "
@@ -356,6 +375,11 @@ def main():
     kp_list = read_list(args.keypoint2_list)
     print(f">>> {len(kp_list)} keypoint2, {ntot} merged_sp; "
           f"this shard: [{lo}:{hi}] ({len(msp_items)}); indexing...", flush=True)
+    a_gamma = (float(load_shower_calib()["gamma"])
+               if args.gamma_min_evis > 0 else 0.0)
+    if args.gamma_min_evis > 0:
+        print(f">>> photon denominator: E_vis > {args.gamma_min_evis:.0f} "
+              f"MeV (a_gamma={a_gamma:.5f} MeV/charge)", flush=True)
     kp_index = build_kp_index(kp_list, stream=args.stream)
     nu_reco = preload_nu_reco(args.nu_reco_dir)
     print(f">>> kp_index={len(kp_index)}  nu_reco events={len(nu_reco)}", flush=True)
@@ -416,6 +440,9 @@ def main():
                     rc = int(nr["cls"][j])
             ntsp = int(n_true_sp.get(t, 0))
             qt = q_true.get(t, 0.0)
+            if (sp == "gamma" and args.gamma_min_evis > 0
+                    and a_gamma * qt < args.gamma_min_evis):
+                continue    # unconverted/escaping photon: not in denominator
             cov = q_slice.get(t, 0.0) / qt if qt > 0 else 0.0    # charge coverage
             cov_count = n_in_slice.get(t, 0) / ntsp if ntsp > 0 else 0.0
             rec["species"].append(SP2I[sp])
@@ -435,17 +462,20 @@ def main():
     for k in rec:
         rec[k] = np.asarray(rec[k])
     np.savez(args.out, species_names=np.array(SPECIES),
-             stream=np.array(args.stream), **rec)
+             stream=np.array(args.stream),
+             gamma_min_evis=np.float64(args.gamma_min_evis),
+             gamma_evis_calib=np.float64(a_gamma), **rec)
     print(f">>> {n_ev} events with nu-origin truth, {len(rec['species'])} "
           f"true particles -> {args.out}", flush=True)
 
-    print_summary(rec)
+    print_summary(rec, gamma_min_evis=args.gamma_min_evis)
 
     if args.plots:
-        _plots(rec, args.plots)
+        _plots(rec, args.plots, gamma_min_evis=args.gamma_min_evis,
+               a_gamma=a_gamma)
 
 
-def _plots(rec, outdir):
+def _plots(rec, outdir, gamma_min_evis=0.0, a_gamma=0.0):
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
@@ -477,11 +507,36 @@ def _plots(rec, outdir):
                 eff.append(e)
                 err.append(np.sqrt(e * (1 - e) / N) if N else 0)
             ax.errorbar(ctr, eff, yerr=err, marker="o", ms=3, label=lab)
+        gnote = (f" (denom: E_vis>{gamma_min_evis:.0f} MeV)"
+                 if sp == "gamma" and gamma_min_evis > 0 else "")
         ax.set(xlabel="true KE [MeV]", ylabel="efficiency", ylim=(0, 1.05),
-               title=f"{sp} reco efficiency")
+               title=f"{sp} reco efficiency{gnote}")
         ax.legend(); ax.grid(alpha=0.3)
         fig.tight_layout(); fig.savefig(f"{outdir}/eff_{sp}.png", dpi=110)
         plt.close(fig)
+        # photons: same efficiency curves vs VISIBLE energy (what the
+        # detector had to work with; complements the true-KE view used to
+        # project analysis expectations over true-energy ranges).
+        if sp == "gamma" and a_gamma > 0:
+            evis = a_gamma * np.asarray(rec["q_true"], np.float64)
+            fig, ax = plt.subplots(figsize=(5, 4))
+            for arr, lab in curves:
+                arr = np.asarray(arr).astype(float)
+                eff, err = [], []
+                for lo, hi in zip(edges[:-1], edges[1:]):
+                    b = m & (evis >= lo) & (evis < hi)
+                    N = b.sum()
+                    e = arr[b].mean() if N else np.nan
+                    eff.append(e)
+                    err.append(np.sqrt(e * (1 - e) / N) if N else 0)
+                ax.errorbar(ctr, eff, yerr=err, marker="o", ms=3, label=lab)
+            ax.set(xlabel="visible energy [MeV]", ylabel="efficiency",
+                   ylim=(0, 1.05),
+                   title=f"{sp} reco efficiency vs E_vis{gnote}")
+            ax.legend(); ax.grid(alpha=0.3)
+            fig.tight_layout()
+            fig.savefig(f"{outdir}/eff_vs_evis_{sp}.png", dpi=110)
+            plt.close(fig)
         # slice-coverage distribution (metric C, upstream diagnostic)
         fig, ax = plt.subplots(figsize=(5, 4))
         ax.hist(rec["slice_cov"][m], bins=np.linspace(0, 1, 21), color="C0")

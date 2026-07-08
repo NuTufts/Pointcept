@@ -33,6 +33,12 @@ set -eu
 NSHARDS=${NSHARDS:-10}
 # denominator restriction; blank it (PRIMARIES_ONLY="") for all nu-origin.
 PRIMARIES_ONLY=${PRIMARIES_ONLY:---primaries-only}
+# reco stream to evaluate ('nu' or 'flashmatch'); the KEYPOINT2_LIST must be
+# the matching per-stream list (see regen_kp2_list.sh) and NU_RECO_DIR the
+# nu_reco run made from that same list.
+STREAM=${STREAM:-nu}
+# photon denominator visibility cut [MeV]; 0 disables (see --gamma-min-evis)
+GAMMA_MIN_EVIS=${GAMMA_MIN_EVIS:-20}
 
 # ---- paths ------------------------------------------------------------------
 WORKDIR=/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/kpv2_pointcept
@@ -76,6 +82,8 @@ apptainer exec --bind /cluster:/cluster "${container}" bash -c "
     --out ${OUT} \
     --start ${START} \
     --n ${N} \
+    --stream ${STREAM} \
+    --gamma-min-evis ${GAMMA_MIN_EVIS} \
     ${PRIMARIES_ONLY}
 "
 
