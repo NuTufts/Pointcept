@@ -55,17 +55,32 @@ def _attr_str(h5attrs, key):
     return v.decode() if isinstance(v, bytes) else v
 
 
-def build_kp_index(kp_list):
-    """src_file basename -> (gidx, kp_path). gidx = line index in the list."""
-    idx = {}
+def build_kp_index(kp_list, stream="nu"):
+    """src_file basename -> (gidx, kp_path). gidx = line index in the list.
+
+    `stream`: only index keypoint2 files whose `stream` attr contains this
+    token ('nu' | 'flashmatch'; files without the attr count as 'nu').
+    IMPORTANT: gidx must match the kp list used for the nu_reco run, so use
+    stream-specific lists (see slurm/regen_kp2_list.sh) rather than mixing
+    streams in one list.
+    """
+    idx, n_other = {}, 0
     for gidx, kp in enumerate(kp_list):
         try:
             with h5py.File(kp, "r") as f:
                 src = _attr_str(f.attrs, "src_file")
+                st = _attr_str(f.attrs, "stream") or "nu"
+            if stream not in st.split(","):
+                n_other += 1
+                continue
             if src:
                 idx[os.path.basename(src)] = (gidx, kp)
         except Exception:
             continue
+    if n_other:
+        print(f"  [warn] {n_other} keypoint2 files in the list are not "
+              f"stream '{stream}' and were skipped — their gidx will not "
+              f"match any nu_reco event group; use a stream-specific list.")
     return idx
 
 
@@ -308,6 +323,10 @@ def main():
     ap.add_argument("--nu-reco-dir")
     ap.add_argument("--out", default="eval_records.npz")
     ap.add_argument("--plots", default=None, help="dir for PNGs (needs matplotlib)")
+    ap.add_argument("--stream", default="nu",
+                help="which reco stream to evaluate: 'nu' (default) or "
+                     "'flashmatch'. Requires a stream-specific keypoint2 "
+                     "list + matching nu_reco run.")
     ap.add_argument("--primaries-only", action="store_true",
                     help="denominator = primaries (parent is the nu) only")
     ap.add_argument("--start", type=int, default=0,
@@ -337,7 +356,7 @@ def main():
     kp_list = read_list(args.keypoint2_list)
     print(f">>> {len(kp_list)} keypoint2, {ntot} merged_sp; "
           f"this shard: [{lo}:{hi}] ({len(msp_items)}); indexing...", flush=True)
-    kp_index = build_kp_index(kp_list)
+    kp_index = build_kp_index(kp_list, stream=args.stream)
     nu_reco = preload_nu_reco(args.nu_reco_dir)
     print(f">>> kp_index={len(kp_index)}  nu_reco events={len(nu_reco)}", flush=True)
 
@@ -415,7 +434,8 @@ def main():
             rec["has_instance"].append(t in compl)   # segmenter made an instance
     for k in rec:
         rec[k] = np.asarray(rec[k])
-    np.savez(args.out, species_names=np.array(SPECIES), **rec)
+    np.savez(args.out, species_names=np.array(SPECIES),
+             stream=np.array(args.stream), **rec)
     print(f">>> {n_ev} events with nu-origin truth, {len(rec['species'])} "
           f"true particles -> {args.out}", flush=True)
 

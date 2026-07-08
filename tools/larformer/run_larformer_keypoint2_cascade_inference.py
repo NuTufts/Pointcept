@@ -39,6 +39,9 @@ from pointcept.models.LArFormer.keypoint2_particle import (
     KP_CLS_START, KP_CLS_END)
 from tools.larformer.run_larformer_stage3_inference import (
     _load_weights_into, set_deterministic, reseed_per_event)
+from lartpc.flashmatch.flash_predict import (
+    predict_many_slices_pe, select_charge_y_with_uv_fallback_np)
+from lartpc.flashmatch.flash_chi2 import neyman_chi2, drift_correct, oob_mask
 
 
 def _np(x):
@@ -231,11 +234,13 @@ def _decode_event(ev, inst_list, gt, coord_cm, coord_norm, nu_thresh,
     return out
 
 
-def _write_event_h5(path, dec, attrs):
+def _write_event_h5(path, dec, attrs, flash_tbl=None):
     import h5py
     with h5py.File(path, "w") as f:
         for k, v in attrs.items():
             f.attrs[k] = v
+        if flash_tbl is not None:
+            _write_flash_groups(f, flash_tbl)
         f.attrs["n_particles"] = len(dec["particles"])
         f.attrs["has_gt"] = bool(
             any(p["has_match"] for p in dec["particles"])
@@ -395,6 +400,187 @@ def _write_slice_ids_h5(path, coord_cm, slice_id, p_real, attrs):
         f.attrs["n_cosmic_slices"] = int(np.unique(slice_id[slice_id >= 0]).size)
 
 
+def _rng_snapshot():
+    """Capture torch (CPU + all CUDA) + numpy RNG state. The backbones'
+    serialization shuffle consumes global RNG on every forward, so any work
+    between two forwards that touches the RNG shifts the later forward's
+    draws; snapshot/restore keeps the stream passes bit-compatible with the
+    pre-stream single-forward flow."""
+    st = {"torch": torch.get_rng_state(), "np": np.random.get_state()}
+    if torch.cuda.is_available():
+        st["cuda"] = torch.cuda.get_rng_state_all()
+    return st
+
+
+def _rng_restore(st):
+    torch.set_rng_state(st["torch"])
+    np.random.set_state(st["np"])
+    if "cuda" in st:
+        torch.cuda.set_rng_state_all(st["cuda"])
+
+
+def _vox_keys(pos):
+    """1 cm voxel keys, one bytes key per row (matches the single_photon study's
+    voxel hash)."""
+    k = np.round(np.asarray(pos, np.float64)).astype(np.int32)
+    return [row.tobytes() for row in k]
+
+
+def _load_msp_flash_charge(msp_path):
+    """Observed flashes + 1 cm voxel->charge map from the input merged_h5.
+
+    Returns (flashes, vox2charge):
+      flashes: dict(pe (Nf,32), producer_id, total_pe, time_us[, flash_index])
+               or None if the file has no `flashes` group;
+      vox2charge: {voxel bytes key: mean charge} from triplet_data
+               (Y-plane ADC with U/V fallback), or None if unavailable.
+    """
+    import h5py
+    flashes, vox2charge = None, None
+    with h5py.File(msp_path, "r") as f:
+        e = f["entry_0"]
+        if "flashes" in e:
+            fl = e["flashes"]
+            flashes = {
+                "pe": fl["pe"][()].astype(np.float32),
+                "producer_id": fl["producer_id"][()].astype(np.int32),
+                "total_pe": fl["total_pe"][()].astype(np.float32),
+                "time_us": fl["time_us"][()].astype(np.float32),
+            }
+            if "flash_index" in fl:
+                flashes["flash_index"] = fl["flash_index"][()].astype(np.int32)
+        td = e.get("triplet_data")
+        if td is not None and "pos" in td and "pixval" in td:
+            pos = td["pos"][()].astype(np.float32)
+            charge = select_charge_y_with_uv_fallback_np(td["pixval"][()])
+            acc = {}
+            for k, q in zip(_vox_keys(pos), charge):
+                acc.setdefault(k, []).append(float(q))
+            vox2charge = {k: float(np.mean(v)) for k, v in acc.items()}
+    return flashes, vox2charge
+
+
+def _flash_slice_table(coord_cm, sid, p_nu_per_query, nu_qs, flashes,
+                       vox2charge, args):
+    """Per-slice flash-match table over the full-event slicer partition.
+
+    Rows: the nu union (query == _NU_SID) if present, plus every cosmic-class
+    query with >= --slice-min-points spacepoints. For each row: predicted PE
+    per PMT (PhotonLib, drift-corrected by the in-time beam flash t0), Neyman
+    chi2 vs the observed beam flash, OOB fraction, and 1-based chi2 rank among
+    rows passing --flash-oob-max (rank 0 = not ranked). Also carries the
+    slicer's P(nu) per row and the per-query nu-score subtable.
+
+    Returns dict for _write_event_h5, plus 'best_query' (the rank-1 row's
+    query value, _NU_SID for the nu union) or None.
+    """
+    # ---- observed in-time beam flash (producer 0, max total PE) -------------
+    obs = None
+    if flashes is not None and flashes["pe"].size:
+        beam = np.where(flashes["producer_id"] == 0)[0]
+        if beam.size:
+            bi = int(beam[int(np.argmax(flashes["total_pe"][beam]))])
+            obs = {
+                "pe": flashes["pe"][bi],
+                "time_us": float(flashes["time_us"][bi]),
+                "total_pe": float(flashes["total_pe"][bi]),
+                "producer_id": 0,
+                "flash_index": int(flashes.get(
+                    "flash_index", np.arange(len(flashes["pe"])))[bi]),
+            }
+
+    # ---- slice rows ----------------------------------------------------------
+    rows = []                       # (label, query, point_index_array)
+    if (sid == _NU_SID).any():
+        rows.append(("nu", _NU_SID, np.nonzero(sid == _NU_SID)[0]))
+    for q in np.unique(sid[sid >= 0]):
+        pts = np.nonzero(sid == q)[0]
+        if pts.size >= args.slice_min_points:
+            rows.append((f"cosmic{int(q):02d}", int(q), pts))
+    S = len(rows)
+    tbl = {
+        "label": [r[0] for r in rows],
+        "query": np.asarray([r[1] for r in rows], np.int32),
+        "n_points": np.asarray([r[2].size for r in rows], np.int32),
+        "pred_pe": np.full((S, 32), np.nan, np.float32),
+        "chi2": np.full(S, np.nan, np.float32),
+        "oob_frac": np.full(S, np.nan, np.float32),
+        "chi2_rank": np.zeros(S, np.int32),
+        "p_nu": np.asarray(
+            [(max((p_nu_per_query[q] for q in nu_qs), default=np.nan)
+              if r[1] == _NU_SID else p_nu_per_query.get(r[1], np.nan))
+             for r in rows], np.float32),
+        "flashes": flashes, "observed": obs, "best_query": None,
+        "nu_queries": {
+            "query": np.asarray(sorted(nu_qs), np.int32),
+            "p_nu": np.asarray([p_nu_per_query.get(q, np.nan)
+                                for q in sorted(nu_qs)], np.float32),
+        },
+        "params": {"gamma_beam": args.gamma_beam, "f_sys": args.flash_f_sys,
+                   "eps": args.flash_eps, "oob_max": args.flash_oob_max},
+    }
+    if obs is None or vox2charge is None or S == 0:
+        return tbl
+
+    # ---- predicted PE + chi2 + OOB per row -----------------------------------
+    sel = np.concatenate([r[2] for r in rows])
+    cid = np.concatenate([np.full(r[2].size, i, np.int64)
+                          for i, r in enumerate(rows)])
+    spos = coord_cm[sel].astype(np.float32)
+    scharge = np.asarray([vox2charge.get(k, 0.0) for k in _vox_keys(spos)],
+                         np.float32)
+    tbl["pred_pe"] = predict_many_slices_pe(
+        spos, scharge, cid, S, obs["time_us"], producer_id=0,
+        gamma_by_producer=(args.gamma_beam, args.gamma_beam),
+        photonlib_cache=args.photonlib).astype(np.float32)
+    for i, r in enumerate(rows):
+        pos_i = coord_cm[r[2]]
+        tbl["oob_frac"][i] = float(
+            oob_mask(drift_correct(pos_i, obs["time_us"])).mean())
+        tbl["chi2"][i] = float(neyman_chi2(
+            tbl["pred_pe"][i], obs["pe"],
+            f_sys=args.flash_f_sys, eps=args.flash_eps))
+    ok = (tbl["oob_frac"] <= args.flash_oob_max) & np.isfinite(tbl["chi2"])
+    order = np.argsort(np.where(ok, tbl["chi2"], np.inf), kind="stable")
+    rank = 1
+    for j in order:
+        if ok[j]:
+            tbl["chi2_rank"][j] = rank
+            rank += 1
+    if ok.any():
+        tbl["best_query"] = int(tbl["query"][order[0]])
+    return tbl
+
+
+def _write_flash_groups(f, tbl):
+    """Write flash/ + slices/ groups (schema in lartpc/larformer_reco/README)."""
+    import h5py
+    fg = f.create_group("flash")
+    for k, v in tbl["params"].items():
+        fg.attrs[k] = v
+    obs = tbl.get("observed")
+    fg.attrs["has_beam_flash"] = obs is not None
+    if obs is not None:
+        fg.create_dataset("observed_pe", data=obs["pe"].astype(np.float32))
+        for k in ("time_us", "total_pe", "producer_id", "flash_index"):
+            fg.attrs[k] = obs[k]
+    fl = tbl.get("flashes")
+    if fl is not None:
+        ag = fg.create_group("all")
+        for k in ("pe", "producer_id", "total_pe", "time_us"):
+            ag.create_dataset(k, data=fl[k], compression="gzip")
+    sg = f.create_group("slices")
+    sg.create_dataset("label", data=np.array(
+        [s.encode() for s in tbl["label"]]))
+    for k in ("query", "n_points", "pred_pe", "chi2", "oob_frac",
+              "chi2_rank", "p_nu"):
+        sg.create_dataset(k, data=tbl[k])
+    nq = tbl["nu_queries"]
+    g = f.create_group("slices/nu_queries")
+    g.create_dataset("query", data=nq["query"])
+    g.create_dataset("p_nu", data=nq["p_nu"])
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0],
                                  formatter_class=argparse.RawTextHelpFormatter)
@@ -474,6 +660,29 @@ def main():
                     help="Class the loose fallback ranks below-threshold queries by "
                          "(default 1=gamma). Use -1 to rank by generic object-ness "
                          "(1-P(no_object)) instead.")
+    ap.add_argument("--no-flash", action="store_true",
+                    help="Disable the flash-match machinery entirely: no flash/ "
+                         "+ slices/ groups in the output and no flashmatch "
+                         "stream. Use when the input has no flashes group or "
+                         "the photonlib cache is unavailable.")
+    ap.add_argument("--no-flashmatch-stream", action="store_true",
+                    help="Still write the flash/ + slices/ chi2 table, but do "
+                         "NOT run Stage-3 on the best-chi2 slice (no "
+                         "stream='flashmatch' output files).")
+    ap.add_argument("--gamma-beam", type=float, default=5.25,
+                    help="PhotonLib PE scale for beam flashes (calibrated on "
+                         "the slicer gamma tune; see single_photon study).")
+    ap.add_argument("--flash-f-sys", type=float, default=0.10,
+                    help="fractional systematic on observed PE in the Neyman "
+                         "chi2 variance")
+    ap.add_argument("--flash-eps", type=float, default=1.0,
+                    help="absolute variance floor (dark PMTs) in the chi2")
+    ap.add_argument("--flash-oob-max", type=float, default=0.05,
+                    help="max fraction of a slice's points outside the TPC "
+                         "(post drift-correction) for it to be chi2-ranked")
+    ap.add_argument("--photonlib", default=None,
+                    help="photon-library npz cache (default: "
+                         "lartpc/flashmatch/data/photonlib_v6_70kV.npz)")
     ap.add_argument("--max-spacepoints", type=int, default=None,
                     help="Override cfg.data.test.max_spacepoints (random "
                          "subsample before deghoster+slicer). The config "
@@ -587,10 +796,10 @@ def main():
         batch = larformer_collate([ds[i]])
         batch = {k: (v.to(args.device) if torch.is_tensor(v) else v)
                  for k, v in batch.items()}
-        # --- full-event slice-id sidecar (separate slicer forward) ------------
-        # Runs for EVERY event (incl. no-nu-slice ones), on a shallow-copied batch
-        # so the deghoster/backbone can't pollute the batch the main model sees.
-        if save_slice_ids:
+        # --- slice-ids-only: sidecar from a separate slicer forward, no Stage-3.
+        # (In the unified path below, the sidecar is written from the SAME slicer
+        # forward the streams use, so slice ids always match the stream labels.)
+        if args.slice_ids_only:
             with torch.no_grad():
                 sl_out = model.cascade.cascaded_slicer(_slicer_input(batch))
             sids = _compute_slice_ids(
@@ -603,12 +812,13 @@ def main():
                 _write_slice_ids_h5(
                     os.path.join(sid_dir, f"sliceid_event{i:05d}.h5"),
                     *sids, sattrs)
-            if args.slice_ids_only:
-                print(f"  [{i}] slice-ids -> sliceid_event{i:05d}.h5")
-                continue
+            print(f"  [{i}] slice-ids -> sliceid_event{i:05d}.h5")
+            continue
         # Decode Stage-3 output + write one keypoint2 H5 per nu-slice prediction.
         # `tag_prefix` labels the slice for --all-slices (e.g. 'nu_', 'cosmic07_').
-        def decode_and_write(out, tag_prefix=""):
+        # `attrs_extra` adds stream labels; `flash_tbl` adds flash/ + slices/.
+        def decode_and_write(out, tag_prefix="", attrs_extra=None,
+                             flash_tbl=None):
             preds = out.get("predictions", [])
             if not preds:
                 return 0
@@ -655,6 +865,8 @@ def main():
                                       if i < len(real_files) else "")}
                 if tag_prefix:
                     attrs["slice_label"] = tag_prefix.rstrip("_")
+                if attrs_extra:
+                    attrs.update(attrs_extra)
                 for k in ("run", "subrun", "event"):
                     v = out.get(f"ps_{k}")
                     if v is not None:
@@ -663,7 +875,7 @@ def main():
                 outp = os.path.join(
                     args.output_dir,
                     f"keypoint2_event{i:05d}_{tag_prefix}{ei}.h5")
-                _write_event_h5(outp, dec, attrs)
+                _write_event_h5(outp, dec, attrs, flash_tbl=flash_tbl)
                 n_match = sum(1 for p in dec["particles"] if p["has_match"])
                 print(f"  [{i}.{tag_prefix}{ei}] "
                       f"n_particles={len(dec['particles'])} "
@@ -709,10 +921,95 @@ def main():
                 model.cascade._force_slicer_out = None
             continue
 
+        # ---- unified stream path (default) ------------------------------------
+        # One slicer forward feeds everything for the event: the slice-id
+        # sidecar, the flash-match slice table, and up to two Stage-3+keypoint
+        # passes — the nu union (stream='nu') and, when the best-chi2 slice is
+        # NOT the nu union, the flash-match slice (stream='flashmatch', with the
+        # loose single-object fallback enabled for that pass).
         with torch.no_grad():
-            out = model(batch)
-        if decode_and_write(out) == 0:
-            print(f"  [{i}] no nu slice — skipped")
+            sl_out = model.cascade.cascaded_slicer(_slicer_input(batch))
+        # RNG state right after the (deghost+slicer) forward == what Stage-3 saw
+        # in the pre-stream flow; restored before each stream's Stage-3 pass so
+        # the sidecar/flash-table work in between cannot shift the draws.
+        rng_post_slicer = _rng_snapshot()
+        sids = _compute_slice_ids(
+            sl_out, batch, model.cascade.nu_class_id,
+            model.cascade.mask_prob_threshold, model.cascade.spacepoint_level)
+        if save_slice_ids and sids is not None:
+            _write_slice_ids_h5(
+                os.path.join(sid_dir, f"sliceid_event{i:05d}.h5"), *sids,
+                {"src_file": (os.path.basename(real_files[i])
+                              if i < len(real_files) else "")})
+
+        flash_tbl = None
+        if not args.no_flash and sids is not None:
+            try:
+                p_nu_per_query, nu_qs = {}, []
+                preds_sl = sl_out.get("predictions") or []
+                if preds_sl:
+                    cls = preds_sl[0].get("class_logits")
+                    if cls is not None and cls.shape[0]:
+                        probs = torch.softmax(
+                            cls.detach().float(), dim=-1).cpu().numpy()
+                        nu_id = model.cascade.nu_class_id
+                        p_nu_per_query = {
+                            q: float(probs[q, nu_id])
+                            for q in range(len(probs))}
+                        am = cls.argmax(dim=-1).detach().cpu().numpy()
+                        nu_qs = [q for q in range(len(am)) if am[q] == nu_id]
+                flashes, vox2charge = _load_msp_flash_charge(real_files[i])
+                flash_tbl = _flash_slice_table(
+                    sids[0], sids[1], p_nu_per_query, nu_qs,
+                    flashes, vox2charge, args)
+            except Exception as ex:
+                print(f"  [warn] flash table failed for event {i}: {ex}")
+
+        best_q = flash_tbl.get("best_query") if flash_tbl else None
+        nu_stream = ("nu,flashmatch" if best_q == _NU_SID else "nu")
+        wrote = 0
+        model.cascade._force_slicer_out = sl_out
+        try:
+            # nu stream: the cascade's default nu-union path on this slicer out.
+            _rng_restore(rng_post_slicer)
+            with torch.no_grad():
+                out = model(batch)
+            wrote += decode_and_write(out, attrs_extra={"stream": nu_stream},
+                                      flash_tbl=flash_tbl)
+            # flashmatch stream: best-chi2 slice, if it is not the nu union.
+            if (best_q is not None and best_q != _NU_SID
+                    and not args.no_flashmatch_stream):
+                old_lf = getattr(model, "loose_fallback", False)
+                old_lc = getattr(model, "loose_class_id", None)
+                model.loose_fallback = True
+                model.loose_class_id = (None if int(args.loose_class_id) < 0
+                                        else int(args.loose_class_id))
+                model.cascade._force_slice = ("q", int(best_q))
+                try:
+                    # same post-slicer state for the fm pass, so its output does
+                    # not depend on whether a nu pass ran before it.
+                    _rng_restore(rng_post_slicer)
+                    with torch.no_grad():
+                        out = model(batch)
+                finally:
+                    model.cascade._force_slice = None
+                    model.loose_fallback = old_lf
+                    model.loose_class_id = old_lc
+                row = int(np.nonzero(flash_tbl["query"] == best_q)[0][0])
+                wrote += decode_and_write(
+                    out, tag_prefix="fm_",
+                    attrs_extra={
+                        "stream": "flashmatch",
+                        "slice_label": f"cosmic{int(best_q):02d}",
+                        "flash_chi2": float(flash_tbl["chi2"][row]),
+                    },
+                    flash_tbl=flash_tbl)
+        finally:
+            model.cascade._force_slicer_out = None
+        if wrote == 0:
+            print(f"  [{i}] no nu slice"
+                  + ("" if best_q is None else " / empty flash-match pass")
+                  + " — skipped")
     print("DONE")
 
 

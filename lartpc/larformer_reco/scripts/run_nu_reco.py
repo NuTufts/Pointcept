@@ -102,9 +102,12 @@ def _write_event(g, interactions, all_recs, kp_path):
     interaction) is kept for backward compatibility."""
     ke_by = {r.inst_idx: (r.energy_mev, int(r.gt_trackid)) for r in (all_recs or [])}
     with h5py.File(kp_path, "r") as f:
-        for k in ("src_file", "run", "subrun", "event"):
+        for k in ("src_file", "run", "subrun", "event",
+                  "stream", "slice_label", "flash_chi2"):
             if k in f.attrs:
                 g.attrs[k] = f.attrs[k]
+        if "stream" not in f.attrs:
+            g.attrs["stream"] = "nu"       # pre-stream keypoint2 files
     _, gt_nu = read_nu_vertices(kp_path)
     g.attrs["gt_nu_vertex_cm"] = gt_nu.astype(np.float32)
     g.attrs["n_interactions"] = len(interactions)

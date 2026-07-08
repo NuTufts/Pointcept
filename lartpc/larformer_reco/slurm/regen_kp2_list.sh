@@ -29,6 +29,14 @@ ls "${OUTPUT_DIR}"/keypoint2_event*_0.h5 2>/dev/null \
   | grep -E 'keypoint2_event[0-9]+_0\.h5$' | sort > "${KP2_LIST}"
 echo ">>> keypoint2 list: $(grep -c . "${KP2_LIST}") files -> ${KP2_LIST}"
 
+# flashmatch-stream outputs (keypoint2_event<digits>_fm_0.h5), when present.
+# Keep them in a SEPARATE list: nu_reco/eval gidx-link by list line number, so
+# streams must never be mixed in one list (run nu_reco + eval per stream).
+FM_LIST=${FM_LIST:-${KP2_LIST%.txt}_flashmatch.txt}
+ls "${OUTPUT_DIR}"/keypoint2_event*_fm_0.h5 2>/dev/null \
+  | grep -E 'keypoint2_event[0-9]+_fm_0\.h5$' | sort > "${FM_LIST}" || true
+echo ">>> flashmatch list: $(grep -c . "${FM_LIST}" || echo 0) files -> ${FM_LIST}"
+
 # clean downstream so stale shards can't survive into the new results
 rm -f "${NU_RECO_DIR}"/nu_reco_shard*.h5 2>/dev/null || true
 rm -f "${EVAL_DIR}"/eval_shard*.npz 2>/dev/null || true
