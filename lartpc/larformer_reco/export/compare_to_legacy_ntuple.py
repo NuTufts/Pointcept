@@ -10,8 +10,9 @@ NEW = _args.new
 OLD = _args.old
 MASS = {11: 0.511, 22: 0.0, 13: 105.6584, 211: 139.5704, 2212: 938.2721}
 BR = ["run","subrun","event","foundVertex","vtxX","vtxY","vtxZ","trueVtxX","trueVtxY","trueVtxZ",
-      "nTracks","trackPID","trackTruePID","trackRecoE","trackTrueE","trackTrueComp","trackTruePurity","trackClassified",
-      "nShowers","showerPID","showerTruePID","showerRecoE","showerTrueE","showerTrueComp","showerTruePurity","showerClassified"]
+      "nTracks","trackPID","trackTruePID","trackTrueTID","trackRecoE","trackTrueE","trackTrueComp","trackTruePurity","trackClassified",
+      "nShowers","showerPID","showerTruePID","showerTrueTID","showerRecoE","showerTrueE","showerTrueComp","showerTruePurity","showerClassified",
+      "nTrueSimParts","trueSimPartPDG","trueSimPartTID","trueSimPartProcess","trueSimPartE"]
 
 new = uproot.open(NEW)["EventTree"].arrays(BR + ["trueVtxInWCFV","primaryVtxStream","nRecoVtx","recoVtxX","recoVtxY","recoVtxZ"], library="np")
 old = uproot.open(OLD)["EventTree"].arrays(BR, library="np")
@@ -65,3 +66,46 @@ print("\n== PRONGS (classified + truth-matched; energy for trueKE>25 MeV) ==")
 for pre in ("track", "shower"):
     prong_metrics("old v0 reco", old, oj, pre)
     prong_metrics("larformer", new, ni, pre)
+
+SPECIES = {11: "e", 22: "gamma", 13: "mu", 211: "pi", 2212: "p"}
+
+def truth_side(tag, a, idx):
+    """Truth-side denominator: true PRIMARY particles (Process==0, KE>25 MeV)
+    of reconstructable species; numerator = a classified prong truth-matched
+    to that TID exists (found), and one of them has PID == |true PDG|."""
+    n_true = {s: 0 for s in SPECIES.values()}
+    n_found = {s: 0 for s in SPECIES.values()}
+    n_pid = {s: 0 for s in SPECIES.values()}
+    for i in idx:
+        pid_by_tid = {}
+        for pre, cn in (("track", "nTracks"), ("shower", "nShowers")):
+            for j in range(a[cn][i]):
+                if not a[pre + "Classified"][i][j]:
+                    continue
+                t = int(a[pre + "TrueTID"][i][j])
+                if t > 0:
+                    pid_by_tid.setdefault(t, set()).add(
+                        int(a[pre + "PID"][i][j]))
+        for j in range(a["nTrueSimParts"][i]):
+            pdg = abs(int(a["trueSimPartPDG"][i][j]))
+            if pdg not in SPECIES or a["trueSimPartProcess"][i][j] != 0:
+                continue
+            ke = float(a["trueSimPartE"][i][j]) - MASS.get(pdg, 0.0)
+            if not np.isfinite(ke) or ke <= 25.0:
+                continue
+            sp = SPECIES[pdg]
+            n_true[sp] += 1
+            pids = pid_by_tid.get(int(a["trueSimPartTID"][i][j]))
+            if pids:
+                n_found[sp] += 1
+                if pdg in pids:
+                    n_pid[sp] += 1
+    row = " | ".join(
+        f"{s}: {n_found[s]/n_true[s]:.3f}/{n_pid[s]/n_true[s]:.3f} (N={n_true[s]})"
+        if n_true[s] else f"{s}: -" for s in ("e", "gamma", "mu", "pi", "p"))
+    print(f"  {tag:12s} {row}")
+
+print("\n== TRUTH-SIDE EFFICIENCY (true primaries, KE>25 MeV; "
+      "found/found-with-correct-PID fractions) ==")
+truth_side("old v0 reco", old, oj)
+truth_side("larformer", new, ni)
