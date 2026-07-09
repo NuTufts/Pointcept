@@ -88,7 +88,14 @@ def truth_side(tag, a, idx):
                         int(a[pre + "PID"][i][j]))
         for j in range(a["nTrueSimParts"][i]):
             pdg = abs(int(a["trueSimPartPDG"][i][j]))
-            if pdg not in SPECIES or a["trueSimPartProcess"][i][j] != 0:
+            if pdg not in SPECIES:
+                continue
+            # primaries only — but pi0-decay photons ARE the visible primaries
+            # (the pi0 itself never appears in trueSimPart), and they carry
+            # Process=1 ('Decay'); admit them, matching the reco eval's
+            # is_primary() convention. Other species: Process==0 strictly.
+            proc = int(a["trueSimPartProcess"][i][j])
+            if proc != 0 and not (pdg == 22 and proc == 1):
                 continue
             ke = float(a["trueSimPartE"][i][j]) - MASS.get(pdg, 0.0)
             if not np.isfinite(ke) or ke <= 25.0:
