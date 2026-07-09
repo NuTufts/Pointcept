@@ -61,7 +61,7 @@ infix marks the flashmatch stream.
 | `n_particles` | i64 | number of `particle/{i}` groups |
 | `has_gt` | bool | GT matching present (sim; `--no-gt` for data) |
 | `has_score_maps` | bool | `score_maps/` present (`--save-score-maps`) |
-| `run`,`subrun`,`event` | i64 | event ids, when the dataset provides them |
+| `run`,`subrun`,`event` | i64 | event ids (from the input merged_sp `entry_0` attrs when the dataset does not surface them) |
 
 ### Datasets
 
@@ -149,6 +149,7 @@ File attrs: `shard_start`, `n_requested`, `n_reco`, `n_skip`, `n_err`.
 | dataset | shape, dtype | description |
 |---|---|---|
 | `vertices_cm` | (I,3) f32 | PRIMARY vertex per interaction (row = interaction index) |
+| `vertices_score` | (I,) f32 | seed nu-vertex-candidate score per interaction (NaN if unavailable). NOTE: interaction row order is reco-iteration order (attachment quality), NOT score order — rank by this column. |
 | `vtx_pos_cm` | (V,3) f32 | all vertices, primary + secondary |
 | `vtx_interaction` | (V,) i64 | owning interaction index (row of `vertices_cm`) |
 | `vtx_depth` | (V,) i64 | 0 = primary, ≥1 = secondary (kink/decay) depth in the tree |

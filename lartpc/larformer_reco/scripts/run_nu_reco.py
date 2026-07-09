@@ -113,6 +113,11 @@ def _write_event(g, interactions, all_recs, kp_path):
     g.attrs["n_interactions"] = len(interactions)
     g.create_dataset("vertices_cm",
                      data=np.array([I["vertex"] for I in interactions], np.float32))
+    # seed nu-vertex-candidate score per interaction (row-aligned with
+    # vertices_cm); the ntuple exporter ranks interactions by this.
+    g.create_dataset("vertices_score",
+                     data=np.array([I.get("vtx_score", np.nan)
+                                    for I in interactions], np.float32))
 
     # --- full vertex tree (primary + secondary), flattened across interactions --
     vtx_pos, vtx_int, vtx_depth, vtx_parent = [], [], [], []

@@ -290,6 +290,7 @@ def reco_interactions(cands, tracks, shower_recs, args):
         res["showers"] = showers
         out.append(dict(res=res, best=best, iter=it, conn_points=cps,
                         vertex=np.asarray(res["vertices"][0]["pos"], float),
+                        vtx_score=float(best["score"]),
                         tracks=[T for T in rem_tracks if T["attached"]],
                         showers=showers))
         used.append(np.asarray(res["vertices"][0]["pos"], float))
@@ -330,7 +331,8 @@ def reco_interactions(cands, tracks, shower_recs, args):
             continue
         res["showers"] = showers
         out.append(dict(res=res, best=None, iter=len(out), conn_points=cps,
-                        vertex=cpos, tracks=[], showers=showers))
+                        vertex=cpos, vtx_score=cscore, tracks=[],
+                        showers=showers))
         used.append(cpos)
         rem_shrec = [r for r, s in zip(rem_shrec, showers) if not s["attached"]]
     return out, rem_tracks, rem_shrec

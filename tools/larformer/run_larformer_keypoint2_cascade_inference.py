@@ -419,6 +419,18 @@ def _rng_restore(st):
         torch.cuda.set_rng_state_all(st["cuda"])
 
 
+def _entry_rse(msp_path):
+    """run/subrun/event from the input merged_h5's entry_0 attrs (the dataset
+    does not always surface them as ps_* fields)."""
+    import h5py
+    try:
+        with h5py.File(msp_path, "r") as f:
+            a = f["entry_0"].attrs
+            return {k: int(a[k]) for k in ("run", "subrun", "event") if k in a}
+    except Exception:
+        return {}
+
+
 def _vox_keys(pos):
     """1 cm voxel keys, one bytes key per row (matches the single_photon study's
     voxel hash)."""
@@ -872,6 +884,8 @@ def main():
                     if v is not None:
                         attrs[k] = (int(v[ei]) if hasattr(v, "__getitem__")
                                     else int(v))
+                if "run" not in attrs and i < len(real_files):
+                    attrs.update(_entry_rse(real_files[i]))
                 outp = os.path.join(
                     args.output_dir,
                     f"keypoint2_event{i:05d}_{tag_prefix}{ei}.h5")
