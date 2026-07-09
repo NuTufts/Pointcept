@@ -138,7 +138,8 @@ def _write_event(g, interactions, all_recs, kp_path):
     g.create_dataset("vtx_parent_track", data=np.asarray(vtx_parent, np.int64))
 
     rows = dict(interaction=[], kind=[], pred_class=[], energy=[], length=[],
-                charge=[], method=[], gt_trackid=[], true_ke=[], vtx=[])
+                charge=[], method=[], gt_trackid=[], true_ke=[], vtx=[],
+                inst_idx=[])
     mom, fourvec, direction, start_cm, polys = [], [], [], [], []
     for ii, I in enumerate(interactions):
         objs = ([("track", T) for T in I["tracks"]]
@@ -147,6 +148,9 @@ def _write_event(g, interactions, all_recs, kp_path):
             m = o.get("mom") or {}
             inst = o["inst_idx"] if kind == "track" else o["inst"]
             tke, gtid = ke_by.get(inst, (float("nan"), -1))
+            # keypoint2 particle index (particle/{inst_idx} in the kp2 file) —
+            # the LArPID stage uses it to fetch the instance's point_idx.
+            rows["inst_idx"].append(int(inst) if inst is not None else -1)
             rows["interaction"].append(I["iter"])
             rows["kind"].append(0 if kind == "track" else 1)
             rows["pred_class"].append(int(o["cls"]))

@@ -175,6 +175,7 @@ Tracks first, then ATTACHED showers, per interaction.
 | `part_start_cm` | (P,3) f32 | start point (tracks: first polyline point, oriented to start at the attach vertex; showers: trunk start / connection point) |
 | `part_npoly` | (P,) i64 | polyline point count per particle (0 for showers) |
 | `part_poly_cm` | (ΣN,3) f32 | fitted track polylines, concatenated; unpack with `np.split(part_poly_cm, np.cumsum(part_npoly)[:-1])` |
+| `part_inst_idx` | (P,) i64 | keypoint2 particle index (`particle/{inst_idx}` in the source kp2 file; −1 unknown) — links a reco particle back to its predicted instance (point_idx etc.) |
 | `part_gt_trackid` | (P,) i64 | majority-matched GT trackid (−1 unmatched / no GT) |
 | `part_true_ke` | (P,) f64 | matched particle's true KE [MeV] (NaN unmatched) |
 
