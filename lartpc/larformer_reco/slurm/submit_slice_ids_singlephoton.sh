@@ -16,7 +16,7 @@
 #SBATCH --mem-per-cpu=8000
 #SBATCH --cpus-per-task=4
 #SBATCH --time=02:00:00
-#SBATCH --partition=gpu
+#SBATCH --partition=gpu,preempt
 #SBATCH --gres=gpu:1
 #SBATCH --requeue
 
