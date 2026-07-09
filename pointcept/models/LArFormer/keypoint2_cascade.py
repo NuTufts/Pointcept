@@ -114,6 +114,7 @@ def predicted_masks_to_instances(
             inst["match_iou"] = best_iou
 
     out: List[dict] = []
+    all_probs = class_logits.softmax(dim=-1)                    # (Q, C)
     for q in range(eff.shape[0]):
         if int(eff[q]) == int(no_object_class_id):
             continue
@@ -122,12 +123,13 @@ def predicted_masks_to_instances(
             continue
         inst = {"truth_indices": idx.long(),
                 "primary_trackid": -1,
-                "pred_class": int(eff[q])}
+                "pred_class": int(eff[q]),
+                "class_probs": all_probs[q].detach().cpu()}
         _attach_gt(inst, q)
         out.append(inst)
 
     if not out and loose_fallback:
-        probs = class_logits.softmax(dim=-1)                    # (Q, C)
+        probs = all_probs                                       # (Q, C)
         obj_probs = probs.clone()
         obj_probs[:, int(no_object_class_id)] = -1.0
         obj_cls = obj_probs.argmax(dim=-1)                      # best object class
@@ -143,6 +145,7 @@ def predicted_masks_to_instances(
                 continue
             inst = {"truth_indices": idx.long(), "primary_trackid": -1,
                     "pred_class": int(obj_cls[q]),
+                    "class_probs": all_probs[q].detach().cpu(),
                     "loose_pass": True, "loose_conf": float(rank[q])}
             _attach_gt(inst, q)
             out.append(inst)

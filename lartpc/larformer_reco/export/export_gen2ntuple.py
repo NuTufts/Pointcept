@@ -49,6 +49,7 @@ from lartpc.larformer_reco.export import schema  # noqa: E402
 from lartpc.larformer_reco.utils import read_list  # noqa: E402
 
 MASS = {0: 0.511, 1: 0.0, 2: 105.6584, 3: 139.5704, 4: 938.2721, 5: 0.0}
+LARFORMER_PDG = {0: 11, 1: 22, 2: 13, 3: 211, 4: 2212, 5: 0}
 SPECIES_PIDS = {"El": (11, -11), "Ph": (22,), "Mu": (13, -13),
                 "Pi": (211, -211), "Pr": (2212,)}
 STREAM_CODE = {"nu": 0, "flashmatch": 1}
@@ -168,6 +169,7 @@ def prong_rows(gr):
     """nu_reco event group -> dict of part_* arrays."""
     keys = ["part_interaction", "part_kind", "part_pred_class", "part_energy",
             "part_charge", "part_gt_trackid", "part_vtx", "part_inst_idx",
+            "part_pred_class",
             "part_start_cm", "part_direction", "part_npoly", "part_poly_cm",
             "larpid_classified", "larpid_scores", "larpid_completeness",
             "larpid_purity", "larpid_process_scores", "larpid_pid",
@@ -339,6 +341,17 @@ def main():
                                else np.full(3, -9.0))
                         p["EndPosX"], p["EndPosY"], p["EndPosZ"] = map(
                             float, end)
+                    # LArFormer segmenter PID (its own classifier)
+                    p["LArFormerPID"] = LARFORMER_PDG.get(
+                        int(d["part_pred_class"][i]), 0)
+                    lfs = (fkp[f"particle/{inst}/class_scores"][()]
+                           if inst >= 0
+                           and f"particle/{inst}/class_scores"
+                           in fkp else None)
+                    for j, nm in enumerate(("El", "Ph", "Mu", "Pi", "Pr")):
+                        p["LArFormer" + nm + "Score"] = (
+                            float(lfs[j]) if lfs is not None and j < len(lfs)
+                            else -9.0)
                     # LArPID block
                     p["Classified"] = int(d["larpid_classified"][i])
                     p["PID"] = int(d["larpid_pid"][i])

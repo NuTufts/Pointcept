@@ -5,6 +5,8 @@ import argparse
 _ap = argparse.ArgumentParser()
 _ap.add_argument("--new", required=True)
 _ap.add_argument("--old", required=True)
+_ap.add_argument("--plots", default=None,
+                 help="directory for eff-vs-trueKE PNGs (LANTERN vs LArFormer)")
 _args = _ap.parse_args()
 NEW = _args.new
 OLD = _args.old
@@ -69,10 +71,12 @@ for pre in ("track", "shower"):
 
 SPECIES = {11: "e", 22: "gamma", 13: "mu", 211: "pi", 2212: "p"}
 
-def truth_side(tag, a, idx):
-    """Truth-side denominator: true PRIMARY particles (Process==0, KE>25 MeV)
-    of reconstructable species; numerator = a classified prong truth-matched
-    to that TID exists (found), and one of them has PID == |true PDG|."""
+def truth_side(tag, a, idx, rows_out=None):
+    """Truth-side denominator: true PRIMARY particles (Process==0, KE>25 MeV;
+    photons also admit Process==1, pi0 decay) of reconstructable species;
+    numerator = a classified prong truth-matched to that TID exists (found),
+    and one of them has PID == |true PDG|. rows_out (optional list) collects
+    (species, trueKE, found, pid_ok) per particle for binned plotting."""
     n_true = {s: 0 for s in SPECIES.values()}
     n_found = {s: 0 for s in SPECIES.values()}
     n_pid = {s: 0 for s in SPECIES.values()}
@@ -103,10 +107,12 @@ def truth_side(tag, a, idx):
             sp = SPECIES[pdg]
             n_true[sp] += 1
             pids = pid_by_tid.get(int(a["trueSimPartTID"][i][j]))
-            if pids:
-                n_found[sp] += 1
-                if pdg in pids:
-                    n_pid[sp] += 1
+            found = pids is not None
+            pid_ok = found and pdg in pids
+            n_found[sp] += int(found)
+            n_pid[sp] += int(pid_ok)
+            if rows_out is not None:
+                rows_out.append((sp, ke, found, pid_ok))
     row = " | ".join(
         f"{s}: {n_found[s]/n_true[s]:.3f}/{n_pid[s]/n_true[s]:.3f} (N={n_true[s]})"
         if n_true[s] else f"{s}: -" for s in ("e", "gamma", "mu", "pi", "p"))
@@ -114,5 +120,51 @@ def truth_side(tag, a, idx):
 
 print("\n== TRUTH-SIDE EFFICIENCY (true primaries, KE>25 MeV; "
       "found/found-with-correct-PID fractions) ==")
-truth_side("old v0 reco", old, oj)
-truth_side("larformer", new, ni)
+rows_old, rows_new = [], []
+truth_side("old v0 reco", old, oj, rows_out=rows_old)
+truth_side("larformer", new, ni, rows_out=rows_new)
+
+if _args.plots:
+    import os
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    os.makedirs(_args.plots, exist_ok=True)
+    EDGES = np.array([25, 50, 100, 150, 200, 300, 400, 600, 800, 1200])
+    CTR = 0.5 * (EDGES[:-1] + EDGES[1:])
+
+    def curves(rows, sp):
+        r = [x for x in rows if x[0] == sp]
+        ke = np.array([x[1] for x in r])
+        fo = np.array([x[2] for x in r], float)
+        pk = np.array([x[3] for x in r], float)
+        eff_f, err_f, eff_p = [], [], []
+        for lo, hi in zip(EDGES[:-1], EDGES[1:]):
+            b = (ke >= lo) & (ke < hi)
+            N = b.sum()
+            e = fo[b].mean() if N else np.nan
+            eff_f.append(e)
+            err_f.append(np.sqrt(e * (1 - e) / N) if N else 0)
+            eff_p.append(pk[b].mean() if N else np.nan)
+        return np.array(eff_f), np.array(err_f), np.array(eff_p)
+
+    for sp in ("gamma", "mu", "pi", "p", "e"):
+        if sum(1 for x in rows_new if x[0] == sp) < 20:
+            continue
+        fig, ax = plt.subplots(figsize=(5.5, 4.2))
+        for rows, lab, col in ((rows_old, "LANTERN", "C0"),
+                               (rows_new, "LArFormer", "C3")):
+            ef, er, ep = curves(rows, sp)
+            ax.errorbar(CTR, ef, yerr=er, marker="o", ms=3.5, color=col,
+                        label=f"{lab} found")
+            ax.plot(CTR, ep, ls="--", marker="s", ms=3, color=col, alpha=0.7,
+                    label=f"{lab} found + correct PID")
+        ax.set(xlabel="true KE [MeV]", ylabel="efficiency", ylim=(0, 1.05),
+               title=f"{sp}: truth-side efficiency vs true KE\n"
+                     "(true primaries; classified truth-matched prong)")
+        ax.legend(fontsize=8)
+        ax.grid(alpha=0.3)
+        fig.tight_layout()
+        fig.savefig(f"{_args.plots}/eff_vs_trueke_{sp}.png", dpi=110)
+        plt.close(fig)
+    print(f">>> plots -> {_args.plots}")

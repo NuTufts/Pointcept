@@ -40,6 +40,10 @@ _TRUE_MATCH = [("TruePID", I), ("TrueTID", I), ("TrueE", F),
                ("TruePurity", F), ("TrueComp", F),
                ("TrueElPurity", F), ("TruePhPurity", F), ("TrueMuPurity", F),
                ("TruePiPurity", F), ("TruePrPurity", F)]
+_LARFORMER = [("LArFormerPID", I),
+              ("LArFormerElScore", F), ("LArFormerPhScore", F),
+              ("LArFormerMuScore", F), ("LArFormerPiScore", F),
+              ("LArFormerPrScore", F)]
 _LARPID = [("Classified", I), ("PID", I),
            ("ElScore", F), ("PhScore", F), ("MuScore", F), ("PiScore", F),
            ("PrScore", F), ("Comp", F), ("Purity", F), ("Process", I),
@@ -75,12 +79,14 @@ GROUPS = {
     "track": ("nTracks",
               [("track" + n, t) for n, t in _PRONG_COMMON]
               + [("trackEndPosX", F), ("trackEndPosY", F), ("trackEndPosZ", F)]
+              + [("track" + n, t) for n, t in _LARFORMER]
               + [("track" + n, t) for n, t in _LARPID]
               + [("trackRecoE", F)]
               + [("track" + n, t) for n, t in _TRUE_MATCH]
               + [("trackVtxIdx", I)]),
     "shower": ("nShowers",
                [("shower" + n, t) for n, t in _PRONG_COMMON]
+               + [("shower" + n, t) for n, t in _LARFORMER]
                + [("shower" + n, t) for n, t in _LARPID]
                + [("showerRecoE", F)]
                + [("shower" + n, t) for n, t in _TRUE_MATCH]

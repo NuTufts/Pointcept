@@ -157,6 +157,10 @@ def _decode_event(ev, inst_list, gt, coord_cm, coord_norm, nu_thresh,
             # single-object recovery (highest object confidence).
             "loose_pass": bool(inst.get("loose_pass", False)),
             "loose_conf": float(inst.get("loose_conf", np.nan)),
+            # the Stage-3 segmenter's per-class softmax for this instance's
+            # query (LArFormer's own PID scores; last entry = no_object)
+            "class_scores": np.asarray(
+                inst.get("class_probs", np.zeros(0)), np.float32).reshape(-1),
         }
         if trk is not None and pt_idx.size:
             t = _mode_trackid(trk[pt_idx])
@@ -265,6 +269,8 @@ def _write_event_h5(path, dec, attrs, flash_tbl=None):
                              compression="gzip")
             g.create_dataset("gt_start_cm", data=p["gt_start_cm"])
             g.create_dataset("gt_end_cm", data=p["gt_end_cm"])
+            if p.get("class_scores") is not None and len(p["class_scores"]):
+                g.create_dataset("class_scores", data=p["class_scores"])
 
         # --- optional: dense head score maps + GT keypoints (--save-score-maps) -
         smaps = dec.get("score_maps")
