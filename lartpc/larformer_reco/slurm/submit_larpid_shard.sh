@@ -14,7 +14,7 @@
 #SBATCH --mem-per-cpu=8000
 #SBATCH --cpus-per-task=4
 #SBATCH --time=4:00:00
-#SBATCH --partition=gpu,preempt,wongjiradlab
+#SBATCH --partition=gpu
 #SBATCH --gres=gpu:a100:1
 #SBATCH --array=0-9
 

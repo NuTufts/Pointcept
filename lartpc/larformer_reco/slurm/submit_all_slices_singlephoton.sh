@@ -16,7 +16,7 @@
 #SBATCH --mem-per-cpu=8000
 #SBATCH --cpus-per-task=4
 #SBATCH --time=08:00:00
-#SBATCH --partition=gpu,preempt,wongjiradlab
+#SBATCH --partition=gpu
 # Pin to A100 (Ampere): the ONLY conforming family for a repeatable measurement.
 # H100/H200 (Hopper) diverge ~1.9% at the event level -- see
 # docs/reference/LArFormer_Reproducibility.md sec 4.3. L40S also conforms if you need it.
