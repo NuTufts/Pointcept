@@ -7,6 +7,10 @@
 # Submit (nu stream example):
 #   NU_RECO_DIR=.../nu_reco_streams_nu KP2_LIST=.../keypoint2_out_<tag>_nu.txt \
 #   OUTPUT_DIR=.../nu_reco_larpid_nu sbatch --array=0-9 submit_larpid_shard.sh
+#
+# CPU mode (often faster than waiting for a GPU; the network is small):
+#   DEVICE=cpu ... sbatch --partition=batch --gres=gpu:0 --array=0-9 \
+#     submit_larpid_shard.sh
 # ---------------------------------------------------------------------------
 #SBATCH --job-name=larpid
 #SBATCH --output=logs/export/larpid.%A_%a.%N.log
@@ -29,6 +33,7 @@ KP2_LIST=${KP2_LIST:-${RECODIR}/outputlists/keypoint2_out_${TAG}_2400_nu.txt}
 MERGED_SP_LIST=${MERGED_SP_LIST:-${RECODIR}/inputlists/merged_sp_${TAG}_2400.txt}
 OUTPUT_DIR=${OUTPUT_DIR:-${RECODIR}/output/${TAG}/nu_reco_larpid_nu}
 SAMPLE_TAG=${SAMPLE_TAG:-mcc9_v29e_dl_run3b_bnb_nu_overlay}
+DEVICE=${DEVICE:-cuda}
 
 mkdir -p "${OUTPUT_DIR}" "${WORKDIR}/logs/export"
 SHARDS=($(ls ${NU_RECO_DIR}/nu_reco_shard*.h5 | sort))
@@ -43,5 +48,5 @@ apptainer exec --nv --bind /cluster:/cluster "${container}" bash -c "
   PYTHONPATH=./ python3 lartpc/larformer_reco/larpid/apply_larpid.py \
     --nu-reco-shard ${IN} --kp2-list ${KP2_LIST} \
     --merged-sp-list ${MERGED_SP_LIST} --out ${OUT} \
-    --sample-tag ${SAMPLE_TAG} --device cuda"
+    --sample-tag ${SAMPLE_TAG} --device ${DEVICE}"
 echo "DONE"
