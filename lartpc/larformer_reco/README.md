@@ -20,6 +20,10 @@ eval/eval_reco_performance.py                          (slurm/submit_eval_reco_{
   → eval_shard*.npz → merged records + plots
 ```
 
+**Output file schema** (every dataset/attr, units, sentinels, class-id codes,
+stream + linkage conventions):
+[larformer_reco_output_data_schema.md](larformer_reco_output_data_schema.md).
+
 ## Streams and flash products
 
 Cascade inference emits up to TWO labeled slice streams per event (file attr
