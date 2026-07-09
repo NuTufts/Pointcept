@@ -249,6 +249,9 @@ def main():
               f"{len(streams[s]['reco'])} reco events", flush=True)
 
     events, n_now, n_nownr = [], 0, 0
+    fout = uproot.recreate(args.out)
+    tree = schema.mktree(fout)
+    FLUSH = 4000                # events per extend() batch (bounds RAM)
     stats = dict(noweight=0, notruth=0, found=0)
     for msp_path in msp:
         base = os.path.basename(msp_path)
@@ -450,11 +453,13 @@ def main():
         n_now += 1
         if n_now % 200 == 0:
             print(f"  [{n_now}/{len(msp)}]", flush=True)
+        if len(events) >= FLUSH:
+            tree.extend(schema.extend_payload(events))
+            events.clear()
 
     # ---- write --------------------------------------------------------------
-    fout = uproot.recreate(args.out)
-    tree = schema.mktree(fout)
-    tree.extend(schema.extend_payload(events))
+    if events:
+        tree.extend(schema.extend_payload(events))
     pot = fout.mktree("potTree", {"totPOT": "float32",
                                   "totGoodPOT": "float32"})
     fn = sorted(truth.pot)
