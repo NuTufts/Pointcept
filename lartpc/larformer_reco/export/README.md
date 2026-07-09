@@ -12,3 +12,16 @@ in the repo memory + larformer_reco_output_data_schema.md).
 - `wirecell_fiducial_volume.cxx` + `lib_wirecell_fiducial_volume.so` — the
   Wire-Cell fiducial-volume test (copied from gen2ntuple/helpers; compile with
   g++ -fPIC -shared inside the container).
+- `schema.py` — ONE declarative table drives branch declaration (uproot
+  record types -> shared-counter leaflist branches), defaults, and the
+  extend payload. v7 branch set minus the KPSReco kp*/eventPC* blocks, plus
+  recoVtx* (multi-interaction table with stream codes), trueVtxInWCFV,
+  track/showerVtxIdx, trueSimPartEnd momenta.
+- `export_gen2ntuple.py` — the exporter: event universe = merged_sp list;
+  joins truth sidecars + xsecWeight pickle + both streams' nu_reco_larpid
+  shards + keypoint2 files; ranks interactions (nu stream by vertex score,
+  then flashmatch); legacy scalars from rank 1. Pure h5py+numpy+uproot
+  (pointcept container). Validated on 20 events: schema/type-identical to
+  the v7 reference (mod design changes), truth branches EXACTLY match the
+  old v0 ntuple on shared events, legacy pyROOT counter-indexed reading
+  works.
