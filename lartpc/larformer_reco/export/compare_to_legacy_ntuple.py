@@ -22,8 +22,9 @@ BR = ["run","subrun","event","foundVertex","vtxX","vtxY","vtxZ","trueVtxX","true
 
 _newtree = uproot.open(NEW)["EventTree"]
 _extra = ["trueVtxInWCFV","primaryVtxStream","nRecoVtx","recoVtxX","recoVtxY","recoVtxZ"]
-if "trueSimPartPixelSumQ" in _newtree.keys():
-    _extra.append("trueSimPartPixelSumQ")
+for _b in ("trueSimPartPixelSumQ", "trackLArFormerPID", "showerLArFormerPID"):
+    if _b in _newtree.keys():
+        _extra.append(_b)
 new = _newtree.arrays(BR + _extra, library="np")
 old = uproot.open(OLD)["EventTree"].arrays(BR, library="np")
 
@@ -101,14 +102,19 @@ def truth_side(tag, a, idx, rows_out=None):
     photons also admit Process==1, pi0 decay) of reconstructable species;
     numerator = a classified prong truth-matched to that TID exists (found),
     and one of them has PID == |true PDG|. rows_out (optional list) collects
-    (species, trueKE, found, pid_ok, evis) per particle for binned plotting;
-    evis = calibrated visible energy from the new file's trueSimPartPixelSumQ
-    (-1 when unavailable)."""
+    (species, trueKE, found, pid_ok, evis, lfpid_ok) per particle for binned
+    plotting; evis = calibrated visible energy from the new file's
+    trueSimPartPixelSumQ (-1 when unavailable); lfpid_ok = correct PID by the
+    LArFormer segmenter's own prediction (None when the file has no
+    LArFormerPID branches, i.e. the LANTERN side)."""
     n_true = {s: 0 for s in SPECIES.values()}
     n_found = {s: 0 for s in SPECIES.values()}
     n_pid = {s: 0 for s in SPECIES.values()}
+    n_lf = {s: 0 for s in SPECIES.values()}
+    has_lf = "trackLArFormerPID" in a
     for i in idx:
         pid_by_tid = {}
+        lf_by_tid = {}
         for pre, cn in (("track", "nTracks"), ("shower", "nShowers")):
             for j in range(a[cn][i]):
                 if not a[pre + "Classified"][i][j]:
@@ -117,6 +123,9 @@ def truth_side(tag, a, idx, rows_out=None):
                 if t > 0:
                     pid_by_tid.setdefault(t, set()).add(
                         int(a[pre + "PID"][i][j]))
+                    if has_lf:
+                        lf_by_tid.setdefault(t, set()).add(
+                            int(a[pre + "LArFormerPID"][i][j]))
         for j in range(a["nTrueSimParts"][i]):
             pdg = abs(int(a["trueSimPartPDG"][i][j]))
             if pdg not in SPECIES:
@@ -133,20 +142,27 @@ def truth_side(tag, a, idx, rows_out=None):
                 continue
             sp = SPECIES[pdg]
             n_true[sp] += 1
-            pids = pid_by_tid.get(int(a["trueSimPartTID"][i][j]))
+            tid = int(a["trueSimPartTID"][i][j])
+            pids = pid_by_tid.get(tid)
             found = pids is not None
             pid_ok = found and pdg in pids
+            lf_ok = (found and pdg in lf_by_tid.get(tid, set())) \
+                if has_lf else None
             n_found[sp] += int(found)
             n_pid[sp] += int(pid_ok)
+            n_lf[sp] += int(bool(lf_ok))
             if rows_out is not None:
                 q = QVIS.get((a["run"][i], a["subrun"][i], a["event"][i]),
-                             {}).get(int(a["trueSimPartTID"][i][j]), -1.0)
+                             {}).get(tid, -1.0)
                 rows_out.append((sp, ke, found, pid_ok,
-                                 A_GAMMA * q if q >= 0 else -1.0))
+                                 A_GAMMA * q if q >= 0 else -1.0, lf_ok))
     row = " | ".join(
-        f"{s}: {n_found[s]/n_true[s]:.3f}/{n_pid[s]/n_true[s]:.3f} (N={n_true[s]})"
+        (f"{s}: {n_found[s]/n_true[s]:.3f}/{n_pid[s]/n_true[s]:.3f}"
+         + (f"/{n_lf[s]/n_true[s]:.3f}" if has_lf else "")
+         + f" (N={n_true[s]})")
         if n_true[s] else f"{s}: -" for s in ("e", "gamma", "mu", "pi", "p"))
-    print(f"  {tag:12s} {row}")
+    print(f"  {tag:12s} {row}" + ("   [3rd = LArFormer-segmenter PID]"
+                                  if has_lf else ""))
 
 print("\n== TRUTH-SIDE EFFICIENCY (true primaries, KE>25 MeV; "
       "found/found-with-correct-PID fractions) ==")
@@ -168,7 +184,9 @@ if _args.plots:
         xv = np.array([x[xi] for x in r])
         fo = np.array([x[2] for x in r], float)
         pk = np.array([x[3] for x in r], float)
-        eff_f, err_f, eff_p = [], [], []
+        has_lf = bool(r) and r[0][5] is not None
+        lf = (np.array([bool(x[5]) for x in r], float) if has_lf else None)
+        eff_f, err_f, eff_p, eff_l = [], [], [], []
         for lo, hi in zip(edges[:-1], edges[1:]):
             b = (xv >= lo) & (xv < hi)
             N = b.sum()
@@ -176,7 +194,9 @@ if _args.plots:
             eff_f.append(e)
             err_f.append(np.sqrt(e * (1 - e) / N) if N else 0)
             eff_p.append(pk[b].mean() if N else np.nan)
-        return np.array(eff_f), np.array(err_f), np.array(eff_p)
+            eff_l.append(lf[b].mean() if has_lf and N else np.nan)
+        return (np.array(eff_f), np.array(err_f), np.array(eff_p),
+                np.array(eff_l) if has_lf else None)
 
     AXES = [(1, KE_EDGES, "true KE [MeV]", "true KE", "eff_vs_trueke")]
     if QVIS:
@@ -192,11 +212,17 @@ if _args.plots:
             fig, ax = plt.subplots(figsize=(5.5, 4.2))
             for rows, lab, col in ((rows_old, "LANTERN", "C0"),
                                    (rows_new, "LArFormer", "C3")):
-                ef, er, ep = curves(rows, sp, xi, edges)
+                ef, er, ep, el = curves(rows, sp, xi, edges)
                 ax.errorbar(ctr, ef, yerr=er, marker="o", ms=3.5, color=col,
                             label=f"{lab} found")
+                pid_lab = ("correct PID (LArPID)" if el is not None
+                           else "correct PID")
                 ax.plot(ctr, ep, ls="--", marker="s", ms=3, color=col,
-                        alpha=0.7, label=f"{lab} found + correct PID")
+                        alpha=0.7, label=f"{lab} found + {pid_lab}")
+                if el is not None:
+                    ax.plot(ctr, el, ls=":", marker="^", ms=3, color=col,
+                            alpha=0.7,
+                            label=f"{lab} found + correct PID (segmenter)")
             ax.set(xlabel=xlabel, ylabel="efficiency", ylim=(0, 1.05),
                    title=f"{sp}: truth-side efficiency vs {xname}\n"
                          "(true primaries; classified truth-matched prong)")
