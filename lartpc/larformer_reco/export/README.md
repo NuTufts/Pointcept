@@ -16,7 +16,14 @@ in the repo memory + larformer_reco_output_data_schema.md).
   record types -> shared-counter leaflist branches), defaults, and the
   extend payload. v7 branch set minus the KPSReco kp*/eventPC* blocks, plus
   recoVtx* (multi-interaction table with stream codes), trueVtxInWCFV,
-  track/showerVtxIdx, trueSimPartEnd momenta.
+  track/showerVtxIdx, trueSimPartEnd momenta, per-prong LArFormer segmenter
+  PID + class scores (track/showerLArFormer*), and trueSimPartPixelSumQ —
+  the UNCALIBRATED de-double-counted pixel-charge sum of each true
+  particle's truth-matched spacepoints (comb: Y else mean(U,V); same
+  quantity as the reco eval's q_true). Multiply by the shower gamma calib
+  factor for E_vis in MeV — kept uncalibrated so shower-energy
+  recalibrations apply downstream. -1 = triplet_data unavailable, 0 = no
+  truth-matched charge (e.g. unconverted photon, out-of-TPC deposit).
 - `export_gen2ntuple.py` — the exporter: event universe = merged_sp list;
   joins truth sidecars + xsecWeight pickle + both streams' nu_reco_larpid
   shards + keypoint2 files; ranks interactions (nu stream by vertex score,

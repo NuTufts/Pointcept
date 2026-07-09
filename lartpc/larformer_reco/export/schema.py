@@ -12,6 +12,9 @@ Deviations from the legacy v7 tree (all user-approved):
   `recoVtxStream` (0=nu, 1=flashmatch) + `primaryVtxStream`, and per-prong
   `trackVtxIdx`/`showerVtxIdx` into that table.
 - ADDED (post-v7 gen2ntuple HEAD parity): `trueSimPartEndPx/Py/Pz/EndE`.
+- NEW: `trueSimPartPixelSumQ` — uncalibrated visible-charge sum per true
+  particle (see inline comment in the trueSimPart group), primarily for
+  photon E_vis denominators.
 """
 import numpy as np
 import awkward as ak
@@ -75,7 +78,15 @@ GROUPS = {
         ("trueSimPartEndX", F), ("trueSimPartEndY", F), ("trueSimPartEndZ", F),
         ("trueSimPartEndPx", F), ("trueSimPartEndPy", F),
         ("trueSimPartEndPz", F), ("trueSimPartEndE", F),
-        ("trueSimPartContained", I)]),
+        ("trueSimPartContained", I),
+        # computed by the exporter from merged_sp triplet_data, NOT stored in
+        # the truth sidecar: de-double-counted unique-pixel charge sum of the
+        # spacepoints truth-matched to the particle's trackid (comb: Y else
+        # mean(U,V)) -- UNCALIBRATED, so downstream shower-energy recalibration
+        # applies directly (E_vis[MeV] ~= gamma calib factor * this). -1 when
+        # triplet_data was unavailable; 0 when the particle left no
+        # truth-matched spacepoints (e.g. unconverted photons).
+        ("trueSimPartPixelSumQ", F)]),
     "track": ("nTracks",
               [("track" + n, t) for n, t in _PRONG_COMMON]
               + [("trackEndPosX", F), ("trackEndPosY", F), ("trackEndPosZ", F)]

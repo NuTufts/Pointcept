@@ -47,6 +47,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "..", "..", "..")))
 from lartpc.larformer_reco.export import schema  # noqa: E402
 from lartpc.larformer_reco.utils import read_list  # noqa: E402
+from lartpc.larformer_reco.trajfit.calo import dedup_charge  # noqa: E402
 
 MASS = {0: 0.511, 1: 0.0, 2: 105.6584, 3: 139.5704, 4: 938.2721, 5: 0.0}
 LARFORMER_PDG = {0: 11, 1: 22, 2: 13, 3: 211, 4: 2212, 5: 0}
@@ -140,9 +141,39 @@ def fill_truth(ev, ftruth, entry):
     for b in schema.GROUPS["truePrimPart"][1]:
         ev["truePrimPart"][b[0]] = list(pp[b[0][len("truePrimPart"):]][()])
     for b in schema.GROUPS["trueSimPart"][1]:
-        ev["trueSimPart"][b[0]] = list(sp[b[0][len("trueSimPart"):]][()])
+        key = b[0][len("trueSimPart"):]
+        if key not in sp:
+            continue           # exporter-computed branch (PixelSumQ)
+        ev["trueSimPart"][b[0]] = list(sp[key][()])
     return {int(t): (int(p), float(e))
             for t, p, e in zip(sp["TID"][()], sp["PDG"][()], sp["E"][()])}
+
+
+def msp_qvis(msp_path, tids):
+    """Uncalibrated visible-charge sum per trackid: de-double-counted
+    unique-pixel charge (comb: Y else mean(U,V)) of the merged_sp triplet_data
+    spacepoints truth-matched to each tid -- identical to the reco eval's
+    q_true (E_vis ~= shower gamma calib factor * this)."""
+    out = {int(t): 0.0 for t in tids}
+    if not out:
+        return out
+    with h5py.File(msp_path, "r") as f:
+        td = f["entry_0/triplet_data"]
+        tid = np.asarray(td["trackid"][()], np.int64)
+        sel = np.isin(tid, np.asarray(list(out), np.int64))
+        if not sel.any():
+            return out
+        pix = td["pixval"][()][sel]
+        tick = td["tick"][()][sel]
+        uw = td["uwire"][()][sel]
+        vw = td["vwire"][()][sel]
+        yw = td["ywire"][()][sel]
+        tid = tid[sel]
+    for t in np.unique(tid):
+        m = tid == t
+        _, q_comb = dedup_charge(pix[m], tick[m], uw[m], vw[m], yw[m])
+        out[int(t)] = float(q_comb.sum())
+    return out
 
 
 class MspTruthPoints:
@@ -238,6 +269,15 @@ def main():
                 tid_lookup = fill_truth(ev, ft, tentry)
         else:
             stats["notruth"] += 1
+        qv = {}
+        if tid_lookup:
+            try:
+                qv = msp_qvis(msp_path, tid_lookup.keys())
+            except Exception as ex:
+                print(f"  [warn] qvis {base}: {ex}", flush=True)
+        ev["trueSimPart"]["trueSimPartPixelSumQ"] = [
+            float(qv.get(int(t), -1.0))
+            for t in ev["trueSimPart"]["trueSimPartTID"]]
         try:
             w = float(weights[rse[0]][rse[1]][rse[2]])
             ev["xsecWeight"] = w if np.isfinite(w) else -1.0
