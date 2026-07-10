@@ -42,6 +42,7 @@ from tools.larformer.run_larformer_stage3_inference import (
 from lartpc.flashmatch.flash_predict import (
     predict_many_slices_pe, select_charge_y_with_uv_fallback_np)
 from lartpc.flashmatch.flash_chi2 import neyman_chi2, drift_correct, oob_mask
+from lartpc.larformer_reco.trajfit.calo import dedup_charge
 
 
 def _np(x):
@@ -445,16 +446,28 @@ def _vox_keys(pos):
 
 
 def _load_msp_flash_charge(msp_path):
-    """Observed flashes + 1 cm voxel->charge map from the input merged_h5.
+    """Observed flashes + per-spacepoint pixel table from the input merged_h5.
 
-    Returns (flashes, vox2charge):
+    Returns (flashes, charge_ctx):
       flashes: dict(pe (Nf,32), producer_id, total_pe, time_us[, flash_index])
                or None if the file has no `flashes` group;
-      vox2charge: {voxel bytes key: mean charge} from triplet_data
-               (Y-plane ADC with U/V fallback), or None if unavailable.
+      charge_ctx: dict with
+        row_by_pos: {pos float32 bytes -> triplet_data row} (exact match; the
+                    slice coords are bit-identical members of triplet_data),
+        pixval/tick/uwire/vwire/ywire: the raw per-row pixel columns needed
+                    by calo.dedup_charge,
+        vox2charge: legacy {1 cm voxel key -> mean full-pixel charge}, kept
+                    ONLY as a fallback for coords with no exact match;
+      or None if triplet_data is unavailable.
+
+    NOTE (PE calibration): per-SP charge for the flash prediction must be
+    DE-DOUBLE-COUNTED -- each wire pixel's ADC split among the spacepoints
+    sharing it (calo.dedup_charge, per slice row). The previous convention
+    (full pixel ADC per SP) over-counted by the pixel multiplicity (~2.2-2.3
+    within deghosted slices), producing the observed ~2.5x PE over-prediction.
     """
     import h5py
-    flashes, vox2charge = None, None
+    flashes, charge_ctx = None, None
     with h5py.File(msp_path, "r") as f:
         e = f["entry_0"]
         if "flashes" in e:
@@ -474,12 +487,47 @@ def _load_msp_flash_charge(msp_path):
             acc = {}
             for k, q in zip(_vox_keys(pos), charge):
                 acc.setdefault(k, []).append(float(q))
-            vox2charge = {k: float(np.mean(v)) for k, v in acc.items()}
-    return flashes, vox2charge
+            charge_ctx = {
+                "row_by_pos": {pos[i].tobytes(): i for i in range(len(pos))},
+                "pixval": td["pixval"][()],
+                "tick": td["tick"][()],
+                "uwire": td["uwire"][()],
+                "vwire": td["vwire"][()],
+                "ywire": td["ywire"][()],
+                "vox2charge": {k: float(np.mean(v)) for k, v in acc.items()},
+            }
+    return flashes, charge_ctx
+
+
+def _dedup_row_charge(pos_cm, ctx):
+    """Per-SP de-double-counted comb charge for ONE slice row's point set.
+
+    Exact-position match into triplet_data, then calo.dedup_charge WITHIN the
+    row set (the set defines the pixel sharing, matching the calo/eval q_true
+    convention). Coords without an exact match (should be none) fall back to
+    the legacy voxel-mean full-pixel value.
+    """
+    pos = np.ascontiguousarray(pos_cm, np.float32)
+    rows = np.asarray([ctx["row_by_pos"].get(pos[i].tobytes(), -1)
+                       for i in range(len(pos))], np.int64)
+    out = np.zeros(len(pos), np.float32)
+    ok = rows >= 0
+    if ok.any():
+        r = rows[ok]
+        _, q_comb = dedup_charge(ctx["pixval"][r], ctx["tick"][r],
+                                 ctx["uwire"][r], ctx["vwire"][r],
+                                 ctx["ywire"][r])
+        out[ok] = q_comb.astype(np.float32)
+    if (~ok).any():
+        v2c = ctx["vox2charge"]
+        miss = np.nonzero(~ok)[0]
+        keys = _vox_keys(pos[miss])
+        out[miss] = [v2c.get(k, 0.0) for k in keys]
+    return out, int((~ok).sum())
 
 
 def _flash_slice_table(coord_cm, sid, p_nu_per_query, nu_qs, flashes,
-                       vox2charge, args):
+                       charge_ctx, args):
     """Per-slice flash-match table over the full-event slicer partition.
 
     Rows: the nu union (query == _NU_SID) if present, plus every cosmic-class
@@ -535,9 +583,10 @@ def _flash_slice_table(coord_cm, sid, p_nu_per_query, nu_qs, flashes,
                                 for q in sorted(nu_qs)], np.float32),
         },
         "params": {"gamma_beam": args.gamma_beam, "f_sys": args.flash_f_sys,
-                   "eps": args.flash_eps, "oob_max": args.flash_oob_max},
+                   "eps": args.flash_eps, "oob_max": args.flash_oob_max,
+                   "charge_convention": "dedup_comb_per_row"},
     }
-    if obs is None or vox2charge is None or S == 0:
+    if obs is None or charge_ctx is None or S == 0:
         return tbl
 
     # ---- predicted PE + chi2 + OOB per row -----------------------------------
@@ -545,8 +594,16 @@ def _flash_slice_table(coord_cm, sid, p_nu_per_query, nu_qs, flashes,
     cid = np.concatenate([np.full(r[2].size, i, np.int64)
                           for i, r in enumerate(rows)])
     spos = coord_cm[sel].astype(np.float32)
-    scharge = np.asarray([vox2charge.get(k, 0.0) for k in _vox_keys(spos)],
-                         np.float32)
+    parts, n_miss = [], 0
+    for r in rows:
+        q, m = _dedup_row_charge(coord_cm[r[2]].astype(np.float32),
+                                 charge_ctx)
+        parts.append(q)
+        n_miss += m
+    scharge = np.concatenate(parts).astype(np.float32)
+    if n_miss:
+        print(f"  [warn] flash charge: {n_miss}/{len(sel)} spacepoints had "
+              "no exact triplet_data match (voxel-mean fallback)")
     tbl["pred_pe"] = predict_many_slices_pe(
         spos, scharge, cid, S, obs["time_us"], producer_id=0,
         gamma_by_producer=(args.gamma_beam, args.gamma_beam),
@@ -978,10 +1035,10 @@ def main():
                             for q in range(len(probs))}
                         am = cls.argmax(dim=-1).detach().cpu().numpy()
                         nu_qs = [q for q in range(len(am)) if am[q] == nu_id]
-                flashes, vox2charge = _load_msp_flash_charge(real_files[i])
+                flashes, charge_ctx = _load_msp_flash_charge(real_files[i])
                 flash_tbl = _flash_slice_table(
                     sids[0], sids[1], p_nu_per_query, nu_qs,
-                    flashes, vox2charge, args)
+                    flashes, charge_ctx, args)
             except Exception as ex:
                 print(f"  [warn] flash table failed for event {i}: {ex}")
 
