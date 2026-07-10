@@ -191,6 +191,10 @@ def reco_ke(energy, cls_idx):
 
 PI0 = 111
 
+# MicroBooNE TPC active volume [cm] for --true-vtx-in-tpc
+TPC_LO = (0.0, -116.5, 0.0)
+TPC_HI = (256.35, 116.5, 1036.8)
+
 
 def is_primary(t, pid_by_tid, par_by_tid):
     """True if particle `t` is a ν-vertex primary.
@@ -306,7 +310,8 @@ def merge_shards(glob_pat, out, plots):
     if not paths:
         raise SystemExit(f"no shard npz matched {glob_pat!r}")
     parts = {k: [] for k in RECORD_KEYS}
-    meta = {"gamma_min_evis": 0.0, "gamma_evis_calib": 0.0}
+    meta = {"gamma_min_evis": 0.0, "gamma_evis_calib": 0.0,
+            "true_vtx_in_tpc": 0.0}
     for p in paths:
         with np.load(p, allow_pickle=True) as z:
             for k in RECORD_KEYS:
@@ -318,7 +323,10 @@ def merge_shards(glob_pat, out, plots):
            for k in RECORD_KEYS}
     np.savez(out, species_names=np.array(SPECIES),
              gamma_min_evis=np.float64(meta["gamma_min_evis"]),
-             gamma_evis_calib=np.float64(meta["gamma_evis_calib"]), **rec)
+             gamma_evis_calib=np.float64(meta["gamma_evis_calib"]),
+             true_vtx_in_tpc=np.float64(meta["true_vtx_in_tpc"]), **rec)
+    if meta["true_vtx_in_tpc"]:
+        print("(event denominator: true nu vertex inside TPC active volume)")
     print(f">>> merged {len(paths)} shards -> {len(rec['species'])} true "
           f"particles -> {out}", flush=True)
     print_summary(rec, gamma_min_evis=meta["gamma_min_evis"])
@@ -348,6 +356,14 @@ def main():
                      "list + matching nu_reco run.")
     ap.add_argument("--primaries-only", action="store_true",
                     help="denominator = primaries (parent is the nu) only")
+    ap.add_argument("--true-vtx-in-tpc", action="store_true",
+                help="restrict the EVENT denominator to events whose true nu "
+                     "vertex (GENIE mc_particle_tree/nu_vertices) lies inside "
+                     "the TPC active volume (x 0..256.35, y +-116.5, "
+                     "z 0..1036.8 cm). Canonical in-TPC definition; the "
+                     "earlier 2400-sample _intpc runs used a pre-filtered "
+                     "merged_sp list that this reproduces to ~99.7% (boundary "
+                     "stragglers from a different vertex convention).")
     ap.add_argument("--start", type=int, default=0,
                     help="shard: first merged_sp index (sorted by basename)")
     ap.add_argument("--n", type=int, default=None,
@@ -401,6 +417,14 @@ def main():
         except Exception:
             fmsp.close()
             continue
+        if args.true_vtx_in_tpc:
+            d = mt["nu_vertices"]
+            nv = (np.asarray(d[()], np.float64).reshape(-1, 3)
+                  if d.size else np.zeros((0, 3)))
+            if not any(all(TPC_LO[i] <= v[i] <= TPC_HI[i] for i in range(3))
+                       for v in nv):
+                fmsp.close()
+                continue
         # maps for the primaries cut (need parent pid to catch π0-decay γ)
         if args.primaries_only:
             pid_by_tid = {int(tid[i]): int(pid[i]) for i in range(len(tid))}
@@ -463,6 +487,7 @@ def main():
         rec[k] = np.asarray(rec[k])
     np.savez(args.out, species_names=np.array(SPECIES),
              stream=np.array(args.stream),
+             true_vtx_in_tpc=np.float64(args.true_vtx_in_tpc),
              gamma_min_evis=np.float64(args.gamma_min_evis),
              gamma_evis_calib=np.float64(a_gamma), **rec)
     print(f">>> {n_ev} events with nu-origin truth, {len(rec['species'])} "

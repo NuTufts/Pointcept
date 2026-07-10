@@ -39,6 +39,8 @@ PRIMARIES_ONLY=${PRIMARIES_ONLY:---primaries-only}
 STREAM=${STREAM:-nu}
 # photon denominator visibility cut [MeV]; 0 disables (see --gamma-min-evis)
 GAMMA_MIN_EVIS=${GAMMA_MIN_EVIS:-20}
+# set INTPC=--true-vtx-in-tpc to restrict events to true vertex in the TPC
+INTPC=${INTPC:-}
 
 # ---- paths ------------------------------------------------------------------
 WORKDIR=/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/kpv2_pointcept
@@ -84,7 +86,7 @@ apptainer exec --bind /cluster:/cluster "${container}" bash -c "
     --n ${N} \
     --stream ${STREAM} \
     --gamma-min-evis ${GAMMA_MIN_EVIS} \
-    ${PRIMARIES_ONLY}
+    ${PRIMARIES_ONLY} ${INTPC}
 "
 
 echo "DONE shard ${SLURM_ARRAY_TASK_ID} -> ${OUT}"
