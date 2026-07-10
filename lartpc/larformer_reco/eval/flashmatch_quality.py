@@ -45,7 +45,12 @@ import h5py
 sys.path.insert(0, os.path.abspath(os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "..", "..", "..")))
 
-KEYS = ["has_gt", "obs_pe",
+# MicroBooNE TPC active volume [cm] -- same canonical bounds as
+# eval_reco_performance --true-vtx-in-tpc
+TPC_LO = (0.0, -116.5, 0.0)
+TPC_HI = (256.35, 116.5, 1036.8)
+
+KEYS = ["has_gt", "obs_pe", "vtx_in_tpc", "vtx_dwall",
         "nu_present", "nu_chi2", "nu_pred_pe", "nu_p_nu", "nu_rank",
         "nu_correct",
         "fm_present", "fm_chi2", "fm_pred_pe", "fm_is_nu", "fm_correct",
@@ -61,6 +66,13 @@ def _index_by_event(paths):
     return out
 
 
+def _dwall(v):
+    """Signed distance to the nearest TPC wall: >0 inside, <0 outside."""
+    return float(min(v[0] - TPC_LO[0], TPC_HI[0] - v[0],
+                     v[1] - TPC_LO[1], TPC_HI[1] - v[1],
+                     v[2] - TPC_LO[2], TPC_HI[2] - v[2]))
+
+
 def _vtx_dist(f, gt):
     v = f["nu_vertex_cm"][()] if "nu_vertex_cm" in f else None
     if v is None or np.asarray(v).size < 3:
@@ -74,6 +86,10 @@ def _vtx_dist(f, gt):
 def process(args):
     nu_by_ev = _index_by_event([l.strip() for l in open(args.kp2_nu_list)])
     fm_by_ev = _index_by_event([l.strip() for l in open(args.kp2_fm_list)])
+    msp_by_base = {}
+    if args.merged_sp_list:
+        msp_by_base = {os.path.basename(l.strip()): l.strip()
+                       for l in open(args.merged_sp_list)}
     events = sorted(set(nu_by_ev) | set(fm_by_ev))
     lo = args.start
     hi = len(events) if args.n is None else min(len(events), lo + args.n)
@@ -102,6 +118,22 @@ def process(args):
                 if np.isfinite(g).all():
                     gt = g
             row["has_gt"] = int(gt is not None)
+            # GENIE nu vertex -> in-TPC flag + signed wall distance (the
+            # flash prediction only models ionization INSIDE the TPC, so
+            # out-of-TPC interactions and boundary events with escaping
+            # particles produce observed light we cannot predict).
+            msp = msp_by_base.get(str(base.attrs.get("src_file", "")))
+            if msp:
+                try:
+                    with h5py.File(msp, "r") as fm_:
+                        d = fm_["entry_0/mc_particle_tree/nu_vertices"]
+                        nv = (np.asarray(d[()], np.float64).reshape(-1, 3)
+                              if d.size else np.zeros((0, 3)))
+                    if len(nv):
+                        row["vtx_dwall"] = _dwall(nv[0])
+                        row["vtx_in_tpc"] = int(row["vtx_dwall"] > 0)
+                except Exception:
+                    pass
             if "observed_pe" not in base["flash"]:
                 n_noflash += 1        # no in-time beam flash: no chi2 anywhere
                 continue
@@ -158,19 +190,28 @@ def _hist_pair(ax, a, b, bins, la, lb):
     ax.hist(b, bins=bins, histtype="step", lw=1.8, label=lb)
 
 
-def make_plots(rec, outdir, vtx_cut):
+def make_plots(rec, outdir, vtx_cut, region="all", suffix=""):
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
     os.makedirs(outdir, exist_ok=True)
     lx = np.linspace(0, 5, 51)                 # log10(chi2) bins
     lpe = np.linspace(0, 5, 51)                # log10(PE) bins
+    rmask = {"all": np.ones(len(rec["obs_pe"]), bool),
+             "intpc": rec["vtx_in_tpc"] > 0,
+             "outtpc": rec["vtx_in_tpc"] == 0}[region]
+    rnote = {"all": "", "intpc": ", true vtx in TPC",
+             "outtpc": ", true vtx OUT of TPC"}[region]
 
     for s, name in (("nu", "nu stream (nu-union slice)"),
                     ("fm", "flashmatch stream (best-chi2 slice)")):
-        pres = rec[f"{s}_present"] > 0
+        name += rnote
+        pres = rmask & (rec[f"{s}_present"] > 0)
         ok = pres & (rec["has_gt"] > 0) & (rec[f"{s}_correct"] > 0)
         bad = pres & (rec["has_gt"] > 0) & (rec[f"{s}_correct"] == 0)
+        # out-of-TPC events carry no GT vertex keypoint, so correct/incorrect
+        # is undefined there -- the 'all' variant is the usable diagnostic
+        # for the unmodelable-light population.
         chi = rec[f"{s}_chi2"]
         fin = np.isfinite(chi) & (chi > 0)
 
@@ -184,10 +225,10 @@ def make_plots(rec, outdir, vtx_cut):
         ax.legend(fontsize=8)
         ax.grid(alpha=0.3)
         fig.tight_layout()
-        fig.savefig(f"{outdir}/chi2_{s}.png", dpi=110)
+        fig.savefig(f"{outdir}/chi2_{s}{suffix}.png", dpi=110)
         plt.close(fig)
 
-        for m, tag in ((ok, "correct"), (bad, "incorrect")):
+        for m, tag in ((ok, "correct"), (bad, "incorrect"), (pres, "all")):
             pe_p = rec[f"{s}_pred_pe"][m]
             pe_o = rec["obs_pe"][m]
             f2 = (pe_p > 0) & (pe_o > 0)
@@ -200,12 +241,13 @@ def make_plots(rec, outdir, vtx_cut):
             ax.legend(fontsize=8)
             ax.grid(alpha=0.3)
             fig.tight_layout()
-            fig.savefig(f"{outdir}/pe_{s}_{tag}.png", dpi=110)
+            fig.savefig(f"{outdir}/pe_{s}_{tag}{suffix}.png", dpi=110)
             plt.close(fig)
 
         fig, ax = plt.subplots(figsize=(6, 4.2))
         for m, lab, st in ((ok, "correct", "stepfilled"),
-                           (bad, "incorrect", "step")):
+                           (bad, "incorrect", "step"),
+                           (pres, "all choices", "step")):
             r = rec[f"{s}_pred_pe"][m] / rec["obs_pe"][m]
             r = r[np.isfinite(r) & (r > 0)]
             ax.hist(np.log10(r), bins=np.linspace(-2, 2, 61), histtype=st,
@@ -218,39 +260,102 @@ def make_plots(rec, outdir, vtx_cut):
         ax.legend(fontsize=8)
         ax.grid(alpha=0.3)
         fig.tight_layout()
-        fig.savefig(f"{outdir}/pe_ratio_{s}.png", dpi=110)
+        fig.savefig(f"{outdir}/pe_ratio_{s}{suffix}.png", dpi=110)
         plt.close(fig)
 
     # 2D pred vs obs on correct nu-union rows (the calibration population)
-    m = (rec["nu_present"] > 0) & (rec["nu_correct"] > 0)
+    m = rmask & (rec["nu_present"] > 0) & (rec["nu_correct"] > 0)
     pe_p, pe_o = rec["nu_pred_pe"][m], rec["obs_pe"][m]
     f2 = (pe_p > 0) & (pe_o > 0)
+    if not f2.any():
+        return
     fig, ax = plt.subplots(figsize=(5.2, 4.6))
     hb = ax.hexbin(np.log10(pe_o[f2]), np.log10(pe_p[f2]), gridsize=45,
                    bins="log", cmap="viridis")
     ax.plot([0, 5], [0, 5], "r--", lw=1, label="pred = obs")
     ax.set(xlabel="log10(observed total PE)",
            ylabel="log10(predicted total PE)",
-           title="correct nu-union slices: PE prediction calibration")
+           title=f"correct nu-union slices: PE prediction calibration{rnote}")
     fig.colorbar(hb, ax=ax, label="events")
     ax.legend(fontsize=8)
     fig.tight_layout()
-    fig.savefig(f"{outdir}/pe_pred_vs_obs.png", dpi=110)
+    fig.savefig(f"{outdir}/pe_pred_vs_obs{suffix}.png", dpi=110)
     plt.close(fig)
 
     # chi2 rank of the correct nu union: rank 1 = flash match alone finds nu
-    m = (rec["nu_present"] > 0) & (rec["nu_correct"] > 0) & (rec["nu_rank"] > 0)
+    m = (rmask & (rec["nu_present"] > 0) & (rec["nu_correct"] > 0)
+         & (rec["nu_rank"] > 0))
     rk = rec["nu_rank"][m].astype(int)
     fig, ax = plt.subplots(figsize=(6, 4.2))
     ax.hist(np.clip(rk, 1, 10), bins=np.arange(0.5, 11.5), rwidth=0.85)
     fr1 = float((rk == 1).mean()) if len(rk) else 0.0
     ax.set(xlabel="chi2 rank of the (correct) nu-union slice (10 = >=10)",
            ylabel="events",
-           title=f"flash-match ranking accuracy: nu slice is rank 1 in "
-                 f"{fr1:.1%} of events (N={len(rk)})")
+           title=f"flash-match ranking accuracy{rnote}: nu slice is rank 1 "
+                 f"in {fr1:.1%} of events (N={len(rk)})")
     ax.grid(alpha=0.3)
     fig.tight_layout()
-    fig.savefig(f"{outdir}/nu_chi2_rank.png", dpi=110)
+    fig.savefig(f"{outdir}/nu_chi2_rank{suffix}.png", dpi=110)
+    plt.close(fig)
+
+
+def dwall_plots(rec, outdir):
+    """Boundary effect: prediction quality vs signed vertex wall distance.
+    Escaping particles deposit ionization outside the TPC, so even in-TPC
+    events near a wall should show under-predicted light (ratio dropping)."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    edges = np.array([-60, -30, -15, -5, 0, 5, 10, 20, 35, 55, 80, 118])
+    ctr = 0.5 * (edges[:-1] + edges[1:])
+    m0 = ((rec["nu_present"] > 0) & (rec["nu_correct"] > 0)
+          & np.isfinite(rec["vtx_dwall"]))
+    ratio = np.log10(rec["nu_pred_pe"] / rec["obs_pe"])
+    med, q16, q84, n = [], [], [], []
+    for lo, hi in zip(edges[:-1], edges[1:]):
+        b = m0 & (rec["vtx_dwall"] >= lo) & (rec["vtx_dwall"] < hi) \
+            & np.isfinite(ratio)
+        r = ratio[b]
+        n.append(len(r))
+        med.append(np.median(r) if len(r) else np.nan)
+        q16.append(np.percentile(r, 16) if len(r) else np.nan)
+        q84.append(np.percentile(r, 84) if len(r) else np.nan)
+    fig, ax = plt.subplots(figsize=(6.4, 4.4))
+    ax.fill_between(ctr, q16, q84, alpha=0.25, label="16-84%")
+    ax.plot(ctr, med, "o-", ms=4, label="median")
+    ax.axhline(0, color="k", ls=":", lw=1)
+    ax.axvline(0, color="r", ls="--", lw=1, label="TPC wall")
+    ax.set(xlabel="true vtx signed distance to nearest TPC wall [cm] "
+                  "(<0 = outside)",
+           ylabel="log10(predicted / observed total PE)",
+           title="PE prediction vs wall distance (correct nu-union slices)\n"
+                 "escaping ionization -> under-prediction near/outside walls")
+    ax.legend(fontsize=8)
+    ax.grid(alpha=0.3)
+    fig.tight_layout()
+    fig.savefig(f"{outdir}/pe_ratio_vs_dwall.png", dpi=110)
+    plt.close(fig)
+
+    m1 = ((rec["nu_present"] > 0) & (rec["nu_correct"] > 0)
+          & (rec["nu_rank"] > 0) & np.isfinite(rec["vtx_dwall"]))
+    fr, nn = [], []
+    for lo, hi in zip(edges[:-1], edges[1:]):
+        b = m1 & (rec["vtx_dwall"] >= lo) & (rec["vtx_dwall"] < hi)
+        nn.append(int(b.sum()))
+        fr.append((rec["nu_rank"][b] == 1).mean() if b.sum() else np.nan)
+    fig, ax = plt.subplots(figsize=(6.4, 4.4))
+    ax.errorbar(ctr, fr, yerr=[np.sqrt(f*(1-f)/max(k,1)) if np.isfinite(f)
+                               else 0 for f, k in zip(fr, nn)], marker="o",
+                ms=4)
+    ax.axvline(0, color="r", ls="--", lw=1, label="TPC wall")
+    ax.set(xlabel="true vtx signed distance to nearest TPC wall [cm]",
+           ylabel="fraction where correct nu slice is chi2 rank 1",
+           ylim=(0, 1),
+           title="flash-match ranking accuracy vs wall distance")
+    ax.legend(fontsize=8)
+    ax.grid(alpha=0.3)
+    fig.tight_layout()
+    fig.savefig(f"{outdir}/nu_rank1_vs_dwall.png", dpi=110)
     plt.close(fig)
     print(f">>> plots -> {outdir}")
 
@@ -258,22 +363,31 @@ def make_plots(rec, outdir, vtx_cut):
 def summary(rec, vtx_cut):
     print(f"\n== FLASH-MATCH QUALITY (correct = chosen slice's decoded vertex "
           f"within {vtx_cut:.0f} cm of GT) ==")
-    for s in ("nu", "fm"):
-        pres = rec[f"{s}_present"] > 0
-        gt = pres & (rec["has_gt"] > 0)
-        ok = gt & (rec[f"{s}_correct"] > 0)
-        chi = rec[f"{s}_chi2"]
-        cok = chi[ok & np.isfinite(chi)]
-        cbad = chi[gt & (rec[f"{s}_correct"] == 0) & np.isfinite(chi)]
-        print(f"  {s}: present {int(pres.sum())} | with GT {int(gt.sum())} | "
-              f"correct {ok.sum()/max(gt.sum(),1):.3f} | median chi2 "
-              f"correct {np.median(cok) if len(cok) else np.nan:.1f} vs "
-              f"incorrect {np.median(cbad) if len(cbad) else np.nan:.1f}")
-    m = (rec["nu_present"] > 0) & (rec["nu_correct"] > 0) & (rec["nu_rank"] > 0)
-    rk = rec["nu_rank"][m]
-    if len(rk):
-        print(f"  correct nu slice wins chi2 ranking (rank 1): "
-              f"{(rk == 1).mean():.3f} (N={len(rk)})")
+    regions = [("all", np.ones(len(rec["obs_pe"]), bool)),
+               ("in-TPC", rec["vtx_in_tpc"] > 0),
+               ("out-TPC", rec["vtx_in_tpc"] == 0)]
+    for rname, rmask in regions:
+        for s in ("nu", "fm"):
+            pres = rmask & (rec[f"{s}_present"] > 0)
+            gt = pres & (rec["has_gt"] > 0)
+            ok = gt & (rec[f"{s}_correct"] > 0)
+            chi = rec[f"{s}_chi2"]
+            cok = chi[ok & np.isfinite(chi)]
+            cbad = chi[gt & (rec[f"{s}_correct"] == 0) & np.isfinite(chi)]
+            ratio = rec[f"{s}_pred_pe"][ok] / rec["obs_pe"][ok]
+            ratio = ratio[np.isfinite(ratio) & (ratio > 0)]
+            print(f"  [{rname:7s}] {s}: present {int(pres.sum()):6d} | "
+                  f"with GT {int(gt.sum()):6d} | correct "
+                  f"{ok.sum()/max(gt.sum(),1):.3f} | median chi2 "
+                  f"{np.median(cok) if len(cok) else np.nan:8.1f} (corr) vs "
+                  f"{np.median(cbad) if len(cbad) else np.nan:8.1f} (inc) | "
+                  f"med pred/obs {np.median(ratio) if len(ratio) else np.nan:.2f}")
+        m = (rmask & (rec["nu_present"] > 0) & (rec["nu_correct"] > 0)
+             & (rec["nu_rank"] > 0))
+        rk = rec["nu_rank"][m]
+        if len(rk):
+            print(f"  [{rname:7s}] correct nu slice wins chi2 ranking: "
+                  f"{(rk == 1).mean():.3f} (N={len(rk)})")
     fm = rec["fm_present"] > 0
     print(f"  fm choice == nu union: {rec['fm_is_nu'][fm].mean():.3f} "
           f"of {int(fm.sum())} events")
@@ -283,6 +397,10 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--kp2-nu-list")
     ap.add_argument("--kp2-fm-list")
+    ap.add_argument("--merged-sp-list",
+                    help="merged_sp list for the GENIE vertex -> in-TPC flag "
+                         "+ wall distance (matched by kp2 src_file attr); "
+                         "omit to skip the TPC split")
     ap.add_argument("--out", default="fmq_records.npz")
     ap.add_argument("--plots", default=None)
     ap.add_argument("--vtx-cut", type=float, default=5.0,
@@ -310,7 +428,11 @@ def main():
               f"events -> {args.out}")
         summary(rec, vtx_cut)
         if args.plots:
-            make_plots(rec, args.plots, vtx_cut)
+            for region, sfx in (("all", ""), ("intpc", "_intpc"),
+                                ("outtpc", "_outtpc")):
+                make_plots(rec, args.plots, vtx_cut, region=region,
+                           suffix=sfx)
+            dwall_plots(rec, args.plots)
         return
 
     for req in ("kp2_nu_list", "kp2_fm_list"):
