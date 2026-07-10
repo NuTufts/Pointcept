@@ -1,0 +1,324 @@
+"""Flash-match quality study from keypoint2 files (slices/ + flash/ tables).
+
+Per event, extracts each stream's CHOSEN slice and asks whether the choice was
+the true nu interaction (vertex proximity proxy: the choosing pass's decoded
+nu_vertex_cm within --vtx-cut of gt_nu_vertex_cm):
+
+  nu stream: the slicer's nu-union row (label == 'nu' in slices/).
+  fm stream: the chi2_rank==1 row. When that row IS the nu union, no separate
+             _fm_0.h5 exists (the nu file carries stream='nu,flashmatch'), so
+             pairing BOTH per-stream lists per event is required -- iterating
+             the fm list alone would drop exactly the fm stream's correct
+             choices.
+
+This cannot run off the eval npz (per-particle records, no flash info) or the
+exported ntuple (recoVtxFlashChi2 only -- no PE vectors); the kp2 files hold
+the per-slice chi2, per-slice predicted PE (PhotonLib, drift-corrected) and
+the observed in-time beam flash.
+
+Shard + merge exactly like eval_reco_performance:
+
+    PYTHONPATH=./ python3 lartpc/larformer_reco/eval/flashmatch_quality.py \
+        --kp2-nu-list ... --kp2-fm-list ... --out shard.npz [--start I --n N]
+    PYTHONPATH=./ python3 ... --merge 'dir/fmq_shard*.npz' --out merged.npz \
+        --plots plots/dir
+
+Plots (correct = solid/filled, incorrect = outline):
+  chi2_{nu,fm}.png            chosen-slice chi2, correct vs incorrect
+  pe_{nu,fm}_{correct,incorrect}.png
+                              total predicted vs observed in-time PE overlay
+  pe_ratio_{nu,fm}.png        predicted/observed total PE (calibration scale)
+  pe_pred_vs_obs.png          2D pred vs obs (correct nu-union rows)
+  nu_chi2_rank.png            chi2 rank of the (correct) nu union among all
+                              ranked slices -- rank 1 = flash match alone
+                              would have picked the nu slice
+"""
+import argparse
+import glob
+import os
+import re
+import sys
+
+import numpy as np
+import h5py
+
+sys.path.insert(0, os.path.abspath(os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "..", "..", "..")))
+
+KEYS = ["has_gt", "obs_pe",
+        "nu_present", "nu_chi2", "nu_pred_pe", "nu_p_nu", "nu_rank",
+        "nu_correct",
+        "fm_present", "fm_chi2", "fm_pred_pe", "fm_is_nu", "fm_correct",
+        "n_ranked"]
+
+
+def _index_by_event(paths):
+    out = {}
+    for p in paths:
+        m = re.search(r"event(\d+)(_fm)?_0\.h5$", os.path.basename(p))
+        if m:
+            out[int(m.group(1))] = p
+    return out
+
+
+def _vtx_dist(f, gt):
+    v = f["nu_vertex_cm"][()] if "nu_vertex_cm" in f else None
+    if v is None or np.asarray(v).size < 3:
+        return np.inf
+    v = np.asarray(v, np.float64).reshape(-1)[:3]
+    if not np.isfinite(v).all():
+        return np.inf
+    return float(np.linalg.norm(v - gt))
+
+
+def process(args):
+    nu_by_ev = _index_by_event([l.strip() for l in open(args.kp2_nu_list)])
+    fm_by_ev = _index_by_event([l.strip() for l in open(args.kp2_fm_list)])
+    events = sorted(set(nu_by_ev) | set(fm_by_ev))
+    lo = args.start
+    hi = len(events) if args.n is None else min(len(events), lo + args.n)
+    events = events[lo:hi]
+    print(f">>> {len(nu_by_ev)} nu / {len(fm_by_ev)} fm kp2 files; "
+          f"this shard: events [{lo}:{hi}] ({len(events)})", flush=True)
+
+    rec = {k: [] for k in KEYS}
+    n_noflash = 0
+    for ev in events:
+        row = {k: np.nan for k in KEYS}
+        row.update(nu_present=0, fm_present=0, fm_is_nu=0,
+                   nu_correct=0, fm_correct=0, has_gt=0, nu_rank=0,
+                   n_ranked=0)
+        fnu = h5py.File(nu_by_ev[ev], "r") if ev in nu_by_ev else None
+        ffm = h5py.File(fm_by_ev[ev], "r") if ev in fm_by_ev else None
+        base = fnu if fnu is not None else ffm
+        try:
+            if "slices" not in base or "flash" not in base:
+                n_noflash += 1
+                continue
+            gt = None
+            if bool(base.attrs.get("has_gt", False)):
+                g = np.asarray(base["gt_nu_vertex_cm"][()],
+                               np.float64).reshape(-1)[:3]
+                if np.isfinite(g).all():
+                    gt = g
+            row["has_gt"] = int(gt is not None)
+            if "observed_pe" not in base["flash"]:
+                n_noflash += 1        # no in-time beam flash: no chi2 anywhere
+                continue
+            row["obs_pe"] = float(np.nansum(base["flash/observed_pe"][()]))
+            sl = base["slices"]
+            labels = [l.decode() if isinstance(l, bytes) else str(l)
+                      for l in sl["label"][()]]
+            chi2 = np.asarray(sl["chi2"][()], np.float64)
+            rank = np.asarray(sl["chi2_rank"][()], np.int64)
+            pred = np.asarray(sl["pred_pe"][()], np.float64)
+            p_nu = np.asarray(sl["p_nu"][()], np.float64)
+            row["n_ranked"] = int((rank > 0).sum())
+
+            # ---- nu stream: the nu-union row + the nu pass's vertex ---------
+            if fnu is not None and "nu" in labels:
+                i = labels.index("nu")
+                row["nu_present"] = 1
+                row["nu_chi2"] = float(chi2[i])
+                row["nu_pred_pe"] = float(np.nansum(pred[i]))
+                row["nu_p_nu"] = float(p_nu[i])
+                row["nu_rank"] = int(rank[i])
+                if gt is not None:
+                    row["nu_correct"] = int(_vtx_dist(fnu, gt) < args.vtx_cut)
+
+            # ---- fm stream: the chi2_rank==1 row + the choosing pass -------
+            if (rank == 1).any():
+                j = int(np.nonzero(rank == 1)[0][0])
+                is_nu = labels[j] == "nu"
+                fsel = fnu if is_nu else ffm
+                if fsel is not None:      # decode of the chosen slice exists
+                    row["fm_present"] = 1
+                    row["fm_is_nu"] = int(is_nu)
+                    row["fm_chi2"] = float(chi2[j])
+                    row["fm_pred_pe"] = float(np.nansum(pred[j]))
+                    if gt is not None:
+                        row["fm_correct"] = int(
+                            _vtx_dist(fsel, gt) < args.vtx_cut)
+        finally:
+            for f in (fnu, ffm):
+                if f is not None:
+                    f.close()
+        for k in KEYS:
+            rec[k].append(row[k])
+    for k in rec:
+        rec[k] = np.asarray(rec[k], np.float64)
+    np.savez(args.out, vtx_cut=np.float64(args.vtx_cut), **rec)
+    print(f">>> {len(rec['obs_pe'])} events ({n_noflash} without flash table) "
+          f"-> {args.out}", flush=True)
+
+
+# ---------------------------------------------------------------------------
+def _hist_pair(ax, a, b, bins, la, lb):
+    ax.hist(a, bins=bins, histtype="stepfilled", alpha=0.45, label=la)
+    ax.hist(b, bins=bins, histtype="step", lw=1.8, label=lb)
+
+
+def make_plots(rec, outdir, vtx_cut):
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    os.makedirs(outdir, exist_ok=True)
+    lx = np.linspace(0, 5, 51)                 # log10(chi2) bins
+    lpe = np.linspace(0, 5, 51)                # log10(PE) bins
+
+    for s, name in (("nu", "nu stream (nu-union slice)"),
+                    ("fm", "flashmatch stream (best-chi2 slice)")):
+        pres = rec[f"{s}_present"] > 0
+        ok = pres & (rec["has_gt"] > 0) & (rec[f"{s}_correct"] > 0)
+        bad = pres & (rec["has_gt"] > 0) & (rec[f"{s}_correct"] == 0)
+        chi = rec[f"{s}_chi2"]
+        fin = np.isfinite(chi) & (chi > 0)
+
+        fig, ax = plt.subplots(figsize=(6, 4.2))
+        _hist_pair(ax, np.log10(chi[ok & fin]), np.log10(chi[bad & fin]), lx,
+                   f"correct nu choice (N={int((ok & fin).sum())})",
+                   f"incorrect (N={int((bad & fin).sum())})")
+        ax.set(xlabel="log10(flash-match chi2)", ylabel="events",
+               title=f"{name}\nchosen-slice chi2 (vtx<{vtx_cut:.0f}cm = "
+                     "correct)")
+        ax.legend(fontsize=8)
+        ax.grid(alpha=0.3)
+        fig.tight_layout()
+        fig.savefig(f"{outdir}/chi2_{s}.png", dpi=110)
+        plt.close(fig)
+
+        for m, tag in ((ok, "correct"), (bad, "incorrect")):
+            pe_p = rec[f"{s}_pred_pe"][m]
+            pe_o = rec["obs_pe"][m]
+            f2 = (pe_p > 0) & (pe_o > 0)
+            fig, ax = plt.subplots(figsize=(6, 4.2))
+            _hist_pair(ax, np.log10(pe_p[f2]), np.log10(pe_o[f2]), lpe,
+                       "predicted total PE", "observed in-time total PE")
+            ax.set(xlabel="log10(total PE)", ylabel="events",
+                   title=f"{name}, {tag} choices (N={int(f2.sum())})\n"
+                         "predicted vs observed flash scale")
+            ax.legend(fontsize=8)
+            ax.grid(alpha=0.3)
+            fig.tight_layout()
+            fig.savefig(f"{outdir}/pe_{s}_{tag}.png", dpi=110)
+            plt.close(fig)
+
+        fig, ax = plt.subplots(figsize=(6, 4.2))
+        for m, lab, st in ((ok, "correct", "stepfilled"),
+                           (bad, "incorrect", "step")):
+            r = rec[f"{s}_pred_pe"][m] / rec["obs_pe"][m]
+            r = r[np.isfinite(r) & (r > 0)]
+            ax.hist(np.log10(r), bins=np.linspace(-2, 2, 61), histtype=st,
+                    alpha=0.45 if st == "stepfilled" else 1.0, lw=1.8,
+                    label=f"{lab} (median {np.median(r):.2f})" if len(r)
+                    else lab)
+        ax.axvline(0, color="k", ls=":", lw=1)
+        ax.set(xlabel="log10(predicted / observed total PE)", ylabel="events",
+               title=f"{name}\nPE scale calibration (0 = perfect)")
+        ax.legend(fontsize=8)
+        ax.grid(alpha=0.3)
+        fig.tight_layout()
+        fig.savefig(f"{outdir}/pe_ratio_{s}.png", dpi=110)
+        plt.close(fig)
+
+    # 2D pred vs obs on correct nu-union rows (the calibration population)
+    m = (rec["nu_present"] > 0) & (rec["nu_correct"] > 0)
+    pe_p, pe_o = rec["nu_pred_pe"][m], rec["obs_pe"][m]
+    f2 = (pe_p > 0) & (pe_o > 0)
+    fig, ax = plt.subplots(figsize=(5.2, 4.6))
+    hb = ax.hexbin(np.log10(pe_o[f2]), np.log10(pe_p[f2]), gridsize=45,
+                   bins="log", cmap="viridis")
+    ax.plot([0, 5], [0, 5], "r--", lw=1, label="pred = obs")
+    ax.set(xlabel="log10(observed total PE)",
+           ylabel="log10(predicted total PE)",
+           title="correct nu-union slices: PE prediction calibration")
+    fig.colorbar(hb, ax=ax, label="events")
+    ax.legend(fontsize=8)
+    fig.tight_layout()
+    fig.savefig(f"{outdir}/pe_pred_vs_obs.png", dpi=110)
+    plt.close(fig)
+
+    # chi2 rank of the correct nu union: rank 1 = flash match alone finds nu
+    m = (rec["nu_present"] > 0) & (rec["nu_correct"] > 0) & (rec["nu_rank"] > 0)
+    rk = rec["nu_rank"][m].astype(int)
+    fig, ax = plt.subplots(figsize=(6, 4.2))
+    ax.hist(np.clip(rk, 1, 10), bins=np.arange(0.5, 11.5), rwidth=0.85)
+    fr1 = float((rk == 1).mean()) if len(rk) else 0.0
+    ax.set(xlabel="chi2 rank of the (correct) nu-union slice (10 = >=10)",
+           ylabel="events",
+           title=f"flash-match ranking accuracy: nu slice is rank 1 in "
+                 f"{fr1:.1%} of events (N={len(rk)})")
+    ax.grid(alpha=0.3)
+    fig.tight_layout()
+    fig.savefig(f"{outdir}/nu_chi2_rank.png", dpi=110)
+    plt.close(fig)
+    print(f">>> plots -> {outdir}")
+
+
+def summary(rec, vtx_cut):
+    print(f"\n== FLASH-MATCH QUALITY (correct = chosen slice's decoded vertex "
+          f"within {vtx_cut:.0f} cm of GT) ==")
+    for s in ("nu", "fm"):
+        pres = rec[f"{s}_present"] > 0
+        gt = pres & (rec["has_gt"] > 0)
+        ok = gt & (rec[f"{s}_correct"] > 0)
+        chi = rec[f"{s}_chi2"]
+        cok = chi[ok & np.isfinite(chi)]
+        cbad = chi[gt & (rec[f"{s}_correct"] == 0) & np.isfinite(chi)]
+        print(f"  {s}: present {int(pres.sum())} | with GT {int(gt.sum())} | "
+              f"correct {ok.sum()/max(gt.sum(),1):.3f} | median chi2 "
+              f"correct {np.median(cok) if len(cok) else np.nan:.1f} vs "
+              f"incorrect {np.median(cbad) if len(cbad) else np.nan:.1f}")
+    m = (rec["nu_present"] > 0) & (rec["nu_correct"] > 0) & (rec["nu_rank"] > 0)
+    rk = rec["nu_rank"][m]
+    if len(rk):
+        print(f"  correct nu slice wins chi2 ranking (rank 1): "
+              f"{(rk == 1).mean():.3f} (N={len(rk)})")
+    fm = rec["fm_present"] > 0
+    print(f"  fm choice == nu union: {rec['fm_is_nu'][fm].mean():.3f} "
+          f"of {int(fm.sum())} events")
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    ap.add_argument("--kp2-nu-list")
+    ap.add_argument("--kp2-fm-list")
+    ap.add_argument("--out", default="fmq_records.npz")
+    ap.add_argument("--plots", default=None)
+    ap.add_argument("--vtx-cut", type=float, default=5.0,
+                    help="correct-choice vertex distance cut [cm]")
+    ap.add_argument("--start", type=int, default=0)
+    ap.add_argument("--n", type=int, default=None)
+    ap.add_argument("--merge", metavar="GLOB",
+                    help="merge shard npz files -> --out (+summary/plots)")
+    args = ap.parse_args()
+
+    if args.merge:
+        paths = sorted(glob.glob(args.merge))
+        if not paths:
+            raise SystemExit(f"no shard npz matched {args.merge!r}")
+        rec = {k: [] for k in KEYS}
+        vtx_cut = args.vtx_cut
+        for p in paths:
+            with np.load(p) as z:
+                vtx_cut = float(z["vtx_cut"])
+                for k in KEYS:
+                    rec[k].append(z[k])
+        rec = {k: np.concatenate(v) for k, v in rec.items()}
+        np.savez(args.out, vtx_cut=np.float64(vtx_cut), **rec)
+        print(f">>> merged {len(paths)} shards -> {len(rec['obs_pe'])} "
+              f"events -> {args.out}")
+        summary(rec, vtx_cut)
+        if args.plots:
+            make_plots(rec, args.plots, vtx_cut)
+        return
+
+    for req in ("kp2_nu_list", "kp2_fm_list"):
+        if getattr(args, req) is None:
+            raise SystemExit(f"--{req.replace('_','-')} required "
+                             "(unless --merge)")
+    process(args)
+
+
+if __name__ == "__main__":
+    main()
