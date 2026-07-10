@@ -1,8 +1,14 @@
 """Flash-match quality study from keypoint2 files (slices/ + flash/ tables).
 
 Per event, extracts each stream's CHOSEN slice and asks whether the choice was
-the true nu interaction (vertex proximity proxy: the choosing pass's decoded
-nu_vertex_cm within --vtx-cut of gt_nu_vertex_cm):
+the true nu interaction. Correctness = CHARGE FRACTION (the eval's slicer
+metric C, event-level): the chosen slice must collect >= --qfrac-cut (default
+0.50, matching eval SLICE_COVERAGE) of the nu interaction's de-double-counted
+charge (calo.dedup_charge over the nu-origin truth-matched spacepoints; the
+in-slice numerator deduped over its own subset, mirroring the eval). This
+directly measures slice choice, unlike the earlier decoded-vertex proxy which
+convolved in keypoint-decode resolution (slices containing the true vertex
+were scored wrong when the decode missed by >5 cm):
 
   nu stream: the slicer's nu-union row (label == 'nu' in slices/).
   fm stream: the chi2_rank==1 row. When that row IS the nu union, no separate
@@ -50,10 +56,11 @@ sys.path.insert(0, os.path.abspath(os.path.join(
 TPC_LO = (0.0, -116.5, 0.0)
 TPC_HI = (256.35, 116.5, 1036.8)
 
-KEYS = ["has_gt", "obs_pe", "vtx_in_tpc", "vtx_dwall",
+KEYS = ["has_gt", "obs_pe", "vtx_in_tpc", "vtx_dwall", "qtrue",
         "nu_present", "nu_chi2", "nu_pred_pe", "nu_p_nu", "nu_rank",
-        "nu_correct",
+        "nu_correct", "nu_qfrac",
         "fm_present", "fm_chi2", "fm_pred_pe", "fm_is_nu", "fm_correct",
+        "fm_qfrac",
         "n_ranked"]
 
 
@@ -73,14 +80,53 @@ def _dwall(v):
                      v[2] - TPC_LO[2], TPC_HI[2] - v[2]))
 
 
-def _vtx_dist(f, gt):
-    v = f["nu_vertex_cm"][()] if "nu_vertex_cm" in f else None
-    if v is None or np.asarray(v).size < 3:
-        return np.inf
-    v = np.asarray(v, np.float64).reshape(-1)[:3]
-    if not np.isfinite(v).all():
-        return np.inf
-    return float(np.linalg.norm(v - gt))
+def _dedup_sum(ctx, m):
+    """De-double-counted comb charge sum over truth-row subset mask `m`
+    (each set deduped over itself, mirroring the eval's _charge_sum)."""
+    if not np.any(m):
+        return 0.0
+    from lartpc.larformer_reco.trajfit.calo import dedup_charge
+    _, q = dedup_charge(ctx["pixval"][m], ctx["tick"][m], ctx["uwire"][m],
+                        ctx["vwire"][m], ctx["ywire"][m])
+    return float(q.sum())
+
+
+def _nu_truth_ctx(msp_path):
+    """Nu-origin truth spacepoints from the merged_sp file: per-row pixel
+    columns + exact-position keys, and the GENIE vertex list."""
+    with h5py.File(msp_path, "r") as f:
+        e = f["entry_0"]
+        d = e["mc_particle_tree/nu_vertices"]
+        nv = (np.asarray(d[()], np.float64).reshape(-1, 3)
+              if d.size else np.zeros((0, 3)))
+        mt = e["mc_particle_tree"]
+        nu_tids = np.asarray(mt["trackid"][()], np.int64)[
+            np.asarray(mt["origin"][()], np.int64) == 1]
+        td = e["triplet_data"]
+        sel = np.isin(np.asarray(td["trackid"][()], np.int64), nu_tids)
+        if not sel.any():
+            return {"nv": nv, "n": 0}
+        pos = td["pos"][()].astype(np.float32)[sel]
+        ctx = {"nv": nv, "n": int(sel.sum()),
+               "pos_bytes": [pos[i].tobytes() for i in range(len(pos))],
+               "pixval": td["pixval"][()][sel],
+               "tick": td["tick"][()][sel],
+               "uwire": td["uwire"][()][sel],
+               "vwire": td["vwire"][()][sel],
+               "ywire": td["ywire"][()][sel]}
+        ctx["qtrue"] = _dedup_sum(ctx, np.ones(ctx["n"], bool))
+        return ctx
+
+
+def _slice_qfrac(fsel, ctx):
+    """Fraction of the nu interaction's dedup charge inside fsel's slice."""
+    if ctx.get("n", 0) == 0 or ctx.get("qtrue", 0.0) <= 0 or fsel is None \
+            or "slice" not in fsel:
+        return np.nan
+    sc = fsel["slice/coord_cm"][()].astype(np.float32)
+    sset = {sc[i].tobytes() for i in range(len(sc))}
+    m = np.asarray([b in sset for b in ctx["pos_bytes"]], bool)
+    return _dedup_sum(ctx, m) / ctx["qtrue"]
 
 
 def process(args):
@@ -104,6 +150,7 @@ def process(args):
         row.update(nu_present=0, fm_present=0, fm_is_nu=0,
                    nu_correct=0, fm_correct=0, has_gt=0, nu_rank=0,
                    n_ranked=0)
+        tctx = None
         fnu = h5py.File(nu_by_ev[ev], "r") if ev in nu_by_ev else None
         ffm = h5py.File(fm_by_ev[ev], "r") if ev in fm_by_ev else None
         base = fnu if fnu is not None else ffm
@@ -125,15 +172,14 @@ def process(args):
             msp = msp_by_base.get(str(base.attrs.get("src_file", "")))
             if msp:
                 try:
-                    with h5py.File(msp, "r") as fm_:
-                        d = fm_["entry_0/mc_particle_tree/nu_vertices"]
-                        nv = (np.asarray(d[()], np.float64).reshape(-1, 3)
-                              if d.size else np.zeros((0, 3)))
-                    if len(nv):
-                        row["vtx_dwall"] = _dwall(nv[0])
+                    tctx = _nu_truth_ctx(msp)
+                    if len(tctx["nv"]):
+                        row["vtx_dwall"] = _dwall(tctx["nv"][0])
                         row["vtx_in_tpc"] = int(row["vtx_dwall"] > 0)
+                    row["qtrue"] = float(tctx.get("qtrue", np.nan)) \
+                        if tctx.get("n", 0) else 0.0
                 except Exception:
-                    pass
+                    tctx = None
             if "observed_pe" not in base["flash"]:
                 n_noflash += 1        # no in-time beam flash: no chi2 anywhere
                 continue
@@ -155,8 +201,11 @@ def process(args):
                 row["nu_pred_pe"] = float(np.nansum(pred[i]))
                 row["nu_p_nu"] = float(p_nu[i])
                 row["nu_rank"] = int(rank[i])
-                if gt is not None:
-                    row["nu_correct"] = int(_vtx_dist(fnu, gt) < args.vtx_cut)
+                if tctx is not None:
+                    row["nu_qfrac"] = _slice_qfrac(fnu, tctx)
+                    if np.isfinite(row["nu_qfrac"]):
+                        row["nu_correct"] = int(
+                            row["nu_qfrac"] >= args.qfrac_cut)
 
             # ---- fm stream: the chi2_rank==1 row + the choosing pass -------
             if (rank == 1).any():
@@ -168,9 +217,11 @@ def process(args):
                     row["fm_is_nu"] = int(is_nu)
                     row["fm_chi2"] = float(chi2[j])
                     row["fm_pred_pe"] = float(np.nansum(pred[j]))
-                    if gt is not None:
-                        row["fm_correct"] = int(
-                            _vtx_dist(fsel, gt) < args.vtx_cut)
+                    if tctx is not None:
+                        row["fm_qfrac"] = _slice_qfrac(fsel, tctx)
+                        if np.isfinite(row["fm_qfrac"]):
+                            row["fm_correct"] = int(
+                                row["fm_qfrac"] >= args.qfrac_cut)
         finally:
             for f in (fnu, ffm):
                 if f is not None:
@@ -179,7 +230,7 @@ def process(args):
             rec[k].append(row[k])
     for k in rec:
         rec[k] = np.asarray(rec[k], np.float64)
-    np.savez(args.out, vtx_cut=np.float64(args.vtx_cut), **rec)
+    np.savez(args.out, qfrac_cut=np.float64(args.qfrac_cut), **rec)
     print(f">>> {len(rec['obs_pe'])} events ({n_noflash} without flash table) "
           f"-> {args.out}", flush=True)
 
@@ -190,7 +241,7 @@ def _hist_pair(ax, a, b, bins, la, lb):
     ax.hist(b, bins=bins, histtype="step", lw=1.8, label=lb)
 
 
-def make_plots(rec, outdir, vtx_cut, region="all", suffix=""):
+def make_plots(rec, outdir, qfrac_cut, region="all", suffix=""):
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
@@ -207,11 +258,12 @@ def make_plots(rec, outdir, vtx_cut, region="all", suffix=""):
                     ("fm", "flashmatch stream (best-chi2 slice)")):
         name += rnote
         pres = rmask & (rec[f"{s}_present"] > 0)
-        ok = pres & (rec["has_gt"] > 0) & (rec[f"{s}_correct"] > 0)
-        bad = pres & (rec["has_gt"] > 0) & (rec[f"{s}_correct"] == 0)
-        # out-of-TPC events carry no GT vertex keypoint, so correct/incorrect
-        # is undefined there -- the 'all' variant is the usable diagnostic
-        # for the unmodelable-light population.
+        judged = pres & np.isfinite(rec[f"{s}_qfrac"])
+        ok = judged & (rec[f"{s}_correct"] > 0)
+        bad = judged & (rec[f"{s}_correct"] == 0)
+        # events whose nu deposited no truth-matched charge (fully out-of-TPC)
+        # cannot be judged -- the 'all' variant is the usable diagnostic for
+        # the unmodelable-light population.
         chi = rec[f"{s}_chi2"]
         fin = np.isfinite(chi) & (chi > 0)
 
@@ -220,8 +272,8 @@ def make_plots(rec, outdir, vtx_cut, region="all", suffix=""):
                    f"correct nu choice (N={int((ok & fin).sum())})",
                    f"incorrect (N={int((bad & fin).sum())})")
         ax.set(xlabel="log10(flash-match chi2)", ylabel="events",
-               title=f"{name}\nchosen-slice chi2 (vtx<{vtx_cut:.0f}cm = "
-                     "correct)")
+               title=f"{name}\nchosen-slice chi2 (correct = slice has >="
+                     f"{qfrac_cut:.0%} of nu dedup charge)")
         ax.legend(fontsize=8)
         ax.grid(alpha=0.3)
         fig.tight_layout()
@@ -360,25 +412,25 @@ def dwall_plots(rec, outdir):
     print(f">>> plots -> {outdir}")
 
 
-def summary(rec, vtx_cut):
-    print(f"\n== FLASH-MATCH QUALITY (correct = chosen slice's decoded vertex "
-          f"within {vtx_cut:.0f} cm of GT) ==")
+def summary(rec, qfrac_cut):
+    print(f"\n== FLASH-MATCH QUALITY (correct = chosen slice collects >= "
+          f"{qfrac_cut:.0%} of the nu interaction's dedup charge) ==")
     regions = [("all", np.ones(len(rec["obs_pe"]), bool)),
                ("in-TPC", rec["vtx_in_tpc"] > 0),
                ("out-TPC", rec["vtx_in_tpc"] == 0)]
     for rname, rmask in regions:
         for s in ("nu", "fm"):
             pres = rmask & (rec[f"{s}_present"] > 0)
-            gt = pres & (rec["has_gt"] > 0)
-            ok = gt & (rec[f"{s}_correct"] > 0)
+            judged = pres & np.isfinite(rec[f"{s}_qfrac"])
+            ok = judged & (rec[f"{s}_correct"] > 0)
             chi = rec[f"{s}_chi2"]
             cok = chi[ok & np.isfinite(chi)]
-            cbad = chi[gt & (rec[f"{s}_correct"] == 0) & np.isfinite(chi)]
+            cbad = chi[judged & (rec[f"{s}_correct"] == 0) & np.isfinite(chi)]
             ratio = rec[f"{s}_pred_pe"][ok] / rec["obs_pe"][ok]
             ratio = ratio[np.isfinite(ratio) & (ratio > 0)]
             print(f"  [{rname:7s}] {s}: present {int(pres.sum()):6d} | "
-                  f"with GT {int(gt.sum()):6d} | correct "
-                  f"{ok.sum()/max(gt.sum(),1):.3f} | median chi2 "
+                  f"judged {int(judged.sum()):6d} | correct "
+                  f"{ok.sum()/max(judged.sum(),1):.3f} | median chi2 "
                   f"{np.median(cok) if len(cok) else np.nan:8.1f} (corr) vs "
                   f"{np.median(cbad) if len(cbad) else np.nan:8.1f} (inc) | "
                   f"med pred/obs {np.median(ratio) if len(ratio) else np.nan:.2f}")
@@ -403,8 +455,10 @@ def main():
                          "omit to skip the TPC split")
     ap.add_argument("--out", default="fmq_records.npz")
     ap.add_argument("--plots", default=None)
-    ap.add_argument("--vtx-cut", type=float, default=5.0,
-                    help="correct-choice vertex distance cut [cm]")
+    ap.add_argument("--qfrac-cut", type=float, default=0.50,
+                    help="correct choice = chosen slice collects at least this "
+                         "fraction of the nu interaction's de-double-counted "
+                         "charge (eval SLICE_COVERAGE convention)")
     ap.add_argument("--start", type=int, default=0)
     ap.add_argument("--n", type=int, default=None)
     ap.add_argument("--merge", metavar="GLOB",
@@ -416,21 +470,21 @@ def main():
         if not paths:
             raise SystemExit(f"no shard npz matched {args.merge!r}")
         rec = {k: [] for k in KEYS}
-        vtx_cut = args.vtx_cut
+        qfrac_cut = args.qfrac_cut
         for p in paths:
             with np.load(p) as z:
-                vtx_cut = float(z["vtx_cut"])
+                qfrac_cut = float(z["qfrac_cut"])
                 for k in KEYS:
                     rec[k].append(z[k])
         rec = {k: np.concatenate(v) for k, v in rec.items()}
-        np.savez(args.out, vtx_cut=np.float64(vtx_cut), **rec)
+        np.savez(args.out, qfrac_cut=np.float64(qfrac_cut), **rec)
         print(f">>> merged {len(paths)} shards -> {len(rec['obs_pe'])} "
               f"events -> {args.out}")
-        summary(rec, vtx_cut)
+        summary(rec, qfrac_cut)
         if args.plots:
             for region, sfx in (("all", ""), ("intpc", "_intpc"),
                                 ("outtpc", "_outtpc")):
-                make_plots(rec, args.plots, vtx_cut, region=region,
+                make_plots(rec, args.plots, qfrac_cut, region=region,
                            suffix=sfx)
             dwall_plots(rec, args.plots)
         return
