@@ -198,7 +198,8 @@ class MspTruthPoints:
 
 def prong_rows(gr):
     """nu_reco event group -> dict of part_* arrays."""
-    keys = ["part_interaction", "part_kind", "part_pred_class", "part_energy",
+    keys = ["part_att_score", "part_att_confident",
+            "part_interaction", "part_kind", "part_pred_class", "part_energy",
             "part_charge", "part_gt_trackid", "part_vtx", "part_inst_idx",
             "part_pred_class",
             "part_start_cm", "part_direction", "part_npoly", "part_poly_cm",
@@ -397,6 +398,12 @@ def main():
                     # LArFormer segmenter PID (its own classifier)
                     p["LArFormerPID"] = LARFORMER_PDG.get(
                         int(d["part_pred_class"][i]), 0)
+                    if kind == "shower":
+                        p["AttScore"] = (float(d["part_att_score"][i])
+                                         if "part_att_score" in d else -9.0)
+                        p["AttConfident"] = (
+                            int(d["part_att_confident"][i])
+                            if "part_att_confident" in d else 1)
                     lfs = (fkp[f"particle/{inst}/class_scores"][()]
                            if inst >= 0
                            and f"particle/{inst}/class_scores"

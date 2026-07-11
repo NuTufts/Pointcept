@@ -97,6 +97,11 @@ GROUPS = {
               + [("trackVtxIdx", I)]),
     "shower": ("nShowers",
                [("shower" + n, t) for n, t in _PRONG_COMMON]
+               # LLR attachment quality (2026-07-11 --shower-mode llr):
+               # AttScore = union-rule LLR (-9 when absent, pre-llr files);
+               # AttConfident = 0 for forced no-shower-left-behind
+               # attachments, 1 otherwise. Analyzer purity dials.
+               + [("showerAttScore", F), ("showerAttConfident", I)]
                + [("shower" + n, t) for n, t in _LARFORMER]
                + [("shower" + n, t) for n, t in _LARPID]
                + [("showerRecoE", F)]
