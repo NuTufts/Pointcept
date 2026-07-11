@@ -184,7 +184,7 @@ def reco_interaction(primary, tracks, d_vertex=8.0, d_perp=3.0, front_tol=1.5,
 # Phase 2: attach showers to interaction connection points
 # ---------------------------------------------------------------------------
 def reco_showers(shower_recs, conn_points, mode="greedy", d_impact=10.0,
-                 cos_min=0.9, d_gap=60.0, gap_touch=3.0):
+                 cos_min=0.9, d_gap=60.0, gap_touch=3.0, llr=None):
     """Attach predicted shower instances to interaction connection points.
 
     `conn_points`: list of {vid, pos, dist} (the nu vertex + track endpoints from
@@ -200,9 +200,11 @@ def reco_showers(shower_recs, conn_points, mode="greedy", d_impact=10.0,
     showers = [dict(inst=r.inst_idx, cls=r.pred_cls, cls_name=r.pred_cls_name,
                     gt_trackid=r.gt_trackid, points=r.points,
                     truth_cloud=getattr(r, "truth_cloud", None),
+                    charge_w=getattr(r, "charge_w", None),
                     pred_start=r.pred_start, gt_start=r.gt_start,
                     attached=False, cp_id=None, cp_pos=None, cp_kind=None,
-                    trunk=None, geom=None) for r in shower_recs]
+                    trunk=None, geom=None, att_score=np.nan,
+                    att_confident=True) for r in shower_recs]
     if not conn_points:
         return showers
 
@@ -210,7 +212,33 @@ def reco_showers(shower_recs, conn_points, mode="greedy", d_impact=10.0,
         sh.update(attached=True, cp_id=cp["id"], cp_pos=cp["pos"],
                   cp_kind=cp["kind"], trunk=tk, geom=g)
 
-    if mode == "greedy":
+    if mode == "llr" and llr is not None:
+        # UNION rule (attachment study): production hard cuts (whose touch
+        # bypass is unbeatable for near-vertex showers) OR high-threshold LLR
+        # (recovers far-converting/small showers the cuts reject). On the
+        # study table this strictly dominates the cuts alone. Best passing
+        # connection point by LLR; the best score is recorded even when no
+        # cp passes (analyzers see it via part_att_score / attachment/).
+        for sh in showers:
+            best_pass, best_any = None, None
+            for cp in conn_points:
+                s, tk, g, v = llr.score(sh["points"], cp["pos"],
+                                        q=sh.get("charge_w"))
+                ok_cur, _ = connects(tk.start, tk.direction, cp["pos"],
+                                     d_impact=d_impact, cos_min=cos_min,
+                                     d_gap=d_gap, gap_touch=gap_touch)
+                cand = (s, cp, tk, dict(g, llr=float(s),
+                                        cur_pass=bool(ok_cur)))
+                if best_any is None or s > best_any[0]:
+                    best_any = cand
+                if (ok_cur or s >= llr.thr) and (best_pass is None
+                                                 or s > best_pass[0]):
+                    best_pass = cand
+            if best_any is not None:
+                sh["att_score"] = float(best_any[0])
+            if best_pass is not None:
+                _attach(sh, best_pass[1], best_pass[2], best_pass[3])
+    elif mode == "greedy":
         for cp in conn_points:                       # closest-to-nu-vtx first
             for sh in showers:
                 if sh["attached"]:
@@ -274,7 +302,8 @@ def reco_interactions(cands, tracks, shower_recs, args):
     out = []
     sk = dict(d_impact=args.shower_d_impact, cos_min=args.shower_cos_min,
               d_gap=args.shower_d_gap,
-              gap_touch=getattr(args, "shower_gap_touch", 3.0))
+              gap_touch=getattr(args, "shower_gap_touch", 3.0),
+              llr=getattr(args, "attach_llr", None))
     for it in range(args.max_interactions):
         pool = [c for c in cands if all(
             np.linalg.norm(np.asarray(c[0], float) - u) > args.reco_exclude_radius
@@ -335,7 +364,45 @@ def reco_interactions(cands, tracks, shower_recs, args):
                         showers=showers))
         used.append(cpos)
         rem_shrec = [r for r, s in zip(rem_shrec, showers) if not s["attached"]]
+
+    # --- no shower left behind (llr mode) --------------------------------------
+    # Every remaining segmented shower attaches to its best-LLR connection point
+    # across ALL reconstructed interactions, flagged att_confident=False so
+    # analyzers can drop or re-rank them (the per-pair score matrix is persisted
+    # by run_nu_reco).
+    llr = sk.get("llr")
+    if llr is not None and args.shower_mode == "llr" and out and rem_shrec:
+        rem_shrec = force_attach_leftover_showers(out, rem_shrec, llr)
     return out, rem_tracks, rem_shrec
+
+
+def force_attach_leftover_showers(out, rem_shrec, llr):
+    """Attach each leftover shower to the best-scoring connection point over
+    all interactions (no threshold); returns showers with no scorable cp."""
+    kept = []
+    for r in rem_shrec:
+        best = None
+        for I in out:
+            for cp in I["conn_points"]:
+                s, tk, g, v = llr.score(r.points, cp["pos"],
+                                        q=getattr(r, "charge_w", None))
+                if best is None or s > best[0]:
+                    best = (s, I, cp, tk, g)
+        if best is None:
+            kept.append(r)
+            continue
+        s, I, cp, tk, g = best
+        sh = dict(inst=r.inst_idx, cls=r.pred_cls, cls_name=r.pred_cls_name,
+                  gt_trackid=r.gt_trackid, points=r.points,
+                  truth_cloud=getattr(r, "truth_cloud", None),
+                  charge_w=getattr(r, "charge_w", None),
+                  pred_start=r.pred_start, gt_start=r.gt_start,
+                  attached=True, cp_id=cp["id"], cp_pos=cp["pos"],
+                  cp_kind=cp["kind"], trunk=tk, geom=dict(g, llr=float(s)),
+                  att_score=float(s), att_confident=False)
+        I["showers"].append(sh)
+        I["res"]["showers"] = I["showers"]
+    return kept
 
 
 # ---------------------------------------------------------------------------

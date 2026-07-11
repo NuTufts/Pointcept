@@ -47,6 +47,7 @@ def reco_args(a):
         shower_cos_min=a.shower_cos_min, shower_d_gap=60.0,
         shower_gap_touch=getattr(a, "shower_gap_touch", 3.0),
         shower_seed_score=getattr(a, "shower_seed_score", 0.5),
+        attach_llr=getattr(a, "_attach_llr", None),
         max_interactions=a.max_interactions, reco_exclude_radius=10.0,
         reco_min_unassoc_points=30)
 
@@ -79,20 +80,63 @@ def reco_one(kp_path, msp_path, rmom, calib, a):
                    and np.all(np.isfinite(r.pred_start))
                    and r.n_points >= a.shower_min_points]
     if not tracks and not shower_recs:
-        return None, all_recs
+        return None, all_recs, None
+    llr = args.attach_llr
+    if llr is not None and shower_recs and msp_path:
+        # per-point comb charge (Y else mean(U,V)) for the cone-shape prior,
+        # exact-position matched into triplet_data (same as the study)
+        try:
+            with h5py.File(msp_path, "r") as f:
+                td = f["entry_0/triplet_data"]
+                tpos = td["pos"][()].astype(np.float32)
+                pix = td["pixval"][()].astype(np.float64)
+                q = pix[:, 2].copy()
+                b = q <= 0
+                q[b] = 0.5 * (pix[b, 0] + pix[b, 1])
+                q = np.clip(q, 0, None)
+                qmap = {tpos[i].tobytes(): q[i] for i in range(len(tpos))}
+            for r in shower_recs:
+                pp = np.ascontiguousarray(r.points, np.float32)
+                r.charge_w = np.asarray(
+                    [qmap.get(pp[i].tobytes(), 0.0) for i in range(len(pp))])
+        except Exception:
+            pass
     interactions, _lo_t, _lo_s = reco_interactions(cands, tracks, shower_recs, args)
     if not interactions:
-        return None, all_recs
+        return None, all_recs, None
     entry, fh = _entry(kp_path, msp_dir)
     try:
         assign_momenta(interactions, entry, rmom, calib)
     finally:
         if fh is not None:
             fh.close()
-    return interactions, all_recs
+    # per-pair LLR score matrix over ALL (shower, connection point) combos --
+    # the analyzer-facing attachment matrix (rearrangeable particle graph)
+    att = None
+    if llr is not None:
+        cps_all = [(np.asarray(cp["pos"], np.float64),
+                    0 if cp["kind"] == "vertex" else 1, I["iter"])
+                   for I in interactions for cp in I["conn_points"]]
+        sh_all = [sh for I in interactions for sh in I["showers"]
+                  if sh["attached"]]
+        if cps_all and sh_all:
+            sc = np.full((len(sh_all), len(cps_all)), np.nan, np.float32)
+            for si, sh in enumerate(sh_all):
+                for ci, (pos_, _, _) in enumerate(cps_all):
+                    s, _tk, _g, _v = llr.score(sh["points"], pos_,
+                                               q=sh.get("charge_w"))
+                    sc[si, ci] = s
+            att = dict(
+                cp_pos=np.asarray([c[0] for c in cps_all], np.float32),
+                cp_kind=np.asarray([c[1] for c in cps_all], np.int32),
+                cp_interaction=np.asarray([c[2] for c in cps_all], np.int32),
+                shower_inst=np.asarray([int(sh["inst"]) for sh in sh_all],
+                                       np.int32),
+                scores=sc, thr=np.float32(llr.thr))
+    return interactions, all_recs, att
 
 
-def _write_event(g, interactions, all_recs, kp_path):
+def _write_event(g, interactions, all_recs, kp_path, att_matrix=None):
     """Per-particle 4-momentum table + geometry: the fitted track polylines
     (`part_poly_cm` concatenated + `part_npoly` counts), per-particle start point
     (`part_start_cm`) and attach-vertex index (`part_vtx`), and the full vertex
@@ -139,7 +183,7 @@ def _write_event(g, interactions, all_recs, kp_path):
 
     rows = dict(interaction=[], kind=[], pred_class=[], energy=[], length=[],
                 charge=[], method=[], gt_trackid=[], true_ke=[], vtx=[],
-                inst_idx=[])
+                inst_idx=[], att_score=[], att_confident=[])
     mom, fourvec, direction, start_cm, polys = [], [], [], [], []
     for ii, I in enumerate(interactions):
         objs = ([("track", T) for T in I["tracks"]]
@@ -160,6 +204,10 @@ def _write_event(g, interactions, all_recs, kp_path):
             rows["method"].append(_METHOD.get(m.get("momentum_method"), -1))
             rows["gt_trackid"].append(gtid)
             rows["true_ke"].append(float(tke))
+            rows["att_score"].append(float(o.get("att_score", np.nan))
+                                     if kind == "shower" else np.nan)
+            rows["att_confident"].append(
+                int(o.get("att_confident", True)) if kind == "shower" else 1)
             mom.append(np.asarray(m.get("momentum", [np.nan] * 3), np.float32))
             fourvec.append(np.asarray(m.get("fourvec", [np.nan] * 4), np.float32))
             direction.append(np.asarray(m.get("direction", [np.nan] * 3), np.float32))
@@ -203,6 +251,15 @@ def _write_event(g, interactions, all_recs, kp_path):
                            if n else np.zeros((0, 3), np.float32)))
     npoly = np.asarray([len(p) for p in polys], np.int64)
     g.create_dataset("part_npoly", data=npoly)
+    if att_matrix is not None:
+        # NOTE att_matrix, not `att`: the particle loop above reuses `att`
+        # for each track's attach dict and would shadow the parameter.
+        ag = g.create_group("attachment")
+        for k, v in att_matrix.items():
+            if k == "thr":
+                ag.attrs["llr_threshold"] = float(v)
+            else:
+                ag.create_dataset(k, data=v)
     g.create_dataset("part_poly_cm",
                      data=(np.concatenate(polys, 0).astype(np.float32)
                            if polys and npoly.sum() > 0
@@ -220,7 +277,18 @@ def main():
     # reco knobs (tuned defaults)
     ap.add_argument("--min-points", type=int, default=20)
     ap.add_argument("--shower-min-points", type=int, default=20)
-    ap.add_argument("--shower-mode", default="greedy")
+    ap.add_argument("--shower-mode", default="greedy",
+                    choices=["greedy", "exhaustive", "llr"],
+                    help="llr = attachment-study-tuned likelihood scorer "
+                         "(+ no-shower-left-behind, per-pair score matrix "
+                         "persisted in attachment/)")
+    ap.add_argument("--attach-llr-tables", default=None,
+                    help="LLR tables npz (default: trajfit/data/"
+                         "attachment_llr_tables.npz)")
+    ap.add_argument("--attach-llr-thr", type=float, default=5.0,
+                    help="LLR threshold for the union rule (hard cuts OR "
+                         "llr>=thr); study: +5.0 = correct 0.799->0.838, "
+                         "far>55cm 0.167->0.612, false 0.129->0.146")
     ap.add_argument("--shower-d-impact", type=float, default=15.0)
     ap.add_argument("--shower-cos-min", type=float, default=0.80)
     ap.add_argument("--shower-gap-touch", type=float, default=3.0,
@@ -239,6 +307,13 @@ def main():
     end = len(kp_list) if args.n < 0 else min(args.start + args.n, len(kp_list))
     shard = list(range(args.start, min(end, len(kp_list))))
     msp_map = build_msp_map(args.merged_sp_list)
+    if args.shower_mode == "llr":
+        from lartpc.larformer_reco.trajfit.shower_attach_llr import AttachLLR
+        args._attach_llr = AttachLLR(args.attach_llr_tables)
+        args._attach_llr.thr = float(args.attach_llr_thr)
+        print(f">>> attachment LLR (union rule): "
+              f"{len(args._attach_llr.var_names)} vars, "
+              f"thr={args._attach_llr.thr:+.2f}", flush=True)
     rmom = RangeMomentum()
     calib = load_shower_calib()
     os.makedirs(args.output_dir, exist_ok=True)
@@ -257,12 +332,13 @@ def main():
                     src = f.attrs.get("src_file", "")
                 src = src.decode() if isinstance(src, bytes) else src
                 msp = msp_map.get(os.path.basename(src))
-                interactions, all_recs = reco_one(kp, msp, rmom, calib, args)
+                interactions, all_recs, att = reco_one(kp, msp, rmom,
+                                                        calib, args)
                 if interactions is None:
                     n_skip += 1
                     continue
                 _write_event(fout.create_group(f"event_{gidx:07d}"),
-                             interactions, all_recs, kp)
+                             interactions, all_recs, kp, att_matrix=att)
                 n_ok += 1
                 if n_ok % 100 == 0:
                     print(f"    {n_ok} done ({gidx})", flush=True)
