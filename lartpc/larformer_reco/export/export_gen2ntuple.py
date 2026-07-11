@@ -241,9 +241,10 @@ def main():
         m = re.search(r"fileno(\d+)", os.path.basename(pth))
         if m and int(m.group(1)) not in first_by_fileno:
             first_by_fileno[int(m.group(1))] = i
-    end = len(msp) if args.n < 0 else min(args.start + args.n, len(msp))
-    msp = msp[args.start:end]
-    print(f">>> {len(msp)} events [{args.start}:{end})", flush=True)
+    shard_end = len(msp) if args.n < 0 else min(args.start + args.n,
+                                                 len(msp))
+    msp = msp[args.start:shard_end]
+    print(f">>> {len(msp)} events [{args.start}:{shard_end})", flush=True)
 
     in_wcfv = load_wcfv(args.wcfv_lib)
     truth = TruthIndex(args.truth_dir)
@@ -471,8 +472,10 @@ def main():
         tree.extend(schema.extend_payload(events))
     pot = fout.mktree("potTree", {"totPOT": "float32",
                                   "totGoodPOT": "float32"})
+    # NOTE shard_end, not a bare `end`: the prong loop reuses `end` for
+    # track endpoints, which clobbered the range bound (array truth error).
     fn = sorted(k for k in truth.pot
-                if args.start <= first_by_fileno.get(k, -1) < end)
+                if args.start <= first_by_fileno.get(k, -1) < shard_end)
     pot.extend({"totPOT": np.asarray([truth.pot[k][0] for k in fn],
                                      np.float32),
                 "totGoodPOT": np.asarray([truth.pot[k][1] for k in fn],
