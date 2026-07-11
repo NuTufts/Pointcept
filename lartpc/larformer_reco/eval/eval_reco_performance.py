@@ -216,7 +216,8 @@ def is_primary(t, pid_by_tid, par_by_tid):
 
 RECORD_KEYS = ["species", "true_ke", "found_A", "compl", "found_B",
                "reco_ke", "reco_class", "had_kp", "found_C", "slice_cov",
-               "slice_cov_count", "q_true", "n_true_sp", "has_instance"]
+               "slice_cov_count", "q_true", "n_true_sp", "has_instance",
+               "conv_dist"]
 
 # per-particle failure-stage diagnosis (mirrors the visualizer's why_unattached):
 # where in the pipeline each true particle fell out. First matching wins.
@@ -315,7 +316,8 @@ def merge_shards(glob_pat, out, plots):
     for p in paths:
         with np.load(p, allow_pickle=True) as z:
             for k in RECORD_KEYS:
-                parts[k].append(z[k])
+                parts[k].append(z[k] if k in z.files else
+                                np.full(len(z["species"]), np.nan))
             for k in meta:
                 if k in z.files:
                     meta[k] = float(z[k])
@@ -442,6 +444,24 @@ def main():
             fmsp.close()
             continue
         n_ev += 1
+        # conversion distance per trackid: |startpt - originpt| minimized over
+        # the particle's shower fragments (photons: origin = creation point,
+        # earliest fragment start = pair-conversion point; istrunk does not
+        # discriminate). nan when the particle has no fragments.
+        conv = {}
+        try:
+            sf = entry["shower_fragments"]
+            ftid = np.atleast_1d(sf["trackid"][()])
+            if ftid.size:
+                so = np.atleast_2d(sf["startpt"][()]).astype(np.float64)
+                oo = np.atleast_2d(sf["originpt"][()]).astype(np.float64)
+                dd = np.linalg.norm(so - oo, axis=1)
+                for fi in range(ftid.size):
+                    t_ = int(ftid[fi])
+                    if t_ not in conv or dd[fi] < conv[t_]:
+                        conv[t_] = float(dd[fi])
+        except Exception:
+            pass
         hit = kp_index.get(msp_base)
         compl, slice_coord = completeness_by_trackid(hit[1]) if hit else ({}, None)
         nr = nu_reco.get(hit[0]) if hit else None
@@ -483,6 +503,7 @@ def main():
             rec["q_true"].append(qt)
             rec["n_true_sp"].append(ntsp)
             rec["has_instance"].append(t in compl)   # segmenter made an instance
+            rec["conv_dist"].append(conv.get(t, np.nan))
     for k in rec:
         rec[k] = np.asarray(rec[k])
     np.savez(args.out, species_names=np.array(SPECIES),
@@ -625,6 +646,43 @@ def _stage_plots(rec, outdir):
         plt.setp(ax.get_xticklabels(), rotation=25, ha="right", fontsize=7)
         ax.set_xlabel("true KE [MeV]")
         fig.tight_layout(); fig.savefig(f"{outdir}/stage_{sp}.png", dpi=110)
+        plt.close(fig)
+        # photons: same failure-stage mix vs CONVERSION DISTANCE (creation ->
+        # pair-conversion point). Far-converting photons are the classic
+        # single-photon-search background where past recos struggled.
+        if sp != "gamma" or "conv_dist" not in rec:
+            continue
+        cd = np.asarray(rec["conv_dist"], float)
+        mc = m & np.isfinite(cd)
+        if mc.sum() < 5:
+            continue
+        dbins = [0, 2, 5, 10, 20, 35, 55, 80, 120, 1e9]
+        dlabels = [f"{lo:.0f}-{hi if hi < 1e8 else 999:.0f}"
+                   for lo, hi in zip(dbins[:-1], dbins[1:])]
+        fracs = np.zeros((len(STAGE_NAMES), len(dlabels)))
+        Ns = []
+        for j, (lo, hi) in enumerate(zip(dbins[:-1], dbins[1:])):
+            b = mc & (cd >= lo) & (cd < hi)
+            N = int(b.sum()); Ns.append(N)
+            if N:
+                for k in range(len(STAGE_NAMES)):
+                    fracs[k, j] = (codes[b] == k).mean()
+        fig, ax = plt.subplots(figsize=(6.5, 4))
+        bottoms = np.zeros(len(dlabels))
+        for k in range(len(STAGE_NAMES)):
+            ax.bar(dlabels, fracs[k], bottom=bottoms, color=colors[k],
+                   label=STAGE_NAMES[k], width=0.8)
+            bottoms += fracs[k]
+        for x, N in enumerate(Ns):
+            ax.text(x, 1.01, f"N={N}", ha="center", va="bottom", fontsize=6)
+        ax.set(ylabel="fraction of true photons", ylim=(0, 1.12),
+               title="gamma: reco failure-stage mix vs conversion distance")
+        ax.legend(fontsize=7, ncol=5, loc="lower center",
+                  bbox_to_anchor=(0.5, -0.32))
+        plt.setp(ax.get_xticklabels(), rotation=25, ha="right", fontsize=7)
+        ax.set_xlabel("true |conversion point - origin| [cm]")
+        fig.tight_layout()
+        fig.savefig(f"{outdir}/stage_gamma_convdist.png", dpi=110)
         plt.close(fig)
 
 
