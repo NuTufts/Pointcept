@@ -138,12 +138,19 @@ def merge_calib_data(paths):
 
 
 def load_shower_calib(path=None):
-    """{type: a}. Empty if no file (reco then can't calorimeter showers)."""
+    """{type: a[, type_b: b]}. Empty if no file (reco then can't calorimeter
+    showers). `_b` entries are OPTIONAL affine offsets: E = a*Q + b, fitted
+    inverse-constructed (median Q at fixed true E) so the estimator's median
+    is unbiased per true-E bin -- a pure scale can't be, because charge
+    leakage grows with shower energy (2026-07-11 photon recalibration)."""
     p = path or _calib_path()
     if not os.path.exists(p):
         return {}
     d = np.load(p)
-    return {k[:-2]: float(d[k]) for k in d.files if k.endswith("_a")}
+    out = {k[:-2]: float(d[k]) for k in d.files if k.endswith("_a")}
+    out.update({k[:-2] + "_b": float(d[k]) for k in d.files
+                if k.endswith("_b")})
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -178,8 +185,10 @@ def assign_momenta(interactions, entry, range_mom, shower_calib):
                        momentum=fm["momentum"], fourvec=fm["fourvec"],
                        length_cm=L, momentum_method="range")
         else:                                          # shower (or non-track)
-            a = shower_calib.get(cls, shower_calib.get("gamma", 0.0))
-            E = a * c["comb"] if c else float("nan")
+            key = cls if cls in shower_calib else "gamma"
+            a = shower_calib.get(key, 0.0)
+            b = shower_calib.get(key + "_b", 0.0)
+            E = max(a * c["comb"] + b, 0.0) if c else float("nan")
             dd = np.asarray(d, np.float32)
             rec.update(ke_calo=E, energy=E, momentum=(E * dd).astype(np.float32),
                        fourvec=np.array([E, *(E * dd)], np.float32),
