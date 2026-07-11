@@ -277,11 +277,15 @@ def main():
     # reco knobs (tuned defaults)
     ap.add_argument("--min-points", type=int, default=20)
     ap.add_argument("--shower-min-points", type=int, default=20)
-    ap.add_argument("--shower-mode", default="greedy",
+    ap.add_argument("--shower-mode", default="llr",
                     choices=["greedy", "exhaustive", "llr"],
-                    help="llr = attachment-study-tuned likelihood scorer "
-                         "(+ no-shower-left-behind, per-pair score matrix "
-                         "persisted in attachment/)")
+                    help="llr (PRODUCTION DEFAULT since 2026-07-11): "
+                         "attachment-study-tuned likelihood union rule "
+                         "(hard cuts OR llr>=thr) + no-shower-left-behind, "
+                         "per-pair score matrix persisted in attachment/. "
+                         "A/B on 67k: gamma attach 0.705->0.794, conv-dist "
+                         "cliff eliminated, tracks unchanged. greedy = the "
+                         "pre-2026-07-11 hard-cut behavior.")
     ap.add_argument("--attach-llr-tables", default=None,
                     help="LLR tables npz (default: trajfit/data/"
                          "attachment_llr_tables.npz)")
@@ -308,7 +312,14 @@ def main():
     shard = list(range(args.start, min(end, len(kp_list))))
     msp_map = build_msp_map(args.merged_sp_list)
     if args.shower_mode == "llr":
-        from lartpc.larformer_reco.trajfit.shower_attach_llr import AttachLLR
+        from lartpc.larformer_reco.trajfit.shower_attach_llr import (
+            AttachLLR, DEFAULT_TABLES)
+        if not os.path.exists(args.attach_llr_tables or DEFAULT_TABLES):
+            raise SystemExit(
+                f"attachment LLR tables not found "
+                f"({args.attach_llr_tables or DEFAULT_TABLES}); regenerate "
+                "with eval/fit_attachment_likelihood.py --save-tables, or "
+                "run with --shower-mode greedy")
         args._attach_llr = AttachLLR(args.attach_llr_tables)
         args._attach_llr.thr = float(args.attach_llr_thr)
         print(f">>> attachment LLR (union rule): "
