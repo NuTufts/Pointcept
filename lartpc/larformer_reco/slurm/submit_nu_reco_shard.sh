@@ -33,6 +33,8 @@ set -eu
 
 # ---- knobs ------------------------------------------------------------------
 NSHARDS=${NSHARDS:-20}
+# extra run_nu_reco.py flags, e.g. EXTRA_ARGS="--shower-mode llr"
+EXTRA_ARGS=${EXTRA_ARGS:-}
 
 # ---- paths ------------------------------------------------------------------
 WORKDIR=/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/kpv2_pointcept
@@ -72,7 +74,7 @@ apptainer exec --bind /cluster:/cluster "${container}" bash -c "
     --merged-sp-list ${MERGED_SP_LIST} \
     --output-dir ${OUTPUT_DIR} \
     --start ${START} \
-    --n ${N}
+    --n ${N} ${EXTRA_ARGS}
 "
 
 echo "DONE shard ${SLURM_ARRAY_TASK_ID} -> ${OUTPUT_DIR}"
