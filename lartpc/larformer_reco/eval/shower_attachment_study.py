@@ -55,8 +55,13 @@ SHOWER_CLASSES = (0, 1)                    # LArFormer class ids: e, gamma
 KEYS = ["ev", "inst", "n_pts", "pred_cls", "spread",
         "gap", "impact", "along", "cosine", "trunk_q", "trunk_len",
         "pca_impact", "pca_cosine", "pca_q",
-        "v_score", "v_dist_gt", "is_nu", "true_pdg", "conv_dist",
-        "correct", "cur_pass", "fail_gap", "fail_impact", "fail_cos"]
+        "cone_qfrac", "ang_rms",
+        "cp_kind", "cp_int", "v_score", "v_dist_gt",
+        "is_nu", "true_pdg", "conv_dist", "origin_dist",
+        "correct", "correct_origin",
+        "cur_pass", "fail_gap", "fail_impact", "fail_cos"]
+
+CONE_HALF_DEG = 30.0                        # cone-shape prior half-angle
 
 
 def _index_by_event(paths):
@@ -81,11 +86,15 @@ def _msp_truth(msp_path):
         td = e["triplet_data"]
         pos = td["pos"][()].astype(np.float32)
         ttid = np.asarray(td["trackid"][()], np.int64)
-        ctx = {"row_tid": ttid,
+        pix = td["pixval"][()].astype(np.float64)
+        q = pix[:, 2].copy()                 # comb charge: Y else mean(U,V)
+        bad = q <= 0
+        q[bad] = 0.5 * (pix[bad, 0] + pix[bad, 1])
+        ctx = {"row_tid": ttid, "row_q": np.clip(q, 0, None),
                "row_by_pos": {pos[i].tobytes(): i for i in range(len(pos))},
                "nu_tids": set(tid[org == 1].tolist()),
                "pdg_by_tid": {int(t): int(p) for t, p in zip(tid, pid)},
-               "conv": {}}
+               "conv": {}, "origin": {}}
         sf = e["shower_fragments"]
         ftid = np.atleast_1d(sf["trackid"][()])
         if ftid.size:
@@ -96,7 +105,25 @@ def _msp_truth(msp_path):
                 t = int(ftid[i])
                 if t not in ctx["conv"] or dd[i] < ctx["conv"][t]:
                     ctx["conv"][t] = float(dd[i])
+                    ctx["origin"][t] = oo[i]
     return ctx
+
+
+def _cone_vars(pts, q, apex, axis, min_r=1.0):
+    """Cone-shape prior test: charge fraction within CONE_HALF_DEG of `axis`
+    from `apex`, and the charge-weighted RMS angle [deg]. Points closer than
+    min_r to the apex are angle-undefined and excluded."""
+    r = pts - apex
+    dist = np.linalg.norm(r, axis=1)
+    m = dist > min_r
+    if not m.any() or q[m].sum() <= 0:
+        return np.nan, np.nan
+    cosang = np.clip((r[m] @ axis) / dist[m], -1, 1)
+    ang = np.degrees(np.arccos(cosang))
+    w = q[m]
+    frac = float(w[ang < CONE_HALF_DEG].sum() / w.sum())
+    rms = float(np.sqrt((w * ang ** 2).sum() / w.sum()))
+    return frac, rms
 
 
 def process(args):
@@ -128,6 +155,22 @@ def process(args):
             vsc = np.atleast_1d(gr["vertices_score"][()]).astype(np.float64)
             if len(vcm) == 0 or "particle" not in fk or "slice" not in fk:
                 continue
+            # connection points: interaction vertices (kind 0) + endpoints of
+            # reconstructed tracks (kind 1), tagged with their interaction
+            cps = [dict(pos=vcm[vi], kind=0, ii=vi, score=float(vsc[vi]))
+                   for vi in range(len(vcm))]
+            if "part_kind" in gr and "part_npoly" in gr:
+                pk = gr["part_kind"][()]
+                pint = gr["part_interaction"][()]
+                npo = gr["part_npoly"][()]
+                poly = gr["part_poly_cm"][()].astype(np.float64)
+                off = np.concatenate([[0], np.cumsum(npo)])
+                for pi in range(len(pk)):
+                    if pk[pi] != 0 or npo[pi] < 2:
+                        continue
+                    for pos_ in (poly[off[pi]], poly[off[pi + 1] - 1]):
+                        cps.append(dict(pos=pos_, kind=1, ii=int(pint[pi]),
+                                        score=np.nan))
             coords = fk["slice/coord_cm"][()].astype(np.float32)
             gt_v = None
             if bool(fk.attrs.get("has_gt", False)):
@@ -156,10 +199,17 @@ def process(args):
                     continue
                 # truth match: majority trackid of exact-position rows
                 is_nu, tpdg, cdist = 0, 0, np.nan
+                origin_pt = None
+                q_pts = np.ones(len(pts), np.float64)   # cone charge weights
                 if tctx is not None:
-                    rows = [tctx["row_by_pos"].get(coords[i].tobytes(), -1)
-                            for i in pidx]
-                    rows = np.asarray([r for r in rows if r >= 0], np.int64)
+                    rows_all = np.asarray(
+                        [tctx["row_by_pos"].get(coords[i].tobytes(), -1)
+                         for i in pidx], np.int64)
+                    hasr = rows_all >= 0
+                    if hasr.any():
+                        q_pts[hasr] = tctx["row_q"][rows_all[hasr]]
+                        q_pts[~hasr] = 0.0
+                    rows = rows_all[hasr]
                     if len(rows):
                         tids, cnt = np.unique(tctx["row_tid"][rows],
                                               return_counts=True)
@@ -167,16 +217,28 @@ def process(args):
                         is_nu = int(maj in tctx["nu_tids"])
                         tpdg = tctx["pdg_by_tid"].get(maj, 0)
                         cdist = tctx["conv"].get(maj, np.nan)
+                        origin_pt = tctx["origin"].get(maj)
                 # full-shower PCA (vertex-independent): line through centroid
                 c, evals, evecs = _pca(pts)
                 e1 = evecs[:, 0]
                 pca_q = float(evals[0] / (evals.sum() + 1e-12))
                 spread = float(np.sqrt(max(evals[1:].sum(), 0.0)))
 
-                for vi in range(len(vcm)):
-                    V = vcm[vi]
+                for cp in cps:
+                    V = np.asarray(cp["pos"], np.float64)
                     tk = trunk_vertex_biased(pts, V)
                     ok, g = connects(tk.start, tk.direction, V, **CUR)
+                    # cone-shape prior: apex = trunk start (the conversion
+                    # point implied by this connection hypothesis), axis
+                    # pointing away from the connection point
+                    ax = tk.start - V
+                    axn = np.linalg.norm(ax)
+                    if axn > 1e-6:
+                        cone_f, ang_rms = _cone_vars(pts, q_pts, tk.start,
+                                                     ax / axn)
+                    else:                    # apex ~on CP: axis = trunk dir
+                        cone_f, ang_rms = _cone_vars(pts, q_pts, tk.start,
+                                                     tk.direction)
                     # full-PCA variables: orient axis away from V
                     d1 = e1 if (c - V) @ e1 >= 0 else -e1
                     rv = V - c
@@ -189,6 +251,10 @@ def process(args):
                            if gt_v is not None else np.nan)
                     correct = int(bool(is_nu) and np.isfinite(vdg)
                                   and vdg < args.vtx_cut)
+                    odist = (float(np.linalg.norm(V - origin_pt))
+                             if origin_pt is not None else np.nan)
+                    correct_origin = int(bool(is_nu) and np.isfinite(odist)
+                                         and odist < args.vtx_cut)
                     row = dict(
                         ev=ev, inst=int(inst), n_pts=len(pts), pred_cls=cls,
                         spread=spread,
@@ -196,9 +262,13 @@ def process(args):
                         cosine=g["cosine"], trunk_q=tk.quality,
                         trunk_len=tk.length_cm,
                         pca_impact=pca_imp, pca_cosine=pca_cos, pca_q=pca_q,
-                        v_score=float(vsc[vi]), v_dist_gt=vdg,
+                        cone_qfrac=cone_f, ang_rms=ang_rms,
+                        cp_kind=cp["kind"], cp_int=cp["ii"],
+                        v_score=cp["score"], v_dist_gt=vdg,
                         is_nu=is_nu, true_pdg=tpdg, conv_dist=cdist,
-                        correct=correct, cur_pass=int(ok),
+                        origin_dist=odist,
+                        correct=correct, correct_origin=correct_origin,
+                        cur_pass=int(ok),
                         fail_gap=int(g["gap"] > CUR["d_gap"]),
                         fail_impact=int(g["impact"] > CUR["d_impact"]),
                         fail_cos=int(g["cosine"] < CUR["cos_min"]

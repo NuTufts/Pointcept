@@ -37,7 +37,7 @@ SIZE_EDGES = [10, 60, 250, 1e9]          # n_pts bins: small / medium / large
 
 def _vars(d):
     gap = np.maximum(d["gap"], 0.1)
-    return {
+    out = {
         "cosine": (d["cosine"], np.linspace(-1, 1, 41)),
         "pca_cosine": (d["pca_cosine"], np.linspace(-1, 1, 41)),
         "log_sin_tk": (np.log10(np.clip(d["impact"] / gap, EPS, 2.0)),
@@ -48,12 +48,17 @@ def _vars(d):
                     np.linspace(-1, 2.7, 41)),
         "trunk_q": (d["trunk_q"], np.linspace(0.3, 1.0, 36)),
     }
+    if "cone_qfrac" in d:                    # cone-shape prior variables
+        out["cone_qfrac"] = (d["cone_qfrac"], np.linspace(0, 1, 41))
+        out["ang_rms"] = (np.clip(d["ang_rms"], 0, 120),
+                          np.linspace(0, 120, 41))
+    return out
 
 
-def fit_llr(d, train):
+def fit_llr(d, train, label="correct"):
     """Per size-bin, per-variable histogram density ratios -> LLR scorer."""
     V = _vars(d)
-    ok = d["correct"] > 0
+    ok = d[label] > 0
     size = d["n_pts"]
     tables = []                             # [size_bin][var] = (bins, logratio)
     for lo, hi in zip(SIZE_EDGES[:-1], SIZE_EDGES[1:]):
@@ -75,27 +80,40 @@ def fit_llr(d, train):
         for bi, (lo, hi) in enumerate(zip(SIZE_EDGES[:-1], SIZE_EDGES[1:])):
             m = (sz >= lo) & (sz < hi)
             for name, (bins, lr) in tables[bi].items():
-                j = np.clip(np.digitize(xs[name][m], bins) - 1,
-                            0, len(lr) - 1)
-                s[m] += lr[j]
+                x = xs[name][m]
+                fin = np.isfinite(x)
+                j = np.clip(np.digitize(x[fin], bins) - 1, 0, len(lr) - 1)
+                add = np.zeros(m.sum())
+                add[fin] = lr[j]              # nan variable -> no contribution
+                s[m] += add
         return s
-    return score
+    return score, tables
 
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--records", required=True)
     ap.add_argument("--plots", default=None)
+    ap.add_argument("--label", default="correct_origin",
+                    help="truth label column: correct_origin (cp within "
+                         "vtx-cut of the TRUE shower origin; works for "
+                         "track-end cps) or correct (GT nu vertex only)")
+    ap.add_argument("--save-tables", default=None,
+                    help="npz path for the fitted LLR tables + matched "
+                         "threshold (consumed by trajfit.shower_attach_llr)")
     args = ap.parse_args()
 
     d = dict(np.load(args.records))
-    ok = d["correct"] > 0
+    if args.label not in d:
+        args.label = "correct"
+    ok = d[args.label] > 0
     train = (d["ev"].astype(np.int64) % 2) == 0
     test = ~train
     print(f">>> {len(ok)} pairs; train {int(train.sum())} / test "
-          f"{int(test.sum())}; test correct {int((test & ok).sum())}")
+          f"{int(test.sum())}; test correct[{args.label}] "
+          f"{int((test & ok).sum())}")
 
-    score = fit_llr(d, train)
+    score, tables = fit_llr(d, train, label=args.label)
     llr = np.full(len(ok), np.nan)
     llr[test] = score(test)
     tok, tbad = test & ok, test & ~ok
@@ -128,6 +146,35 @@ def main():
           f"current {cur[far].mean():.3f} -> LLR {at[far].mean():.3f}")
     print(f"  small showers (<60 pts) correct     : N={int(small.sum())} | "
           f"current {cur[small].mean():.3f} -> LLR {at[small].mean():.3f}")
+    if "cp_kind" in d:
+        for kk, kn in ((0, "vertex"), (1, "track-end")):
+            km = test & (d["cp_kind"] == kk)
+            if km.sum():
+                kok = km & ok
+                print(f"  cp kind {kn:9s}: pairs {int(km.sum()):6d} | "
+                      f"correct {int(kok.sum()):5d} | LLR attaches "
+                      f"{at[kok].mean() if kok.sum() else 0:.3f} of correct")
+    if "origin_dist" in d:
+        od = d["origin_dist"]
+        m_at = test & at & np.isfinite(od)
+        m_cu = test & cur & np.isfinite(od)
+        print(f"\n== attached-point vs TRUE ORIGIN (secondary FOM) ==")
+        for nm, mm in (("current", m_cu), ("LLR", m_at)):
+            if mm.sum():
+                print(f"  {nm:8s}: median |cp - true origin| "
+                      f"{np.median(od[mm]):6.2f} cm | <3cm "
+                      f"{(od[mm] < 3).mean():.3f} (N={int(mm.sum())})")
+    if args.save_tables:
+        payload = {"size_edges": np.asarray(SIZE_EDGES, np.float64),
+                   "thr_matched_false": np.float64(thr),
+                   "label": np.array(args.label),
+                   "var_names": np.array(sorted(tables[0].keys()))}
+        for bi, tabs in enumerate(tables):
+            for name, (bins, lr) in tabs.items():
+                payload[f"bins_{bi}_{name}"] = bins
+                payload[f"lr_{bi}_{name}"] = lr
+        np.savez(args.save_tables, **payload)
+        print(f">>> LLR tables -> {args.save_tables}")
 
     if not args.plots:
         return
