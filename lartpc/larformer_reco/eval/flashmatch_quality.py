@@ -56,7 +56,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(
 TPC_LO = (0.0, -116.5, 0.0)
 TPC_HI = (256.35, 116.5, 1036.8)
 
-KEYS = ["has_gt", "obs_pe", "vtx_in_tpc", "vtx_dwall", "qtrue",
+KEYS = ["has_gt", "obs_pe", "vtx_in_tpc", "vtx_dwall", "qtrue", "vtx_x",
         "nu_present", "nu_chi2", "nu_pred_pe", "nu_p_nu", "nu_rank",
         "nu_correct", "nu_qfrac",
         "fm_present", "fm_chi2", "fm_pred_pe", "fm_is_nu", "fm_correct",
@@ -165,6 +165,11 @@ def process(args):
                 if np.isfinite(g).all():
                     gt = g
             row["has_gt"] = int(gt is not None)
+            if fnu is not None and "nu_vertex_cm" in fnu:
+                v_ = np.asarray(fnu["nu_vertex_cm"][()],
+                                np.float64).reshape(-1)
+                if v_.size >= 3 and np.isfinite(v_[0]):
+                    row["vtx_x"] = float(v_[0])   # drift coord (PMTs at x~0)
             # GENIE nu vertex -> in-TPC flag + signed wall distance (the
             # flash prediction only models ionization INSIDE the TPC, so
             # out-of-TPC interactions and boundary events with escaping
@@ -387,6 +392,36 @@ def dwall_plots(rec, outdir):
     fig.tight_layout()
     fig.savefig(f"{outdir}/pe_ratio_vs_dwall.png", dpi=110)
     plt.close(fig)
+
+    # PE prediction agreement vs drift coordinate X (light model weakest
+    # near the PMTs at x~0): median log10(pred/obs) for the nu-union slice,
+    # all choices (works truth-free on beam data)
+    mx = ((rec["nu_present"] > 0) & np.isfinite(rec["vtx_x"])
+          & np.isfinite(rec["nu_pred_pe"]) & (rec["obs_pe"] > 0))
+    if mx.sum() > 50:
+        ratio = np.log10(np.clip(rec["nu_pred_pe"] / rec["obs_pe"],
+                                 1e-3, 1e3))
+        xe = np.linspace(0, 260, 14)
+        xc = 0.5 * (xe[:-1] + xe[1:])
+        med, q16, q84 = [], [], []
+        for lo, hi in zip(xe[:-1], xe[1:]):
+            b = mx & (rec["vtx_x"] >= lo) & (rec["vtx_x"] < hi)
+            r = ratio[b]
+            med.append(np.median(r) if len(r) > 5 else np.nan)
+            q16.append(np.percentile(r, 16) if len(r) > 5 else np.nan)
+            q84.append(np.percentile(r, 84) if len(r) > 5 else np.nan)
+        fig, ax = plt.subplots(figsize=(6.4, 4.4))
+        ax.fill_between(xc, q16, q84, alpha=0.25, label="16-84%")
+        ax.plot(xc, med, "o-", ms=4, label="median")
+        ax.axhline(0, color="k", ls=":", lw=1)
+        ax.set(xlabel="reco nu-vertex X [cm]  (PMTs at x~0)",
+               ylabel="log10(predicted / observed total PE)",
+               title="flash prediction vs drift coordinate (nu-union slices)")
+        ax.legend(fontsize=8)
+        ax.grid(alpha=0.3)
+        fig.tight_layout()
+        fig.savefig(f"{outdir}/pe_ratio_vs_x.png", dpi=110)
+        plt.close(fig)
 
     m1 = ((rec["nu_present"] > 0) & (rec["nu_correct"] > 0)
           & (rec["nu_rank"] > 0) & np.isfinite(rec["vtx_dwall"]))
