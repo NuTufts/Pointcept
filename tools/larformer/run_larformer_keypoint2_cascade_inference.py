@@ -1051,7 +1051,13 @@ def main():
             _rng_restore(rng_post_slicer)
             with torch.no_grad():
                 out = model(batch)
-            wrote += decode_and_write(out, attrs_extra={"stream": nu_stream},
+            nu_attrs = {"stream": nu_stream}
+            if flash_tbl is not None and "nu" in flash_tbl["label"]:
+                # promote the nu-union row's chi2 so downstream (nu_reco ->
+                # exporter recoVtxFlashChi2) sees it, matching the fm pass
+                nu_attrs["flash_chi2"] = float(
+                    flash_tbl["chi2"][flash_tbl["label"].index("nu")])
+            wrote += decode_and_write(out, attrs_extra=nu_attrs,
                                       flash_tbl=flash_tbl)
             # flashmatch stream: best-chi2 slice, if it is not the nu union.
             if (best_q is not None and best_q != _NU_SID

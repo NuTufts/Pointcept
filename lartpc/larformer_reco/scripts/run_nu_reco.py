@@ -150,6 +150,14 @@ def _write_event(g, interactions, all_recs, kp_path, att_matrix=None):
                   "stream", "slice_label", "flash_chi2"):
             if k in f.attrs:
                 g.attrs[k] = f.attrs[k]
+        if "flash_chi2" not in f.attrs and "slices" in f:
+            # RETROFIT for pre-2026-07-12 nu-stream kp2 files: the nu pass
+            # did not promote its chi2 attr; read it from the slices table
+            labels = [x.decode() if isinstance(x, bytes) else str(x)
+                      for x in f["slices/label"][()]]
+            if "nu" in labels:
+                g.attrs["flash_chi2"] = float(
+                    f["slices/chi2"][()][labels.index("nu")])
         if "stream" not in f.attrs:
             g.attrs["stream"] = "nu"       # pre-stream keypoint2 files
     _, gt_nu = read_nu_vertices(kp_path)
