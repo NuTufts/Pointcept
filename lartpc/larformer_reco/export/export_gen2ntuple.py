@@ -398,7 +398,7 @@ def main():
                     # LArFormer segmenter PID (its own classifier)
                     p["LArFormerPID"] = LARFORMER_PDG.get(
                         int(d["part_pred_class"][i]), 0)
-                    if kind == "shower":
+                    if key == "shower":   # NOTE key, not kind (kind is int)
                         p["AttScore"] = (float(d["part_att_score"][i])
                                          if "part_att_score" in d else -9.0)
                         p["AttConfident"] = (
