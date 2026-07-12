@@ -85,15 +85,24 @@ def main():
     ap.add_argument("--plots", required=True)
     ap.add_argument("--pot", type=float, default=4.4e19)
     ap.add_argument("--out", default=None)
+    ap.add_argument("--data", action="store_true",
+                    help="real-data mode: unit weights (no xsecWeight/POT "
+                         "scaling), no truth categories (all events tagged "
+                         "'data'), truth-dependent plots skipped")
     args = ap.parse_args()
     os.makedirs(args.plots, exist_ok=True)
 
     fin = uproot.open(args.ntuple)
-    pot = fin["potTree"].arrays(library="np")
-    pot_sum = float(np.sum(pot["totGoodPOT"])) or float(np.sum(pot["totPOT"]))
-    scale = args.pot / pot_sum
-    print(f">>> sample POT {pot_sum:.3e}, target {args.pot:.2e} "
-          f"-> scale {scale:.4f}")
+    if args.data:
+        scale = 1.0
+        print(">>> DATA mode: unit weights, no truth tags")
+    else:
+        pot = fin["potTree"].arrays(library="np")
+        pot_sum = (float(np.sum(pot["totGoodPOT"]))
+                   or float(np.sum(pot["totPOT"])))
+        scale = args.pot / pot_sum
+        print(f">>> sample POT {pot_sum:.3e}, target {args.pot:.2e} "
+              f"-> scale {scale:.4f}")
 
     t = fin["EventTree"]
     have = set(t.keys())
@@ -111,13 +120,15 @@ def main():
                   "showerTrueTID", "showerTruePID",
                   "trackLArFormerPID", "trackIsSecondary", "trackRecoE"])
     n = len(a["run"])
-    w0 = np.asarray(a["xsecWeight"], np.float64)
-    w = np.where(w0 > 0, w0, 0.0) * scale
-
-    cat = np.array([truth_category(a, i) for i in range(n)], np.int64)
-    n_sig = (cat <= 1)
-    print(f">>> {n} events | true signal CC {int((cat==0).sum())} "
-          f"NC {int((cat==1).sum())}")
+    if args.data:
+        w = np.ones(n, np.float64)
+        cat = np.zeros(n, np.int64)      # single tag; truth plots skipped
+    else:
+        w0 = np.asarray(a["xsecWeight"], np.float64)
+        w = np.where(w0 > 0, w0, 0.0) * scale
+        cat = np.array([truth_category(a, i) for i in range(n)], np.int64)
+        print(f">>> {n} events | true signal CC {int((cat==0).sum())} "
+              f"NC {int((cat==1).sum())}")
 
     # ---- reco selection ---------------------------------------------------
     vtx_ok = ((np.asarray(a["foundVertex"]) == 1)
@@ -192,13 +203,20 @@ def main():
                    ("default selection (mass ok)", sel2p),
                    ("exactly-2 variant", sel2x)):
         print(f"  {lab:30s}: {int(m.sum()):6d} | {w[m].sum():9.1f}")
-    print("\n== selected composition (default, >=2) ==")
-    for lab, m in (("reco-CC", sel2p & reco_cc), ("reco-NC", sel2p & ~reco_cc)):
+    if args.data:
+        for lab, m in (("reco-CC", sel2p & reco_cc),
+                       ("reco-NC", sel2p & ~reco_cc)):
+            print(f"  {lab}: N={int(m.sum())}")
+    if not args.data:
+        print("\n== selected composition (default, >=2) ==")
+    for lab, m in ([] if args.data else
+                   [("reco-CC", sel2p & reco_cc),
+                    ("reco-NC", sel2p & ~reco_cc)]):
         tot = w[m].sum()
         parts = " | ".join(f"{CATS[c]} {w[m & (cat==c)].sum()/max(tot,1e-9):.2f}"
                            for c in range(6) if (m & (cat == c)).any())
         print(f"  {lab} (N={int(m.sum())}, w={tot:.1f}): {parts}")
-    for cc, lab in ((0, "CC"), (1, "NC")):
+    for cc, lab in ([] if args.data else ((0, "CC"), (1, "NC"))):
         den = (cat == cc)
         num = den & sel2p & (reco_cc if cc == 0 else ~reco_cc)
         print(f"  signal {lab} efficiency (sel+right CC tag): "
@@ -216,24 +234,31 @@ def main():
     import matplotlib.pyplot as plt
     bins = np.linspace(0, 500, 51)
 
+    ncat = 1 if args.data else 6
+    cat_names = ["beam data"] if args.data else CATS
+    cat_colors = ["#1f77b4"] if args.data else CAT_COLORS
+
     def stacked(mass, sel, tag, fname):
         for ccm, cclab in ((reco_cc, "recoCC"), (~reco_cc, "recoNC")):
             m = sel & ccm & np.isfinite(mass)
             fig, ax = plt.subplots(figsize=(6.4, 4.4))
-            data = [np.clip(mass[m & (cat == c)], 0, 499) for c in range(6)]
-            ws = [w[m & (cat == c)] for c in range(6)]
+            data = [np.clip(mass[m & (cat == c)], 0, 499) for c in range(ncat)]
+            ws = [w[m & (cat == c)] for c in range(ncat)]
             ax.hist(data, bins=bins, weights=ws, stacked=True,
-                    color=CAT_COLORS,
-                    label=[f"{CATS[c]} ({ws[c].sum():.0f})" for c in range(6)])
+                    color=cat_colors,
+                    label=[f"{cat_names[c]} ({ws[c].sum():.0f})"
+                           for c in range(ncat)])
             ax.axvline(PI0_MASS, color="k", ls=":", lw=1.2,
                        label=f"pi0 mass {PI0_MASS:.0f}")
-            sig = m & (cat <= 1)
+            sig = m & (cat <= 1) if not args.data else m
             if sig.sum() > 10:
                 med = np.median(mass[sig])
                 ax.axvline(med, color="r", ls="--", lw=1,
-                           label=f"signal median {med:.0f}")
+                           label=f"{'data' if args.data else 'signal'} "
+                                 f"median {med:.0f}")
             ax.set(xlabel=r"$m_{\gamma\gamma}$ [MeV]",
-                   ylabel=f"events / {args.pot:.1e} POT",
+                   ylabel=("events" if args.data
+                           else f"events / {args.pot:.1e} POT"),
                    title=f"{cclab}: two-photon invariant mass ({tag})")
             ax.legend(fontsize=7)
             ax.grid(alpha=0.3)
@@ -244,6 +269,10 @@ def main():
     stacked(mA, sel2p, "vertex->start dir, >=2 gamma", "mgg_vtx2start_ge2")
     stacked(mA, sel2x, "vertex->start dir, exactly 2", "mgg_vtx2start_eq2")
     stacked(mB, sel2p, "trunk dir, >=2 gamma", "mgg_trunkdir_ge2")
+
+    if args.data:
+        print(f">>> plots -> {args.plots}")
+        return
 
     # direction-estimator comparison on signal
     fig, ax = plt.subplots(figsize=(6.2, 4.2))
