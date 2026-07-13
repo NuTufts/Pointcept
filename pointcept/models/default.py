@@ -375,6 +375,20 @@ class SonataSegmentor(nn.Module):
         if self.freeze_backbone:
             for p in self.backbone.parameters():
                 p.requires_grad = False
+        elif hasattr(self.backbone, "teacher"):
+            # End-to-end training (supervised ceiling, full fine-tune):
+            # Sonata's __init__ sets requires_grad=False on the WHOLE teacher
+            # branch (EMA teacher), but forward(return_point=True) runs
+            # through teacher.backbone — without re-enabling it, "end-to-end"
+            # training would silently update only the seg head. Enable the
+            # teacher backbone and idle the student/heads (they take no part
+            # in the segmentation forward). PT-v3m2's mask_token remains an
+            # unused trainable param, so DDP still needs
+            # find_unused_parameters=True.
+            for p in self.backbone.teacher["backbone"].parameters():
+                p.requires_grad = True
+            for p in self.backbone.student.parameters():
+                p.requires_grad = False
 
         # Initialize bias with log-prior for imbalanced classification
         # This helps training converge faster by starting with predictions

@@ -373,6 +373,43 @@ def _save_resumable_checkpoint(trainer, iter_in_epoch, save_rng_state=True,
         )
 
 
+def _save_weight_snapshot(trainer, iter_in_epoch, log_prefix="[IterCheckpointSaver]"):
+    """Write a retained, weights-only snapshot for offline probing.
+
+    Unlike :func:`_save_resumable_checkpoint` these are meant to be kept (one
+    per scheduled point) and shipped to another cluster for linear-probe
+    evaluation, so they carry no optimizer/scheduler/scaler/RNG state. The
+    ``state_dict`` key is kept so SonataCheckpointLoader /
+    SonataFinetuneCheckpointLoader consume them unchanged (with
+    ``cfg.resume=False``).
+
+    The filename encodes global images seen (``global_step * cfg.batch_size``,
+    where cfg.batch_size is the global batch across ranks) so probe curves can
+    be plotted against images seen without consulting the run config.
+    """
+    global_step = trainer.epoch * len(trainer.train_loader) + iter_in_epoch
+    images_seen = global_step * trainer.cfg.batch_size
+    ckpt = {
+        "epoch": trainer.epoch,
+        "iter_in_epoch": iter_in_epoch,
+        "global_step": global_step,
+        "images_seen": images_seen,
+        "batch_size": trainer.cfg.batch_size,
+        "state_dict": trainer.model.state_dict(),
+    }
+    snapshot_dir = os.path.join(trainer.cfg.save_path, "snapshot")
+    os.makedirs(snapshot_dir, exist_ok=True)
+    filename = os.path.join(
+        snapshot_dir, f"snapshot_iter{global_step:07d}_img{images_seen}.pth"
+    )
+    trainer.logger.info(
+        f"{log_prefix} Saving weights-only snapshot: global_step={global_step} "
+        f"images_seen={images_seen} -> {filename}"
+    )
+    torch.save(ckpt, filename + ".tmp")
+    os.replace(filename + ".tmp", filename)
+
+
 @HOOKS.register_module()
 class IterCheckpointSaver(HookBase):
     """
@@ -389,18 +426,39 @@ class IterCheckpointSaver(HookBase):
     The ``epoch`` field is the **current** (in-progress) epoch, NOT ``epoch+1``,
     because the epoch hasn't finished yet.
 
+    Independently of the resumable save, the hook can retain **weights-only
+    snapshots** at scheduled global steps for offline linear-probe curves
+    (metric vs images seen); see :func:`_save_weight_snapshot`. Snapshots go to
+    ``save_path/snapshot/snapshot_iter{N}_img{M}.pth`` so the directory can be
+    rsync'd to another cluster as points accumulate.
+
     Args:
         save_iter_freq: save every N dataloader iterations.
-        keep_history: if True, also copy each save to
-            ``model/iter_{global_step}.pth``.
+        keep_history: if True, also copy each resumable save to
+            ``model/iter_{global_step}.pth`` (full training state).
         save_rng_state: if True, snapshot torch / cuda / numpy / python RNG
             (rank-0 state only; restored on every rank at resume).
+        snapshot_at_iters: iterable of global steps (epoch*len(loader)+iter) at
+            which to retain a weights-only snapshot, e.g. a log-spaced list.
+        snapshot_freq: if set, also retain a snapshot every N global steps.
     """
 
-    def __init__(self, save_iter_freq=500, keep_history=False, save_rng_state=True):
+    def __init__(self, save_iter_freq=500, keep_history=False, save_rng_state=True,
+                 snapshot_at_iters=None, snapshot_freq=None):
         self.save_iter_freq = save_iter_freq
         self.keep_history = keep_history
         self.save_rng_state = save_rng_state
+        self.snapshot_at_iters = (
+            set(int(i) for i in snapshot_at_iters) if snapshot_at_iters else set()
+        )
+        self.snapshot_freq = snapshot_freq
+
+    def _snapshot_due(self, global_step):
+        if global_step in self.snapshot_at_iters:
+            return True
+        if self.snapshot_freq and global_step % self.snapshot_freq == 0:
+            return True
+        return False
 
     def after_step(self):
         if not is_main_process():
@@ -411,6 +469,9 @@ class IterCheckpointSaver(HookBase):
         if getattr(self.trainer, "_gradient_accumulation_counter", 0) != 0:
             return
         iter_in_epoch = self.trainer.comm_info["iter"] + 1
+        global_step = self.trainer.epoch * len(self.trainer.train_loader) + iter_in_epoch
+        if self._snapshot_due(global_step):
+            _save_weight_snapshot(self.trainer, iter_in_epoch)
         if iter_in_epoch % self.save_iter_freq != 0:
             return
         # Skip the very last iter of the epoch — CheckpointSaver.after_epoch

@@ -1,0 +1,16 @@
+# The large generated lists stay out of git (55-132 MB each) — regenerate with
+# make_filelists.py and verify against the sha256 hashes in filelist_stats.txt.
+# (The repo root .gitignore ignores *.txt globally; rules here override it for
+# this directory.)
+h5list_v3_mc_only_train.txt
+h5list_v3_mc_only_val.txt
+h5list_v3_extbnb_only_train.txt
+h5list_v3_extbnb_only_val.txt
+h5list_v3_combined_train.txt
+h5list_v3_combined_val.txt
+
+# Committed exceptions: the frozen 1k-event MC diagnostic set (small, and its
+# exact contents define the M1/M2/t-SNE diagnostic sample on every cluster)
+# and the stats/hash record of the generated lists.
+!h5list_v3_mc_diag1k.txt
+!filelist_stats.txt

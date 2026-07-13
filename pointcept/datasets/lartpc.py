@@ -169,6 +169,7 @@ class LArTPCDataset(DefaultDataset):
         include_ghosts=False,
         exclude_other=True,
         true_points_only=False,
+        ghost_keep_frac=None,
         drop_cosmics=False,
         drop_cosmics_prob=0.5,
         add_min_pixval=1.0e-2,
@@ -188,6 +189,17 @@ class LArTPCDataset(DefaultDataset):
         self.exclude_other = exclude_other
         self.data_list_file = data_list_file
         self.true_points_only = true_points_only
+        # ghost_keep_frac: None disables; float in [0,1] keeps all real points
+        # (hasmatch==1) and each ghost point with this probability. Controlled
+        # contamination for the ghost dose-response studies (P0.4 / P2A).
+        # ghost_keep_frac=0.0 is equivalent to true_points_only=True;
+        # ghost_keep_frac=1.0 keeps everything.
+        if ghost_keep_frac is not None:
+            assert 0.0 <= ghost_keep_frac <= 1.0, \
+                f"ghost_keep_frac must be in [0,1], got {ghost_keep_frac}"
+            assert not true_points_only, \
+                "ghost_keep_frac and true_points_only are mutually exclusive"
+        self.ghost_keep_frac = ghost_keep_frac
         self.drop_cosmics = drop_cosmics
         self.drop_cosmics_prob = drop_cosmics_prob
         self.data_only = data_only
@@ -447,12 +459,27 @@ class LArTPCDataset(DefaultDataset):
         }
 
         filtered = False
+        # Masks applied so far, in order, each in the coordinates of the array
+        # it was applied to — used to bring the larmatch mask (defined on the
+        # original points) into the current filtered frame.
+        applied_masks = []
         if has_truth and self.true_points_only:
             # mask out ghost points
             ghost_mask = hasmatch == 1
             for k in data_dict:
                 if k in ['coord', 'strength', 'color', 'segment', 'instance', 'origin', 'hasmatch']:
                     data_dict[k] = data_dict[k][ghost_mask[:]]
+            applied_masks.append(ghost_mask)
+            filtered = True
+        elif has_truth and self.ghost_keep_frac is not None:
+            # keep all real points and a random ghost_keep_frac of the ghosts
+            keep_mask = (hasmatch == 1) | (
+                np.random.random(hasmatch.shape[0]) < self.ghost_keep_frac
+            )
+            for k in data_dict:
+                if k in ['coord', 'strength', 'color', 'segment', 'instance', 'origin', 'hasmatch']:
+                    data_dict[k] = data_dict[k][keep_mask[:]]
+            applied_masks.append(keep_mask)
             filtered = True
 
         if has_truth and self.drop_cosmics and np.random.random() < self.drop_cosmics_prob:
@@ -461,6 +488,7 @@ class LArTPCDataset(DefaultDataset):
                 for k in data_dict:
                     if k in ['coord', 'strength', 'color', 'segment', 'instance', 'origin', 'hasmatch']:
                         data_dict[k] = data_dict[k][nu_mask[:]]
+                applied_masks.append(nu_mask)
                 filtered = True
 
         if larmatch_score is not None:
@@ -468,13 +496,11 @@ class LArTPCDataset(DefaultDataset):
             lo, hi = self.larmatch_threshold_range
             threshold = np.random.uniform(lo, hi)
             lm_mask = larmatch_score > threshold
-            # Apply the same mask used by prior filters (true_points_only, drop_cosmics)
+            # Bring the mask (defined on the original points) into the current
+            # filtered frame by replaying the masks that were actually applied.
             if filtered and len(lm_mask) != data_dict['coord'].shape[0]:
-                # Reconstruct mask after prior filtering
-                if has_truth and self.true_points_only:
-                    lm_mask = lm_mask[hasmatch == 1]
-                if has_truth and self.drop_cosmics:
-                    lm_mask = lm_mask[nu_mask[:]]
+                for prior_mask in applied_masks:
+                    lm_mask = lm_mask[prior_mask[:]]
             if lm_mask.sum() >= self.min_points_required:
                 for k in data_dict:
                     if k in ['coord', 'strength', 'color', 'segment', 'instance', 'origin', 'hasmatch']:

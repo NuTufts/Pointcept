@@ -2118,3 +2118,69 @@ class HasmatchAsGhost(object):
         data_dict["segment"] = seg
         return data_dict
 
+
+@TRANSFORMS.register_module()
+class ZeroKey(object):
+    """
+    Overwrite per-point arrays with a constant, removing their information
+    content while keeping shapes (and hence model in_channels) unchanged.
+
+    Used for the "geometry-only" supervised ceiling (P05A.2) and the
+    charge-ablation diagnostic (M3): place after LogTransform to replace the
+    charge features with an uninformative constant at train and/or test time.
+
+    Args:
+        keys: data_dict keys to overwrite.
+        value: constant fill value.
+    """
+
+    def __init__(self, keys=("strength",), value=0.0):
+        if not isinstance(keys, (tuple, list)):
+            keys = (keys,)
+        self.keys = keys
+        self.value = value
+
+    def __call__(self, data_dict):
+        for k in self.keys:
+            if k in data_dict.keys():
+                data_dict[k] = np.full_like(data_dict[k], self.value)
+            else:
+                raise ValueError(f"Key {k} not found in data_dict")
+        return data_dict
+
+
+@TRANSFORMS.register_module()
+class ChannelReduce(object):
+    """
+    Reduce a multi-channel per-point feature to a single channel.
+
+    Used for the plane-summed charge variant (P05B.4): the three per-plane
+    pixvals are reduced to one scalar, which is more nearly invariant under
+    the detector-symmetry flips (u/v swap leaves the sum unchanged). Place
+    BEFORE LogTransform so the reduction acts on raw charge.
+
+    Args:
+        key: data_dict key holding an (N, C) array.
+        mode: "sum", "mean", or "max" over the channel axis.
+    """
+
+    def __init__(self, key="strength", mode="sum"):
+        assert mode in ("sum", "mean", "max")
+        self.key = key
+        self.mode = mode
+
+    def __call__(self, data_dict):
+        if self.key not in data_dict.keys():
+            raise ValueError(f"Key {self.key} not found in data_dict")
+        x = data_dict[self.key]
+        if x.ndim != 2:
+            raise ValueError(f"{self.key} must be (N, C), got shape {x.shape}")
+        if self.mode == "sum":
+            x = x.sum(axis=1, keepdims=True)
+        elif self.mode == "mean":
+            x = x.mean(axis=1, keepdims=True)
+        else:
+            x = x.max(axis=1, keepdims=True)
+        data_dict[self.key] = x.astype(np.float32)
+        return data_dict
+

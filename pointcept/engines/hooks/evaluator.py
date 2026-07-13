@@ -122,7 +122,11 @@ class SemSegEvaluator(HookBase):
 
     def before_train(self):
         if self.trainer.writer is not None and self.trainer.cfg.enable_wandb:
-            wandb.define_metric("val/*", step_metric="Epoch")
+            # Step-based eval (eval_freq > 0) logs val metrics on the global
+            # iteration axis: multiple evals within one epoch would otherwise
+            # all land on the same integer Epoch value and overwrite each other.
+            step_metric = "Iter" if self.eval_freq > 0 else "Epoch"
+            wandb.define_metric("val/*", step_metric=step_metric)
 
     def after_step(self):
         if self.trainer.cfg.evaluate and self.eval_freq > 0:
@@ -212,15 +216,26 @@ class SemSegEvaluator(HookBase):
                 )
             )
         current_epoch = self.trainer.epoch + 1
+        if self.eval_freq > 0:
+            # Step-based eval: use the global iteration as the log step so
+            # intra-epoch eval points stay distinct (see before_train).
+            axis_name = "Iter"
+            log_step = (
+                self.trainer.comm_info["iter"] + 1
+                + len(self.trainer.train_loader) * self.trainer.epoch
+            )
+        else:
+            axis_name = "Epoch"
+            log_step = current_epoch
         if self.trainer.writer is not None:
-            self.trainer.writer.add_scalar("val/loss", loss_avg, current_epoch)
-            self.trainer.writer.add_scalar("val/mIoU", m_iou, current_epoch)
-            self.trainer.writer.add_scalar("val/mAcc", m_acc, current_epoch)
-            self.trainer.writer.add_scalar("val/allAcc", all_acc, current_epoch)
+            self.trainer.writer.add_scalar("val/loss", loss_avg, log_step)
+            self.trainer.writer.add_scalar("val/mIoU", m_iou, log_step)
+            self.trainer.writer.add_scalar("val/mAcc", m_acc, log_step)
+            self.trainer.writer.add_scalar("val/allAcc", all_acc, log_step)
             if self.trainer.cfg.enable_wandb:
                 wandb.log(
                     {
-                        "Epoch": current_epoch,
+                        axis_name: log_step,
                         "val/loss": loss_avg,
                         "val/mIoU": m_iou,
                         "val/mAcc": m_acc,
@@ -233,16 +248,16 @@ class SemSegEvaluator(HookBase):
                     self.trainer.writer.add_scalar(
                         f"val/cls_{i}-{self.trainer.cfg.data.names[i]} IoU",
                         iou_class[i],
-                        current_epoch,
+                        log_step,
                     )
                     self.trainer.writer.add_scalar(
                         f"val/cls_{i}-{self.trainer.cfg.data.names[i]} Acc",
                         acc_class[i],
-                        current_epoch,
+                        log_step,
                     )
                 if self.trainer.cfg.enable_wandb:
                     # Log all per-class metrics in a single wandb.log call for efficiency
-                    per_class_metrics = {"Epoch": current_epoch}
+                    per_class_metrics = {axis_name: log_step}
                     for i in range(self.trainer.cfg.data.num_classes):
                         class_name = self.trainer.cfg.data.names[i]
                         per_class_metrics[f"val/cls_{i}-{class_name} IoU"] = iou_class[i]

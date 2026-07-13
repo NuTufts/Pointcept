@@ -149,7 +149,16 @@ flips including the non-symmetric x-flip — which sharpens the P05B.1-vs-B.2 co
 
 Ordered so that WP1–WP3 unblock everything; each WP lists concrete file touches.
 
-### WP1 — File lists + dataset splits *(blocking, ~half day, no GPU)*
+### WP1 — File lists + dataset splits *(blocking, ~half day, no GPU)* — **DONE 2026-07-13**
+
+Implemented in `lartpc/filelists/` (`make_filelists.py` + `check_truth_keys.py`;
+generated lists gitignored, hashes in `filelist_stats.txt`). Findings from the
+smoke check: MC files carry all truth keys and **no `larmatch_score`** (so
+`filter_larmatch` silently no-oped on MC events in the v8 combined run — EXTBNB
+events were filtered, MC events entered unfiltered with all ghosts); mean MC ghost
+fraction ≈ 0.60 (range 0.50–0.75 over 20 files); 15/20 MC files have a nu-vertex
+keypoint (BiasedSphereCrop's random fallback covers the rest). MC actually
+comprises 5 corsika subsamples (nu, nue, chargedpiplus, pi0filter, prod2 + set2).
 
 1. Regenerate lists from the combined list into the repo, e.g. `lartpc/filelists/`:
    - `h5list_v3_mc_only_train.txt`, `h5list_v3_mc_only_val.txt` — `grep corsika`,
@@ -164,7 +173,18 @@ Ordered so that WP1–WP3 unblock everything; each WP lists concrete file touche
    `origin`, `ssnet_label`, `hasmatch`, `pid`, `mckeypoints` (nu vertex present).
 3. Deliverable: lists checked in + a `make_filelists.py` script so they are reproducible.
 
-### WP2 — Checkpoint-snapshot infrastructure for images-seen curves *(blocking for the curve study, ~1 day)*
+### WP2 — Checkpoint-snapshot infrastructure for images-seen curves *(blocking for the curve study, ~1 day)* — **DONE 2026-07-13** (pilot validation pending)
+
+Implemented: `IterCheckpointSaver` gained `snapshot_at_iters` (explicit global-step
+list) and `snapshot_freq`; snapshots are weights-only
+(`state_dict` + epoch/iter/global_step/images_seen/batch_size), written atomically to
+`save_path/snapshot/snapshot_iter{N}_img{M}.pth` (rsync this directory).
+`SemSegEvaluator` with `eval_freq > 0` now logs val metrics on the global-Iter axis
+(wandb + tensorboard) instead of colliding on integer epochs. Unit test:
+`lartpc_tests/test_iter_snapshot_saver.py` (passes in the container; covers
+scheduling across epoch boundaries, weights-only content, images-seen naming, and
+the SonataCheckpointLoader key-remap convention). Remaining: item 6's end-to-end
+validation happens via the P05B.1 pilot.
 
 Extend `IterCheckpointSaver` / `_save_resumable_checkpoint` (`misc.py:326-428`):
 
@@ -219,7 +239,14 @@ Workflow: Isambard writes snapshots → rsync `snapshot_*.pth` + frozen config t
    - Record the chosen budget in the registry; it is then frozen for every probe in
      the program.
 
-### WP4 — `ghost_keep_frac` dataset knob (P0.4) *(~half day)*
+### WP4 — `ghost_keep_frac` dataset knob (P0.4) *(~half day)* — **DONE 2026-07-13**
+
+Implemented in `LArTPCDataset` (mutually exclusive with `true_points_only`;
+per-point Bernoulli keep on `hasmatch==0`). The LArMatch mask-reconstruction
+chain now replays applied masks explicitly (also fixes a latent edge-case bug
+when `drop_cosmics` doesn't trigger). Test: `lartpc_tests/test_ghost_keep_frac.py`
+passes against real MC files (real points preserved; ghost fraction within
+binomial tolerance for frac ∈ {0, 0.5, 1}; frac=0 ≡ `true_points_only`).
 
 In `LArTPCDataset.get_data` (`lartpc.py`), after truth load, when
 `ghost_keep_frac` is set (float in [0,1]) and truth is available: keep all
@@ -229,7 +256,41 @@ with `true_points_only` (`true_points_only=True` ≡ `ghost_keep_frac=0`). Not n
 until P1A.2/P2A, but it is 30 lines next to code WP1 already touches — do it now,
 with a unit test on a real MC file.
 
-### WP5 — Phase 0.5 config generation *(~2 days once WP1–WP2 land)*
+### WP5 — Phase 0.5 config generation *(~2 days once WP1–WP2 land)* — **DONE 2026-07-13** (11 configs; probe config + A.4 remain)
+
+Implemented as a generator (`lartpc/pretraining_studies/gen_p05_configs.py` →
+`configs/lartpc/p05/`, 11 configs: 8 SSL + 3 supervised), all CPU-smoke-validated
+against the squashfs data (`lartpc_tests/validate_p05_configs.py`: transform
+pipeline runs, feature channels match `in_channels`, truth labels reach the views,
+ZeroKey produces constant charge, snapshot schedules hit identical images-seen
+anchors across batch sizes). Design decisions taken:
+- **Supervised ceiling = SonataSegmentor trained end-to-end** (same encoder,
+  up_cast_level=4, linear head, probe-protocol data distribution: nu-anchored
+  crops + drop_cosmics=0.9) so M6 fraction-of-ceiling is apples-to-apples.
+- **M5 labels ride through the views**: `view_keys += segment`,
+  `Collect keys += global_segment`; new `BatchCompositionLogger` hook
+  (labels are never seen by the SSL loss).
+- New transforms: `ZeroKey` (P05A.2/M3) and `ChannelReduce` (P05B.4 plane-summed
+  charge, `in_channels=4`, no u/v swap needed — the sum is swap-invariant).
+- Snapshot schedule is specified in images seen (24k→768k log-doubling, then
+  every 768k), converted to iters per config batch size.
+- P05C.2 ≡ P05B.1 (prototype 4096 on default augs) — one run, two roles.
+
+**Update (same day):** the v8mc-matched Tufts probe config is now generated too
+(`linearprobe-sonata-p05-mc-noghost-tufts.py`, 12th config; per-snapshot launch
+via `--options weight=<snapshot> save_path=<...>`, and
+`model.backbone.head_num_prototypes` must be overridden when probing the
+P05C.1/C.3 prototype-sweep snapshots). **Critical fix found before launch:**
+Sonata sets `requires_grad=False` on its whole teacher branch, and
+`SonataSegmentor` inference runs through the teacher — so the P05A "end-to-end"
+supervised configs would have silently trained ONLY the linear head.
+`SonataSegmentor.__init__` now re-enables `teacher.backbone` (and idles the
+student) when `freeze_backbone=False`; verified 90.7M trainable encoder params
+in supervised mode and 0 in probe mode. Submit tooling (WP8-lite):
+`slurm_scripts/lartpc_sonata_pretraining/launch_p05_run.sh` (config snapshot +
+hash + registry row + resubmit chaining via `submit_p05_isambard.sh`) and
+`launch_p05_smoke.sh` (P0.7 short-run shakedown on the val/diag lists).
+Still deferred: optional P05A.4 (class-balanced sampling).
 
 Common base for all P05 pretraining configs ("`pretrain-sonata-v8mc-*`"):
 v8 config with `data_list_file` → MC-only lists, `data_only=False`,

@@ -15,7 +15,7 @@
 set -u
 
 # set the location of your copy of the repo here
-WORKDIR=/home/u6jo/twongj01.u6jo/ubpointcept/pointcept
+WORKDIR=/projects/u6jo/work/pointcept/
 CONFIG=${WORKDIR}/configs/lartpc/pretrain-sonata-v8-extbnb-mc-combined-larmatch.py
 SQASHFILE=/projects/u6jo/datasets/combined_pretrain-sonata-v7-extbnb-larmatch.sqsh
 
@@ -57,9 +57,9 @@ rm -f "$RESUBMIT_MARKER"
 #     so the signal reaches python instead of being queued by bash.
 #   - `source setenv.sh` runs *before* exec so env vars (PYTHONPATH, ROOT
 #     bindings, etc.) are exported into the process that exec replaces.
-srun apptainer exec --nv --bind $SQASHFILE:/data:image-src=,ro $container \
+srun apptainer exec --nv --bind $SQASHFILE:/data:image-src=,ro,/projects/u6jo:/projects/u6jo $container \
     bash -c "cd ${WORKDIR} && \
-             source setenv.sh && \
+             source setenv_isambard_project_repo.sh && \
              exec python3 tools/train.py --config ${CONFIG} --num-gpus 4 ${RESUME_OPTS}"
 TRAIN_RC=$?
 echo "[$(date)] training exited with code $TRAIN_RC"
