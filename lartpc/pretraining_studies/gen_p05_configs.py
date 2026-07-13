@@ -465,7 +465,7 @@ flash_backend = "flash_attn"
 amp_dtype = "bfloat16"
 
 enable_wandb = True
-wandb_project = "pointcept"
+wandb_project = "pointcept_semseg"
 save_path = "sonata/p05/@RUN_ID@"
 
 TRAIN_FILE_LIST = "@TRAIN_LIST@"
@@ -717,7 +717,7 @@ flash_backend = "xformers"   # backend needed on the Tufts P100s
 amp_dtype = "float16"
 
 enable_wandb = True
-wandb_project = "pointcept"
+wandb_project = "pointcept_semseg"
 # The probe sweep driver overrides save_path and weight per snapshot:
 #   --options weight=<snapshot_iterN_imgM.pth> save_path=exp/probes/<run>/imgM
 save_path = "sonata/p05/probes/default"
