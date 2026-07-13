@@ -48,7 +48,7 @@ elif [[ "$BASENAME" == supervised-ceiling-* ]]; then
     OPTS="$OPTS hooks.3.eval_freq=50"
 fi
 
-mkdir -p "${SCRIPT_DIR}/logs" "${WORKDIR}/sonata/p05/smoke"
+mkdir -p "${WORKDIR}/exp/logs" "${WORKDIR}/sonata/p05/smoke"
 
 cd "$SCRIPT_DIR"
 JOBID=$(sbatch --parsable --job-name="$TAG" --time=04:00:00 <<EOF
@@ -59,8 +59,8 @@ JOBID=$(sbatch --parsable --job-name="$TAG" --time=04:00:00 <<EOF
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --gpus=4
-#SBATCH --output=logs/p05.%x.%j.%N.log
-#SBATCH --error=logs/p05.%x.%j.%N.err
+#SBATCH --output=${WORKDIR}/exp/logs/p05.%x.%j.%N.log
+#SBATCH --error=${WORKDIR}/exp/logs/p05.%x.%j.%N.err
 set -u
 SQASHFILE=/projects/u6jo/datasets/combined_pretrain-sonata-v7-extbnb-larmatch.sqsh
 container=/projects/u6jo/containers/pointcept-sandbox/

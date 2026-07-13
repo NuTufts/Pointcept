@@ -28,7 +28,10 @@ TAG=$(echo "$RUN_ID" | tr '.' '_' | tr -cd 'A-Za-z0-9_-')
 REGISTRY_DIR=${WORKDIR}/exp
 REGISTRY=${REGISTRY_DIR}/registry.csv
 CONFIG_STORE=${REGISTRY_DIR}/configs
-mkdir -p "$CONFIG_STORE" "${SCRIPT_DIR}/logs"
+# Job logs go to exp/logs (absolute path in submit_p05_isambard.sh #SBATCH
+# directives — the local logs/ dir is owned by another user and not writable,
+# which makes SLURM kill jobs at startup with exit code 53).
+mkdir -p "$CONFIG_STORE" "${REGISTRY_DIR}/logs"
 
 # Exact config snapshot + hash recorded before submission (plan §7 rule 2)
 CONFIG_HASH=$(sha256sum "$CONFIG" | cut -c1-12)

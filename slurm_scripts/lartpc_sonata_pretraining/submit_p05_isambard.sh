@@ -18,8 +18,8 @@
 #SBATCH --ntasks=1
 #SBATCH --gpus=4
 #SBATCH --signal=USR1@600
-#SBATCH --output=logs/p05.%x.%j.%N.log
-#SBATCH --error=logs/p05.%x.%j.%N.err
+#SBATCH --output=/projects/u6jo/work/pointcept/exp/logs/p05.%x.%j.%N.log
+#SBATCH --error=/projects/u6jo/work/pointcept/exp/logs/p05.%x.%j.%N.err
 
 set -u
 
