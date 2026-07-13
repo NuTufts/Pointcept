@@ -28,7 +28,7 @@ flash_backend = "flash_attn"
 amp_dtype = "bfloat16"
 
 enable_wandb = True
-wandb_project = "pointcept"
+wandb_project = "pointcept_p05_pretrain"
 save_path = "sonata/p05/P05B.1-mc_noghost-s0"
 
 TRAIN_FILE_LIST = "/projects/u6jo/work/pointcept/lartpc/filelists/h5list_v3_mc_only_train.txt"

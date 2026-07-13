@@ -118,7 +118,7 @@ flash_backend = "flash_attn"
 amp_dtype = "bfloat16"
 
 enable_wandb = True
-wandb_project = "pointcept"
+wandb_project = "pointcept_p05_pretrain"
 save_path = "sonata/p05/@RUN_ID@"
 
 TRAIN_FILE_LIST = "@TRAIN_LIST@"
