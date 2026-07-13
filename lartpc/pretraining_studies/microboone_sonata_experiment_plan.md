@@ -55,7 +55,9 @@ MATCHED_BUDGET = dict(
     images_seen   = 15_000_000,   # PLACEHOLDER — set from cluster throughput; must exceed
                                   # longest prelim run (~335k iters x batch ~48-90)
     batch_size    = 48,           # pick ONE value; prelim runs mixed 48/90 — do not repeat this
-    peak_lr       = 2e-3,         # prelim Full Real Cosmic used 5e-4 — confound, fix at 2e-3
+    peak_lr       = 5e-4,         # prelim Full Real Cosmic used 5e-4 — confound, fix at 5-e4. 
+                                  # Other runs used 2e-3 which when used on real data led 
+                                  # to the occurance of training instabilities
     lr_schedule   = "OneCycleLR, pct_start / div_factor as in BASE_PRETRAIN",
     seed          = 0,            # flagship configs also get s1, s2 (see §6)
 )
