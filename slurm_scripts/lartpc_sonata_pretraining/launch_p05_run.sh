@@ -18,7 +18,12 @@ WORKDIR=/projects/u6jo/work/pointcept
 SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 
 CONFIG_ARG=${1:?usage: ./launch_p05_run.sh <config.py>}
-CONFIG=$(cd "$WORKDIR" && readlink -f "$CONFIG_ARG")
+# Do NOT readlink -f: it resolves through the /lus/... filesystem symlink,
+# which is not bound inside the container (only /projects/u6jo is).
+case "$CONFIG_ARG" in
+    /*) CONFIG="$CONFIG_ARG" ;;
+    *)  CONFIG="${WORKDIR}/${CONFIG_ARG}" ;;
+esac
 [ -f "$CONFIG" ] || { echo "ERROR: config not found: $CONFIG_ARG"; exit 1; }
 
 SAVE_REL=$(grep -m1 '^save_path' "$CONFIG" | sed 's/.*=\s*"\(.*\)".*/\1/')
