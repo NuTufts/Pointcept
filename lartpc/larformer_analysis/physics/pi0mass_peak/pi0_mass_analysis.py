@@ -108,10 +108,12 @@ def main():
     have = set(t.keys())
     a = t.arrays([b for b in ("showerAttConfident", "showerAttScore")
                   if b in have] + ["run", "subrun", "event", "xsecWeight",
-                  "trueVtxInWCFV", "trueNuCCNC", "truePrimPartPDG",
+                  "trueVtxInWCFV", "trueNuCCNC",
                   "trueSimPartPDG", "trueSimPartTID", "trueSimPartMID",
                   "trueSimPartProcess", "trueSimPartPixelSumQ",
                   "trueSimPartPx", "trueSimPartPy", "trueSimPartPz",
+                  "truePrimPartPDG", "truePrimPartPx", "truePrimPartPy",
+                  "truePrimPartPz",
                   "foundVertex", "primaryVtxStream", "vtxIsFiducial",
                   "vtxX", "vtxY", "vtxZ",
                   "showerLArFormerPID", "showerRecoE",
@@ -144,6 +146,7 @@ def main():
     E1 = np.full(n, np.nan); E2 = np.full(n, np.nan)
     cosA = np.full(n, np.nan)     # vertex->start direction
     cosB = np.full(n, np.nan)     # trunk StartDir
+    p_reco = np.full(n, np.nan)   # |p(g1)+p(g2)| with vertex->start dirs
     dres = {"vtx2start": [], "trunkdir": []}   # direction resolution [deg]
     for i in np.nonzero(vtx_ok & (n_g >= 2))[0]:
         gi = np.nonzero(ak.to_numpy(is_g[i]))[0]
@@ -160,6 +163,7 @@ def main():
         if np.all(nA > 1e-3):
             dA = dA / nA[:, None]
             cosA[i] = float(dA[0] @ dA[1])
+            p_reco[i] = float(np.linalg.norm(E1[i] * dA[0] + E2[i] * dA[1]))
         nB = np.linalg.norm(sd, axis=1)
         if np.all(nB > 1e-3):
             sd = sd / nB[:, None]
@@ -187,6 +191,19 @@ def main():
             if np.all(nB > 1e-3):
                 dres["trunkdir"].append(np.degrees(
                     np.arccos(np.clip(sd[k] @ td, -1, 1))))
+
+    # true pi0 momentum [MeV/c] for events with exactly one primary pi0
+    # (truePrimPart 4-vectors are in GeV; invariant mass validates at 0.1350)
+    p_true = np.full(n, np.nan)
+    if not args.data:
+        for i in range(n):
+            pd = np.asarray(a["truePrimPartPDG"][i])
+            k = np.nonzero(pd == 111)[0]
+            if len(k) == 1:
+                p_true[i] = 1000.0 * float(np.sqrt(
+                    a["truePrimPartPx"][i][k[0]] ** 2
+                    + a["truePrimPartPy"][i][k[0]] ** 2
+                    + a["truePrimPartPz"][i][k[0]] ** 2))
 
     def mgg(cth):
         return np.sqrt(np.clip(2.0 * E1 * E2 * (1.0 - cth), 0, None))
@@ -226,7 +243,8 @@ def main():
     if args.out:
         np.savez(args.out, cat=cat, sel_ge2=sel2p, sel_eq2=sel2x,
                  reco_cc=reco_cc, m_vtx2start=mA, m_trunkdir=mB,
-                 n_gamma=n_g, w=w, E1=E1, E2=E2)
+                 n_gamma=n_g, w=w, E1=E1, E2=E2,
+                 p_reco=p_reco, p_true=p_true)
 
     # ---- plots -------------------------------------------------------------
     import matplotlib
@@ -270,9 +288,76 @@ def main():
     stacked(mA, sel2x, "vertex->start dir, exactly 2", "mgg_vtx2start_eq2")
     stacked(mB, sel2p, "trunk dir, >=2 gamma", "mgg_trunkdir_ge2")
 
+    # reconstructed pi0 momentum |p(g1)+p(g2)| (vertex->start dirs), stacked
+    # by truth category per reco-CC/NC (works in data mode too)
+    pbins = np.linspace(0, 1200, 49)
+    for ccm, cclab in ((reco_cc, "recoCC"), (~reco_cc, "recoNC")):
+        m = sel2p & ccm & np.isfinite(p_reco)
+        fig, ax = plt.subplots(figsize=(6.4, 4.4))
+        data = [np.clip(p_reco[m & (cat == c)], 0, 1199) for c in range(ncat)]
+        ws = [w[m & (cat == c)] for c in range(ncat)]
+        ax.hist(data, bins=pbins, weights=ws, stacked=True, color=cat_colors,
+                label=[f"{cat_names[c]} ({ws[c].sum():.0f})"
+                       for c in range(ncat)])
+        ax.set(xlabel=r"reco $p_{\pi^0}$ [MeV/c]",
+               ylabel=("events" if args.data
+                       else f"events / {args.pot:.1e} POT"),
+               title=f"{cclab}: reconstructed pi0 momentum (>=2 gamma)")
+        ax.legend(fontsize=7)
+        ax.grid(alpha=0.3)
+        fig.tight_layout()
+        fig.savefig(f"{args.plots}/ppi0_reco_{cclab}.png", dpi=110)
+        plt.close(fig)
+
     if args.data:
         print(f">>> plots -> {args.plots}")
         return
+
+    # 2D reco vs true pi0 momentum (selected true-signal events)
+    m2 = sel2p & (cat <= 1) & np.isfinite(p_reco) & np.isfinite(p_true)
+    fig, ax = plt.subplots(figsize=(5.6, 4.8))
+    h = ax.hist2d(np.clip(p_true[m2], 0, 1199), np.clip(p_reco[m2], 0, 1199),
+                  bins=[np.linspace(0, 1200, 40)] * 2, cmin=1, cmap="viridis")
+    ax.plot([0, 1200], [0, 1200], "r--", lw=1, label="reco = true")
+    r = p_reco[m2] / p_true[m2]
+    ax.set(xlabel=r"true $p_{\pi^0}$ [MeV/c]",
+           ylabel=r"reco $p_{\pi^0}$ [MeV/c]",
+           title=f"pi0 momentum: reco vs true (selected signal, N={int(m2.sum())})\n"
+                 f"median reco/true = {np.median(r):.3f}, "
+                 f"16-84%: [{np.percentile(r,16):.2f}, {np.percentile(r,84):.2f}]")
+    fig.colorbar(h[3], ax=ax, label="events")
+    ax.legend(fontsize=8, loc="upper left")
+    fig.tight_layout()
+    fig.savefig(f"{args.plots}/ppi0_reco_vs_true.png", dpi=110)
+    plt.close(fig)
+
+    # selection efficiency vs true pi0 momentum (denominator = true signal)
+    fig, ax = plt.subplots(figsize=(6.4, 4.4))
+    pedges = np.array([0, 100, 200, 300, 400, 500, 650, 800, 1000, 1200])
+    pctr = 0.5 * (pedges[:-1] + pedges[1:])
+    den_all = (cat <= 1) & np.isfinite(p_true)
+    for num, lab, sty in (
+            (sel2p, "selected (>=2 gamma)", "o-"),
+            (sel2p & ((cat == 0) == reco_cc), "selected + correct CC/NC tag",
+             "s--"),
+            (sel2x, "selected (exactly 2)", "^:")):
+        eff, err = [], []
+        for lo, hi in zip(pedges[:-1], pedges[1:]):
+            b = den_all & (p_true >= lo) & (p_true < hi)
+            N = int(b.sum())
+            e = num[b].mean() if N else np.nan
+            eff.append(e)
+            err.append(np.sqrt(e * (1 - e) / N) if N else 0)
+        ax.errorbar(pctr, eff, yerr=err, fmt=sty, ms=4, label=lab)
+    ax.set(xlabel=r"true $p_{\pi^0}$ [MeV/c]", ylabel="efficiency",
+           ylim=(0, 1.05),
+           title="pi0 selection efficiency vs true momentum\n"
+                 "(denominator: true signal, both photons E_vis>20 MeV)")
+    ax.legend(fontsize=8)
+    ax.grid(alpha=0.3)
+    fig.tight_layout()
+    fig.savefig(f"{args.plots}/ppi0_efficiency.png", dpi=110)
+    plt.close(fig)
 
     # direction-estimator comparison on signal
     fig, ax = plt.subplots(figsize=(6.2, 4.2))
