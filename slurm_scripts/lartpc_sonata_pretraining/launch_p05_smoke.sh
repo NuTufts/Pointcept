@@ -64,10 +64,10 @@ JOBID=$(sbatch --parsable --job-name="$TAG" --time=04:00:00 <<EOF
 set -u
 SQASHFILE=/projects/u6jo/datasets/combined_pretrain-sonata-v7-extbnb-larmatch.sqsh
 container=/projects/u6jo/containers/pointcept-sandbox/
-srun apptainer exec --nv --bind \$SQASHFILE:/data:image-src=,ro,/projects/u6jo:/projects/u6jo \$container \\
-    bash -c "cd ${WORKDIR} && \\
-             source setenv_isambard_project_repo.sh && \\
-             exec python3 tools/train.py --config ${CONFIG} --num-gpus 4 --options ${OPTS}"
+# NOTE: single line on purpose — backslash-newline continuations inside a
+# heredoc within \$( ) command substitution collapse into literal backslashes,
+# which apptainer then receives as an escaped-space command (" ").
+srun apptainer exec --nv --bind \$SQASHFILE:/data:image-src=,ro,/projects/u6jo:/projects/u6jo \$container bash -c "cd ${WORKDIR} && source setenv_isambard_project_repo.sh && exec python3 tools/train.py --config ${CONFIG} --num-gpus 4 --options ${OPTS}"
 EOF
 )
 echo "submitted smoke test ${TAG}: job ${JOBID}"
