@@ -77,6 +77,12 @@ def parse_args():
                    help="Use MCC9 truth processing (older official sim).")
     p.add_argument("-d", "--is-data", default=False, action="store_true",
                    help="Real detector data: no MC truth processed.")
+    p.add_argument("--max-triplets", type=int, default=5_000_000,
+                   help="spacepoint-noise veto: stop the triplet maker at "
+                        "this many triplets and SKIP the event (noise events "
+                        "can generate tens of millions of spacepoints and "
+                        "OOM the chain; they are not worth reconstructing). "
+                        "<=0 disables.")
     p.add_argument("--no-flash", default=False, action="store_true",
                    help="Do not fold in flash info.")
     p.add_argument("--out-prefix", default="merged",
@@ -210,6 +216,13 @@ def main():
         print("RUNNING IN MCC9 MODE")
         simchmaker.process_mcc9_sim()
     simchmaker._shower_fragment_maker.set_verbosity(args.verbosity)
+    if args.max_triplets > 0:
+        # noise-event veto (PrepMatchTriplets): stop generating triplets at
+        # the cap; the per-event check below skips capped events entirely
+        simchmaker._tripletmaker.setStopAtTripletMax(True, args.max_triplets)
+        simchmaker._tripletmaker.setStopAtSourcePlaneTriples(
+            True, args.max_triplets)
+        print(f"noise veto: stop at {args.max_triplets} triplets")
 
     # ---- IO ----
     ioll = larlite.storage_manager(larlite.storage_manager.kREAD)
@@ -267,6 +280,12 @@ def main():
         # file — log it, drop the partial output, skip to the next entry.
         try:
             simchmaker.process(ioll, iolcv)
+            if (args.max_triplets > 0
+                    and simchmaker._tripletmaker.didEventReachLimits()):
+                n_failed += 1
+                print(f"  [{ientry}] VETOED: triplet maker hit the "
+                      f"{args.max_triplets} cap (noise event); skipping")
+                continue
             simchmaker.open_hdf_file(outpath)
             simchmaker.save_entry("/entry_0")
             simchmaker.close_hdf_file()
