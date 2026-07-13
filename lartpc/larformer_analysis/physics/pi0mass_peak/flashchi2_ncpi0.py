@@ -28,6 +28,9 @@ from pi0_mass_analysis import (CATS, CAT_COLORS, PI0_MASS, RECO_G_MIN,
                                MU_KE_MIN, truth_category)
 
 PEAK_LO, PEAK_HI = 100.0, 170.0   # near-peak mass window [MeV]
+# canonical active-TPC volume [cm] (same def as eval --true-vtx-in-tpc)
+TPC_LO = np.array([0.0, -116.5, 0.0])
+TPC_HI = np.array([256.35, 116.5, 1036.8])
 
 
 def load(ntuple, is_data, pot):
@@ -98,8 +101,16 @@ def load(ntuple, is_data, pot):
 
     sel2p = vok & (n_g >= 2) & np.isfinite(mA)
     sel2x = sel2p & (n_g == 2)
+    # primary-vertex position + distance to nearest active-TPC wall (dwall)
+    vx = np.asarray(a["vtxX"], np.float64)
+    vy = np.asarray(a["vtxY"], np.float64)
+    vz = np.asarray(a["vtxZ"], np.float64)
+    dwall = np.minimum.reduce([vx - TPC_LO[0], TPC_HI[0] - vx,
+                               vy - TPC_LO[1], TPC_HI[1] - vy,
+                               vz - TPC_LO[2], TPC_HI[2] - vz])
     return dict(cat=cat, w=w, n_g=n_g, reco_cc=reco_cc, m=mA,
-                chi2=chi2, sel2p=sel2p, sel2x=sel2x, scale=scale)
+                chi2=chi2, sel2p=sel2p, sel2x=sel2x, scale=scale,
+                vx=vx, vy=vy, vz=vz, dwall=dwall)
 
 
 def main():
