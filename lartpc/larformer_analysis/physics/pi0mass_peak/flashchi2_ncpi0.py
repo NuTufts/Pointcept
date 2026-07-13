@@ -123,65 +123,72 @@ def main():
     lbins = np.linspace(0, 8, 33)     # log10(chi2)
     lcut = np.log10(args.chi2_cut)
 
-    def sel(d, eq2):
-        s = (d["sel2x"] if eq2 else d["sel2p"]) & (~d["reco_cc"]) \
-            & np.isfinite(d["chi2"])
+    def sel(d, eq2, want_cc):
+        s = (d["sel2x"] if eq2 else d["sel2p"]) \
+            & (d["reco_cc"] == want_cc) & np.isfinite(d["chi2"])
         return s
 
-    for eq2, vlab, fname in ((True, "exactly 2", "flashchi2_ncpi0_eq2"),
-                             (False, ">=2", "flashchi2_ncpi0_ge2")):
-        sm = sel(mc, eq2); sd = sel(da, eq2)
-        lchi_mc = np.log10(np.clip(mc["chi2"], 1, None))
-        lchi_da = np.log10(np.clip(da["chi2"], 1, None))
-        ctr = 0.5 * (lbins[:-1] + lbins[1:])
+    lchi_mc = np.log10(np.clip(mc["chi2"], 1, None))
+    lchi_da = np.log10(np.clip(da["chi2"], 1, None))
+    ctr = 0.5 * (lbins[:-1] + lbins[1:])
 
-        fig, axes = plt.subplots(1, 2, figsize=(11.5, 4.4))
-        for ax, peak_only, ttl in (
-                (axes[0], False, "all m$_{\\gamma\\gamma}$"),
-                (axes[1], True, f"near-peak {PEAK_LO:.0f}-{PEAK_HI:.0f} MeV")):
-            mmask = sm & ((mc["m"] >= PEAK_LO) & (mc["m"] < PEAK_HI)
-                          if peak_only else True)
-            dmask = sd & ((da["m"] >= PEAK_LO) & (da["m"] < PEAK_HI)
-                          if peak_only else True)
-            stack = [np.clip(lchi_mc[mmask & (mc["cat"] == c)], 0, 7.999)
-                     for c in range(6)]
-            ws = [mc["w"][mmask & (mc["cat"] == c)] for c in range(6)]
-            ax.hist(stack, bins=lbins, weights=ws, stacked=True,
-                    color=CAT_COLORS,
-                    label=[f"{CATS[c]} ({ws[c].sum():.0f})" for c in range(6)])
-            dh, _ = np.histogram(np.clip(lchi_da[dmask], 0, 7.999), bins=lbins)
-            ax.errorbar(ctr, dh, yerr=np.sqrt(np.clip(dh, 1, None)),
-                        fmt="ko", ms=3.5, lw=1, capsize=0,
-                        label=f"beam data ({int(dh.sum())})")
-            ax.axvline(lcut, color="crimson", ls="--", lw=1.4,
-                       label=f"cut chi2={args.chi2_cut:.0f}")
-            ax.set(xlabel=r"$\log_{10}$ flash $\chi^2$ (primary nu vtx)",
-                   ylabel=f"events / {args.pot:.1e} POT",
-                   title=ttl)
-            ax.legend(fontsize=7)
-            ax.grid(alpha=0.3)
-        fig.suptitle(f"reco-NC flash-$\\chi^2$ ({vlab} photons): "
-                     "beam data vs prediction", fontsize=11)
-        fig.tight_layout()
-        fig.savefig(f"{args.plots}/{fname}.png", dpi=110)
-        plt.close(fig)
+    # reco-CC = likely genuine in-time neutrinos (control); reco-NC = probe
+    for want_cc, slab, sabb in ((True, "reco-CC (likely nu, in-time)", "cc"),
+                                (False, "reco-NC", "nc")):
+        for eq2, vlab, vabb in ((True, "exactly 2", "eq2"),
+                                (False, ">=2", "ge2")):
+            sm = sel(mc, eq2, want_cc); sd = sel(da, eq2, want_cc)
+            fig, axes = plt.subplots(1, 2, figsize=(11.5, 4.4))
+            for ax, peak_only, ttl in (
+                    (axes[0], False, "all m$_{\\gamma\\gamma}$"),
+                    (axes[1], True,
+                     f"near-peak {PEAK_LO:.0f}-{PEAK_HI:.0f} MeV")):
+                mmask = sm & ((mc["m"] >= PEAK_LO) & (mc["m"] < PEAK_HI)
+                              if peak_only else True)
+                dmask = sd & ((da["m"] >= PEAK_LO) & (da["m"] < PEAK_HI)
+                              if peak_only else True)
+                stack = [np.clip(lchi_mc[mmask & (mc["cat"] == c)], 0, 7.999)
+                         for c in range(6)]
+                ws = [mc["w"][mmask & (mc["cat"] == c)] for c in range(6)]
+                ax.hist(stack, bins=lbins, weights=ws, stacked=True,
+                        color=CAT_COLORS,
+                        label=[f"{CATS[c]} ({ws[c].sum():.0f})"
+                               for c in range(6)])
+                dh, _ = np.histogram(np.clip(lchi_da[dmask], 0, 7.999),
+                                     bins=lbins)
+                ax.errorbar(ctr, dh, yerr=np.sqrt(np.clip(dh, 1, None)),
+                            fmt="ko", ms=3.5, lw=1, capsize=0,
+                            label=f"beam data ({int(dh.sum())})")
+                ax.axvline(lcut, color="crimson", ls="--", lw=1.4,
+                           label=f"cut chi2={args.chi2_cut:.0f}")
+                ax.set(xlabel=r"$\log_{10}$ flash $\chi^2$ (primary nu vtx)",
+                       ylabel=f"events / {args.pot:.1e} POT", title=ttl)
+                ax.legend(fontsize=7)
+                ax.grid(alpha=0.3)
+            fig.suptitle(f"{slab} flash-$\\chi^2$ ({vlab} photons): "
+                         "beam data vs prediction", fontsize=11)
+            fig.tight_layout()
+            fig.savefig(f"{args.plots}/flashchi2_{sabb}_{vabb}.png", dpi=110)
+            plt.close(fig)
 
-    # quantify: near-peak reco-NC data/MC before and after the chi2 cut
-    print(f"== reco-NC near-peak ({PEAK_LO:.0f}-{PEAK_HI:.0f} MeV) "
-          f"flash-chi2 cut @ {args.chi2_cut:.0f} ==")
-    for eq2, vlab in ((False, ">=2"), (True, "exactly-2")):
-        sm = sel(mc, eq2); sd = sel(da, eq2)
-        pm = sm & (mc["m"] >= PEAK_LO) & (mc["m"] < PEAK_HI)
-        pd = sd & (da["m"] >= PEAK_LO) & (da["m"] < PEAK_HI)
-        lo_m = pm & (mc["chi2"] < args.chi2_cut)
-        lo_d = pd & (da["chi2"] < args.chi2_cut)
-        wm = mc["w"][pm].sum(); wm_lo = mc["w"][lo_m].sum()
-        nd = int(pd.sum()); nd_lo = int(lo_d.sum())
-        print(f"  [{vlab:9s}] all-chi2: data {nd:4d} / MC {wm:6.1f} = "
-              f"{nd/max(wm,1e-9):.2f}  |  chi2<cut: data {nd_lo:4d} / "
-              f"MC {wm_lo:6.1f} = {nd_lo/max(wm_lo,1e-9):.2f}  |  "
-              f"data high-chi2 removed: {1-nd_lo/max(nd,1):.0%}, "
-              f"MC removed: {1-wm_lo/max(wm,1e-9):.0%}")
+    # quantify: near-peak data/MC before/after the chi2 cut, per stream
+    print(f"== near-peak ({PEAK_LO:.0f}-{PEAK_HI:.0f} MeV) flash-chi2 cut "
+          f"@ {args.chi2_cut:.0f} | median chi2 (data vs MC) ==")
+    for want_cc, slab in ((True, "reco-CC"), (False, "reco-NC")):
+        for eq2, vlab in ((False, ">=2"), (True, "exactly-2")):
+            sm = sel(mc, eq2, want_cc); sd = sel(da, eq2, want_cc)
+            pm = sm & (mc["m"] >= PEAK_LO) & (mc["m"] < PEAK_HI)
+            pd = sd & (da["m"] >= PEAK_LO) & (da["m"] < PEAK_HI)
+            lo_m = pm & (mc["chi2"] < args.chi2_cut)
+            lo_d = pd & (da["chi2"] < args.chi2_cut)
+            wm = mc["w"][pm].sum(); wm_lo = mc["w"][lo_m].sum()
+            nd = int(pd.sum()); nd_lo = int(lo_d.sum())
+            med_d = np.median(da["chi2"][pd]) if pd.any() else np.nan
+            med_m = np.median(mc["chi2"][pm]) if pm.any() else np.nan
+            print(f"  [{slab} {vlab:9s}] all: data {nd:4d}/MC {wm:6.1f}="
+                  f"{nd/max(wm,1e-9):.2f} | chi2<cut: {nd_lo:4d}/{wm_lo:6.1f}="
+                  f"{nd_lo/max(wm_lo,1e-9):.2f} | med chi2 data {med_d:7.0f} "
+                  f"vs MC {med_m:7.0f}")
     print(f">>> plots -> {args.plots}")
 
 
