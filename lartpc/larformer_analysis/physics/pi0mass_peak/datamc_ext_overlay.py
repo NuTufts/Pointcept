@@ -24,7 +24,8 @@ import numpy as np
 
 from pi0_mass_analysis import CATS, CAT_COLORS, PI0_MASS
 
-EXT_COLOR = "#111111"
+EXT_COLOR = "#e5e5e5"      # light grey so black data points read on top
+                           # (distinct from the darker out-of-FV grey #bdbdbd)
 FULL_EXT_SCALE = 0.17682554549   # beam/EXT full-sample spill ratio
 
 
@@ -37,6 +38,9 @@ def main():
                     help="per-EXT-event weight (0.17682554549 / fraction)")
     ap.add_argument("--plots", required=True)
     ap.add_argument("--pot", type=float, default=4.4e19)
+    ap.add_argument("--flashchi2-cut", type=float, default=None,
+                    help="provisional cut: keep events with dead-PMT-masked "
+                         "flash_chi2 < this (requires flash_chi2 in the npz)")
     args = ap.parse_args()
     os.makedirs(args.plots, exist_ok=True)
 
@@ -50,7 +54,14 @@ def main():
 
     def stream_mask(t, want_cc, eq2):
         sel = t["sel_eq2"] if eq2 else t["sel_ge2"]
-        return sel & (t["reco_cc"] == want_cc)
+        sel = sel & (t["reco_cc"] == want_cc)
+        if args.flashchi2_cut is not None:
+            if "flash_chi2" not in t.files:
+                raise SystemExit("--flashchi2-cut needs flash_chi2 in the npz "
+                                 "(rebuild tables with --cascade-dir)")
+            fc = t["flash_chi2"]
+            sel = sel & np.isfinite(fc) & (fc < args.flashchi2_cut)
+        return sel
 
     def panel(obs_key, bins, xlabel, fname_base, clip_hi):
         for want_cc, sabb, slab in ((True, "recoCC", "reco-CC"),

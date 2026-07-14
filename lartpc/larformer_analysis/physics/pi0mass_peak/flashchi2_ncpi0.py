@@ -33,8 +33,11 @@ TPC_LO = np.array([0.0, -116.5, 0.0])
 TPC_HI = np.array([256.35, 116.5, 1036.8])
 
 
-def load(ntuple, is_data, pot):
-    """Return per-event arrays for the reco-NC pi0 study."""
+def load(ntuple, is_data, pot, cascade_dir=None, dead=(15,)):
+    """Return per-event arrays for the reco-NC pi0 study. If cascade_dir is
+    given, the primary-vertex flash chi2 is REPLACED (for the pre-selected
+    events) by the dead-PMT-masked nu-slice chi2 recomputed from the cascade
+    per-PMT arrays -- the analysis-level flash-fix preview."""
     fin = uproot.open(ntuple)
     if is_data:
         scale = 1.0
@@ -43,7 +46,8 @@ def load(ntuple, is_data, pot):
         psum = float(np.sum(p["totGoodPOT"])) or float(np.sum(p["totPOT"]))
         scale = pot / psum
     t = fin["EventTree"]
-    a = t.arrays(["xsecWeight", "trueVtxInWCFV", "trueNuCCNC",
+    a = t.arrays(["run", "subrun", "event",
+                  "xsecWeight", "trueVtxInWCFV", "trueNuCCNC",
                   "trueSimPartPDG", "trueSimPartTID", "trueSimPartMID",
                   "trueSimPartProcess", "trueSimPartPixelSumQ",
                   "truePrimPartPDG",
@@ -101,6 +105,25 @@ def load(ntuple, is_data, pot):
 
     sel2p = vok & (n_g >= 2) & np.isfinite(mA)
     sel2x = sel2p & (n_g == 2)
+
+    # analysis-level flash-fix: replace primary-vertex chi2 with the
+    # dead-PMT-masked nu-slice chi2 recomputed from the cascade per-PMT arrays
+    # (matched by run/subrun/event; cached RSE->path map per cascade dir)
+    if cascade_dir is not None:
+        import os as _os
+        from flash_correction import corrected_chi2_by_rse
+        run = np.asarray(a["run"]); sub = np.asarray(a["subrun"])
+        evt = np.asarray(a["event"])
+        ent = np.nonzero(vok & (n_g >= 2))[0]
+        cache = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)),
+                              "rse_" + _os.path.basename(
+                                  _os.path.dirname(cascade_dir.rstrip("/")))
+                              + "_" + _os.path.basename(cascade_dir.rstrip("/"))
+                              + ".npz")
+        cc = corrected_chi2_by_rse(cascade_dir, run, sub, evt, ent, dead, cache)
+        for i in ent:
+            chi2[i] = cc.get(int(i), np.nan)
+
     # primary-vertex position + distance to nearest active-TPC wall (dwall)
     vx = np.asarray(a["vtxX"], np.float64)
     vy = np.asarray(a["vtxY"], np.float64)
@@ -122,16 +145,26 @@ def main():
     ap.add_argument("--ext-scale", type=float, default=0.17682554549,
                     help="per-EXT-event weight (0.17682554549 / fraction); "
                          "default = full-sample spill ratio")
+    ap.add_argument("--mc-cascade", default=None,
+                    help="MC keypoint2_streams dir; enables dead-PMT-masked "
+                         "flash-chi2 recompute (analysis-level flash fix)")
+    ap.add_argument("--data-cascade", default=None)
+    ap.add_argument("--ext-cascade", default=None)
+    ap.add_argument("--dead-channels", default="15",
+                    help="comma-sep opdet indices to mask (default 15, the "
+                         "run3 dead PMT; masked in ALL samples for fairness)")
     ap.add_argument("--plots", required=True)
     ap.add_argument("--pot", type=float, default=4.4e19)
     ap.add_argument("--chi2-cut", type=float, default=1000.0,
                     help="high-chi2 (out-of-time) cut for the ratio table")
     args = ap.parse_args()
     os.makedirs(args.plots, exist_ok=True)
+    dead = tuple(int(x) for x in args.dead_channels.split(",") if x != "")
 
-    mc = load(args.mc_ntuple, False, args.pot)
-    da = load(args.data_ntuple, True, args.pot)
-    ex = load(args.ext_ntuple, True, args.pot) if args.ext_ntuple else None
+    mc = load(args.mc_ntuple, False, args.pot, args.mc_cascade, dead)
+    da = load(args.data_ntuple, True, args.pot, args.data_cascade, dead)
+    ex = (load(args.ext_ntuple, True, args.pot, args.ext_cascade, dead)
+          if args.ext_ntuple else None)
 
     import matplotlib
     matplotlib.use("Agg")

@@ -85,6 +85,11 @@ def main():
     ap.add_argument("--plots", required=True)
     ap.add_argument("--pot", type=float, default=4.4e19)
     ap.add_argument("--out", default=None)
+    ap.add_argument("--cascade-dir", default=None,
+                    help="keypoint2_streams dir; if given, saves a dead-PMT-"
+                         "masked nu-slice flash_chi2 per event in the --out npz "
+                         "(analysis-level flash-fix preview)")
+    ap.add_argument("--dead-channels", default="15")
     ap.add_argument("--data", action="store_true",
                     help="real-data mode: unit weights (no xsecWeight/POT "
                          "scaling), no truth categories (all events tagged "
@@ -212,6 +217,29 @@ def main():
     sel2p = vtx_ok & (n_g >= 2) & np.isfinite(mA)
     sel2x = sel2p & (n_g == 2)
 
+    # analysis-level flash-fix: dead-PMT-masked nu-slice flash chi2 (per event,
+    # matched to cascade by run/subrun/event), for a provisional flash-chi2 cut
+    flash_chi2 = np.full(n, np.nan)
+    if args.cascade_dir:
+        import os as _os
+        from flash_correction import corrected_chi2_by_rse
+        dead = tuple(int(x) for x in args.dead_channels.split(",") if x != "")
+        run_ = np.asarray(a["run"]); sub_ = np.asarray(a["subrun"])
+        evt_ = np.asarray(a["event"])
+        ent = np.nonzero(vtx_ok & (n_g >= 2))[0]
+        cache = _os.path.join(
+            _os.path.dirname(_os.path.abspath(__file__)),
+            "rse_" + _os.path.basename(_os.path.dirname(
+                args.cascade_dir.rstrip("/"))) + "_"
+            + _os.path.basename(args.cascade_dir.rstrip("/")) + ".npz")
+        cc = corrected_chi2_by_rse(args.cascade_dir, run_, sub_, evt_, ent,
+                                   dead, cache)
+        for i in ent:
+            flash_chi2[i] = cc.get(int(i), np.nan)
+        print(f">>> flash-fix: corrected chi2 for "
+              f"{int(np.isfinite(flash_chi2[sel2p]).sum())}/{int(sel2p.sum())} "
+              f"selected events")
+
     # ---- cutflow + selection summary --------------------------------------
     print("\n== CUTFLOW (raw | POT-weighted) ==")
     for lab, m in (("all events", np.ones(n, bool)),
@@ -244,7 +272,7 @@ def main():
         np.savez(args.out, cat=cat, sel_ge2=sel2p, sel_eq2=sel2x,
                  reco_cc=reco_cc, m_vtx2start=mA, m_trunkdir=mB,
                  n_gamma=n_g, w=w, E1=E1, E2=E2,
-                 p_reco=p_reco, p_true=p_true)
+                 p_reco=p_reco, p_true=p_true, flash_chi2=flash_chi2)
 
     # ---- plots -------------------------------------------------------------
     import matplotlib
