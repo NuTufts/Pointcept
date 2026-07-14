@@ -90,6 +90,9 @@ def main():
                          "masked nu-slice flash_chi2 per event in the --out npz "
                          "(analysis-level flash-fix preview)")
     ap.add_argument("--dead-channels", default="15")
+    ap.add_argument("--flashchi2-cut", type=float, default=10000.0,
+                    help="provisional flash-chi2 cut for the CC/NC efficiency-"
+                         "vs-true-momentum plot (needs --cascade-dir)")
     ap.add_argument("--data", action="store_true",
                     help="real-data mode: unit weights (no xsecWeight/POT "
                          "scaling), no truth categories (all events tagged "
@@ -386,6 +389,47 @@ def main():
     fig.tight_layout()
     fig.savefig(f"{args.plots}/ppi0_efficiency.png", dpi=110)
     plt.close(fig)
+
+    # CC / NC signal efficiency vs true pi0 momentum, with (solid) and without
+    # (dashed) the provisional flash-chi2 cut -- shows the cut's signal cost.
+    # numerator = selected + correct stream tag (+ flash-chi2 cut); denom =
+    # true signal of that CC/NC type. Needs the masked flash_chi2 (cascade-dir).
+    if args.cascade_dir and np.isfinite(flash_chi2[sel2p]).any():
+        cutv = args.flashchi2_cut
+        pass_cut = np.isfinite(flash_chi2) & (flash_chi2 < cutv)
+
+        def binned_eff(num, den):
+            e, er = [], []
+            for lo, hi in zip(pedges[:-1], pedges[1:]):
+                b = den & (p_true >= lo) & (p_true < hi)
+                N = int(b.sum())
+                x = num[b].mean() if N else np.nan
+                e.append(x)
+                er.append(np.sqrt(x * (1 - x) / N) if N and np.isfinite(x)
+                          else 0)
+            return e, er
+
+        fig, ax = plt.subplots(figsize=(6.6, 4.5))
+        for cc, tag, col in ((0, "CC", "#d62728"), (1, "NC", "#1f77b4")):
+            den = (cat == cc) & np.isfinite(p_true)
+            tagged = sel2p & ((cat == 0) == reco_cc)   # correct stream tag
+            for m, sty, suff in ((tagged, "--", "no cut"),
+                                 (tagged & pass_cut, "o-",
+                                  f"flash chi2<{cutv:.0f}")):
+                e, er = binned_eff(m, den)
+                ax.errorbar(pctr, e, yerr=er, fmt=sty, ms=4, color=col,
+                            alpha=1.0 if suff.startswith("flash") else 0.45,
+                            label=f"{tag} ({suff})")
+        ax.set(xlabel=r"true $p_{\pi^0}$ [MeV/c]", ylabel="efficiency",
+               ylim=(0, 1.05),
+               title="CC / NC signal efficiency vs true momentum\n"
+                     f"selected + correct tag; dashed = no cut, solid = "
+                     f"flash-chi2 < {cutv:.0f}")
+        ax.legend(fontsize=8, ncol=2)
+        ax.grid(alpha=0.3)
+        fig.tight_layout()
+        fig.savefig(f"{args.plots}/ppi0_efficiency_ccnc_flashcut.png", dpi=110)
+        plt.close(fig)
 
     # direction-estimator comparison on signal
     fig, ax = plt.subplots(figsize=(6.2, 4.2))
