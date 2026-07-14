@@ -25,12 +25,20 @@ def main():
     ap.add_argument("--out", required=True)
     ap.add_argument("--eq2", action="store_true",
                     help="exactly 2 photons (default: >=2)")
+    ap.add_argument("--chi2-min", type=float, default=None,
+                    help="keep only events with primary-vtx flash chi2 >= this")
+    ap.add_argument("--chi2-max", type=float, default=None,
+                    help="keep only events with primary-vtx flash chi2 <= this")
+    ap.add_argument("--max-events", type=int, default=None,
+                    help="cap the output (evenly sampled across the survivors)")
     args = ap.parse_args()
 
     msp = [l.strip() for l in open(args.merged_sp_list) if l.strip()]
     t = uproot.open(args.ntuple)["EventTree"]
     a = t.arrays(["run", "subrun", "event", "foundVertex", "primaryVtxStream",
-                  "vtxIsFiducial", "showerLArFormerPID", "showerRecoE",
+                  "vtxIsFiducial", "vtxX", "vtxY", "vtxZ",
+                  "recoVtxX", "recoVtxY", "recoVtxZ", "recoVtxStream",
+                  "recoVtxFlashChi2", "showerLArFormerPID", "showerRecoE",
                   "trackLArFormerPID", "trackIsSecondary", "trackRecoE"])
     n = len(a["run"])
     if n != len(msp):
@@ -48,9 +56,37 @@ def main():
     sel = vok & (n_g >= 2) & ~reco_cc
     if args.eq2:
         sel &= (n_g == 2)
+
+    # primary (nu-stream) vertex flash chi2, same coord-match as
+    # flashchi2_ncpi0.py, for the optional chi2-range filter
+    if args.chi2_min is not None or args.chi2_max is not None:
+        chi2 = np.full(n, np.nan)
+        for i in np.nonzero(sel)[0]:
+            rx = ak.to_numpy(a["recoVtxX"][i]); ry = ak.to_numpy(a["recoVtxY"][i])
+            rz = ak.to_numpy(a["recoVtxZ"][i]); st = ak.to_numpy(a["recoVtxStream"][i])
+            c2 = ak.to_numpy(a["recoVtxFlashChi2"][i])
+            if not len(rx):
+                continue
+            d = np.sqrt((rx - a["vtxX"][i])**2 + (ry - a["vtxY"][i])**2
+                        + (rz - a["vtxZ"][i])**2)
+            d = np.where(st == a["primaryVtxStream"][i], d, 1e9)
+            j = int(np.argmin(d))
+            if d[j] < 1.0 and c2[j] >= 0:
+                chi2[i] = c2[j]
+        keep = np.isfinite(chi2)
+        if args.chi2_min is not None:
+            keep &= chi2 >= args.chi2_min
+        if args.chi2_max is not None:
+            keep &= chi2 <= args.chi2_max
+        sel &= keep
+
     idx = np.nonzero(sel)[0]
+    if args.max_events and len(idx) > args.max_events:
+        idx = idx[np.linspace(0, len(idx) - 1, args.max_events).astype(int)]
+    cr = ("" if args.chi2_min is None and args.chi2_max is None
+          else f" | flash chi2 in [{args.chi2_min}, {args.chi2_max}]")
     print(f">>> {len(idx)} reco-NC {'eq2' if args.eq2 else 'ge2'} events "
-          f"of {n}")
+          f"of {n}{cr}")
 
     run = np.asarray(a["run"]); sub = np.asarray(a["subrun"])
     evt = np.asarray(a["event"])
