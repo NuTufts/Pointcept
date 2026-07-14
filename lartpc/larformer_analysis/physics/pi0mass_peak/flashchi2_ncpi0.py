@@ -117,6 +117,11 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--mc-ntuple", required=True)
     ap.add_argument("--data-ntuple", required=True)
+    ap.add_argument("--ext-ntuple", default=None,
+                    help="EXT-BNB cosmic ntuple; stacked as a cosmic component")
+    ap.add_argument("--ext-scale", type=float, default=0.17682554549,
+                    help="per-EXT-event weight (0.17682554549 / fraction); "
+                         "default = full-sample spill ratio")
     ap.add_argument("--plots", required=True)
     ap.add_argument("--pot", type=float, default=4.4e19)
     ap.add_argument("--chi2-cut", type=float, default=1000.0,
@@ -126,6 +131,7 @@ def main():
 
     mc = load(args.mc_ntuple, False, args.pot)
     da = load(args.data_ntuple, True, args.pot)
+    ex = load(args.ext_ntuple, True, args.pot) if args.ext_ntuple else None
 
     import matplotlib
     matplotlib.use("Agg")
@@ -141,6 +147,7 @@ def main():
 
     lchi_mc = np.log10(np.clip(mc["chi2"], 1, None))
     lchi_da = np.log10(np.clip(da["chi2"], 1, None))
+    lchi_ex = np.log10(np.clip(ex["chi2"], 1, None)) if ex else None
     ctr = 0.5 * (lbins[:-1] + lbins[1:])
 
     # reco-CC = likely genuine in-time neutrinos (control); reco-NC = probe
@@ -161,10 +168,18 @@ def main():
                 stack = [np.clip(lchi_mc[mmask & (mc["cat"] == c)], 0, 7.999)
                          for c in range(6)]
                 ws = [mc["w"][mmask & (mc["cat"] == c)] for c in range(6)]
+                colors = list(CAT_COLORS)
+                labels = [f"{CATS[c]} ({ws[c].sum():.0f})" for c in range(6)]
+                if ex is not None:
+                    emask = sel(ex, eq2, want_cc) & (
+                        (ex["m"] >= PEAK_LO) & (ex["m"] < PEAK_HI)
+                        if peak_only else True)
+                    stack.append(np.clip(lchi_ex[emask], 0, 7.999))
+                    ws.append(np.full(int(emask.sum()), args.ext_scale))
+                    colors.append("#e5e5e5")
+                    labels.append(f"EXT cosmic ({ws[-1].sum():.0f})")
                 ax.hist(stack, bins=lbins, weights=ws, stacked=True,
-                        color=CAT_COLORS,
-                        label=[f"{CATS[c]} ({ws[c].sum():.0f})"
-                               for c in range(6)])
+                        color=colors, label=labels)
                 dh, _ = np.histogram(np.clip(lchi_da[dmask], 0, 7.999),
                                      bins=lbins)
                 ax.errorbar(ctr, dh, yerr=np.sqrt(np.clip(dh, 1, None)),
@@ -182,25 +197,27 @@ def main():
             fig.savefig(f"{args.plots}/flashchi2_{sabb}_{vabb}.png", dpi=110)
             plt.close(fig)
 
-    # quantify: near-peak data/MC before/after the chi2 cut, per stream
-    print(f"== near-peak ({PEAK_LO:.0f}-{PEAK_HI:.0f} MeV) flash-chi2 cut "
-          f"@ {args.chi2_cut:.0f} | median chi2 (data vs MC) ==")
+    # quantify: median chi2 per stream (data vs MC vs EXT cosmic) + how the
+    # high-chi2 tail (chi2 > cut) is populated -- the cosmic sits there if the
+    # EXT nu-slice chi2 is high, so a cut would separate it.
+    print("== median flash-chi2 (data vs MC vs EXT) + high-chi2 tail share ==")
     for want_cc, slab in ((True, "reco-CC"), (False, "reco-NC")):
         for eq2, vlab in ((False, ">=2"), (True, "exactly-2")):
             sm = sel(mc, eq2, want_cc); sd = sel(da, eq2, want_cc)
-            pm = sm & (mc["m"] >= PEAK_LO) & (mc["m"] < PEAK_HI)
-            pd = sd & (da["m"] >= PEAK_LO) & (da["m"] < PEAK_HI)
-            lo_m = pm & (mc["chi2"] < args.chi2_cut)
-            lo_d = pd & (da["chi2"] < args.chi2_cut)
-            wm = mc["w"][pm].sum(); wm_lo = mc["w"][lo_m].sum()
-            nd = int(pd.sum()); nd_lo = int(lo_d.sum())
-            med_d = np.median(da["chi2"][pd]) if pd.any() else np.nan
-            med_m = np.median(mc["chi2"][pm]) if pm.any() else np.nan
-            print(f"  [{slab} {vlab:9s}] all: data {nd:4d}/MC {wm:6.1f}="
-                  f"{nd/max(wm,1e-9):.2f} | chi2<cut: {nd_lo:4d}/{wm_lo:6.1f}="
-                  f"{nd_lo/max(wm_lo,1e-9):.2f} | med chi2 data {med_d:7.0f} "
-                  f"vs MC {med_m:7.0f}")
-    print(f">>> plots -> {args.plots}")
+            med_d = np.median(da["chi2"][sd]) if sd.any() else np.nan
+            med_m = np.median(mc["chi2"][sm]) if sm.any() else np.nan
+            se = sel(ex, eq2, want_cc) if ex is not None else None
+            med_e = (np.median(ex["chi2"][se]) if se is not None and se.any()
+                     else np.nan)
+            # fraction of each above the cut (the putative cosmic/out-of-time band)
+            hi = lambda d, s: (float(np.mean(d["chi2"][s] > args.chi2_cut))
+                               if s.any() else np.nan)
+            print(f"  [{slab} {vlab:9s}] median chi2: data {med_d:8.0f} | "
+                  f"MC {med_m:8.0f} | EXT {med_e:9.0f}  ||  frac chi2>"
+                  f"{args.chi2_cut:.0f}: data {hi(da,sd):.2f} MC {hi(mc,sm):.2f}"
+                  f" EXT {hi(ex,se) if ex is not None else float('nan'):.2f}")
+    print(f">>> plots -> {args.plots}  (EXT scale "
+          f"{args.ext_scale if ex is not None else float('nan'):.4f})")
 
 
 if __name__ == "__main__":
