@@ -244,6 +244,8 @@ class Context:
                 out = {"attrs": {k: g.attrs[k] for k in g.attrs},
                        "gidx": gidx, "shard": os.path.basename(sp)}
                 for k in g.keys():
+                    if isinstance(g[k], h5py.Group):
+                        continue      # skip subgroups (e.g. attachment/)
                     out[k] = g[k][()]
                 return out
         return None
@@ -314,8 +316,13 @@ def load_event(ctx, msp_path, slice_label=None):
         td = e["triplet_data"]
         pos = np.asarray(td["pos"][()], np.float32)
         tid = np.asarray(td["trackid"][()], np.int64)
-        origin = np.asarray(td["origin"][()], np.int64)
-        pid = np.asarray(td["pid"][()], np.int64)
+        # truth fields (origin/pid/mc_particle_tree) are absent or empty in
+        # --is-data mode (EXT/beam data); fall back to sentinels so the reco
+        # view still renders (truth-based colorings become degenerate).
+        origin = (np.asarray(td["origin"][()], np.int64) if "origin" in td
+                  else np.full(len(pos), -1, np.int64))
+        pid = (np.asarray(td["pid"][()], np.int64) if "pid" in td
+               else np.full(len(pos), -1, np.int64))
         # per-point wire charge (for the charge-based, over-count-corrected coverage)
         pixval = np.asarray(td["pixval"][()], np.float64)
         tick = np.asarray(td["tick"][()], np.int64)
@@ -345,6 +352,8 @@ def load_event(ctx, msp_path, slice_label=None):
     pred_cls = np.full(n, -1, np.int64)
     particles = []
     ev["nu_vertex_cm"] = ev["gt_nu_vertex_cm"] = None
+    ev["flash_obs_pe"] = None       # observed in-time flash PE per PMT (32,)
+    ev["flash_slices"] = None       # {label, pred_pe (S,32), chi2, rank, p_nu}
     if kp_path is not None:
         with h5py.File(kp_path, "r") as f:
             slice_coord = np.asarray(f["slice/coord_cm"][()], np.float32)
@@ -364,6 +373,19 @@ def load_event(ctx, msp_path, slice_label=None):
             if "gt_nu_vertex_cm" in f:
                 ev["gt_nu_vertex_cm"] = np.asarray(
                     f["gt_nu_vertex_cm"][()], np.float32)
+            # flash: observed in-time PE + per-slice PhotonLib predictions
+            if "flash" in f and "observed_pe" in f["flash"]:
+                ev["flash_obs_pe"] = np.asarray(
+                    f["flash/observed_pe"][()], np.float64)
+            if "slices" in f and "pred_pe" in f["slices"]:
+                s = f["slices"]
+                ev["flash_slices"] = dict(
+                    label=[l.decode() if isinstance(l, bytes) else str(l)
+                           for l in s["label"][()]],
+                    pred_pe=np.asarray(s["pred_pe"][()], np.float64),
+                    chi2=np.asarray(s["chi2"][()], np.float64),
+                    rank=np.asarray(s["chi2_rank"][()], np.int64),
+                    p_nu=np.asarray(s["p_nu"][()], np.float64))
         ev["slice_coord"] = slice_coord
         # per-slice-point segmentation + predicted class
         seg_slice = np.zeros(len(slice_coord), bool)
@@ -1004,6 +1026,62 @@ def _get_event(index, slice_label=None):
     return ev
 
 
+def flash_figure(ev):
+    """Observed vs PhotonLib-predicted in-time flash, PE per PMT (0-31).
+
+    Observed = merged_sp beam flash (flash/observed_pe). Predicted = the
+    reconstructed nu slice's PhotonLib hypothesis (slices/pred_pe, label 'nu');
+    the best-flash-chi2 slice is overlaid too when it differs from the nu slice.
+    Bars overlaid per PMT so under/over-prediction reads directly; the title
+    carries the total-PE ratio and chi2 (the same quantity used in the
+    flashmatch-quality study).
+    """
+    pmt = np.arange(32)
+    fig = go.Figure()
+    obs = ev.get("flash_obs_pe")
+    sl = ev.get("flash_slices")
+    obs_sum = float(np.nansum(obs)) if obs is not None else np.nan
+    if obs is not None:
+        fig.add_bar(x=pmt, y=obs, name=f"observed  (Σ={obs_sum:.0f} PE)",
+                    marker_color="#1f77b4", opacity=0.85)
+    title = "flash: observed vs predicted"
+    if sl is not None:
+        labs = sl["label"]
+        # reconstructed nu slice
+        if "nu" in labs:
+            i = labs.index("nu")
+            pred = sl["pred_pe"][i]
+            psum = float(np.nansum(pred))
+            fig.add_bar(x=pmt, y=pred, marker_color="#d62728", opacity=0.55,
+                        name=f"predicted: nu slice  (Σ={psum:.0f} PE, "
+                             f"χ²={sl['chi2'][i]:.0f})")
+            ratio = psum / obs_sum if obs_sum > 0 else np.nan
+            title = (f"flash: nu slice  pred/obs={ratio:.2f}  "
+                     f"(Σpred={psum:.0f}, Σobs={obs_sum:.0f} PE, "
+                     f"χ²={sl['chi2'][i]:.0f})")
+        # best-flash-χ² (rank 1) slice, if it is not the nu slice
+        r1 = np.nonzero(sl["rank"] == 1)[0]
+        if len(r1):
+            j = int(r1[0])
+            if labs[j] != "nu":
+                pred = sl["pred_pe"][j]
+                fig.add_bar(x=pmt, y=pred, marker_color="#2ca02c", opacity=0.4,
+                            name=f"predicted: best-χ² '{labs[j]}'  "
+                                 f"(Σ={np.nansum(pred):.0f} PE, "
+                                 f"χ²={sl['chi2'][j]:.0f})")
+    if obs is None and sl is None:
+        fig.add_annotation(text="no flash table for this event",
+                           showarrow=False, font=dict(size=14))
+    fig.update_layout(
+        barmode="overlay", title=dict(text=title, font=dict(size=13)),
+        xaxis_title="PMT id (0-31)", yaxis_title="PE",
+        margin=dict(l=50, r=10, t=34, b=36),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0,
+                    font=dict(size=10)),
+        template="plotly_white")
+    return fig
+
+
 def build_app(initial_index):
     app = Dash(__name__)
     app.title = "cascade reco visualizer"
@@ -1083,8 +1161,11 @@ def build_app(initial_index):
         html.Div(id="diag", style={"padding": "4px 8px",
                                    "borderBottom": "1px solid #ddd"}),
         html.Div([
-            dcc.Graph(id="graph", style={"height": "72vh"}),
-        ]),
+            html.Div([dcc.Graph(id="graph", style={"height": "72vh"})],
+                     style={"flex": "3"}),
+            html.Div([dcc.Graph(id="flash", style={"height": "72vh"})],
+                     style={"flex": "2"}),
+        ], style={"display": "flex", "gap": "8px"}),
         html.Div([
             html.Div(id="info", style={"flex": "1"}),
             html.Div(id="stats", style={"flex": "2"}),
@@ -1132,7 +1213,8 @@ def build_app(initial_index):
         return opts, "__default__"
 
     # main render
-    @app.callback(Output("graph", "figure"), Output("stats", "children"),
+    @app.callback(Output("graph", "figure"), Output("flash", "figure"),
+                  Output("stats", "children"),
                   Output("info", "children"), Output("diag", "children"),
                   Input("index", "value"), Input("color_by", "value"),
                   Input("focus", "value"), Input("toggles", "value"),
@@ -1149,7 +1231,8 @@ def build_app(initial_index):
             ray_color=ray_color or "correct")
         diag = [d for d in (why_unattached(ev), slice_breakdown(ev))
                 if d is not None]
-        return fig, stats_table(ev), info_block(ev, _CTX), diag
+        return (fig, flash_figure(ev), stats_table(ev),
+                info_block(ev, _CTX), diag)
 
     return app
 
