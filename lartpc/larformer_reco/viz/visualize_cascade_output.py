@@ -59,6 +59,9 @@ from scipy.spatial import cKDTree
 from dash import Dash, Input, Output, State, dcc, html, callback_context
 import plotly.graph_objects as go
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from pmtpos import getPMTPosByOpDet, getPMTPosByOpChannel, _opch2opdet
+
 # detectoroutline lives one dir up (lartpc_data_prep/).
 _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.abspath(os.path.join(_HERE, "..", "..", "..")))
@@ -1082,6 +1085,46 @@ def flash_figure(ev):
     return fig
 
 
+def pmt_circle_traces(pe, index_mode="opdet", radius=15.2):
+    """32 PMT circles at their detector positions, colored by PE (normalized
+    within the vector). index_mode selects whether the PE array element i is
+    treated as opdet i or opchannel i -- flip it to test which mapping makes
+    the observed light line up with the reco charge. Circles sit in the y-z
+    plane at the PMT x (~ -10 cm, just behind the anode), so viewing down x
+    overlays them on the charge's y-z footprint.
+    """
+    pe = np.nan_to_num(np.asarray(pe, float), nan=0.0)
+    pmax = pe.max() if pe.size and pe.max() > 0 else 1.0
+    traces = []
+    cx, cy, cz, ctxt = [], [], [], []
+    th = np.linspace(0, 2 * np.pi, 25)
+    for i in range(32):
+        pos = (getPMTPosByOpChannel(i) if index_mode == "opchannel"
+               else getPMTPosByOpDet(i))
+        val = float(pe[i] / pmax)
+        ys = pos[1] + radius * np.cos(th)
+        zs = pos[2] + radius * np.sin(th)
+        xs = np.full(th.size, pos[0])
+        n = th.size
+        mx = np.append(xs, pos[0]); my = np.append(ys, pos[1])
+        mz = np.append(zs, pos[2])
+        ii = [n] * n; jj = list(range(n)); kk = [(m + 1) % n for m in range(n)]
+        # dark (low PE) -> bright red/orange (high PE)
+        r = int(50 + 205 * val); g = int(30 + 150 * val ** 1.5); b = 40
+        traces.append(go.Mesh3d(
+            x=mx, y=my, z=mz, i=ii, j=jj, k=kk, color=f"rgb({r},{g},{b})",
+            opacity=0.5 + 0.45 * val, hoverinfo="skip", showscale=False,
+            name="pmt"))
+        cx.append(pos[0]); cy.append(pos[1]); cz.append(pos[2])
+        od = i if index_mode != "opchannel" else _opch2opdet[i]
+        lab = ("opch" if index_mode == "opchannel" else "opdet")
+        ctxt.append(f"{lab} {i} (opdet {od}): {pe[i]:.0f} PE")
+    traces.append(go.Scatter3d(
+        x=cx, y=cy, z=cz, mode="markers", marker=dict(size=2, color="white"),
+        hovertext=ctxt, hoverinfo="text", name="pmt"))
+    return traces
+
+
 def build_app(initial_index):
     app = Dash(__name__)
     app.title = "cascade reco visualizer"
@@ -1140,6 +1183,22 @@ def build_app(initial_index):
                                       {"label": "by pred class",
                                        "value": "class"}]),
             ], style={"width": "170px"}),
+            html.Div([
+                html.Label("PMT overlay", style={"fontSize": "12px"}),
+                dcc.Dropdown(id="pmt_overlay", clearable=False, value="none",
+                             options=[{"label": "off", "value": "none"},
+                                      {"label": "observed PE",
+                                       "value": "observed"},
+                                      {"label": "predicted PE (nu)",
+                                       "value": "predicted"}]),
+            ], style={"width": "170px"}),
+            html.Div([
+                html.Label("PMT index", style={"fontSize": "12px"}),
+                dcc.Dropdown(id="pmt_index", clearable=False, value="opdet",
+                             options=[{"label": "opdet", "value": "opdet"},
+                                      {"label": "opchannel",
+                                       "value": "opchannel"}]),
+            ], style={"width": "150px"}),
             html.Div([
                 html.Label("pt size", style={"fontSize": "12px"}),
                 dcc.Slider(id="size", min=0.6, max=4, step=0.2, value=1.8,
@@ -1220,8 +1279,10 @@ def build_app(initial_index):
                   Input("focus", "value"), Input("toggles", "value"),
                   Input("ray_color", "value"),
                   Input("size", "value"), Input("cap", "value"),
-                  Input("slice", "value"))
-    def _render(index, color_by, focus, toggles, ray_color, size, cap, slice_lab):
+                  Input("slice", "value"), Input("pmt_overlay", "value"),
+                  Input("pmt_index", "value"))
+    def _render(index, color_by, focus, toggles, ray_color, size, cap,
+                slice_lab, pmt_overlay, pmt_index):
         sl = None if slice_lab in (None, "__default__") else slice_lab
         ev = _get_event(int(index or 0), slice_label=sl)
         toggles = toggles or []
@@ -1229,6 +1290,18 @@ def build_app(initial_index):
             ev, color_by, focus, "cosmic" in toggles, "ghost" in toggles,
             "vtx" in toggles, "reco" in toggles, float(size), int(cap),
             ray_color=ray_color or "correct")
+        # PMT circles colored by observed / predicted-nu PE (opdet|opchannel)
+        if pmt_overlay and pmt_overlay != "none":
+            pe = None
+            if pmt_overlay == "observed":
+                pe = ev.get("flash_obs_pe")
+            elif pmt_overlay == "predicted":
+                s = ev.get("flash_slices")
+                if s is not None and "nu" in s["label"]:
+                    pe = s["pred_pe"][s["label"].index("nu")]
+            if pe is not None:
+                for tr in pmt_circle_traces(pe, pmt_index or "opdet"):
+                    fig.add_trace(tr)
         diag = [d for d in (why_unattached(ev), slice_breakdown(ev))
                 if d is not None]
         return (fig, flash_figure(ev), stats_table(ev),
