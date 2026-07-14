@@ -409,27 +409,30 @@ def main():
                           else 0)
             return e, er
 
-        fig, ax = plt.subplots(figsize=(6.6, 4.5))
-        for cc, tag, col in ((0, "CC", "#d62728"), (1, "NC", "#1f77b4")):
-            den = (cat == cc) & np.isfinite(p_true)
-            tagged = sel2p & ((cat == 0) == reco_cc)   # correct stream tag
-            for m, sty, suff in ((tagged, "--", "no cut"),
-                                 (tagged & pass_cut, "o-",
-                                  f"flash chi2<{cutv:.0f}")):
-                e, er = binned_eff(m, den)
-                ax.errorbar(pctr, e, yerr=er, fmt=sty, ms=4, color=col,
-                            alpha=1.0 if suff.startswith("flash") else 0.45,
-                            label=f"{tag} ({suff})")
-        ax.set(xlabel=r"true $p_{\pi^0}$ [MeV/c]", ylabel="efficiency",
-               ylim=(0, 1.05),
-               title="CC / NC signal efficiency vs true momentum\n"
-                     f"selected + correct tag; dashed = no cut, solid = "
-                     f"flash-chi2 < {cutv:.0f}")
-        ax.legend(fontsize=8, ncol=2)
-        ax.grid(alpha=0.3)
-        fig.tight_layout()
-        fig.savefig(f"{args.plots}/ppi0_efficiency_ccnc_flashcut.png", dpi=110)
-        plt.close(fig)
+        for base_sel, vabb, vlab in ((sel2p, "ge2", ">=2 gamma"),
+                                     (sel2x, "eq2", "exactly 2 gamma")):
+            fig, ax = plt.subplots(figsize=(6.6, 4.5))
+            for cc, tag, col in ((0, "CC", "#d62728"), (1, "NC", "#1f77b4")):
+                den = (cat == cc) & np.isfinite(p_true)
+                tagged = base_sel & ((cat == 0) == reco_cc)  # correct stream tag
+                for m, sty, suff in ((tagged, "--", "no cut"),
+                                     (tagged & pass_cut, "o-",
+                                      f"flash chi2<{cutv:.0f}")):
+                    e, er = binned_eff(m, den)
+                    ax.errorbar(pctr, e, yerr=er, fmt=sty, ms=4, color=col,
+                                alpha=1.0 if suff.startswith("flash") else 0.45,
+                                label=f"{tag} ({suff})")
+            ax.set(xlabel=r"true $p_{\pi^0}$ [MeV/c]", ylabel="efficiency",
+                   ylim=(0, 1.05),
+                   title=f"CC / NC signal efficiency vs true momentum "
+                         f"({vlab})\nselected + correct tag; dashed = no cut, "
+                         f"solid = flash-chi2 < {cutv:.0f}")
+            ax.legend(fontsize=8, ncol=2)
+            ax.grid(alpha=0.3)
+            fig.tight_layout()
+            fig.savefig(f"{args.plots}/ppi0_efficiency_ccnc_flashcut_{vabb}.png",
+                        dpi=110)
+            plt.close(fig)
 
     # direction-estimator comparison on signal
     fig, ax = plt.subplots(figsize=(6.2, 4.2))
