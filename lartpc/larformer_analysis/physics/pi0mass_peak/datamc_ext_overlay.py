@@ -116,45 +116,49 @@ def main():
     if "flash_chi2" in mc.files and "flash_chi2" in ex.files:
         def purity_plot(obs_key, bins, xlabel, fname, vline=None):
             ctr = 0.5 * (bins[:-1] + bins[1:])
-            for want_cc, sabb, slab in ((True, "recoCC", "reco-CC"),
-                                        (False, "recoNC", "reco-NC")):
-                base_mc = (mc["sel_ge2"] & (mc["reco_cc"] == want_cc)
-                           & np.isfinite(mc[obs_key]))
-                base_ex = (ex["sel_ge2"] & (ex["reco_cc"] == want_cc)
-                           & np.isfinite(ex[obs_key]))
-                fig, ax = plt.subplots(figsize=(6.6, 4.5))
-                for use_cut, sty, al, lab in (
-                        (False, "s--", 0.45, "no cut"),
-                        (True, "o-", 1.0, f"flash chi2<{cutv:.0f}")):
-                    mm = base_mc.copy(); em = base_ex.copy()
-                    if use_cut:
-                        mm = mm & np.isfinite(mc["flash_chi2"]) & (
-                            mc["flash_chi2"] < cutv)
-                        em = em & np.isfinite(ex["flash_chi2"]) & (
-                            ex["flash_chi2"] < cutv)
-                    pur, err = [], []
-                    for lo, hi in zip(bins[:-1], bins[1:]):
-                        mb = mm & (mc[obs_key] >= lo) & (mc[obs_key] < hi)
-                        eb = em & (ex[obs_key] >= lo) & (ex[obs_key] < hi)
-                        sig = mc["w"][mb & (mc["cat"] <= 1)].sum()
-                        tot = mc["w"][mb].sum() + args.ext_scale * int(eb.sum())
-                        p = sig / tot if tot > 0 else np.nan
-                        n = int(mb.sum()) + int(eb.sum())
-                        pur.append(p)
-                        err.append(np.sqrt(p * (1 - p) / n)
-                                   if n and np.isfinite(p) else 0)
-                    ax.errorbar(ctr, pur, yerr=err, fmt=sty, ms=4,
-                                color="#1f77b4", alpha=al, label=lab)
-                if vline is not None:
-                    ax.axvline(vline, color="0.4", ls=":", lw=1.1)
-                ax.set(xlabel=xlabel, ylabel="purity", ylim=(0, 1.05),
-                       title=f"{slab}: pi0 purity vs {xlabel} (>=2 gamma)\n"
-                             "true pi0 signal / (all MC + EXT cosmic)")
-                ax.legend(fontsize=8)
-                ax.grid(alpha=0.3)
-                fig.tight_layout()
-                fig.savefig(f"{args.plots}/{fname}_{sabb}.png", dpi=110)
-                plt.close(fig)
+            for selk, vabb, vlab in (("sel_ge2", "ge2", ">=2 gamma"),
+                                     ("sel_eq2", "eq2", "exactly 2 gamma")):
+                for want_cc, sabb, slab in ((True, "recoCC", "reco-CC"),
+                                            (False, "recoNC", "reco-NC")):
+                    base_mc = (mc[selk] & (mc["reco_cc"] == want_cc)
+                               & np.isfinite(mc[obs_key]))
+                    base_ex = (ex[selk] & (ex["reco_cc"] == want_cc)
+                               & np.isfinite(ex[obs_key]))
+                    fig, ax = plt.subplots(figsize=(6.6, 4.5))
+                    for use_cut, sty, al, lab in (
+                            (False, "s--", 0.45, "no cut"),
+                            (True, "o-", 1.0, f"flash chi2<{cutv:.0f}")):
+                        mm = base_mc.copy(); em = base_ex.copy()
+                        if use_cut:
+                            mm = mm & np.isfinite(mc["flash_chi2"]) & (
+                                mc["flash_chi2"] < cutv)
+                            em = em & np.isfinite(ex["flash_chi2"]) & (
+                                ex["flash_chi2"] < cutv)
+                        pur, err = [], []
+                        for lo, hi in zip(bins[:-1], bins[1:]):
+                            mb = mm & (mc[obs_key] >= lo) & (mc[obs_key] < hi)
+                            eb = em & (ex[obs_key] >= lo) & (ex[obs_key] < hi)
+                            sig = mc["w"][mb & (mc["cat"] <= 1)].sum()
+                            tot = (mc["w"][mb].sum()
+                                   + args.ext_scale * int(eb.sum()))
+                            p = sig / tot if tot > 0 else np.nan
+                            n = int(mb.sum()) + int(eb.sum())
+                            pur.append(p)
+                            err.append(np.sqrt(p * (1 - p) / n)
+                                       if n and np.isfinite(p) else 0)
+                        ax.errorbar(ctr, pur, yerr=err, fmt=sty, ms=4,
+                                    color="#1f77b4", alpha=al, label=lab)
+                    if vline is not None:
+                        ax.axvline(vline, color="0.4", ls=":", lw=1.1)
+                    ax.set(xlabel=xlabel, ylabel="purity", ylim=(0, 1.05),
+                           title=f"{slab}: pi0 purity vs {xlabel} ({vlab})\n"
+                                 "true pi0 signal / (all MC + EXT cosmic)")
+                    ax.legend(fontsize=8)
+                    ax.grid(alpha=0.3)
+                    fig.tight_layout()
+                    fig.savefig(f"{args.plots}/{fname}_{sabb}_{vabb}.png",
+                                dpi=110)
+                    plt.close(fig)
 
         purity_plot("m_vtx2start", np.linspace(0, 500, 26),
                     r"reco $m_{\gamma\gamma}$ [MeV]", "purity_mgg",
