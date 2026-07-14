@@ -155,8 +155,10 @@ def main():
                          "run3 dead PMT; masked in ALL samples for fairness)")
     ap.add_argument("--plots", required=True)
     ap.add_argument("--pot", type=float, default=4.4e19)
-    ap.add_argument("--chi2-cut", type=float, default=1000.0,
-                    help="high-chi2 (out-of-time) cut for the ratio table")
+    ap.add_argument("--chi2-cut", type=float, default=10000.0,
+                    help="high-chi2 (out-of-time) cut line + ratio table; "
+                         "10^4 accommodates the run1 beam-data light-yield "
+                         "shift (see per-run gamma note)")
     args = ap.parse_args()
     os.makedirs(args.plots, exist_ok=True)
     dead = tuple(int(x) for x in args.dead_channels.split(",") if x != "")
