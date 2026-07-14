@@ -83,12 +83,13 @@ def neyman_chi2(
     pe_obs: np.ndarray,
     f_sys: float = 0.10,
     eps: float = 1.0,
+    dead_opdets=None,
     return_per_pmt: bool = False,
 ):
     """Neyman χ² with systematic floor.
 
     χ²_i = (obs - pred)² / (obs + (f_sys · obs)² + ε)
-    χ²   = Σ_i χ²_i
+    χ²   = Σ_{i ∉ dead} χ²_i
 
     Args:
         pe_pred:        (N_PMTs,) predicted PE.
@@ -97,8 +98,15 @@ def neyman_chi2(
         eps:            absolute variance floor. Default 1.0 PE² —
                         prevents dark-PMT division blowups while not
                         masking real signal differences.
+        dead_opdets:    iterable of opdet indices to EXCLUDE from the sum
+                        (dead/disabled PMTs read obs≈0 but the PhotonLib
+                        still predicts light there, so the Neyman term
+                        pred²/ε would spuriously dominate — see
+                        lartpc/flashmatch/dead_channels.py). Their per-PMT
+                        contribution is zeroed. None = score all 32.
         return_per_pmt: if True, also return the (N_PMTs,) per-PMT
-                        contribution vector for diagnostics.
+                        contribution vector for diagnostics (dead channels
+                        are 0 there too).
 
     Returns:
         chi2: float scalar.
@@ -111,6 +119,11 @@ def neyman_chi2(
                          f"{pe_pred.shape} vs {pe_obs.shape}")
     var = pe_obs + (float(f_sys) * pe_obs) ** 2 + float(eps)
     per_pmt = (pe_obs - pe_pred) ** 2 / var
+    if dead_opdets is not None:
+        dead = [d for d in dead_opdets if 0 <= int(d) < per_pmt.shape[0]]
+        if dead:
+            per_pmt = per_pmt.copy()
+            per_pmt[dead] = 0.0
     chi2 = float(per_pmt.sum())
     if return_per_pmt:
         return chi2, per_pmt.astype(np.float32)
@@ -126,6 +139,7 @@ def chi2_with_oob(
     margin_cm: float = 0.0,
     f_sys: float = 0.10,
     eps: float = 1.0,
+    dead_opdets=None,
 ):
     """Per-slice chi-2 across an OOB-threshold sweep.
 
@@ -161,7 +175,8 @@ def chi2_with_oob(
     n_oob = int(oob.sum())
     oob_frac = (n_oob / n_sp) if n_sp > 0 else 1.0
 
-    chi2_base = neyman_chi2(pe_pred, pe_obs, f_sys=f_sys, eps=eps)
+    chi2_base = neyman_chi2(pe_pred, pe_obs, f_sys=f_sys, eps=eps,
+                            dead_opdets=dead_opdets)
     chi2_arr = np.where(
         np.asarray(oob_thresholds, dtype=np.float64) >= oob_frac,
         chi2_base,

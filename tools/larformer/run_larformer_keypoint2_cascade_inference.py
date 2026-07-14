@@ -527,7 +527,7 @@ def _dedup_row_charge(pos_cm, ctx):
 
 
 def _flash_slice_table(coord_cm, sid, p_nu_per_query, nu_qs, flashes,
-                       charge_ctx, args):
+                       charge_ctx, args, run=None):
     """Per-slice flash-match table over the full-event slicer partition.
 
     Rows: the nu union (query == _NU_SID) if present, plus every cosmic-class
@@ -540,6 +540,12 @@ def _flash_slice_table(coord_cm, sid, p_nu_per_query, nu_qs, flashes,
     Returns dict for _write_event_h5, plus 'best_query' (the rank-1 row's
     query value, _NU_SID for the nu union) or None.
     """
+    # dead PMTs to exclude from the flash chi2 (run-aware; see
+    # lartpc/flashmatch/dead_channels.py). --dead-opdets: auto|none|"15,..".
+    from lartpc.flashmatch.dead_channels import resolve_dead_opdets
+    dead_opdets = resolve_dead_opdets(getattr(args, "dead_opdets", "auto"),
+                                      run if run is not None else 0)
+
     # ---- observed in-time beam flash (producer 0, max total PE) -------------
     obs = None
     if flashes is not None and flashes["pe"].size:
@@ -584,7 +590,8 @@ def _flash_slice_table(coord_cm, sid, p_nu_per_query, nu_qs, flashes,
         },
         "params": {"gamma_beam": args.gamma_beam, "f_sys": args.flash_f_sys,
                    "eps": args.flash_eps, "oob_max": args.flash_oob_max,
-                   "charge_convention": "dedup_comb_per_row"},
+                   "charge_convention": "dedup_comb_per_row",
+                   "dead_opdets": ",".join(str(d) for d in dead_opdets)},
     }
     if obs is None or charge_ctx is None or S == 0:
         return tbl
@@ -614,7 +621,8 @@ def _flash_slice_table(coord_cm, sid, p_nu_per_query, nu_qs, flashes,
             oob_mask(drift_correct(pos_i, obs["time_us"])).mean())
         tbl["chi2"][i] = float(neyman_chi2(
             tbl["pred_pe"][i], obs["pe"],
-            f_sys=args.flash_f_sys, eps=args.flash_eps))
+            f_sys=args.flash_f_sys, eps=args.flash_eps,
+            dead_opdets=dead_opdets))
     ok = (tbl["oob_frac"] <= args.flash_oob_max) & np.isfinite(tbl["chi2"])
     order = np.argsort(np.where(ok, tbl["chi2"], np.inf), kind="stable")
     rank = 1
@@ -747,6 +755,12 @@ def main():
     ap.add_argument("--gamma-beam", type=float, default=5.25,
                     help="PhotonLib PE scale for beam flashes (calibrated on "
                          "the slicer gamma tune; see single_photon study).")
+    ap.add_argument("--dead-opdets", default="auto",
+                    help="dead PMTs to exclude from the flash chi2: 'auto' "
+                         "(run-period based: run3+ -> opdet 15, run1/2 -> "
+                         "none), 'none' (score all 32; pre-fix behavior), or "
+                         "an explicit list e.g. '15' or '15,7'. See "
+                         "lartpc/flashmatch/dead_channels.py.")
     ap.add_argument("--flash-f-sys", type=float, default=0.10,
                     help="fractional systematic on observed PE in the Neyman "
                          "chi2 variance")
@@ -1038,7 +1052,8 @@ def main():
                 flashes, charge_ctx = _load_msp_flash_charge(real_files[i])
                 flash_tbl = _flash_slice_table(
                     sids[0], sids[1], p_nu_per_query, nu_qs,
-                    flashes, charge_ctx, args)
+                    flashes, charge_ctx, args,
+                    run=_entry_rse(real_files[i]).get("run"))
             except Exception as ex:
                 print(f"  [warn] flash table failed for event {i}: {ex}")
 
