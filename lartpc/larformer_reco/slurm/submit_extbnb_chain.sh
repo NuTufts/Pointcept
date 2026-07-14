@@ -113,7 +113,7 @@ LPFM=$(NU_RECO_DIR=${NR_FM} KP2_LIST=${KP2_FM} MERGED_SP_LIST=${MSP_LIST} \
 echo "larpid  fm: ${LPFM}  -> ${LP_FM}"
 
 # ---- 5) export (data mode, both streams) -----------------------------------
-EXP=$(TAG=${TAG} MERGED_SP_LIST=${MSP_LIST} \
+EXP=$(TAG=${TAG} MERGED_SP_LIST=${MSP_LIST} NSHARDS=${NEXP} \
   TRUTH_DIR=${DATADIR}/truth_sidecar_absent \
   KP2_NU_LIST=${KP2_NU} KP2_FM_LIST=${KP2_FM} \
   NU_RECO_NU_DIR=${LP_NU} NU_RECO_FM_DIR=${LP_FM} \
