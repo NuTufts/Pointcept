@@ -110,6 +110,50 @@ def main():
     panel("p_reco", np.linspace(0, 1200, 49),
           r"reco $p_{\pi^0}$ [MeV/c]", "ppi0_ext", 1199)
 
+    # ---- purity vs reco m_gg: true pi0 signal / (all MC bkg + EXT cosmic) ---
+    # with (solid) and without (dashed) the flash-chi2 cut, showing its gain.
+    cutv = args.flashchi2_cut if args.flashchi2_cut is not None else 10000.0
+    if "flash_chi2" in mc.files and "flash_chi2" in ex.files:
+        mbins = np.linspace(0, 500, 26)
+        mctr = 0.5 * (mbins[:-1] + mbins[1:])
+        for want_cc, sabb, slab in ((True, "recoCC", "reco-CC"),
+                                    (False, "recoNC", "reco-NC")):
+            base_mc = (mc["sel_ge2"] & (mc["reco_cc"] == want_cc)
+                       & np.isfinite(mc["m_vtx2start"]))
+            base_ex = (ex["sel_ge2"] & (ex["reco_cc"] == want_cc)
+                       & np.isfinite(ex["m_vtx2start"]))
+            fig, ax = plt.subplots(figsize=(6.6, 4.5))
+            for use_cut, sty, al, lab in (
+                    (False, "s--", 0.45, "no cut"),
+                    (True, "o-", 1.0, f"flash chi2<{cutv:.0f}")):
+                mm = base_mc.copy(); em = base_ex.copy()
+                if use_cut:
+                    mm = mm & np.isfinite(mc["flash_chi2"]) & (mc["flash_chi2"] < cutv)
+                    em = em & np.isfinite(ex["flash_chi2"]) & (ex["flash_chi2"] < cutv)
+                pur, err = [], []
+                for lo, hi in zip(mbins[:-1], mbins[1:]):
+                    mb = mm & (mc["m_vtx2start"] >= lo) & (mc["m_vtx2start"] < hi)
+                    eb = em & (ex["m_vtx2start"] >= lo) & (ex["m_vtx2start"] < hi)
+                    sig = mc["w"][mb & (mc["cat"] <= 1)].sum()
+                    tot = mc["w"][mb].sum() + args.ext_scale * int(eb.sum())
+                    p = sig / tot if tot > 0 else np.nan
+                    n = int(mb.sum()) + int(eb.sum())
+                    pur.append(p)
+                    err.append(np.sqrt(p * (1 - p) / n)
+                               if n and np.isfinite(p) else 0)
+                ax.errorbar(mctr, pur, yerr=err, fmt=sty, ms=4,
+                            color="#1f77b4", alpha=al, label=lab)
+            ax.axvline(PI0_MASS, color="0.4", ls=":", lw=1.1)
+            ax.set(xlabel=r"reco $m_{\gamma\gamma}$ [MeV]", ylabel="purity",
+                   ylim=(0, 1.05),
+                   title=f"{slab}: pi0 purity vs reco mass (>=2 gamma)\n"
+                         "true pi0 signal / (all MC + EXT cosmic)")
+            ax.legend(fontsize=8)
+            ax.grid(alpha=0.3)
+            fig.tight_layout()
+            fig.savefig(f"{args.plots}/purity_mgg_{sabb}.png", dpi=110)
+            plt.close(fig)
+
     # near-peak reco-NC data/pred ratio, with and without the EXT component
     print("== reco-NC near-peak (100-170 MeV) data vs prediction ==")
     for eq2, vlab in ((False, ">=2"), (True, "exactly-2")):
