@@ -21,3 +21,11 @@ Dockerfile
 *.pth
 *.txt
 *.err
+# Source files must never be silently ignored (the blanket *log* rule above
+# once swallowed pointcept/engines/hooks/batch_composition_logger.py, breaking
+# fresh clones with a ModuleNotFoundError).
+!pointcept/**/*.py
+!configs/**/*.py
+!lartpc/**/*.py
+!lartpc_tests/**/*.py
+!tools/**/*.py
