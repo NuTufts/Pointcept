@@ -42,36 +42,38 @@ def main():
     args = ap.parse_args()
 
     per_leaf = Counter()
-    n_files = n_bad = n_already = n_moved = 0
+    n_bad = n_already = n_moved = 0
     t0 = time.time()
-    with os.scandir(args.dir) as it:
-        for e in it:
-            if not e.name.endswith(".h5"):
-                continue
-            if not e.is_file():           # already-created leaf subdirs
-                continue
-            n_files += 1
-            m = _FILENO.search(e.name)
-            if not m:
-                n_bad += 1
-                continue
-            sub = leaf(int(m.group(1)), args.bucket)
-            per_leaf[sub] += 1
-            if not args.execute:
-                if n_files <= 3:
-                    print(f"    {e.name} -> {sub}/")
-                continue
-            dst_dir = os.path.join(args.dir, sub)
-            os.makedirs(dst_dir, exist_ok=True)
-            dst = os.path.join(dst_dir, e.name)
-            if os.path.exists(dst):
-                n_already += 1
-                continue
-            os.rename(e.path, dst)
-            n_moved += 1
-            if args.sleep and n_moved % args.sleep_every == 0:
-                print(f"    moved {n_moved} ({time.time()-t0:.0f}s)", flush=True)
-                time.sleep(args.sleep)
+    # Materialize the full flat-file list FIRST (only immediate .h5 files, not
+    # already-treed subdirs), so moving files into subdirs can't perturb the
+    # scandir iterator (behavior under concurrent modification is FS-dependent).
+    names = [e.name for e in os.scandir(args.dir)
+             if e.name.endswith(".h5") and e.is_file()]
+    n_files = len(names)
+    print(f">>> scanned {n_files} flat .h5 files ({time.time()-t0:.0f}s)",
+          flush=True)
+    for name in names:
+        m = _FILENO.search(name)
+        if not m:
+            n_bad += 1
+            continue
+        sub = leaf(int(m.group(1)), args.bucket)
+        per_leaf[sub] += 1
+        if not args.execute:
+            if per_leaf[sub] == 1 and len(per_leaf) <= 3:
+                print(f"    e.g. {name} -> {sub}/")
+            continue
+        dst_dir = os.path.join(args.dir, sub)
+        os.makedirs(dst_dir, exist_ok=True)
+        dst = os.path.join(dst_dir, name)
+        if os.path.exists(dst):
+            n_already += 1
+            continue
+        os.rename(os.path.join(args.dir, name), dst)
+        n_moved += 1
+        if args.sleep and n_moved % args.sleep_every == 0:
+            print(f"    moved {n_moved} ({time.time()-t0:.0f}s)", flush=True)
+            time.sleep(args.sleep)
 
     sizes = list(per_leaf.values())
     print(f">>> dir {args.dir}")
