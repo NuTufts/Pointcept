@@ -105,6 +105,8 @@ def flash_recovery_keep(ev_pred, filtered_batch, input_h5_path, no_object_class_
     from lartpc.flashmatch.flash_predict import (
         predict_slice_pe, select_charge_y_with_uv_fallback_np)
     from lartpc.flashmatch.flash_chi2 import neyman_chi2
+    from lartpc.flashmatch.dead_channels import (dead_opdets_for_run,
+                                                 gamma_scale_for_run)
 
     sp_mask = ev_pred["mask_logits"]["spacepoint"]          # (Q, n_sp) logits
     Q, n_sp = sp_mask.shape
@@ -118,11 +120,15 @@ def flash_recovery_keep(ev_pred, filtered_batch, input_h5_path, no_object_class_
 
     with h5py.File(input_h5_path, "r") as f:
         e = f["entry_0"]
+        _run = int(e.attrs.get("run", 0))
         ipos = e["triplet_data"]["pos"][:].astype(np.float32)
         icharge = select_charge_y_with_uv_fallback_np(e["triplet_data"]["pixval"][:])
         fl = e["flashes"]
         f_pe = fl["pe"][:]; f_pid = fl["producer_id"][:]
         f_tpe = fl["total_pe"][:]; f_t = fl["time_us"][:]
+    # run-aware flash config (see lartpc/flashmatch/dead_channels.py)
+    dead_opdets = dead_opdets_for_run(_run)
+    gamma_eff = float(gamma_beam) * float(gamma_scale_for_run(_run))
     beam = np.where(f_pid == 0)[0]
     if len(beam) == 0:
         return None
@@ -152,8 +158,8 @@ def flash_recovery_keep(ev_pred, filtered_batch, input_h5_path, no_object_class_
         if _oob_frac_np(pts) > oob_max:
             continue
         pe_pred = predict_slice_pe(pts, post_charge[m], t0, producer_id=0,
-                                   gamma_by_producer=(gamma_beam, gamma_beam))
-        c2 = neyman_chi2(pe_pred, pe_obs)
+                                   gamma_by_producer=(gamma_eff, gamma_eff))
+        c2 = neyman_chi2(pe_pred, pe_obs, dead_opdets=dead_opdets)
         if np.isfinite(c2) and c2 <= chi2_max:
             cand.append((c2, q))
     cand.sort()
