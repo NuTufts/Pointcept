@@ -65,8 +65,10 @@ def main():
     args = ap.parse_args()
     os.makedirs(args.plots, exist_ok=True)
 
+    # old cascade: reuse the shared pi0 RSE cache. new (pilot) cascade: build
+    # fresh (small; a shared cache path would collide across pilot samples).
     old_map = rse_map(args.old_cascade, _cache(args.old_cascade))
-    new_map = rse_map(args.new_cascade, _cache(args.new_cascade))
+    new_map = rse_map(args.new_cascade, None)
     keys = sorted(set(old_map) & set(new_map))
     print(f">>> {args.sample_tag}: {len(old_map)} old / {len(new_map)} new "
           f"nu-slice cascade files; {len(keys)} matched by RSE")
@@ -86,8 +88,8 @@ def main():
     onr = np.array(onr); nnr = np.array(nnr)
     N = len(oc)
     print(f">>> N={N} events with a nu slice in both")
-    print(f"  nu-slice chi2 median:  old {np.median(oc):.0f} -> new "
-          f"{np.median(nc):.0f}")
+    print(f"  nu-slice chi2 median:  old {np.nanmedian(oc):.0f} -> new "
+          f"{np.nanmedian(nc):.0f}")
     print(f"  nu is best flash match: old {obn.mean():.1%} -> new {nbn.mean():.1%}"
           f"  (nu==fm union rate)")
     print(f"  nu-slice rank==1:       old {(orank==1).mean():.1%} -> new "
@@ -104,9 +106,9 @@ def main():
     lb = np.linspace(0, 8, 41)
     lg = lambda x: np.clip(np.log10(np.clip(x, 1, None)), 0, 8)
     ax[0].hist(lg(oc), bins=lb, histtype="step", lw=2, color="0.45", ls="--",
-               label=f"old  med {np.median(oc):.0f}")
+               label=f"old  med {np.nanmedian(oc):.0f}")
     ax[0].hist(lg(nc), bins=lb, histtype="step", lw=2, color="#d62728",
-               label=f"new  med {np.median(nc):.0f}")
+               label=f"new  med {np.nanmedian(nc):.0f}")
     ax[0].set(xlabel=r"$\log_{10}$ nu-slice flash $\chi^2$", ylabel="events",
               title=f"{args.sample_tag}: nu-slice chi2 old vs new (N={N})")
     ax[0].legend(fontsize=9); ax[0].grid(alpha=0.3)
