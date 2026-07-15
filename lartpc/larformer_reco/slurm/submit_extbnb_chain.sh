@@ -48,6 +48,9 @@ DEP=${DEP:-}             # optional afterok stepA job id gating the chain
 #   alternate; bnb5e19/EXT use default. Independent of the dir-naming TAG.
 TRUTH_DIR_IN=${TRUTH_DIR:-${DATADIR}/truth_sidecar_absent}
 LARPID_TAG=${LARPID_SAMPLE_TAG:-${TAG}}
+# EXCLUDE_NODES: comma-sep nodes to avoid (e.g. ones with stale LDAP that give
+# apptainer "Couldn't determine user account information"). Applied to all steps.
+EXCL=${EXCLUDE_NODES:+--exclude=${EXCLUDE_NODES}}
 
 MSP_LIST=${RECODIR}/inputlists/merged_sp_${TAG}.txt
 KP2_NU=${RECODIR}/outputlists/keypoint2_out_${TAG}_nu.txt
@@ -79,7 +82,7 @@ else
     ${WORKDIR}/lartpc/data_prep/uboone_official/list_merged_sp.py \
     --dir ${MSP_DIR} --out ${MSP_LIST}"
 fi
-PREP=$(sbatch --parsable $(dep_arg "${DEP}") \
+PREP=$(sbatch --parsable ${EXCL} $(dep_arg "${DEP}") \
   --partition=batch --time=1:00:00 --mem=4G --job-name=${TAG}_prep \
   --output=logs/data_prep/${TAG}_prep.%j.log \
   --error=logs/data_prep/${TAG}_prep.%j.err \
@@ -93,13 +96,13 @@ echo "prep      : ${PREP}  -> ${MSP_LIST}"
 # --output-tree: write cascade files into an index tree (avoid a 1M-file dir)
 INF=$(INPUT_LIST=${MSP_LIST} OUTPUT_DIR=${KP2_STREAMS}/ NSHARDS=${NINF} \
   EXTRA_INF_ARGS="--output-tree" \
-  sbatch --parsable --export=ALL --dependency=afterok:${PREP} \
+  sbatch --parsable ${EXCL} --export=ALL --dependency=afterok:${PREP} \
   --array=0-$((NINF-1)) --time=8:00:00 \
   ${SLURMDIR}/submit_inference_shard.sh)
 echo "inference : ${INF}  (${NINF} GPU shards) -> ${KP2_STREAMS}"
 
 # ---- 2) regen: split keypoint2_streams into nu / fm lists -------------------
-REGEN=$(sbatch --parsable --dependency=afterok:${INF} \
+REGEN=$(sbatch --parsable ${EXCL} --dependency=afterok:${INF} \
   --partition=batch --time=0:30:00 --mem=4G --job-name=${TAG}_regen \
   --output=logs/export/${TAG}_regen.%j.log \
   --error=logs/export/${TAG}_regen.%j.err \
@@ -110,26 +113,26 @@ echo "regen     : ${REGEN}  -> ${KP2_NU} , ${KP2_FM}"
 
 # ---- 3) nu_reco : nu + fm streams (LLR attachment) -------------------------
 NRNU=$(KEYPOINT2_LIST=${KP2_NU} MERGED_SP_LIST=${MSP_LIST} OUTPUT_DIR=${NR_NU}/ \
-  NSHARDS=${NNR} sbatch --parsable --export=ALL --dependency=afterok:${REGEN} \
+  NSHARDS=${NNR} sbatch --parsable ${EXCL} --export=ALL --dependency=afterok:${REGEN} \
   --array=0-$((NNR-1)) ${SLURMDIR}/submit_nu_reco_shard.sh)
 echo "nu_reco nu: ${NRNU}  (${NNR} shards) -> ${NR_NU}"
 
 NRFM=$(KEYPOINT2_LIST=${KP2_FM} MERGED_SP_LIST=${MSP_LIST} OUTPUT_DIR=${NR_FM}/ \
-  NSHARDS=${NNR} sbatch --parsable --export=ALL --dependency=afterok:${REGEN} \
+  NSHARDS=${NNR} sbatch --parsable ${EXCL} --export=ALL --dependency=afterok:${REGEN} \
   --array=0-$((NNR-1)) ${SLURMDIR}/submit_nu_reco_shard.sh)
 echo "nu_reco fm: ${NRFM}  (${NNR} shards) -> ${NR_FM}"
 
 # ---- 4) larpid : nu + fm (CPU) ---------------------------------------------
 LPNU=$(NU_RECO_DIR=${NR_NU} KP2_LIST=${KP2_NU} MERGED_SP_LIST=${MSP_LIST} \
   OUTPUT_DIR=${LP_NU} SAMPLE_TAG=${LARPID_TAG} DEVICE=cpu TAG=${TAG} \
-  sbatch --parsable --export=ALL --partition=batch --gres=gpu:0 \
+  sbatch --parsable ${EXCL} --export=ALL --partition=batch --gres=gpu:0 \
   --dependency=afterok:${NRNU} --array=0-$((NNR-1)) \
   ${SLURMDIR}/submit_larpid_shard.sh)
 echo "larpid  nu: ${LPNU}  -> ${LP_NU}"
 
 LPFM=$(NU_RECO_DIR=${NR_FM} KP2_LIST=${KP2_FM} MERGED_SP_LIST=${MSP_LIST} \
   OUTPUT_DIR=${LP_FM} SAMPLE_TAG=${LARPID_TAG} DEVICE=cpu TAG=${TAG} \
-  sbatch --parsable --export=ALL --partition=batch --gres=gpu:0 \
+  sbatch --parsable ${EXCL} --export=ALL --partition=batch --gres=gpu:0 \
   --dependency=afterok:${NRFM} --array=0-$((NNR-1)) \
   ${SLURMDIR}/submit_larpid_shard.sh)
 echo "larpid  fm: ${LPFM}  -> ${LP_FM}"
@@ -140,13 +143,13 @@ EXP=$(TAG=${TAG} MERGED_SP_LIST=${MSP_LIST} NSHARDS=${NEXP} \
   KP2_NU_LIST=${KP2_NU} KP2_FM_LIST=${KP2_FM} \
   NU_RECO_NU_DIR=${LP_NU} NU_RECO_FM_DIR=${LP_FM} \
   OUT=${OUT_NTUPLE} \
-  sbatch --parsable --export=ALL --dependency=afterok:${LPNU}:${LPFM} \
+  sbatch --parsable ${EXCL} --export=ALL --dependency=afterok:${LPNU}:${LPFM} \
   --array=0-$((NEXP-1)) ${SLURMDIR}/submit_export_shard.sh)
 echo "export    : ${EXP}  (${NEXP} shards) -> ${OUT_NTUPLE%.root}_shard*.root"
 
 # ---- 6) hadd merge ---------------------------------------------------------
 HADD=$(TAG=${TAG} OUT=${OUT_NTUPLE} \
-  sbatch --parsable --export=ALL --dependency=afterok:${EXP} \
+  sbatch --parsable ${EXCL} --export=ALL --dependency=afterok:${EXP} \
   ${SLURMDIR}/submit_export_merge.sh)
 echo "hadd      : ${HADD}  -> ${OUT_NTUPLE}"
 
