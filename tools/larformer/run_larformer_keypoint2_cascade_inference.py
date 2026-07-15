@@ -540,11 +540,16 @@ def _flash_slice_table(coord_cm, sid, p_nu_per_query, nu_qs, flashes,
     Returns dict for _write_event_h5, plus 'best_query' (the rank-1 row's
     query value, _NU_SID for the nu union) or None.
     """
-    # dead PMTs to exclude from the flash chi2 (run-aware; see
-    # lartpc/flashmatch/dead_channels.py). --dead-opdets: auto|none|"15,..".
-    from lartpc.flashmatch.dead_channels import resolve_dead_opdets
-    dead_opdets = resolve_dead_opdets(getattr(args, "dead_opdets", "auto"),
-                                      run if run is not None else 0)
+    # run-aware flash config (see lartpc/flashmatch/dead_channels.py):
+    #   dead PMTs excluded from the chi2 (--dead-opdets auto|none|"15,..")
+    #   per-run gamma scale on gamma_beam    (--gamma-run-scale auto|<float>)
+    from lartpc.flashmatch.dead_channels import (resolve_dead_opdets,
+                                                 resolve_gamma_scale)
+    _run = run if run is not None else 0
+    dead_opdets = resolve_dead_opdets(getattr(args, "dead_opdets", "auto"), _run)
+    gamma_scale = resolve_gamma_scale(getattr(args, "gamma_run_scale", "auto"),
+                                      _run)
+    gamma_eff = float(args.gamma_beam) * float(gamma_scale)
 
     # ---- observed in-time beam flash (producer 0, max total PE) -------------
     obs = None
@@ -591,7 +596,8 @@ def _flash_slice_table(coord_cm, sid, p_nu_per_query, nu_qs, flashes,
         "params": {"gamma_beam": args.gamma_beam, "f_sys": args.flash_f_sys,
                    "eps": args.flash_eps, "oob_max": args.flash_oob_max,
                    "charge_convention": "dedup_comb_per_row",
-                   "dead_opdets": ",".join(str(d) for d in dead_opdets)},
+                   "dead_opdets": ",".join(str(d) for d in dead_opdets),
+                   "gamma_scale": gamma_scale, "gamma_eff": gamma_eff},
     }
     if obs is None or charge_ctx is None or S == 0:
         return tbl
@@ -613,7 +619,7 @@ def _flash_slice_table(coord_cm, sid, p_nu_per_query, nu_qs, flashes,
               "no exact triplet_data match (voxel-mean fallback)")
     tbl["pred_pe"] = predict_many_slices_pe(
         spos, scharge, cid, S, obs["time_us"], producer_id=0,
-        gamma_by_producer=(args.gamma_beam, args.gamma_beam),
+        gamma_by_producer=(gamma_eff, gamma_eff),
         photonlib_cache=args.photonlib).astype(np.float32)
     for i, r in enumerate(rows):
         pos_i = coord_cm[r[2]]
@@ -761,6 +767,11 @@ def main():
                          "none), 'none' (score all 32; pre-fix behavior), or "
                          "an explicit list e.g. '15' or '15,7'. See "
                          "lartpc/flashmatch/dead_channels.py.")
+    ap.add_argument("--gamma-run-scale", default="auto",
+                    help="per-run multiplier on --gamma-beam: 'auto' "
+                         "(run-period based: run1 -> 0.80, run3 -> 1.0) or an "
+                         "explicit float. Absorbs the run1<->run3 pred/obs PE "
+                         "offset. See lartpc/flashmatch/dead_channels.py.")
     ap.add_argument("--flash-f-sys", type=float, default=0.10,
                     help="fractional systematic on observed PE in the Neyman "
                          "chi2 variance")
