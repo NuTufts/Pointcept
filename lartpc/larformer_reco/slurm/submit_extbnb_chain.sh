@@ -61,14 +61,21 @@ dep_arg() { [ -n "$1" ] && echo "--dependency=afterany:$1" || echo ""; }
 # (find, not ls -- E2BIG at scale; clean keypoint2_streams + nu_reco dirs so
 #  stale shard files can't poison the glob consumers.)
 # stable (fileno,entry) sort so the cascade index<->event linkage is invariant
-# to the merged_sp flat-vs-tree layout (list_merged_sp.py; NOT path-sorted find)
+# to the merged_sp flat-vs-tree layout (list_merged_sp.py; NOT path-sorted find).
+# MSP_LIST_SRC (optional): use a pre-built subset list (e.g. a pilot head -N)
+# instead of listing the whole dir.
+if [ -n "${MSP_LIST_SRC:-}" ]; then
+  BUILD_LIST="cp ${MSP_LIST_SRC} ${MSP_LIST}"
+else
+  BUILD_LIST="apptainer exec --bind /cluster:/cluster ${CONTAINER} python3 \
+    ${WORKDIR}/lartpc/data_prep/uboone_official/list_merged_sp.py \
+    --dir ${MSP_DIR} --out ${MSP_LIST}"
+fi
 PREP=$(sbatch --parsable $(dep_arg "${DEP}") \
   --partition=batch --time=1:00:00 --mem=4G --job-name=${TAG}_prep \
   --output=logs/data_prep/${TAG}_prep.%j.log \
   --error=logs/data_prep/${TAG}_prep.%j.err \
-  --wrap="apptainer exec --bind /cluster:/cluster ${CONTAINER} python3 \
-            ${WORKDIR}/lartpc/data_prep/uboone_official/list_merged_sp.py \
-            --dir ${MSP_DIR} --out ${MSP_LIST}; \
+  --wrap="${BUILD_LIST}; \
           rm -rf ${KP2_STREAMS} ${NR_NU} ${NR_FM} ${LP_NU} ${LP_FM}; \
           mkdir -p ${KP2_STREAMS}; \
           echo \"merged_sp events: \$(wc -l < ${MSP_LIST})\"")
