@@ -50,8 +50,8 @@ def nu_pe(path):
         return None, None
 
 
-def chi2_list(ntuple, cascade_dir, eq2, scales):
-    """{scale: np.array of nu-slice chi2} for reco-NC events, run-aware dead."""
+def chi2_list(ntuple, cascade_dir, eq2, scales, want_cc=False):
+    """{scale: np.array of nu-slice chi2} for reco-CC/NC events, run-aware dead."""
     t = uproot.open(ntuple)["EventTree"]
     a = t.arrays(["run", "subrun", "event", "foundVertex", "primaryVtxStream",
                   "vtxIsFiducial", "showerLArFormerPID", "showerRecoE",
@@ -66,7 +66,7 @@ def chi2_list(ntuple, cascade_dir, eq2, scales):
     reco_cc = ak.to_numpy(ak.any((a["trackLArFormerPID"] == 13)
                                  & (a["trackIsSecondary"] == 0)
                                  & (a["trackRecoE"] > 100), axis=1))
-    sel = vok & (n_g == 2 if eq2 else n_g >= 2) & ~reco_cc
+    sel = vok & (n_g == 2 if eq2 else n_g >= 2) & (reco_cc == want_cc)
     rmap = rse_map(cascade_dir, _cache(cascade_dir))
     out = {s: [] for s in scales}
     for i in np.nonzero(sel)[0]:
@@ -91,16 +91,20 @@ def main():
     ap.add_argument("--data-scale", type=float, default=0.79)
     ap.add_argument("--eq2", action="store_true", default=True)
     ap.add_argument("--ge2", dest="eq2", action="store_false")
+    ap.add_argument("--reco-cc", action="store_true",
+                    help="reco-CC stream (default reco-NC)")
     ap.add_argument("--plots", required=True)
     args = ap.parse_args()
     os.makedirs(args.plots, exist_ok=True)
     vlab = "eq2" if args.eq2 else "ge2"
+    slab = "recoCC" if args.reco_cc else "recoNC"
 
-    mc = chi2_list(args.mc_ntuple, args.mc_cascade, args.eq2, (1.0,))[1.0]
+    mc = chi2_list(args.mc_ntuple, args.mc_cascade, args.eq2, (1.0,),
+                   args.reco_cc)[1.0]
     dd = chi2_list(args.data_ntuple, args.data_cascade, args.eq2,
-                   (1.0, args.data_scale))
+                   (1.0, args.data_scale), args.reco_cc)
     d0, ds = dd[1.0], dd[args.data_scale]
-    print(f">>> reco-NC {vlab}: MC N={len(mc)} med={np.median(mc):.0f} | "
+    print(f">>> {slab} {vlab}: MC N={len(mc)} med={np.median(mc):.0f} | "
           f"data N={len(d0)} med={np.median(d0):.0f} -> "
           f"x{args.data_scale:g} med={np.median(ds):.0f}")
 
@@ -124,12 +128,12 @@ def main():
             label=f"bnb5e19 (gamma x {args.data_scale:g})  "
                   f"med {np.median(ds):.0f}")
     ax.set(xlabel=r"$\log_{10}$ flash $\chi^2$ (nu slice)",
-           ylabel="normalized", title=f"reco-NC {vlab} pi0: nu-slice flash "
+           ylabel="normalized", title=f"{slab} {vlab} pi0: nu-slice flash "
            f"chi2, MC vs bnb5e19 data\n(area-normalized; run-aware dead mask)")
     ax.legend(fontsize=8.5)
     ax.grid(alpha=0.3)
     fig.tight_layout()
-    fig.savefig(f"{args.plots}/chi2_mc_vs_data_{vlab}.png", dpi=110)
+    fig.savefig(f"{args.plots}/chi2_mc_vs_data_{slab}_{vlab}.png", dpi=110)
     plt.close(fig)
     print(f">>> plots -> {args.plots}/chi2_mc_vs_data_{vlab}.png")
 
