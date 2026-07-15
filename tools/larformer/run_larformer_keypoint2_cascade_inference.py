@@ -438,6 +438,19 @@ def _entry_rse(msp_path):
         return {}
 
 
+def _event_out_dir(output_dir, i, tree):
+    """Per-event output dir. With tree=True, place cascade files in a 2-level
+    index tree <i//10000>/<(i%10000)//250> (~250 idx x ~1.3 files ~= 350/leaf)
+    to avoid a single 100k-1M-file dir (shared-FS metadata hotspot). find-based
+    downstream list building recurses, so consumers are unaffected."""
+    if not tree:
+        return output_dir
+    d = os.path.join(output_dir, "%03d" % (i // 10000),
+                     "%03d" % ((i % 10000) // 250))
+    os.makedirs(d, exist_ok=True)
+    return d
+
+
 def _vox_keys(pos):
     """1 cm voxel keys, one bytes key per row (matches the single_photon study's
     voxel hash)."""
@@ -772,6 +785,11 @@ def main():
                          "(run-period based: run1 -> 0.80, run3 -> 1.0) or an "
                          "explicit float. Absorbs the run1<->run3 pred/obs PE "
                          "offset. See lartpc/flashmatch/dead_channels.py.")
+    ap.add_argument("--output-tree", action="store_true",
+                    help="write keypoint2_event{i} files into a 2-level index "
+                         "tree (<i//10000>/<(i%%10000)//250>) instead of one "
+                         "flat dir -- avoids a 100k-1M-file dir. Downstream "
+                         "find-based list building recurses. Use for full runs.")
     ap.add_argument("--flash-f-sys", type=float, default=0.10,
                     help="fractional systematic on observed PE in the Neyman "
                          "chi2 variance")
@@ -975,7 +993,7 @@ def main():
                 if "run" not in attrs and i < len(real_files):
                     attrs.update(_entry_rse(real_files[i]))
                 outp = os.path.join(
-                    args.output_dir,
+                    _event_out_dir(args.output_dir, i, args.output_tree),
                     f"keypoint2_event{i:05d}_{tag_prefix}{ei}.h5")
                 _write_event_h5(outp, dec, attrs, flash_tbl=flash_tbl)
                 n_match = sum(1 for p in dec["particles"] if p["has_match"])

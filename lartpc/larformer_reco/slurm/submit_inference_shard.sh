@@ -41,6 +41,9 @@ RECODIR=${WORKDIR}/lartpc/larformer_reco
 CONFIG=${CONFIG:-configs/lartpc/larformer/stage4_keypoint/larformer-keypoint2-fullcascade.py}
 INPUT_LIST=${INPUT_LIST:-${RECODIR}/inputlists/merged_sp_valdata_all.txt}
 OUTPUT_DIR=${OUTPUT_DIR:-${RECODIR}/output/valdata_all_with_score_maps/}
+# extra flags for the inference (e.g. --output-tree for full runs); see the
+# orchestrator. Default empty.
+EXTRA_INF_ARGS=${EXTRA_INF_ARGS:-}
 
 # ---- per-shard contiguous range over the merged_sp list ---------------------
 NLINES=$(grep -c . "${INPUT_LIST}")
@@ -78,7 +81,7 @@ for attempt in 1 2 3; do
       --n-events ${N} \
       --deterministic \
       --save-score-maps \
-      --device cuda
+      --device cuda ${EXTRA_INF_ARGS}
   " && { rc=0; break; }
   echo ">>> attempt ${attempt} failed (rc=$?); retrying in 10s"; sleep 10
 done

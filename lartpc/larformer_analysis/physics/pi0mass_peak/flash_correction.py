@@ -40,19 +40,20 @@ def neyman_masked(pred, obs, dead=DEAD_DEFAULT, f_sys=0.10, eps=1.0):
 
 
 def _scan_rse(cascade_dir):
-    """{(run,subrun,event): path} over the nu-slice cascade files."""
+    """{(run,subrun,event): path} over the nu-slice cascade files. Recurses
+    (os.walk) so it handles both a flat dir and the index-tree layout."""
     m = {}
-    with os.scandir(cascade_dir) as it:
-        for e in it:
-            n = e.name
+    for root, _dirs, files in os.walk(cascade_dir):
+        for n in files:
             if (not n.startswith("keypoint2_event") or not n.endswith("_0.h5")
                     or n.endswith("_fm_0.h5")):
                 continue
+            path = os.path.join(root, n)
             try:
-                with h5py.File(e.path, "r") as f:
+                with h5py.File(path, "r") as f:
                     key = (int(f.attrs["run"]), int(f.attrs["subrun"]),
                            int(f.attrs["event"]))
-                m[key] = e.path
+                m[key] = path
             except Exception:
                 continue
     return m

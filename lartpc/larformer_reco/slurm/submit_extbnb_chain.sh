@@ -30,6 +30,7 @@ set -eu
 WORKDIR=/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/kpv2_pointcept
 RECODIR=${WORKDIR}/lartpc/larformer_reco
 SLURMDIR=${RECODIR}/slurm
+CONTAINER=/cluster/tufts/wongjiradlabnu/larbys/larbys-container/pointcept_cuml.sif
 cd "${WORKDIR}"
 
 TAG=${TAG:?set TAG (e.g. extbnb_val)}
@@ -59,18 +60,24 @@ dep_arg() { [ -n "$1" ] && echo "--dependency=afterany:$1" || echo ""; }
 # ---- 0) prep: build the merged_sp list + clean downstream dirs --------------
 # (find, not ls -- E2BIG at scale; clean keypoint2_streams + nu_reco dirs so
 #  stale shard files can't poison the glob consumers.)
+# stable (fileno,entry) sort so the cascade index<->event linkage is invariant
+# to the merged_sp flat-vs-tree layout (list_merged_sp.py; NOT path-sorted find)
 PREP=$(sbatch --parsable $(dep_arg "${DEP}") \
-  --partition=batch --time=0:30:00 --mem=4G --job-name=${TAG}_prep \
+  --partition=batch --time=1:00:00 --mem=4G --job-name=${TAG}_prep \
   --output=logs/data_prep/${TAG}_prep.%j.log \
   --error=logs/data_prep/${TAG}_prep.%j.err \
-  --wrap="find ${MSP_DIR} -name 'merged_${TAG%%_*}_fileno*_entry*.h5' | sort > ${MSP_LIST}; \
+  --wrap="apptainer exec --bind /cluster:/cluster ${CONTAINER} python3 \
+            ${WORKDIR}/lartpc/data_prep/uboone_official/list_merged_sp.py \
+            --dir ${MSP_DIR} --out ${MSP_LIST}; \
           rm -rf ${KP2_STREAMS} ${NR_NU} ${NR_FM} ${LP_NU} ${LP_FM}; \
           mkdir -p ${KP2_STREAMS}; \
           echo \"merged_sp events: \$(wc -l < ${MSP_LIST})\"")
 echo "prep      : ${PREP}  -> ${MSP_LIST}"
 
 # ---- 1) inference (GPU) : merged_sp -> keypoint2_streams (nu + fm) ----------
+# --output-tree: write cascade files into an index tree (avoid a 1M-file dir)
 INF=$(INPUT_LIST=${MSP_LIST} OUTPUT_DIR=${KP2_STREAMS}/ NSHARDS=${NINF} \
+  EXTRA_INF_ARGS="--output-tree" \
   sbatch --parsable --export=ALL --dependency=afterok:${PREP} \
   --array=0-$((NINF-1)) --time=8:00:00 \
   ${SLURMDIR}/submit_inference_shard.sh)
