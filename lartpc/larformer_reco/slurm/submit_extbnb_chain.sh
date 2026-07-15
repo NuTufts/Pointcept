@@ -40,6 +40,14 @@ NINF=${NINF:-8}          # inference (GPU) shards
 NNR=${NNR:-8}            # nu_reco shards per stream
 NEXP=${NEXP:-4}          # export shards
 DEP=${DEP:-}             # optional afterok stepA job id gating the chain
+# --- MC-vs-data knobs (defaults = data mode) --------------------------------
+# TRUTH_DIR: real truth-sidecar dir for MC (fills truth branches + potTree +
+#   xsecWeight); default is a non-existent dir -> data mode (exporter tolerant).
+# LARPID_SAMPLE_TAG: controls the LArPID checkpoint via select_checkpoint
+#   ('run3' in the tag -> alternate/run3 weights, else default/run1). MC used
+#   alternate; bnb5e19/EXT use default. Independent of the dir-naming TAG.
+TRUTH_DIR_IN=${TRUTH_DIR:-${DATADIR}/truth_sidecar_absent}
+LARPID_TAG=${LARPID_SAMPLE_TAG:-${TAG}}
 
 MSP_LIST=${RECODIR}/inputlists/merged_sp_${TAG}.txt
 KP2_NU=${RECODIR}/outputlists/keypoint2_out_${TAG}_nu.txt
@@ -113,22 +121,22 @@ echo "nu_reco fm: ${NRFM}  (${NNR} shards) -> ${NR_FM}"
 
 # ---- 4) larpid : nu + fm (CPU) ---------------------------------------------
 LPNU=$(NU_RECO_DIR=${NR_NU} KP2_LIST=${KP2_NU} MERGED_SP_LIST=${MSP_LIST} \
-  OUTPUT_DIR=${LP_NU} SAMPLE_TAG=${TAG} DEVICE=cpu TAG=${TAG} \
+  OUTPUT_DIR=${LP_NU} SAMPLE_TAG=${LARPID_TAG} DEVICE=cpu TAG=${TAG} \
   sbatch --parsable --export=ALL --partition=batch --gres=gpu:0 \
   --dependency=afterok:${NRNU} --array=0-$((NNR-1)) \
   ${SLURMDIR}/submit_larpid_shard.sh)
 echo "larpid  nu: ${LPNU}  -> ${LP_NU}"
 
 LPFM=$(NU_RECO_DIR=${NR_FM} KP2_LIST=${KP2_FM} MERGED_SP_LIST=${MSP_LIST} \
-  OUTPUT_DIR=${LP_FM} SAMPLE_TAG=${TAG} DEVICE=cpu TAG=${TAG} \
+  OUTPUT_DIR=${LP_FM} SAMPLE_TAG=${LARPID_TAG} DEVICE=cpu TAG=${TAG} \
   sbatch --parsable --export=ALL --partition=batch --gres=gpu:0 \
   --dependency=afterok:${NRFM} --array=0-$((NNR-1)) \
   ${SLURMDIR}/submit_larpid_shard.sh)
 echo "larpid  fm: ${LPFM}  -> ${LP_FM}"
 
-# ---- 5) export (data mode, both streams) -----------------------------------
+# ---- 5) export (TRUTH_DIR set -> MC truth mode; else data mode) -------------
 EXP=$(TAG=${TAG} MERGED_SP_LIST=${MSP_LIST} NSHARDS=${NEXP} \
-  TRUTH_DIR=${DATADIR}/truth_sidecar_absent \
+  TRUTH_DIR=${TRUTH_DIR_IN} \
   KP2_NU_LIST=${KP2_NU} KP2_FM_LIST=${KP2_FM} \
   NU_RECO_NU_DIR=${LP_NU} NU_RECO_FM_DIR=${LP_FM} \
   OUT=${OUT_NTUPLE} \
