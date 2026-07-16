@@ -37,7 +37,7 @@ from flash_correction import neyman_masked, rse_map              # noqa: E402
 
 RECO_G_MIN = 20.0     # photon shower energy threshold [MeV]
 MU_KE_MIN = 100.0     # primary muon KE threshold [MeV]
-CAPS = (1, 2, 3, None)
+CAPS = (2, 4, 6, None)
 
 
 def select(ntuple, reco_cc, eq2):
@@ -146,9 +146,9 @@ def main():
 
     variants = [("no mask (as reconstructed)", col("none"), "0.4"),
                 ("dead-mask {15} only", col("dead"), "tab:blue"),
-                ("dead + sat, cap 1", col("cap1"), "tab:green"),
-                ("dead + sat, cap 2", col("cap2"), "tab:red"),
-                ("dead + sat, cap 3", col("cap3"), "tab:purple"),
+                ("dead + sat, cap 2", col("cap2"), "tab:green"),
+                ("dead + sat, cap 4", col("cap4"), "tab:red"),
+                ("dead + sat, cap 6", col("cap6"), "tab:purple"),
                 ("dead + sat, NO cap", col("capinf"), "tab:orange")]
 
     # ---- chi2 distributions -------------------------------------------------
@@ -204,9 +204,9 @@ def main():
         if f > 0:
             print("   %d candidate(s): %5.1f%% of events" % (k, 100 * f))
     print("\nof the %d events above chi2=%.0f before masking, %d (%.0f%%) fall "
-          "below it with dead+sat cap 2"
-          % (hi.sum(), args.chi2_cut, int((col("cap2")[hi] <= args.chi2_cut).sum()),
-             100 * (col("cap2")[hi] <= args.chi2_cut).mean() if hi.any() else 0))
+          "below it with dead+sat cap 4"
+          % (hi.sum(), args.chi2_cut, int((col("cap4")[hi] <= args.chi2_cut).sum()),
+             100 * (col("cap4")[hi] <= args.chi2_cut).mean() if hi.any() else 0))
 
 
 if __name__ == "__main__":

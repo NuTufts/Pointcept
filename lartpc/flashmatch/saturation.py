@@ -55,10 +55,14 @@ _OPDET_POS = np.array([
 ], dtype=np.float64)
 
 # defaults tuned on the run3b overlay high-chi2 CC-2gamma sample
-HOLE_PE = 5.0        # "reads ~nothing": observed PE at or below this
-NEIGH_PE = 100.0     # "surrounded by light": median neighbour PE above this
+HOLE_FRAC = 0.02     # "reads ~nothing": below this FRACTION of its brightest
+                     # neighbour. Relative, not absolute: on RSE
+                     # (15014,234,11701) opdet 20 reads 62 PE where 5326 was
+                     # predicted -- a partially broken tube that any absolute
+                     # few-PE threshold misses, yet it alone carries 2.7e5 chi2.
+NEIGH_PE = 100.0     # only test tubes that HAVE a bright neighbour
 N_NEIGHBORS = 3      # how many nearest tubes define the neighbourhood
-MAX_MASKED = 2       # cap on saturation-masked tubes per event
+MAX_MASKED = 4       # cap on saturation-masked tubes per event
 
 
 def _neighbor_index(positions, k, exclude):
@@ -71,20 +75,31 @@ def _neighbor_index(positions, k, exclude):
     return np.argsort(d, axis=1)[:, :k]
 
 
-def find_saturated(pe_obs, dead=(), max_masked=MAX_MASKED, hole_pe=HOLE_PE,
+def find_saturated(pe_obs, dead=(), max_masked=MAX_MASKED, hole_frac=HOLE_FRAC,
                    neigh_pe=NEIGH_PE, n_neighbors=N_NEIGHBORS, positions=None,
                    return_all=False):
-    """Opdets that read ~nothing while their nearest neighbours are bright.
+    """Opdets reading far too little light for their neighbourhood.
+
+    A tube is a candidate if its observed PE is below `hole_frac` of its
+    BRIGHTEST nearby tube. Two deliberate choices:
+
+    * RELATIVE, not an absolute few-PE floor. On RSE (15014,234,11701) opdet 20
+      reads 62 PE where 5326 was predicted -- an absolute "<= 5 PE" test misses
+      it entirely, yet that one tube contributes 2.7e5 to the chi2.
+    * MAX neighbour, not median. Broken tubes cluster: in that same event opdets
+      21 and 24 are both holes and are two of opdet 20's three nearest
+      neighbours, so a median reference is 0 and the test can never fire. The
+      brightest neighbour still says "there is light here".
 
     Args:
         pe_obs: (N_PMTS,) observed PE (opdet-indexed).
         dead: opdets known dead for this run -- skipped as candidates and
-            excluded from neighbourhoods (a dead tube must not make its
-            neighbour look like a hole, nor hide one).
+            excluded from neighbourhoods (a dead tube must not hide a hole).
         max_masked: cap on returned tubes; the most anomalous survive. Use
             None for no cap (diagnostics only).
-        hole_pe: candidate if pe_obs <= this.
-        neigh_pe: candidate only if the median neighbour PE exceeds this.
+        hole_frac: candidate if pe_obs[i] < hole_frac * max(neighbour PE).
+        neigh_pe: only test tubes whose brightest neighbour exceeds this, so
+            dim regions of the detector are never flagged.
         return_all: also return the uncapped candidate list.
 
     Returns:
@@ -97,11 +112,13 @@ def find_saturated(pe_obs, dead=(), max_masked=MAX_MASKED, hole_pe=HOLE_PE,
 
     cand = []
     for i in range(pe.shape[0]):
-        if i in dead or pe[i] > hole_pe:
+        if i in dead:
             continue
-        score = float(np.median(pe[nbr[i]]))
-        if score > neigh_pe:
-            cand.append((score, i))
+        ref = float(np.max(pe[nbr[i]]))
+        if ref < neigh_pe:
+            continue
+        if pe[i] < hole_frac * ref:
+            cand.append((ref, i))
     cand.sort(key=lambda t: (-t[0], t[1]))          # most anomalous first
     allc = tuple(sorted(i for _, i in cand))
     keep = cand if max_masked is None else cand[:int(max_masked)]

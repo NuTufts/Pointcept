@@ -628,7 +628,7 @@ def _flash_slice_table(coord_cm, sid, p_nu_per_query, nu_qs, flashes,
         from lartpc.flashmatch.saturation import find_saturated
         sat_opdets = find_saturated(
             obs["pe"], dead=dead_opdets,
-            max_masked=int(getattr(args, "max_saturated_pmts", 2)))
+            max_masked=int(getattr(args, "max_saturated_pmts", 4)))
     chi2_mask = tuple(sorted(set(dead_opdets) | set(sat_opdets)))
     tbl["params"]["saturated_opdets"] = ",".join(str(d) for d in sat_opdets)
     tbl["params"]["chi2_masked_opdets"] = ",".join(str(d) for d in chi2_mask)
@@ -813,12 +813,15 @@ def main():
                          "Derived per-event from the OBSERVED flash only, so "
                          "every slice is scored on the same PMTs. 'off' = "
                          "pre-fix behavior. See lartpc/flashmatch/saturation.py.")
-    ap.add_argument("--max-saturated-pmts", type=int, default=2,
+    ap.add_argument("--max-saturated-pmts", type=int, default=4,
                     help="cap on saturation-masked tubes per event (most "
                          "anomalous kept) so a pathological event cannot mask "
                          "away the array and earn an artificially low chi2. "
-                         "Measured: the finder never wants more than 3 and asks "
-                         "for 0 in 88%% of events, so this rarely binds.")
+                         "Default 4: RSE (15014,234,11701) has FOUR broken "
+                         "tubes (opdet 18/20/21/24, 16027 PE of prediction "
+                         "delivering 62) and a cap of 2 or 3 still leaves a "
+                         "cosmic winning the chi2 ranking; at 4 the nu slice "
+                         "wins with chi2 81.")
     ap.add_argument("--output-tree", action="store_true",
                     help="write keypoint2_event{i} files into a 2-level index "
                          "tree (<i//10000>/<(i%%10000)//250>) instead of one "

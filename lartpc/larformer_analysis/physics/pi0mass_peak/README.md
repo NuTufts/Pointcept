@@ -25,3 +25,5 @@ The current ntuple is at lartpc/larformer_reco/output/mcc9_bnbnu_overlay_1500_fu
 
 To start, use only the neutrino slice stream. Use only confidently attached photons as for determining if the event passes the selection criteria. 
 
+Besides the invariant mass plot, I would also be interested efficiency of finding events as well as a function of the total true visible energy of the two photons.
+

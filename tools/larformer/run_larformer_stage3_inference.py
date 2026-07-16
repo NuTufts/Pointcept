@@ -140,7 +140,7 @@ def flash_recovery_keep(ev_pred, filtered_batch, input_h5_path, no_object_class_
     # below are scored on the same PMTs. See lartpc/flashmatch/saturation.py.
     from lartpc.flashmatch.saturation import find_saturated
     chi2_mask = tuple(sorted(set(dead_opdets) | set(
-        find_saturated(pe_obs, dead=dead_opdets, max_masked=2))))
+        find_saturated(pe_obs, dead=dead_opdets, max_masked=4))))
 
     VOX = 1.0
     vc = {}
