@@ -458,3 +458,16 @@ All resolved as of 2026-07-13 (PI):
   audit). Motivated by the pion ceiling deficit and the A.1−A.2 charge
   delta. Outcome may add P05B.5/P05A.5 variants (decision rules in the
   study README).
+- **2026-07-16 — P05F verdict** (full-statistics run at Tufts, 29.5B points):
+  clip at 1000 ADC is a non-issue (max class clip fraction 0.19%); the log
+  transform ranks LAST on every μ/π/p pair in noise-aware d′; recommended
+  variant `asinh(scale=50, xmax=1000)` (2.2–2.5× log's d′). Plan: **P05B.5**
+  SSL variant + matching asinh probe config, implemented at Tufts on branch
+  `p05b5-asinh-input` per
+  `lartpc/pretraining_studies/input_dist_study/P05B5_IMPLEMENTATION_HANDOFF.md`
+  (default-preserving: Isambard's running Wave A resubmits from the live
+  tree). Confirmed en route: `MultiplicativeRandomJitter(log_space=True)` on
+  LogTransform-rescaled values amplifies the nominal ±5% jitter to an
+  effective ±13% multiplicative on charge ((1+n)^2.5) — uniform across Wave A
+  so internal comparisons stand; B.5 defaults to matching the effective
+  strength (σ=0.125 exact-jitter) pending PI choice.
