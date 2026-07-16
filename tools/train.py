@@ -40,6 +40,16 @@ def main():
     args = default_argument_parser().parse_args()
     cfg = default_config_parser(args.config_file, args.options)
 
+    # SLURM's pre-timeout --signal=USR1 is delivered to EVERY process in the
+    # step cgroup. The trainer ranks install handlers (SignalCheckpointHook),
+    # but with num_gpus > 1 this parent process only sits in mp.spawn join()
+    # and would die from the unhandled signal (observed as exit 138 on
+    # P05B.1), tearing down the ranks before they can checkpoint. Ignore it
+    # here; children override the inherited disposition when the hook
+    # registers its own handler.
+    import signal
+    signal.signal(signal.SIGUSR1, signal.SIG_IGN)
+
     launch(
         main_worker,
         num_gpus_per_machine=args.num_gpus,

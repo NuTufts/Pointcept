@@ -61,7 +61,15 @@ srun apptainer exec --nv --bind $SQASHFILE:/data:image-src=,ro,/projects/u6jo:/p
 TRAIN_RC=$?
 echo "[$(date)] training exited with code $TRAIN_RC"
 
-if [ -f "$RESUBMIT_MARKER" ]; then
+# Resubmit on the RESUBMIT marker (graceful signal-triggered save) OR on any
+# nonzero exit (wall-clock kill, crash). The marker path alone proved
+# insufficient: with --num-gpus 4 the trainer ranks are mp.spawn children of
+# a launcher parent that had no USR1 handler, so SLURM's pre-timeout signal
+# killed the parent (exit 138) before any rank could save+mark (observed on
+# P05B.1, job 5663946). IterCheckpointSaver keeps model_last.pth at most
+# save_iter_freq iters stale, so resuming after a hard kill is safe; the
+# counter caps runaway crash loops.
+if [ -f "$RESUBMIT_MARKER" ] || [ "$TRAIN_RC" -ne 0 ]; then
     COUNT=0
     [ -f "$COUNTER_FILE" ] && COUNT=$(cat "$COUNTER_FILE")
     if [ "$COUNT" -ge "$MAX_RESUBMITS" ]; then
@@ -69,10 +77,10 @@ if [ -f "$RESUBMIT_MARKER" ]; then
     else
         echo $((COUNT + 1)) > "$COUNTER_FILE"
         rm -f "$RESUBMIT_MARKER"
-        echo "[$(date)] Resubmitting (count=$((COUNT + 1))/$MAX_RESUBMITS)"
+        echo "[$(date)] Resubmitting (rc=$TRAIN_RC, count=$((COUNT + 1))/$MAX_RESUBMITS)"
         sbatch --job-name="$SLURM_JOB_NAME" --dependency=afterany:$SLURM_JOB_ID "$0" "$CONFIG" "$MAX_RESUBMITS"
     fi
 else
-    echo "[$(date)] No RESUBMIT marker; training either finished or crashed."
+    echo "[$(date)] Clean exit (rc=0) with no RESUBMIT marker: training finished."
     echo "[$(date)] Not resubmitting."
 fi
