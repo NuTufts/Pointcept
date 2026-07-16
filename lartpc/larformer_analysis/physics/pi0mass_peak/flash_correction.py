@@ -76,10 +76,26 @@ def rse_map(cascade_dir, cache_npz=None):
 
 
 def corrected_chi2_by_rse(cascade_dir, run, subrun, event, entries,
-                          dead=DEAD_DEFAULT, cache_npz=None):
+                          dead=DEAD_DEFAULT, cache_npz=None, saturation=False,
+                          max_saturated=4):
     """{entry_idx: masked nu-slice chi2} matched by (run,subrun,event); NaN if
-    the event has no cascade file, no 'nu' slice, or no observed flash."""
+    the event has no cascade file, no 'nu' slice, or no observed flash.
+
+    saturation: also mask saturated PMTs (lartpc/flashmatch/saturation.py) --
+        tubes reading far below their brightest neighbour, which the run3
+        optical sim produces and which otherwise contribute ~pred^2/eps to the
+        chi2. Derived from the OBSERVED flash only, so it is applied identically
+        to every sample and is not circular. Use this to give MC and data the
+        SAME treatment: the MC cascade may already bake the mask into its stored
+        chi2 while data/EXT cascades predate it.
+    """
     m = rse_map(cascade_dir, cache_npz)
+    if saturation:
+        import sys as _sys
+        import os as _os
+        _sys.path.insert(0, _os.path.join(
+            _os.path.dirname(_os.path.abspath(__file__)), "..", "..", ".."))
+        from lartpc.flashmatch.saturation import find_saturated
     out = {}
     for i in entries:
         i = int(i)
@@ -94,8 +110,14 @@ def corrected_chi2_by_rse(cascade_dir, run, subrun, event, entries,
                                 for l in f["slices/label"][()]]
                         if "nu" in labs:
                             j = labs.index("nu")
+                            obs = f["flash/observed_pe"][()]
+                            msk = tuple(dead)
+                            if saturation:
+                                msk = tuple(sorted(set(msk) | set(
+                                    find_saturated(obs, dead=dead,
+                                                   max_masked=max_saturated))))
                             val = neyman_masked(f["slices/pred_pe"][()][j],
-                                                f["flash/observed_pe"][()], dead)
+                                                obs, msk)
             except Exception:
                 val = np.nan
         out[i] = val

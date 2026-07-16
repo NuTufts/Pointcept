@@ -33,7 +33,8 @@ TPC_LO = np.array([0.0, -116.5, 0.0])
 TPC_HI = np.array([256.35, 116.5, 1036.8])
 
 
-def load(ntuple, is_data, pot, cascade_dir=None, dead=(15,)):
+def load(ntuple, is_data, pot, cascade_dir=None, dead=(15,),
+         saturation=False):
     """Return per-event arrays for the reco-NC pi0 study. If cascade_dir is
     given, the primary-vertex flash chi2 is REPLACED (for the pre-selected
     events) by the dead-PMT-masked nu-slice chi2 recomputed from the cascade
@@ -120,7 +121,8 @@ def load(ntuple, is_data, pot, cascade_dir=None, dead=(15,)):
                                   _os.path.dirname(cascade_dir.rstrip("/")))
                               + "_" + _os.path.basename(cascade_dir.rstrip("/"))
                               + ".npz")
-        cc = corrected_chi2_by_rse(cascade_dir, run, sub, evt, ent, dead, cache)
+        cc = corrected_chi2_by_rse(cascade_dir, run, sub, evt, ent, dead, cache,
+                                   saturation=saturation)
         for i in ent:
             chi2[i] = cc.get(int(i), np.nan)
 
@@ -150,6 +152,13 @@ def main():
                          "flash-chi2 recompute (analysis-level flash fix)")
     ap.add_argument("--data-cascade", default=None)
     ap.add_argument("--ext-cascade", default=None)
+    ap.add_argument("--saturation-mask", action="store_true",
+                    help="also mask SATURATED PMTs in the chi2 recompute (see "
+                         "lartpc/flashmatch/saturation.py). Applied to ALL "
+                         "samples so MC/data/EXT get identical treatment -- the "
+                         "MC cascade may already bake it in while the data/EXT "
+                         "cascades predate it, and mixing the two would be an "
+                         "unfair comparison.")
     ap.add_argument("--dead-channels", default="15",
                     help="comma-sep opdet indices to mask (default 15, the "
                          "run3 dead PMT; masked in ALL samples for fairness)")
@@ -163,9 +172,10 @@ def main():
     os.makedirs(args.plots, exist_ok=True)
     dead = tuple(int(x) for x in args.dead_channels.split(",") if x != "")
 
-    mc = load(args.mc_ntuple, False, args.pot, args.mc_cascade, dead)
-    da = load(args.data_ntuple, True, args.pot, args.data_cascade, dead)
-    ex = (load(args.ext_ntuple, True, args.pot, args.ext_cascade, dead)
+    S = args.saturation_mask
+    mc = load(args.mc_ntuple, False, args.pot, args.mc_cascade, dead, S)
+    da = load(args.data_ntuple, True, args.pot, args.data_cascade, dead, S)
+    ex = (load(args.ext_ntuple, True, args.pot, args.ext_cascade, dead, S)
           if args.ext_ntuple else None)
 
     import matplotlib
