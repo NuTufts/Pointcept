@@ -46,7 +46,13 @@ via ssh/rsync to Isambard (alias assumed `isambard`; override with
    H100/H200 (Hopper) runs are fine only as a wholesale replacement, never
    as overflow alongside A100 probes. `mkdir -p logs` here BEFORE the
    first sbatch (SLURM opens --output pre-script; missing dir = exit 53).
-4. Confirm the ssh alias works: `ssh isambard hostname`.
+4. Confirm ssh works: `ssh u6jo.aip2.isambard hostname` (the Tufts-side
+   alias; sync_from_isambard.sh defaults to it). Isambard auth is a
+   **short-lived (~12 h) clifton certificate** — if ssh fails with
+   "kex_exchange_identification: Connection closed", run `./clifton auth`
+   (repo root, interactive browser OIDC, so a human must do it) and retry.
+   Check remaining validity with:
+   `ssh-keygen -L -f ~/.cache/clifton/u6jo.aip2.isambard-cert.pub | grep Valid`.
 
 ## Step 1 — sync (repeat daily / per loop)
 
