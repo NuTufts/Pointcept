@@ -725,18 +725,24 @@ PROBE_TEMPLATE = BANNER + '''
 _base_ = ["../../_base_/default_runtime.py"]
 
 seed = 0
-# P100 (Tufts) settings, as in linearprobe-sonata-lartpc-v5-noghost.py
-batch_size = 288
-batch_size_val = 132
-num_worker = 22
-num_worker_val = 20
+# Probe batch/GPU decision (PI, 2026-07-16, measured on A100-80G job 1632758):
+# all probes run on Tufts A100s (sbatch --constraint=a100) at batch 64.
+# B=64 fits EVERY rtgpu card incl. A100-40G (peak 7.8/14.2 GiB alloc/reserved)
+# and costs only ~18% throughput vs 288 (103 vs 125 samples/s — the ~0.5M-pt
+# batches already saturate the GPU). The head is a pure nn.Linear (no BN), so
+# batch size does not affect model statistics — but it couples to the LR
+# schedule: calibrate the probe budget AT this batch size and freeze both.
+batch_size = 64
+batch_size_val = 64
+num_worker = 14
+num_worker_val = 12
 mix_prob = 0.0
 empty_cache = False
 enable_amp = False
 evaluate = True
 find_unused_parameters = False
 
-flash_backend = "xformers"   # backend needed on the Tufts P100s
+flash_backend = "xformers"   # works on the A100s; keep ONE backend for all probes
 amp_dtype = "float16"
 
 enable_wandb = True
@@ -751,9 +757,10 @@ epoch = 2
 eval_epoch = 2
 base_lr = 2.0e-4
 
-# Tufts MC lists (ghost-dropped truth probing, as in the v5 probe config).
-# These are the Isambard v3 MC train/val splits remapped onto Tufts source
-# paths by lartpc/filelists/remap_filelists_tufts.py (same events as Isambard).
+# Tufts-remapped MC lists: the SAME train/val split as the Isambard
+# supervised ceilings, mapped to Tufts source paths (see the file-list
+# remap task). Probe numbers are only comparable to the P05A ceilings on
+# this split.
 TRAIN_FILE_LIST = "/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/isambard_pointcept/lartpc/filelists/h5list_v3_mc_only_train_tufts.txt"
 VAL_FILE_LIST = "/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/isambard_pointcept/lartpc/filelists/h5list_v3_mc_only_val_tufts.txt"
 
@@ -859,7 +866,7 @@ train_transform = [
         max_retries=100,
         fallback_to_random=True),
     dict(type="NormalizeCoord", center=[125.0, 0.0, 1036.0 / 2.0], scale=coord_scale),
-@STRENGTH_TRANSFORM@
+@PROBE_REDUCE@@STRENGTH_TRANSFORM@
 @AUG_BLOCK@
     dict(type="ToTensor"),
     dict(
@@ -887,7 +894,7 @@ val_transform = [
         max_retries=100,
         fallback_to_random=True),
     dict(type="NormalizeCoord", center=[125.0, 0.0, 1036.0 / 2.0], scale=coord_scale),
-@STRENGTH_TRANSFORM@
+@PROBE_REDUCE@@STRENGTH_TRANSFORM@
     dict(type="CenterShift", apply_z=False, axes=("x", "y", "z")),
     dict(type="ToTensor"),
     dict(
@@ -963,10 +970,23 @@ PROBE_RUNS = {
         "Linear probe for P05/v8-era snapshots (coord+strength, in_channels=6),\n"
         "run at Tufts on the frozen backbone. The v5 probe config cannot load\n"
         "these checkpoints (it assumes strength-only in_channels=3).\n"
+        "For the prototype-sweep snapshots override the head size:\n"
+        "  --options model.backbone.head_num_prototypes=2048   (P05C.1)\n"
+        "  --options model.backbone.head_num_prototypes=8192   (P05C.3)\n"
         "Per-snapshot launch:\n"
         "  python tools/train.py --config-file configs/lartpc/p05/linearprobe-sonata-p05-mc-noghost-tufts.py \\\n"
         "      --options weight=<snapshot.pth> save_path=exp/probes/<run>/<imgM>",
         {"AUG": "detsym", "SWAP": "(0, 1)"},
+    ),
+    "PROBE-p05-mc_noghost-sumcharge": (
+        "linearprobe-sonata-p05-mc-noghost-sumcharge-tufts.py",
+        "Linear probe for P05B.4 snapshots (plane-summed charge scalar,\n"
+        "in_channels=4). The strength pipeline must match B.4's pretraining\n"
+        "exactly: ChannelReduce(sum) before the log transform, no u/v swap.\n"
+        "Per-snapshot launch:\n"
+        "  python tools/train.py --config-file configs/lartpc/p05/linearprobe-sonata-p05-mc-noghost-sumcharge-tufts.py \\\n"
+        "      --options weight=<snapshot.pth> save_path=exp/probes/<run>/<imgM>",
+        {"AUG": "detsym", "SWAP": "None", "SUMCHARGE": True, "IN_CHANNELS": 4},
     ),
     "PROBE-p05-mc_noghost-asinh": (
         "linearprobe-sonata-p05-mc-noghost-asinh-tufts.py",
@@ -994,9 +1014,10 @@ def build_probe(run_id, filename, header, overrides):
     subs = dict(
         HEADER=header,
         RUN_ID=run_id,
-        IN_CHANNELS=6,
+        IN_CHANNELS=overrides.get("IN_CHANNELS", 6),
         AUG_BLOCK=aug_block,
         STRENGTH_TRANSFORM=strength_transform_block(overrides),
+        PROBE_REDUCE=CHANNEL_REDUCE_LINE if overrides.get("SUMCHARGE") else "",
     )
     return filename, render(PROBE_TEMPLATE, subs)
 

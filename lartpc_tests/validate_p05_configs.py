@@ -52,7 +52,11 @@ def check_ssl(cfg, item, name):
 
 def check_supervised(cfg, item, name):
     assert "feat" in item and "segment" in item, sorted(item.keys())
-    assert item["feat"].shape[1] == 6
+    # linearprobe configs reach here when --train-list overrides make them
+    # buildable at Tufts; the sumcharge (B.4) probe is 4-channel.
+    backbone = cfg.model["backbone"]
+    in_ch = (backbone["backbone"] if "backbone" in backbone else backbone)["in_channels"]
+    assert item["feat"].shape[1] == in_ch, (item["feat"].shape[1], in_ch)
     assert item["segment"].shape[0] == item["coord"].shape[0]
     assert int((item["segment"] >= 0).sum()) > 0
     extra = ""
@@ -88,7 +92,8 @@ def main():
                 # parse-only here; the model path is covered by the
                 # supervised configs (same architecture).
                 assert cfg.model["freeze_backbone"] is True
-                assert cfg.model["backbone"]["backbone"]["in_channels"] == 6
+                # 6 = coord+strength(3); 4 = coord+plane-summed strength (B.4 probe)
+                assert cfg.model["backbone"]["backbone"]["in_channels"] in (4, 6)
                 print(f"PASS  {name}: parse-only (Tufts data paths)")
                 continue
             train_ds = build_dataset(cfg.data.train)
