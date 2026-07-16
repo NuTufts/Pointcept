@@ -9,8 +9,18 @@ h5list_v3_extbnb_only_val.txt
 h5list_v3_combined_train.txt
 h5list_v3_combined_val.txt
 
+# Tufts-remapped variants (remap_filelists_tufts.py) are the same size and stay
+# out of git too; regenerate + verify against filelist_stats_tufts.txt.
+h5list_v3_mc_only_train_tufts.txt
+h5list_v3_mc_only_val_tufts.txt
+# The large Tufts source list and any unmatched-entry reports are local-only.
+h5list_mcall_lantern_validated.txt
+*.missing
+
 # Committed exceptions: the frozen 1k-event MC diagnostic set (small, and its
 # exact contents define the M1/M2/t-SNE diagnostic sample on every cluster)
 # and the stats/hash record of the generated lists.
 !h5list_v3_mc_diag1k.txt
+!h5list_v3_mc_diag1k_tufts.txt
 !filelist_stats.txt
+!filelist_stats_tufts.txt

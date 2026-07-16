@@ -1,0 +1,7 @@
+source: /cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/isambard_pointcept/lartpc/filelists/h5list_mcall_lantern_validated.txt
+source_sha256: 80181ae70a19b0efe2b0e9cc06205c6e6ebc059867685f48e4e0c4e3325dbce7
+source_n: 421680
+src_tail_unique: True  src_basename_unique: True
+h5list_v3_mc_only_train_tufts.txt: n=415680 missing=0 key=tail sha256=f171978ea39af43d9e152ec82d9b60d9204291f775318d885dec0490f29c7dc6
+h5list_v3_mc_only_val_tufts.txt: n=5000 missing=0 key=tail sha256=86fc3f1218cfbf4b635cefd98ab98e273d093902650913d49e7d191c6344cf5c
+h5list_v3_mc_diag1k_tufts.txt: n=1000 missing=0 key=tail sha256=fbc0b8720d5a2b34c93509611468cf4406bbd84bfe0f8fc195002ccc9f3ac7d3

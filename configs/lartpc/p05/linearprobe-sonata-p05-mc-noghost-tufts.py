@@ -39,9 +39,11 @@ epoch = 2
 eval_epoch = 2
 base_lr = 2.0e-4
 
-# Tufts MC lists (ghost-dropped truth probing, as in the v5 probe config)
-TRAIN_FILE_LIST = "/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept/lartpc_data_prep/hdflist_combined_prod4_validated_shuffled_trainsplit.txt"
-VAL_FILE_LIST = "/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept/lartpc_data_prep/hdflist_combined_prod4_validated_shuffled_valsplit.txt"
+# Tufts MC lists (ghost-dropped truth probing, as in the v5 probe config).
+# These are the Isambard v3 MC train/val splits remapped onto Tufts source
+# paths by lartpc/filelists/remap_filelists_tufts.py (same events as Isambard).
+TRAIN_FILE_LIST = "/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/isambard_pointcept/lartpc/filelists/h5list_v3_mc_only_train_tufts.txt"
+VAL_FILE_LIST = "/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/isambard_pointcept/lartpc/filelists/h5list_v3_mc_only_val_tufts.txt"
 
 grid_size = 0.25
 wire_scale = 1.0 / 3456.0
