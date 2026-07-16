@@ -68,7 +68,8 @@ def main():
                 # parse-only here; the model path is covered by the
                 # supervised configs (same architecture).
                 assert cfg.model["freeze_backbone"] is True
-                assert cfg.model["backbone"]["backbone"]["in_channels"] == 6
+                # 6 = coord+strength(3); 4 = coord+plane-summed strength (B.4 probe)
+                assert cfg.model["backbone"]["backbone"]["in_channels"] in (4, 6)
                 print(f"PASS  {name}: parse-only (Tufts data paths)")
                 continue
             train_ds = build_dataset(cfg.data.train)

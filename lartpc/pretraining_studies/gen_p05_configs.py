@@ -728,9 +728,12 @@ epoch = 2
 eval_epoch = 2
 base_lr = 2.0e-4
 
-# Tufts MC lists (ghost-dropped truth probing, as in the v5 probe config)
-TRAIN_FILE_LIST = "/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept/lartpc_data_prep/hdflist_combined_prod4_validated_shuffled_trainsplit.txt"
-VAL_FILE_LIST = "/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept/lartpc_data_prep/hdflist_combined_prod4_validated_shuffled_valsplit.txt"
+# Tufts-remapped MC lists: the SAME train/val split as the Isambard
+# supervised ceilings, mapped to Tufts source paths (see the file-list
+# remap task). Probe numbers are only comparable to the P05A ceilings on
+# this split.
+TRAIN_FILE_LIST = "/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/isambard_pointcept/lartpc/filelists/h5list_v3_mc_only_train_tufts.txt"
+VAL_FILE_LIST = "/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/isambard_pointcept/lartpc/filelists/h5list_v3_mc_only_val_tufts.txt"
 
 grid_size = 0.25
 wire_scale = 1.0 / 3456.0
@@ -834,7 +837,7 @@ train_transform = [
         max_retries=100,
         fallback_to_random=True),
     dict(type="NormalizeCoord", center=[125.0, 0.0, 1036.0 / 2.0], scale=coord_scale),
-    dict(
+@PROBE_REDUCE@    dict(
         type="LogTransform",
         min_val=0.01,
         max_val=1000.0,
@@ -868,7 +871,7 @@ val_transform = [
         max_retries=100,
         fallback_to_random=True),
     dict(type="NormalizeCoord", center=[125.0, 0.0, 1036.0 / 2.0], scale=coord_scale),
-    dict(
+@PROBE_REDUCE@    dict(
         type="LogTransform",
         min_val=0.01,
         max_val=1000.0,
@@ -950,10 +953,23 @@ PROBE_RUNS = {
         "Linear probe for P05/v8-era snapshots (coord+strength, in_channels=6),\n"
         "run at Tufts on the frozen backbone. The v5 probe config cannot load\n"
         "these checkpoints (it assumes strength-only in_channels=3).\n"
+        "For the prototype-sweep snapshots override the head size:\n"
+        "  --options model.backbone.head_num_prototypes=2048   (P05C.1)\n"
+        "  --options model.backbone.head_num_prototypes=8192   (P05C.3)\n"
         "Per-snapshot launch:\n"
         "  python tools/train.py --config-file configs/lartpc/p05/linearprobe-sonata-p05-mc-noghost-tufts.py \\\n"
         "      --options weight=<snapshot.pth> save_path=exp/probes/<run>/<imgM>",
         {"AUG": "detsym", "SWAP": "(0, 1)"},
+    ),
+    "PROBE-p05-mc_noghost-sumcharge": (
+        "linearprobe-sonata-p05-mc-noghost-sumcharge-tufts.py",
+        "Linear probe for P05B.4 snapshots (plane-summed charge scalar,\n"
+        "in_channels=4). The strength pipeline must match B.4's pretraining\n"
+        "exactly: ChannelReduce(sum) before the log transform, no u/v swap.\n"
+        "Per-snapshot launch:\n"
+        "  python tools/train.py --config-file configs/lartpc/p05/linearprobe-sonata-p05-mc-noghost-sumcharge-tufts.py \\\n"
+        "      --options weight=<snapshot.pth> save_path=exp/probes/<run>/<imgM>",
+        {"AUG": "detsym", "SWAP": "None", "SUMCHARGE": True, "IN_CHANNELS": 4},
     ),
 }
 
@@ -963,8 +979,9 @@ def build_probe(run_id, filename, header, overrides):
     subs = dict(
         HEADER=header,
         RUN_ID=run_id,
-        IN_CHANNELS=6,
+        IN_CHANNELS=overrides.get("IN_CHANNELS", 6),
         AUG_BLOCK=aug_block,
+        PROBE_REDUCE=CHANNEL_REDUCE_LINE if overrides.get("SUMCHARGE") else "",
     )
     return filename, render(PROBE_TEMPLATE, subs)
 
