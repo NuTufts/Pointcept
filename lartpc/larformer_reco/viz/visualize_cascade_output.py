@@ -50,6 +50,7 @@ import argparse
 import colorsys
 import glob
 import os
+import re
 import sys
 
 import numpy as np
@@ -198,21 +199,54 @@ class Context:
         self._cascade_scan = None   # lazy {src_basename: path}
 
     # -- cascade -----------------------------------------------------------
+    def _srcmap_cache_path(self):
+        """Disk cache for the src_file->cascade map, keyed by the cascade dir."""
+        tag = re.sub(r"[^A-Za-z0-9]+", "_", self.cascade_dir.strip("/"))[-120:]
+        return os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            f".srcmap_{tag}.npz")
+
     def _scan_cascade(self):
+        """{src_file basename: cascade path}. Only needed when the fast
+        index->file path fails (e.g. bnb5e19, whose cascade is indexed against
+        the PRE-veto list while the ntuple uses veto5M). Scanning ~200k files
+        takes minutes, so the map is cached to disk and reused across runs.
+        Recurses (os.walk) to handle the index-tree layout too."""
         if self._cascade_scan is not None:
             return self._cascade_scan
-        print(">>> scanning cascade dir for src_file attrs (one-time) ...",
-              flush=True)
-        m = {}
-        for p in glob.glob(os.path.join(self.cascade_dir, "keypoint2_event*.h5")):
+        cache = self._srcmap_cache_path()
+        if os.path.exists(cache):
             try:
-                with h5py.File(p, "r") as f:
-                    src = _attr_str(f.attrs, "src_file")
-                if src:
-                    m.setdefault(os.path.basename(src), p)
+                z = np.load(cache, allow_pickle=True)
+                self._cascade_scan = {str(k): str(v)
+                                      for k, v in zip(z["keys"], z["paths"])}
+                print(f">>> cascade src_file map: loaded "
+                      f"{len(self._cascade_scan)} from cache", flush=True)
+                return self._cascade_scan
             except Exception:
-                continue
+                pass
+        print(">>> scanning cascade dir for src_file attrs (one-time; "
+              "cached to disk for next run) ...", flush=True)
+        m = {}
+        for root, _d, files in os.walk(self.cascade_dir):
+            for name in files:
+                if not (name.startswith("keypoint2_event")
+                        and name.endswith(".h5")):
+                    continue
+                p = os.path.join(root, name)
+                try:
+                    with h5py.File(p, "r") as f:
+                        src = _attr_str(f.attrs, "src_file")
+                    if src:
+                        m.setdefault(os.path.basename(src), p)
+                except Exception:
+                    continue
         self._cascade_scan = m
+        try:
+            np.savez(cache, keys=np.array(list(m.keys())),
+                     paths=np.array(list(m.values())))
+            print(f">>> cached {len(m)} entries -> {cache}", flush=True)
+        except Exception:
+            pass
         return m
 
     def cascade_file_for(self, msp_basename):
