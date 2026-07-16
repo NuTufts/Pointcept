@@ -134,6 +134,13 @@ def flash_recovery_keep(ev_pred, filtered_batch, input_h5_path, no_object_class_
         return None
     bi = beam[int(np.argmax(f_tpe[beam]))]
     pe_obs = f_pe[bi].astype(np.float64); t0 = float(f_t[bi])
+    # Saturated tubes read ~0 while their neighbours are bright; their
+    # pred^2/eps term (~1e6) would push the CORRECT slice past chi2_max and get
+    # it dropped. Derived once from the observed flash, so all candidate slices
+    # below are scored on the same PMTs. See lartpc/flashmatch/saturation.py.
+    from lartpc.flashmatch.saturation import find_saturated
+    chi2_mask = tuple(sorted(set(dead_opdets) | set(
+        find_saturated(pe_obs, dead=dead_opdets, max_masked=2))))
 
     VOX = 1.0
     vc = {}
@@ -159,7 +166,7 @@ def flash_recovery_keep(ev_pred, filtered_batch, input_h5_path, no_object_class_
             continue
         pe_pred = predict_slice_pe(pts, post_charge[m], t0, producer_id=0,
                                    gamma_by_producer=(gamma_eff, gamma_eff))
-        c2 = neyman_chi2(pe_pred, pe_obs, dead_opdets=dead_opdets)
+        c2 = neyman_chi2(pe_pred, pe_obs, dead_opdets=chi2_mask)
         if np.isfinite(c2) and c2 <= chi2_max:
             cand.append((c2, q))
     cand.sort()

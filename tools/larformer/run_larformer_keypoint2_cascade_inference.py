@@ -615,6 +615,24 @@ def _flash_slice_table(coord_cm, sid, p_nu_per_query, nu_qs, flashes,
     if obs is None or charge_ctx is None or S == 0:
         return tbl
 
+    # ---- saturated-PMT mask (see lartpc/flashmatch/saturation.py) ------------
+    # A tube under a bright flash rails; its ophit area is destroyed and the
+    # opflash reports 0.0 PE. The Neyman term pred^2/eps for that ONE tube runs
+    # ~1e6 and swamps the sum, so the chi2 ranking hands us a near-empty slice
+    # somewhere else. Computed ONCE here from the OBSERVED flash, so it is a
+    # property of the event and every slice below is scored on the same PMT
+    # subset -- a per-slice (prediction-dependent) mask would let any slice
+    # excuse its own mismatches.
+    sat_opdets = ()
+    if getattr(args, "mask_saturated", "auto") != "off":
+        from lartpc.flashmatch.saturation import find_saturated
+        sat_opdets = find_saturated(
+            obs["pe"], dead=dead_opdets,
+            max_masked=int(getattr(args, "max_saturated_pmts", 2)))
+    chi2_mask = tuple(sorted(set(dead_opdets) | set(sat_opdets)))
+    tbl["params"]["saturated_opdets"] = ",".join(str(d) for d in sat_opdets)
+    tbl["params"]["chi2_masked_opdets"] = ",".join(str(d) for d in chi2_mask)
+
     # ---- predicted PE + chi2 + OOB per row -----------------------------------
     sel = np.concatenate([r[2] for r in rows])
     cid = np.concatenate([np.full(r[2].size, i, np.int64)
@@ -641,7 +659,7 @@ def _flash_slice_table(coord_cm, sid, p_nu_per_query, nu_qs, flashes,
         tbl["chi2"][i] = float(neyman_chi2(
             tbl["pred_pe"][i], obs["pe"],
             f_sys=args.flash_f_sys, eps=args.flash_eps,
-            dead_opdets=dead_opdets))
+            dead_opdets=chi2_mask))
     ok = (tbl["oob_frac"] <= args.flash_oob_max) & np.isfinite(tbl["chi2"])
     order = np.argsort(np.where(ok, tbl["chi2"], np.inf), kind="stable")
     rank = 1
@@ -785,6 +803,22 @@ def main():
                          "(run-period based: run1 -> 0.80, run3 -> 1.0) or an "
                          "explicit float. Absorbs the run1<->run3 pred/obs PE "
                          "offset. See lartpc/flashmatch/dead_channels.py.")
+    ap.add_argument("--mask-saturated", default="auto",
+                    choices=["auto", "off"],
+                    help="also exclude SATURATED PMTs from the flash chi2: a "
+                         "tube reading ~0 while its neighbours are bright has "
+                         "railed (ophit area destroyed -> opflash writes 0.0), "
+                         "and its pred^2/eps term (~1e6) otherwise swamps the "
+                         "sum and makes the ranking pick a near-empty slice. "
+                         "Derived per-event from the OBSERVED flash only, so "
+                         "every slice is scored on the same PMTs. 'off' = "
+                         "pre-fix behavior. See lartpc/flashmatch/saturation.py.")
+    ap.add_argument("--max-saturated-pmts", type=int, default=2,
+                    help="cap on saturation-masked tubes per event (most "
+                         "anomalous kept) so a pathological event cannot mask "
+                         "away the array and earn an artificially low chi2. "
+                         "Measured: the finder never wants more than 3 and asks "
+                         "for 0 in 88%% of events, so this rarely binds.")
     ap.add_argument("--output-tree", action="store_true",
                     help="write keypoint2_event{i} files into a 2-level index "
                          "tree (<i//10000>/<(i%%10000)//250>) instead of one "
