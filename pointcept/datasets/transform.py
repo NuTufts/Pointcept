@@ -551,8 +551,28 @@ class RandomJitter(object):
 
 @TRANSFORMS.register_module()
 class MultiplicativeRandomJitter(object):
-    def __init__(self, sigma=0.05, clip=0.05, keys=("energy",), p=0.5, log_space=False):
+    """Multiplicative jitter of scalar features (charge/strength).
+
+    value_space=None (default) preserves the legacy behavior exactly:
+      - log_space=False: x *= (1+n)
+      - log_space=True:  x += log10(1+n), which is multiplicative only if x
+        stores a plain log10. Applied to a LogTransform-RESCALED value
+        y = a*(log10(x+min_val)-log10(min_val)) - 1, it multiplies the
+        underlying (x+min_val) by (1+n)^(1/a) — for the P05 parameters
+        (min_val=0.01, max_val=1000) a nominal ±5% is effectively ±13%.
+        All pre-P05B.5 runs share this; it is kept bit-identical on purpose.
+
+    The value_space modes apply an EXACT multiplicative jitter of the
+    underlying strength through the named transform, y' = T(clip(T_inv(y)
+    * (1+n), 0, max_val)), so the output stays in [-1, 1]:
+      - value_space="scaled_log": T is LogTransform(min_val, max_val, log=True)
+      - value_space="asinh":      T is LogTransform(mode="asinh",
+                                  asinh_scale, max_val)
+    """
+    def __init__(self, sigma=0.05, clip=0.05, keys=("energy",), p=0.5, log_space=False,
+                 value_space=None, min_val=1.0e-2, max_val=1000.0, asinh_scale=50.0):
         assert clip > 0
+        assert value_space in (None, "scaled_log", "asinh"), value_space
         self.sigma = sigma
         self.clip = clip
         if not isinstance(keys, tuple):
@@ -560,6 +580,24 @@ class MultiplicativeRandomJitter(object):
         self.keys = keys
         self.p = p
         self.log_space = log_space
+        self.value_space = value_space
+        self.min_val = min_val
+        self.max_val = max_val
+        self.asinh_scale = asinh_scale
+
+    def jitter_scaled_log(self, y, noise):
+        """Exact multiplicative jitter through the scaled log transform."""
+        denom = np.log10(self.max_val + self.min_val) - np.log10(self.min_val)
+        x = self.min_val * (np.power(10.0, (y + 1) * denom / 2) - 1)
+        x = np.clip(x * (1.0 + noise), 0, self.max_val)
+        return 2 * (np.log10(x + self.min_val) - np.log10(self.min_val)) / denom - 1
+
+    def jitter_asinh(self, y, noise):
+        """Exact multiplicative jitter through the bounded asinh transform."""
+        denom = np.arcsinh(self.max_val / self.asinh_scale)
+        x = self.asinh_scale * np.sinh((y + 1) / 2 * denom)
+        x = np.clip(x * (1.0 + noise), 0, self.max_val)
+        return 2 * np.arcsinh(x / self.asinh_scale) / denom - 1
 
     def __call__(self, data_dict):
         if random.random() > self.p:
@@ -571,7 +609,11 @@ class MultiplicativeRandomJitter(object):
                     -self.clip,
                     self.clip,
                 )
-                if self.log_space:
+                if self.value_space == "scaled_log":
+                    data_dict[k] = self.jitter_scaled_log(data_dict[k], noise)
+                elif self.value_space == "asinh":
+                    data_dict[k] = self.jitter_asinh(data_dict[k], noise)
+                elif self.log_space:
                     # Additive noise in log10 space equivalent to multiplicative
                     # noise in linear space: log10(x*(1+n)) = log10(x) + log10(1+n)
                     data_dict[k] += np.log10(1.0 + noise)
@@ -1893,11 +1935,21 @@ class ImgAugmentation(object):
 class LogTransform(object):
     """
     By Sam Young from https://github.com/DeepLearnPhysics/particle-imaging-models/
+
+    `mode` selects the scaling; mode=None (default) derives it from the legacy
+    `log` flag, keeping every existing config bit-identical. mode="asinh"
+    (P05B.5, input_dist_study verdict) expects the LOADER output — already
+    clipped to [0, max_val] and offset by add_min_pixval — so unlike the log
+    branch it must not add min_val again.
     """
-    def __init__(self, min_val=1.0e-2, max_val=20.0, log=True, keys=("energy",)):
+    def __init__(self, min_val=1.0e-2, max_val=20.0, log=True, keys=("energy",),
+                 mode=None, asinh_scale=50.0):
+        assert mode in (None, "log", "linear", "asinh"), mode
         self.min_val = min_val
         self.max_val = max_val
         self.log = log
+        self.mode = mode
+        self.asinh_scale = asinh_scale
         if not isinstance(keys, tuple):
             keys = (keys,)
         self.keys = keys
@@ -1913,14 +1965,21 @@ class LogTransform(object):
         """Transform energy to linear scale on [-1,1]"""
         return 2 * (x - self.min_val) / (self.max_val - self.min_val) - 1
 
+    def asinh_transform(self, x):
+        """Bounded asinh: [0, max_val] -> [-1, 1] with the knee at asinh_scale"""
+        denom = np.arcsinh(self.max_val / self.asinh_scale)
+        return 2 * np.arcsinh(np.clip(x, 0, self.max_val) / self.asinh_scale) / denom - 1
+
     def __call__(self, data_dict):
+        mode = self.mode if self.mode is not None else ("log" if self.log else "linear")
         for k in self.keys:
             if k in data_dict.keys():
-                data_dict[k] = (
-                    self.log_transform(data_dict[k])
-                    if self.log
-                    else self.linear_transform(data_dict[k])
-                )
+                if mode == "log":
+                    data_dict[k] = self.log_transform(data_dict[k])
+                elif mode == "linear":
+                    data_dict[k] = self.linear_transform(data_dict[k])
+                else:
+                    data_dict[k] = self.asinh_transform(data_dict[k])
             else:
                 raise ValueError(f"Key {k} not found in data_dict")
         return data_dict

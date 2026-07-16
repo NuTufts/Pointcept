@@ -8,7 +8,16 @@ Run inside the container with the squashfs bound at /data:
   apptainer exec --bind $SQSH:/data:image-src=/,ro --bind /projects/u6jo:/projects/u6jo \
       /projects/u6jo/containers/pointcept-sandbox \
       python3 lartpc_tests/validate_p05_configs.py
+
+At Tufts (where the Isambard /projects lists don't exist) override the data
+lists so the pipeline check still runs against real files:
+  apptainer exec --bind /cluster:/cluster \
+      /cluster/tufts/wongjiradlabnu/larbys/containers/pointcept_cuml.sif \
+      python3 lartpc_tests/validate_p05_configs.py \
+          --train-list lartpc/filelists/h5list_v3_mc_diag1k_tufts.txt \
+          --val-list lartpc/filelists/h5list_v3_mc_diag1k_tufts.txt
 """
+import argparse
 import glob
 import os
 import sys
@@ -56,6 +65,13 @@ def check_supervised(cfg, item, name):
 
 
 def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--train-list", default=None,
+                    help="override every config's train data_list_file "
+                         "(for running on a cluster with different data paths)")
+    ap.add_argument("--val-list", default=None, help="override val list")
+    args = ap.parse_args()
+
     paths = sorted(glob.glob(os.path.join(CONFIG_DIR, "*.py")))
     assert paths, f"no configs found in {CONFIG_DIR}"
     n_fail = 0
@@ -63,7 +79,11 @@ def main():
         name = os.path.basename(path)
         try:
             cfg = Config.fromfile(path)
-            if name.startswith("linearprobe"):
+            if args.train_list:
+                cfg.data.train["data_list_file"] = os.path.abspath(args.train_list)
+            if args.val_list:
+                cfg.data.val["data_list_file"] = os.path.abspath(args.val_list)
+            if name.startswith("linearprobe") and not args.train_list:
                 # Tufts config: data lists don't exist on this cluster —
                 # parse-only here; the model path is covered by the
                 # supervised configs (same architecture).
