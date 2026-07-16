@@ -439,3 +439,22 @@ All resolved as of 2026-07-13 (PI):
    to WP7 (only P05B.3 needs it).
 8. **Eval placement**: in-loop val on Isambard for P05A supervised runs; Tufts
    probes for all SSL runs. Probe budget fixed by the WP3.5 calibration study.
+
+---
+
+## 5. Results log
+
+- **2026-07-16 — P05A supervised ceilings complete** (single seed, CIs pending):
+  A.1 (det-sym) mIoU **0.8576**; A.2 (charge-zeroed) 0.8152; A.3 (free
+  rotations) 0.8596. Charge information = **+0.114 pion IoU, +0.087 proton
+  IoU**, +0.042 mIoU — concentrated exactly in the weak-PID classes.
+  Rotations do NOT hurt supervised training (A.3−A.1 ≈ +0.002, null) →
+  the P05B rotation/charge hypothesis is now specifically about
+  self-distillation, not representation capacity.
+- **2026-07-16 — P05F input-scaling study added**
+  (`lartpc/pretraining_studies/input_dist_study/`): CPU map/reduce for the
+  Tufts farm comparing log/linear/sqrt/asinh/quantile input transforms on
+  per-class charge distributions (noise-aware Fisher d′, clip-fraction
+  audit). Motivated by the pion ceiling deficit and the A.1−A.2 charge
+  delta. Outcome may add P05B.5/P05A.5 variants (decision rules in the
+  study README).
