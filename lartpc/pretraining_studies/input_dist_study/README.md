@@ -22,22 +22,49 @@ usage). The clip fraction above 1000 ADC is measured separately — clipping
 is the one step that genuinely destroys information (expected to hit
 protons and overlapping tracks hardest).
 
-## Running (Tufts)
+## Orchestration checklist (for a Claude Code session at Tufts)
 
-1. Prereq: the Tufts-remapped MC train list (see the file-list remap task);
-   or point FILELIST at any Tufts MC list with truth.
-2. Edit the three ADJUST paths in `submit_pixval_hists_tufts.sbatch`.
-3. `sbatch --array=0-199 submit_pixval_hists_tufts.sbatch`
-   (pure h5py+numpy; 1 CPU + 4 GB per task; ~5–15 min/task).
-4. When the array finishes:
+The pipeline was validated end-to-end on Isambard MC files on 2026-07-16
+(80 files, 5.8M points) — the scripts themselves are known-good; the steps
+below localize them to Tufts.
+
+1. **Pick the file list.** Preferred: the Tufts-remapped MC train list
+   (`lartpc/filelists/h5list_v3_mc_only_train_tufts.txt` if the remap task
+   has been done). Fallback: any Tufts MC list with truth — e.g. the prod4
+   lists referenced in `configs/lartpc/p05/linearprobe-sonata-p05-mc-noghost-tufts.py`
+   (`TRAIN_FILE_LIST`). The worker needs
+   `/entry_0/triplet_data/{pixval,ssnet_label,hasmatch}` in each file.
+2. **Verify the environment.** Any python3 with h5py+numpy works for stage 1
+   (no torch, no GPU); stage 2 additionally needs matplotlib. Use whichever
+   env the probe jobs used. Quick check:
+   `python3 -c "import h5py, numpy, matplotlib"`.
+3. **Smoke one shard locally** before submitting 200 tasks (~1 min):
+   `python3 accumulate_pixval_hists.py --filelist <LIST> --num-shards 200
+   --shard 0 --outdir /tmp/p05f_smoke --max-files 20`
+   then confirm the npz exists and reports nonzero true points.
+4. **Edit the sbatch**: the three ADJUST paths (REPO, FILELIST, OUTDIR) and
+   the partition name (discover with `sinfo -s`; pick the general CPU
+   partition). 1 CPU + 4 GB per task is sufficient.
+5. **`mkdir -p logs` in the submission directory, then**
+   `sbatch --array=0-199 submit_pixval_hists_tufts.sbatch`.
+   (SLURM opens the --output file before the script runs; a missing logs/
+   dir kills every task instantly with exit code 53.)
+   Expect ~5–15 min/task over the full 415k-file list.
+6. **Completion check:** `ls <OUTDIR>/pixval_hists_shard*.npz | wc -l` must
+   equal 200. Resubmit any missing shards individually:
+   `sbatch --array=<id1>,<id2> submit_pixval_hists_tufts.sbatch`.
+   (Stage 2 will also run on a partial set — shards are interleaved, so any
+   subset is an unbiased sample; note the reduced statistics in the report.)
+7. **Stage 2 (single node / login, ~1 min):**
    `python3 merge_and_analyze_pixval_hists.py --indir <OUTDIR> --outdir <OUTDIR>/analysis`
-5. Deliverables in `analysis/`: `metrics.csv`, `clip_fractions.csv`,
-   `dist_{u,y,sum}.png`, `summary.md`.
+8. **Deliverables** in `analysis/`: `metrics.csv`, `clip_fractions.csv`,
+   `dist_{u,y,sum}.png`, `summary.md`. Report: the clip-fraction table, and
+   per class-pair (esp. muon-pion, pion-proton) the noise-aware d′ of each
+   transform vs the current log — then apply the decision rules below.
 
-A subsample is statistically plenty (per-point stats are enormous); to run
-on e.g. 1/10th of the list quickly, submit `--array=0-19` with
-`NUM_SHARDS=200` unchanged — shards are interleaved, so any subset of task
-IDs is an unbiased sample of the list.
+To run on a fraction of the list quickly, submit a subset of array IDs
+(e.g. `--array=0-19`) with NUM_SHARDS left at 200 — shard interleaving makes
+any ID subset an unbiased sample.
 
 ## Decision rules (feeding back into Phase 0.5)
 

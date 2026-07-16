@@ -2,6 +2,8 @@
 # Stage-1 array job for the input-distribution study (P05F) on the Tufts
 # CPU farm. Adjust partition/account and the three paths below, then:
 #
+#   mkdir -p logs   # BEFORE sbatch: SLURM opens the --output file before the
+#                   # script runs; a missing logs/ kills jobs instantly (exit 53)
 #   sbatch --array=0-199 submit_pixval_hists_tufts.sbatch
 #
 # Each task processes every 200th file of FILELIST (~2,100 files/task for
