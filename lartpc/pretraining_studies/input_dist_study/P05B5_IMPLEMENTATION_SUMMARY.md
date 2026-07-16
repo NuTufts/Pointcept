@@ -47,10 +47,13 @@ Tufts against the remapped diag1k list.
 Also on the branch, as its own first commit (`688c76b`): the pre-existing
 uncommitted Tufts filelist remap (probe template lists, `.gitignore`
 exceptions, `remap_filelists_tufts.py`, remapped diag1k list). One local
-hand-edit of the probe config (batch_size 288→64, num_worker 22→4, contrary
-to its DO-NOT-HAND-EDIT banner) was **dropped** in favor of the generator
-output; use `--options batch_size=64 num_worker=4` at probe launch if those
-were wanted.
+hand-edit of the probe config (batch_size 288→64, num_worker 22→4) was
+**dropped** in favor of the generator output — PI confirms it was a one-off
+workaround for a smoke test that landed on a single V100 (OOM at 288) while
+the GPU allocation was busy; the production probe runs keep the generated
+batch/worker settings on larger-memory cards (A100/L40S/H100/H200). For any
+future small-GPU smoke, override at launch (`--options batch_size=64
+num_worker=4`) instead of editing the generated file.
 
 ## Test evidence (all run in the container at Tufts, CPU)
 
