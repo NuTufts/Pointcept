@@ -125,28 +125,31 @@ def main():
           f"{'eq2' if args.eq2 else 'ge2'} events of {n}{cr}"
           + ("  [corrected/dead-masked chi2]" if args.corrected_chi2 else ""))
 
+    # Verify entry i <-> merged_sp line i using the MERGED_SP file's own
+    # run/subrun/event (entry_0 attrs). This is the mapping the browse list
+    # actually depends on (the exporter walks the merged_sp list in order).
+    # Do NOT verify via the cascade index: for the veto-surgered bnb5e19 the
+    # cascade index != ntuple entry index (that is why flash_correction matches
+    # by RSE), so a cascade-index check reports spurious mismatches.
     lines, nver, nbad = [], 0, 0
     for i in idx:
         path = msp[i]
-        # verify entry<->line via the cascade file's run/subrun/event
-        casc = os.path.join(args.cascade_dir, f"keypoint2_event{i:05d}_0.h5")
-        if os.path.exists(casc):
-            try:
-                with h5py.File(casc, "r") as f:
-                    ok = (int(f.attrs["run"]) == run[i]
-                          and int(f.attrs["subrun"]) == sub[i]
-                          and int(f.attrs["event"]) == evt[i])
-                nver += 1
-                if not ok:
-                    nbad += 1
+        try:
+            with h5py.File(path, "r") as f:
+                at = f["entry_0"].attrs
+                ok = (int(at["run"]) == run[i] and int(at["subrun"]) == sub[i]
+                      and int(at["event"]) == evt[i])
+            nver += 1
+            if not ok:
+                nbad += 1
+                if nbad <= 3:
                     print(f"  [mismatch] entry {i}: ntuple "
-                          f"({run[i]},{sub[i]},{evt[i]}) vs cascade "
-                          f"({int(f.attrs['run'])},{int(f.attrs['subrun'])},"
-                          f"{int(f.attrs['event'])})")
-            except Exception as e:
-                print(f"  [warn] cascade {i}: {e}")
+                          f"({run[i]},{sub[i]},{evt[i]}) vs merged_sp "
+                          f"{os.path.basename(path)}")
+        except Exception as e:
+            print(f"  [warn] merged_sp {i}: {e}")
         lines.append(path)
-    print(f">>> linkage verified on {nver} events, {nbad} mismatches")
+    print(f">>> merged_sp linkage verified on {nver} events, {nbad} mismatches")
     with open(args.out, "w") as f:
         f.write("\n".join(lines) + ("\n" if lines else ""))
     print(f">>> wrote {len(lines)} merged_sp paths -> {args.out}")
