@@ -83,15 +83,25 @@ both `log_space` settings). New values:
   `T_asinh_inv(y) = asinh_scale * sinh((y+1)/2 * arcsinh(max_val/asinh_scale))`.
   Re-clip the multiplied value to `[0, max_val]` before re-transforming.
 
-### 2.3 Jitter strength for P05B.5 — decision needed, with a default
+### 2.3 Jitter strength — DECIDED (PI, 2026-07-16): two variants
 
 The sibling runs' *effective* multiplicative jitter is `(1+n)^2.5`,
-first-order ±12.5%. For one-delta comparability against P05B.1, the default
-choice is **sigma=0.125, clip=0.125** with `value_space="asinh"` (first-order
-match to the siblings' effective strength). The alternative — "clean"
-sigma=0.05 — changes two things at once (transform AND augmentation
-strength) and should only be picked if the PI prefers it; record the choice
-in the config header and the registry either way.
+first-order ±12.5%. The PI has allocation to spare, so implement BOTH:
+
+- **`P05B.5-mc_noghost-s0`** — asinh transform, exact jitter
+  `sigma=0.125, clip=0.125, value_space="asinh"`. First-order match to the
+  siblings' effective augmentation strength → one-delta (transform only)
+  against P05B.1. This is the primary variant.
+- **`P05B.6-mc_noghost-s0`** — identical to B.5 except
+  `sigma=0.05, clip=0.05`. One-delta (jitter strength only) against B.5;
+  measures whether the charge-jitter magnitude itself matters for what the
+  SSL model learns about calorimetry.
+
+B.5 vs B.1 isolates the transform at matched jitter; B.6 vs B.5 isolates
+jitter strength under asinh. (The fourth factorial cell — log transform
+with clean exact 0.05 jitter — is optional; note it in the summary comment
+but do not generate it unless asked.) The probe configs carry no strength
+jitter, so the single asinh probe config serves both B.5 and B.6.
 
 ### 2.4 Config generator (`lartpc/pretraining_studies/gen_p05_configs.py`)
 
@@ -99,9 +109,10 @@ in the config header and the registry either way.
   (SSL template: transform + val_transform; supervised template: train +
   val; probe template: train + val) — a `@STRENGTH_TRANSFORM@` block
   substitution is the natural mechanism, defaulting to the current log dict.
-- Add `P05B.5-mc_noghost-s0` to `SSL_RUNS`: identical to P05B.1 (free-rot
-  augs, prototypes 4096) except (a) the asinh strength transform in both
-  pipelines and (b) the value-space-aware jitter per 2.2/2.3.
+- Add `P05B.5-mc_noghost-s0` AND `P05B.6-mc_noghost-s0` to `SSL_RUNS`:
+  identical to P05B.1 (free-rot augs, prototypes 4096) except (a) the asinh
+  strength transform in both pipelines and (b) the value-space-aware jitter
+  per 2.2/2.3 (B.5: sigma=clip=0.125; B.6: sigma=clip=0.05).
 - Add `linearprobe-sonata-p05-mc-noghost-asinh-tufts.py` to `PROBE_RUNS`:
   identical to the existing probe but with the asinh transform — **B.5
   snapshots must be probed with matching input scaling** or the probe
@@ -155,10 +166,11 @@ remapped diag1k list `lartpc/filelists/h5list_v3_mc_diag1k_tufts.txt`):
       p05a5)
 - [ ] `lartpc_tests/validate_p05_configs.py` still passes for the old
       configs (run with the Tufts lists or parse-only)
-- [ ] jitter-strength decision (§2.3) recorded in the B.5 config header
+- [ ] both variants generated with the §2.3 jitter settings recorded in
+      their config headers
 - [ ] branch pushed; summary comment for the Isambard session: what changed,
-      test evidence, and the exact launch command
-      (`./launch_p05_run.sh configs/lartpc/p05/<b5 config>.py`)
+      test evidence, and the exact launch commands
+      (`./launch_p05_run.sh configs/lartpc/p05/<b5>.py` and `<b6>.py`)
 
 **What NOT to do:** don't modify the loader clip or `add_min_pixval`; don't
 change any existing config file; don't rename `LogTransform`; don't merge to

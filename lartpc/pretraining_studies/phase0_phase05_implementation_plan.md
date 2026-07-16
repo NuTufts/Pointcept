@@ -469,5 +469,5 @@ All resolved as of 2026-07-13 (PI):
   tree). Confirmed en route: `MultiplicativeRandomJitter(log_space=True)` on
   LogTransform-rescaled values amplifies the nominal ±5% jitter to an
   effective ±13% multiplicative on charge ((1+n)^2.5) — uniform across Wave A
-  so internal comparisons stand; B.5 defaults to matching the effective
-  strength (σ=0.125 exact-jitter) pending PI choice.
+  so internal comparisons stand; DECIDED (PI): B.5 = asinh with matched effective jitter (exact σ=0.125);
+  companion **P05B.6** = asinh with σ=0.05 isolates jitter strength.
