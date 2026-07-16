@@ -27,11 +27,20 @@ REPO=/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/isambard_pointcept   #
 FILELIST=${REPO}/lartpc/filelists/h5list_v3_mc_only_train_tufts.txt            # ADJUST (Tufts-remapped list)
 OUTDIR=${REPO}/exp/p05f_input_dist                                             # ADJUST
 
+# The Tufts login/compute nodes have no h5py outside the container.
+CONTAINER=/cluster/tufts/wongjiradlabnu/larbys/containers/pointcept_cuml.sif
+
 NUM_SHARDS=${NUM_SHARDS:-200}
 
+# apptainer is already on PATH on the batch nodes; load it anyway to match
+# start_container.sh (modtree/deprecated must come first or the load fails).
+module load modtree/deprecated
+module load apptainer/1.2.4-suid
+
 mkdir -p "$OUTDIR" logs
-python3 ${REPO}/lartpc/pretraining_studies/input_dist_study/accumulate_pixval_hists.py \
-    --filelist "$FILELIST" \
-    --num-shards "$NUM_SHARDS" \
-    --shard "$SLURM_ARRAY_TASK_ID" \
-    --outdir "$OUTDIR"
+apptainer exec --bind /cluster:/cluster "$CONTAINER" \
+    python3 ${REPO}/lartpc/pretraining_studies/input_dist_study/accumulate_pixval_hists.py \
+        --filelist "$FILELIST" \
+        --num-shards "$NUM_SHARDS" \
+        --shard "$SLURM_ARRAY_TASK_ID" \
+        --outdir "$OUTDIR"
