@@ -54,6 +54,17 @@ snapshots (15/run) + `model_last.pth` support resuming at Tufts (A100s, same
 container) or a future allocation. Configs:
 `configs/lartpc/p05/pretrain-sonata-p1a{1,2,3,4}-*.py`.
 
+**P5B mixture pretraining — LAUNCHED 2026-07-17** (promoted from §6; jobs
+5692138/5692140), same base/budget as P1A: **P5B.1** raw 1:1 MC+EXTBNB
+mixture (both domains with natural ghosts; pairs with P1A.2/P1A.3) and
+**P5B.2** cleaned mixture (MC ghost-dropped, EXTBNB LArMatch-filtered; pairs
+with P1A.1/P1A.4). 18 epochs × the line-interleaved 831,360-file list =
+MATCHED_BUDGET exactly, half per domain. Motivation: one-foundation-model
+question for the reconstruction cascade + embedding-space domain-shift study
+(data-vs-MC axis, cosmic prototype sharing, nu-origin representation) —
+analysis runs on frozen features at Tufts against the frozen MC/EXTBNB
+diag1k sets. **E.1 remains on hold** (PI, 2026-07-17).
+
 ---
 
 ## 0. Conventions
