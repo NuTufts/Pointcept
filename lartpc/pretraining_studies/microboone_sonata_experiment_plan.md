@@ -13,6 +13,49 @@ templates in `slurm_scripts/lartpc_sonata_pretraining/`.
 
 ---
 
+## STATUS (2026-07-17) — what has been launched / completed
+
+Infrastructure and per-decision detail live in
+`phase0_phase05_implementation_plan.md` (Phase 0/0.5) and
+`probe_orchestration/RESULTS_WAVE_A_DECISION.md` (Wave A→C probe verdict).
+Registry: `exp/registry.csv` on Isambard. Allocation ends **2026-07-22**.
+
+**Phase 0.5 — COMPLETE except deferred items.** All at P05_BUDGET = 5M images
+(1/3 matched), MC-only ghost-dropped lists, batch 48 / lr 2e-4:
+
+- **P05A supervised ceilings (done):** A.1 mIoU **0.8576** (pion 0.773,
+  proton 0.933); A.2 charge-zeroed 0.8152 → charge info = **+0.114 pion,
+  +0.087 proton IoU**; A.3 free rotations 0.8596 (null — rotations don't hurt
+  *supervised* training). A.4 (class-balanced) deferred. A.5 (asinh input
+  scaling, from the P05F study below) launched 07-17.
+- **Wave A SSL (8 runs, done/finishing 07-17/18):** B.1, B.2, B.4, C.1, C.3,
+  C.4, C.5, C.6 (C.2≡B.1 by reuse; B.3 blocked on P0.9 wire projections).
+- **Wave B probes (Tufts, decision-level done):** verdict at matched 768k/1.5M
+  images — composition dominates (C.5 drop_cosmics=0.9: +7.7 mIoU, +10 pion,
+  +20 proton over B.1); detsym augs +2.4 (rotation/charge hypothesis confirmed,
+  second order); prototype count dead; 2×crops hurts; B.4 sum-charge a wash.
+  Curve-filling probes resume after the fleet finishes.
+- **P05F input-scaling study (NEW, done):** log ranks last on every μ/π/p
+  pair; clip at 1000 ADC is a non-issue → **P05B.5** (asinh(50,1000), matched
+  jitter σ=0.125) and **P05B.6** (σ=0.05) launched 07-17.
+- **Wave C:** E.1 config generated (detsym × drop_cosmics=0.9); training
+  deferred by PI decision (its cosmic-drop knob cannot transfer to Phase 1
+  anyway — see below); can run later at Tufts or in spare Isambard capacity.
+
+**Phase 1 — P1A LAUNCHED 2026-07-17** (jobs 5691894–97) at MATCHED_BUDGET.
+**Base = "v9-provisional" restricted to TRUTH-FREE knobs** (detsym augs, 4096
+prototypes, log scaling, NO drop_cosmics): the Wave A composition winner
+requires MC truth, cannot run on the EXTBNB cells, and its keep-mask
+(origin==1) would strip P1A.2's ghosts — so it is excluded from the 2×2 base
+for internal validity and remains an MC-side result (C.5 / optional E.1).
+P1A.5 (25th percentile) cut: list unavailable, plan already marked it a
+candidate to cut. Runs reach ~60% of budget by allocation end; log-spaced
+snapshots (15/run) + `model_last.pth` support resuming at Tufts (A100s, same
+container) or a future allocation. Configs:
+`configs/lartpc/p05/pretrain-sonata-p1a{1,2,3,4}-*.py`.
+
+---
+
 ## 0. Conventions
 
 ### 0.1 Run ID scheme
@@ -51,14 +94,15 @@ exp/
 Set once, then never vary within a comparison:
 
 ```python
-MATCHED_BUDGET = dict(
-    images_seen   = 15_000_000,   # PLACEHOLDER — set from cluster throughput; must exceed
-                                  # longest prelim run (~335k iters x batch ~48-90)
-    batch_size    = 48,           # pick ONE value; prelim runs mixed 48/90 — do not repeat this
-    peak_lr       = 5e-4,         # prelim Full Real Cosmic used 5e-4 — confound, fix at 5-e4. 
-                                  # Other runs used 2e-3 which when used on real data led 
-                                  # to the occurance of training instabilities
-    lr_schedule   = "OneCycleLR, pct_start / div_factor as in BASE_PRETRAIN",
+MATCHED_BUDGET = dict(            # FROZEN 2026-07-17 (P0.1 done; used by P1A)
+    images_seen   = 14_964_480,   # = 36 epochs x 415,680 files (both MC and the
+                                  # trimmed EXTBNB list are exactly 415,680, so
+                                  # every cell sees identical images/epoch)
+    batch_size    = 48,           # locked 2026-07-13 (batch 80 OOM'd on big events)
+    peak_lr       = 2e-4,         # REVISED from 5e-4: 2e-4 is the only value
+                                  # validated free of Adam-state spikes (v8 run);
+                                  # locked 2026-07-13, used by all P05/P1A runs
+    lr_schedule   = "OneCycleLR, pct_start=0.06, div_factor=100, final_div=1000",
     seed          = 0,            # flagship configs also get s1, s2 (see §6)
 )
 ```
@@ -246,11 +290,11 @@ All runs use `MATCHED_BUDGET`. All get full EVALSUITE.
 
 | Run | Dataset / prep | Config delta from base | Status |
 |---|---|---|---|
-| P1A.1 | MC, ghosts dropped ("MC-clean") | `BASE_PRETRAIN_MC`, matched budget | rerun of prelim MC at matched budget |
-| P1A.2 | **MC, ghosts kept ("MC-ghosts")** | `BASE_PRETRAIN_MC` + `ghost_keep_frac=1.0` (P0.4) | **NEW — highest priority run in the program** |
-| P1A.3 | EXTBNB full, ghosts kept | v7 base with LArMatch filtering **disabled** | rerun of prelim Full Real Cosmic, now at 2e-3 LR + matched budget |
-| P1A.4 | EXTBNB + LArMatch stochastic filter | `BASE_PRETRAIN` unchanged (threshold U[0.25,0.75], floor 0.15) | rerun of prelim Ghost Removal |
-| P1A.5 | EXTBNB 25th percentile | prelim config at matched budget | keep only if it adds to the story; candidate to cut |
+| P1A.1 | MC, ghosts dropped ("MC-clean") | v9-provisional base, matched budget | **LAUNCHED 07-17** (job 5691894) |
+| P1A.2 | **MC, ghosts kept ("MC-ghosts")** | + `ghost_keep_frac=1.0` (P0.4), `include_ghosts=True` | **LAUNCHED 07-17** (job 5691895) — validated: crops ~50% ghost points |
+| P1A.3 | EXTBNB full, ghosts kept | `data_only=True`, no LArMatch filter, trimmed 415,680-file list | **LAUNCHED 07-17** (job 5691896) — at 2e-4 LR per frozen §0.4 |
+| P1A.4 | EXTBNB + LArMatch stochastic filter | + `filter_larmatch=True`, threshold U[0.15,0.75] (v7 range) | **LAUNCHED 07-17** (job 5691897) |
+| P1A.5 | EXTBNB 25th percentile | prelim config at matched budget | **CUT 07-17** — percentile list unavailable; plan already marked candidate to cut |
 
 **Analysis (analysis/P1A/):**
 - Main results table: 5 backbones × EVALSUITE metrics with CIs (paper Table 1).
