@@ -317,11 +317,18 @@ All runs use `MATCHED_BUDGET`. All get full EVALSUITE.
 | P1A.3 | EXTBNB full, ghosts kept | `data_only=True`, no LArMatch filter, trimmed 415,680-file list | **LAUNCHED 07-17** (job 5691896) — at 2e-4 LR per frozen §0.4 |
 | P1A.4 | EXTBNB + LArMatch stochastic filter | + `filter_larmatch=True`, threshold U[0.15,0.75] (v7 range) | **LAUNCHED 07-17** (job 5691897) |
 | P1A.5 | EXTBNB 25th percentile | prelim config at matched budget | **CUT 07-17** — percentile list unavailable; plan already marked candidate to cut |
+| P1A.4b | **MC + LArMatch stochastic filter** | + `filter_larmatch=True`, `larmatch_score_keys=("larmatch_score","lm_score")` (MC stores the score as `lm_score`) | **LAUNCHED 07-17** (job 5692768) — NEW cell enabled by the lm_score fix |
 
 **Analysis (analysis/P1A/):**
 - Main results table: 5 backbones × EVALSUITE metrics with CIs (paper Table 1).
 - Loss curves overlay, plateau value vs dataset (paper "pretraining dynamics" figure).
 - Explicit 2×2 interpretation: `(P1A.1 vs P1A.2)` isolates ghosts in MC; `(P1A.2 vs P1A.3)` isolates domain at fixed contamination; `(P1A.3 vs P1A.4)` isolates preprocessing on data.
+- New contrasts from the lm_score fix (2026-07-17): `(P1A.4b vs P1A.4)` isolates
+  **pure domain at identical preprocessing** (same stochastic filter both sides —
+  the cleanest domain comparison in the program); `(P1A.4b vs P1A.1)` isolates
+  **cleaning method** (reco score vs truth) within MC. Historical caveat for any
+  v8-era result: v8's "filtered combined" run actually filtered EXTBNB only —
+  MC entered unfiltered with all ghosts (naming mismatch, silently skipped).
 
 **Dependencies:** P0.1, P0.4, P0.7, and the **v9 reference config from Phase 0.5** (all
 P1 pretraining runs use v9 as base — do not launch P1 with the v7-style base).
@@ -460,7 +467,7 @@ MC eval set (with ghost truth) + 1k EXTBNB events.
 | ID | Study | Runs |
 |---|---|---|
 | P5A | Data scaling: EXTBNB+LArMatch pretraining at 10k / 100k / 857k events, fixed iterations | 2 new (857k = reuse) |
-| P5B | Mixture pretraining (BASE_PRETRAIN_MIX) at matched budget, EVALSUITE | 1; interpret against P1A 2×2 |
+| P5B | Mixture pretraining at matched budget, EVALSUITE — **PROMOTED + LAUNCHED 07-17 as three variants** on the interleaved 1:1 831,360-file list (18 epochs = MATCHED_BUDGET, half per domain): P5B.1 raw (both domains natural ghosts; pairs w/ P1A.2+P1A.3), P5B.2 deployment-prep (MC truth-cleaned, EXTBNB LArMatch-filtered; pairs w/ P1A.1+P1A.4), P5B.3 symmetric LArMatch filter both domains via lm_score fallback (truth-free; pairs w/ P1A.4+P1A.4b) | 3; interpret against P1A 2×2 + embedding-space domain study (data-vs-MC axis, cosmic prototype sharing, nu-origin representation) on the frozen MC/EXTBNB diag1k sets |
 | P5C | Seeds: s1, s2 for flagship configs (P1A.2, P1A.4, tuned) | 6 pretraining runs |
 | P5D | One instance-level downstream task (particle clustering or keypoints) on top 2 backbones | scope-limited; only if schedule allows |
 
