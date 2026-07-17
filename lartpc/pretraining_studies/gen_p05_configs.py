@@ -1326,6 +1326,38 @@ P5B_RUNS = {
     ),
 }
 
+# --- Symmetric LArMatch filtering (2026-07-17): the MC production stores the
+# score as lm_score (writer naming mismatch); larmatch_score_keys opts into
+# reading it, enabling identical stochastic filtering on BOTH domains.
+P1A_RUNS["P1A.4b-mc_larmatch-s0"] = (
+    "pretrain-sonata-p1a4b-mc-larmatch-detsym.py",
+    "P1A.4b — MC + stochastic LArMatch filter (U[0.15,0.75] via the lm_score\n"
+    "fallback): the METHOD-SYMMETRIC partner of P1A.4. P1A.4b-vs-P1A.4\n"
+    "isolates pure domain at identical preprocessing; P1A.4b-vs-P1A.1\n"
+    "isolates cleaning method (reco score vs truth) within MC.",
+    dict(P1A_COMMON,
+         TRUE_POINTS_ONLY=False,
+         INCLUDE_GHOSTS=True,
+         FILTER_LARMATCH=True,
+         EXTRA_DATASET_LINES=("        larmatch_threshold_range=(0.15, 0.75),\n"
+                              '        larmatch_score_keys=("larmatch_score", "lm_score"),\n'),
+         DATASET_COMMENT="# ---- P1A.4b: MC + LArMatch filter (lm_score fallback) ----"),
+)
+
+P5B_RUNS["P5B.3-mix_larmatch-s0"] = (
+    "pretrain-sonata-p5b3-mix-larmatch-detsym.py",
+    "P5B.3 — SYMMETRIC cleaned 1:1 mixture: the SAME stochastic LArMatch\n"
+    "filter (U[0.15,0.75]) on both domains via the lm_score fallback — no\n"
+    "truth used anywhere. The method-symmetric alternative to P5B.2.",
+    dict(P5B_COMMON,
+         TRUE_POINTS_ONLY=False,
+         INCLUDE_GHOSTS=True,
+         FILTER_LARMATCH=True,
+         EXTRA_DATASET_LINES=("        larmatch_threshold_range=(0.15, 0.75),\n"
+                              '        larmatch_score_keys=("larmatch_score", "lm_score"),\n'),
+         DATASET_COMMENT="# ---- P5B.3: symmetric LArMatch-filtered mixture ----"),
+)
+
 
 def build_supervised(run_id, filename, header, overrides):
     aug = overrides.get("AUG", "detsym")
