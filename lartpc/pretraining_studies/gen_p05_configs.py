@@ -172,8 +172,8 @@ flash_backend = "flash_attn"
 amp_dtype = "bfloat16"
 
 enable_wandb = True
-wandb_project = "pointcept_p05_pretrain"
-save_path = "sonata/p05/@RUN_ID@"
+wandb_project = "@WANDB_PROJECT@"
+save_path = "sonata/@SAVE_ROOT@/@RUN_ID@"
 
 TRAIN_FILE_LIST = "@TRAIN_LIST@"
 VAL_FILE_LIST = "@VAL_LIST@"
@@ -397,16 +397,16 @@ data = dict(
         use_edep_as_strength=True,
         label_mode="ssnet",
         coord_scale=1.0,
-        include_ghosts=False,
+        include_ghosts=@INCLUDE_GHOSTS@,
         exclude_other=False,
         transform=transform,
         test_mode=False,
         loop=1,
-        # ---- Phase 0.5: ghost-dropped MC with truth loaded ----
-        true_points_only=True,
-        data_only=False,
-        filter_larmatch=False,
-        drop_cosmics=@DROP_COSMICS@,
+        @DATASET_COMMENT@
+        true_points_only=@TRUE_POINTS_ONLY@,
+        data_only=@DATA_ONLY@,
+        filter_larmatch=@FILTER_LARMATCH@,
+@EXTRA_DATASET_LINES@        drop_cosmics=@DROP_COSMICS@,
         drop_cosmics_prob=@DROP_COSMICS_PROB@,
     ),
     val=dict(
@@ -417,15 +417,15 @@ data = dict(
         use_edep_as_strength=True,
         label_mode="ssnet",
         coord_scale=1.0,
-        include_ghosts=False,
+        include_ghosts=@INCLUDE_GHOSTS@,
         exclude_other=False,
         transform=val_transform,
         test_mode=False,
         loop=1,
-        true_points_only=True,
-        data_only=False,
-        filter_larmatch=False,
-    ),
+        true_points_only=@TRUE_POINTS_ONLY@,
+        data_only=@DATA_ONLY@,
+        filter_larmatch=@FILTER_LARMATCH@,
+@EXTRA_DATASET_LINES@    ),
 )
 
 hooks = [
@@ -1184,10 +1184,98 @@ def build_ssl(run_id, filename, header, overrides):
         STRENGTH_JITTER=(asinh_strength_jitter(overrides["JITTER_SIGMA"])
                          if overrides.get("STRENGTH") == "asinh"
                          else LOG_STRENGTH_JITTER),
-        TRAIN_LIST=MC_TRAIN,
-        VAL_LIST=MC_VAL,
+        TRAIN_LIST=overrides.get("TRAIN_LIST", MC_TRAIN),
+        VAL_LIST=overrides.get("VAL_LIST", MC_VAL),
+        # Data-selection flags: P05 defaults reproduce the ghost-dropped-MC
+        # configs byte-identically; P1A cells override them per §2 of the
+        # experiment plan (domain x contamination on truth-free knobs only).
+        INCLUDE_GHOSTS=overrides.get("INCLUDE_GHOSTS", False),
+        TRUE_POINTS_ONLY=overrides.get("TRUE_POINTS_ONLY", True),
+        DATA_ONLY=overrides.get("DATA_ONLY", False),
+        FILTER_LARMATCH=overrides.get("FILTER_LARMATCH", False),
+        EXTRA_DATASET_LINES=overrides.get("EXTRA_DATASET_LINES", ""),
+        DATASET_COMMENT=overrides.get(
+            "DATASET_COMMENT",
+            "# ---- Phase 0.5: ghost-dropped MC with truth loaded ----"),
+        WANDB_PROJECT=overrides.get("WANDB_PROJECT", "pointcept_p05_pretrain"),
+        SAVE_ROOT=overrides.get("SAVE_ROOT", "p05"),
     )
+    subs["EPOCH"] = overrides.get("EPOCH", EPOCH)
+    subs["SNAPSHOT_ITERS"] = overrides.get("SNAPSHOT_ITERS", snapshot_iters(batch))
     return filename, render(SSL_TEMPLATE, subs)
+
+
+# =============================================================================
+# Phase 1 Study P1A: the paper's 2x2 (domain x contamination) at MATCHED_BUDGET.
+# Base = v9-provisional restricted to TRUTH-FREE knobs (detsym augs, 4096
+# prototypes, log scaling, no drop_cosmics): the Wave A winner drop_cosmics=0.9
+# requires MC truth, cannot run on the EXTBNB cells, and silently strips the
+# ghosts P1A.2 exists to keep (the cosmic-drop mask keeps origin==1 only) —
+# so it is excluded from the 2x2 base for internal validity. Detsym's +2.4
+# probe-mIoU gain (RESULTS_WAVE_A_DECISION.md) is domain-applicable and kept.
+# EXTBNB train list trimmed to exactly 415,680 files so all four cells see
+# identical images/epoch and identical total images.
+# =============================================================================
+P1A_EPOCH = 36            # 36 x 415,680 = 14,964,480 ~= 15M (MATCHED_BUDGET)
+P1A_SNAPSHOT_IMG_ANCHORS = (
+    [24_000 * 2 ** i for i in range(6)]              # 24k .. 768k
+    + [1_536_000 * k for k in range(1, 10)]          # 1.536M .. 13.8M
+)
+EXTBNB_TRAIN = f"{FILELIST_DIR}/h5list_v3_extbnb_only_train_415680.txt"
+EXTBNB_VAL = f"{FILELIST_DIR}/h5list_v3_extbnb_only_val.txt"
+
+P1A_COMMON = dict(
+    AUG="detsym", SWAP="(0, 1)",
+    EPOCH=P1A_EPOCH,
+    SNAPSHOT_ITERS=[img // BATCH_SIZE for img in P1A_SNAPSHOT_IMG_ANCHORS],
+    WANDB_PROJECT="pointcept_p1_pretrain",
+    SAVE_ROOT="p1a",
+)
+
+P1A_RUNS = {
+    "P1A.1-mc_clean-s0": (
+        "pretrain-sonata-p1a1-mc-clean-detsym.py",
+        "P1A.1 — 2x2 cell (MC, ghosts dropped): rerun of MC-clean at\n"
+        "MATCHED_BUDGET on the truth-free v9-provisional base.",
+        dict(P1A_COMMON),
+    ),
+    "P1A.2-mc_ghosts-s0": (
+        "pretrain-sonata-p1a2-mc-ghosts-detsym.py",
+        "P1A.2 — 2x2 cell (MC, ghosts KEPT via ghost_keep_frac=1.0): the\n"
+        "program's highest-priority new run. include_ghosts=True so the M5\n"
+        "composition log sees the ghost class (ssnet class 8 lands in the\n"
+        "logger's unlabeled_or_other bucket with num_classes=8 — expected).",
+        dict(P1A_COMMON,
+             TRUE_POINTS_ONLY=False,
+             INCLUDE_GHOSTS=True,
+             EXTRA_DATASET_LINES="        ghost_keep_frac=1.0,\n",
+             DATASET_COMMENT="# ---- P1A.2: MC with ALL ghosts kept ----"),
+    ),
+    "P1A.3-extbnb_full-s0": (
+        "pretrain-sonata-p1a3-extbnb-full-detsym.py",
+        "P1A.3 — 2x2 cell (EXTBNB real data, ghosts kept): no truth, no\n"
+        "LArMatch filtering. Rerun of prelim Full Real Cosmic at the locked\n"
+        "budget/LR on the truth-free base.",
+        dict(P1A_COMMON,
+             TRUE_POINTS_ONLY=False,
+             DATA_ONLY=True,
+             TRAIN_LIST=EXTBNB_TRAIN, VAL_LIST=EXTBNB_VAL,
+             DATASET_COMMENT="# ---- P1A.3: EXTBNB data, all points ----"),
+    ),
+    "P1A.4-extbnb_larmatch-s0": (
+        "pretrain-sonata-p1a4-extbnb-larmatch-detsym.py",
+        "P1A.4 — 2x2 companion (EXTBNB + stochastic LArMatch filtering,\n"
+        "threshold ~ U[0.15, 0.75] as in the v7 base): isolates preprocessing\n"
+        "on data against P1A.3.",
+        dict(P1A_COMMON,
+             TRUE_POINTS_ONLY=False,
+             DATA_ONLY=True,
+             FILTER_LARMATCH=True,
+             EXTRA_DATASET_LINES="        larmatch_threshold_range=(0.15, 0.75),\n",
+             TRAIN_LIST=EXTBNB_TRAIN, VAL_LIST=EXTBNB_VAL,
+             DATASET_COMMENT="# ---- P1A.4: EXTBNB data + LArMatch filter ----"),
+    ),
+}
 
 
 def build_supervised(run_id, filename, header, overrides):
@@ -1219,6 +1307,11 @@ def main():
     os.makedirs(OUT_DIR, exist_ok=True)
     written = []
     for run_id, (filename, header, overrides) in SSL_RUNS.items():
+        fn, text = build_ssl(run_id, filename, header, overrides)
+        with open(os.path.join(OUT_DIR, fn), "w") as f:
+            f.write(text)
+        written.append(fn)
+    for run_id, (filename, header, overrides) in P1A_RUNS.items():
         fn, text = build_ssl(run_id, filename, header, overrides)
         with open(os.path.join(OUT_DIR, fn), "w") as f:
             f.write(text)

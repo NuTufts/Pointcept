@@ -36,6 +36,10 @@ PROBE_MAP = [
     ("P05C.3", "configs/lartpc/p05/linearprobe-sonata-p05-mc-noghost-tufts.py",
      ["model.backbone.head_num_prototypes=8192"]),
     ("P05", "configs/lartpc/p05/linearprobe-sonata-p05-mc-noghost-tufts.py", []),
+    # Phase 1 2x2 cells: all four use log scaling + 4096 prototypes, so the
+    # standard 6-channel MC probe applies (data-domain backbones P1A.3/.4 are
+    # probed on MC truth by design — same protocol for every cell).
+    ("P1A", "configs/lartpc/p05/linearprobe-sonata-p05-mc-noghost-tufts.py", []),
 ]
 
 SNAP_RE = re.compile(r"snapshot_iter(\d+)_img(\d+)\.pth$")

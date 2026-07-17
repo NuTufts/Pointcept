@@ -8,3 +8,4 @@ h5list_v3_extbnb_only_train.txt: n=527645 sha256=8d3a552dc45be651c8d02f07837578e
 h5list_v3_extbnb_only_val.txt: n=5000 sha256=7a0eadb5043465c4ed8fb8d91af8232ab13c8b1ae5d1e665ac8e047035adffb5
 h5list_v3_combined_train.txt: n=943325 sha256=508e674827cb4c2a14a91aaa8c4e5d63ec95e27f6ae75f8fe87d7348b41d4619
 h5list_v3_combined_val.txt: n=10000 sha256=e9bd630529ef51672e5b59ec5bebbf42564f23ba453f5249c3703e39e0fb7460
+h5list_v3_extbnb_only_train_415680.txt: n=415680 sha256=ec437e8bee64598bb5a0da0e688178c7ce5924f40f45e1384570a64348c24d8f (first 415680 lines of h5list_v3_extbnb_only_train.txt; P1A budget matching)
