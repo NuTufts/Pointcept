@@ -27,10 +27,10 @@ import sys
 # ORDER MATTERS: first matching prefix wins.
 PROBE_MAP = [
     ("P05B.4", "configs/lartpc/p05/linearprobe-sonata-p05-mc-noghost-sumcharge-tufts.py", []),
-    # P05B.5/P05B.6 (asinh variants): uncomment once the p05b5-asinh-input
-    # branch is merged and the asinh probe config exists.
-    # ("P05B.5", "configs/lartpc/p05/linearprobe-sonata-p05-mc-noghost-asinh-tufts.py", []),
-    # ("P05B.6", "configs/lartpc/p05/linearprobe-sonata-p05-mc-noghost-asinh-tufts.py", []),
+    # P05B.5/P05B.6 (asinh variants) — live on this branch: snapshots
+    # pretrained on asinh inputs MUST be probed with the asinh config.
+    ("P05B.5", "configs/lartpc/p05/linearprobe-sonata-p05-mc-noghost-asinh-tufts.py", []),
+    ("P05B.6", "configs/lartpc/p05/linearprobe-sonata-p05-mc-noghost-asinh-tufts.py", []),
     ("P05C.1", "configs/lartpc/p05/linearprobe-sonata-p05-mc-noghost-tufts.py",
      ["model.backbone.head_num_prototypes=2048"]),
     ("P05C.3", "configs/lartpc/p05/linearprobe-sonata-p05-mc-noghost-tufts.py",

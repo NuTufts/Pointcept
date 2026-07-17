@@ -93,6 +93,60 @@ CHANNEL_REDUCE_LINE = '''    # P05B.4: reduce the 3 per-plane pixvals to one pla
     dict(type="ChannelReduce", key="strength", mode="sum"),
 '''
 
+# ---------------------------------------------------------------------------
+# Strength-scaling slot (P05B.5): every template's strength transform renders
+# from one of these, so SSL / supervised / probe pipelines can never disagree.
+# The log dict must stay byte-identical to the pre-P05B.5 configs.
+# ---------------------------------------------------------------------------
+LOG_STRENGTH_TRANSFORM = '''    dict(
+        type="LogTransform",
+        min_val=0.01,
+        max_val=1000.0,
+        log=True,
+        keys=("strength",),
+    ),'''
+
+ASINH_STRENGTH_TRANSFORM = '''    # P05F verdict (input_dist_study): asinh(scale=50) over [0, 1000] keeps the
+    # mu/pi/p dE/dx separation the log scaling squashes; xmax matches the
+    # loader clip, so the loader is untouched.
+    dict(
+        type="LogTransform",
+        mode="asinh",
+        asinh_scale=50.0,
+        max_val=1000.0,
+        keys=("strength",),
+    ),'''
+
+LOG_STRENGTH_JITTER = '''dict(
+                type="MultiplicativeRandomJitter",
+                sigma=0.05,
+                clip=0.05,
+                keys=("strength"),
+                p=0.8,
+                log_space=True,
+            ),'''
+
+
+def asinh_strength_jitter(sigma):
+    """EXACT multiplicative charge jitter through the asinh transform.
+
+    The legacy log_space jitter on LogTransform-rescaled values multiplies the
+    underlying charge by (1+n)^2.5 (nominal 0.05 -> effective ~0.125), so
+    P05B.5 uses sigma=0.125 to first-order match the siblings' augmentation
+    strength and P05B.6 uses sigma=0.05 to isolate the jitter magnitude.
+    """
+    return f'''dict(
+                # exact value-space jitter (handoff §2.2/§2.3): stays in [-1,1]
+                type="MultiplicativeRandomJitter",
+                sigma={sigma},
+                clip={sigma},
+                keys=("strength"),
+                p=0.8,
+                value_space="asinh",
+                asinh_scale=50.0,
+                max_val=1000.0,
+            ),'''
+
 # =============================================================================
 # SSL pretraining template
 # =============================================================================
@@ -254,13 +308,7 @@ transform = [
         max_retries=100,
         fallback_to_random=True),
     dict(type="NormalizeCoord", center=[125.0, 0.0, 1036.0 / 2.0], scale=coord_scale),
-@STRENGTH_REDUCE@    dict(
-        type="LogTransform",
-        min_val=0.01,
-        max_val=1000.0,
-        log=True,
-        keys=("strength",),
-    ),
+@STRENGTH_REDUCE@@STRENGTH_TRANSFORM@
     dict(type="Copy", keys_dict={"coord": "origin_coord"}),
     dict(
         type="MultiViewGenerator",
@@ -272,14 +320,7 @@ transform = [
         local_view_num=6,
         local_view_scale=(0.1, 0.4),
         global_shared_transform=[
-            dict(
-                type="MultiplicativeRandomJitter",
-                sigma=0.05,
-                clip=0.05,
-                keys=("strength"),
-                p=0.8,
-                log_space=True,
-            ),
+            @STRENGTH_JITTER@
         ],
         global_transform=[
 @GLOBAL_AUG@
@@ -330,13 +371,7 @@ val_transform = [
         max_retries=100,
         fallback_to_random=True),
     dict(type="NormalizeCoord", center=[125.0, 0.0, 1036.0 / 2.0], scale=coord_scale),
-@STRENGTH_REDUCE@    dict(
-        type="LogTransform",
-        min_val=0.01,
-        max_val=1000.0,
-        log=True,
-        keys=("strength",),
-    ),
+@STRENGTH_REDUCE@@STRENGTH_TRANSFORM@
     dict(type="CenterShift", apply_z=False, axes=("x", "y", "z")),
     dict(type="ToTensor"),
     dict(
@@ -579,13 +614,7 @@ train_transform = [
         max_retries=100,
         fallback_to_random=True),
     dict(type="NormalizeCoord", center=[125.0, 0.0, 1036.0 / 2.0], scale=coord_scale),
-    dict(
-        type="LogTransform",
-        min_val=0.01,
-        max_val=1000.0,
-        log=True,
-        keys=("strength",),
-    ),
+@STRENGTH_TRANSFORM@
 @ZERO_CHARGE@@AUG_BLOCK@
     dict(type="ToTensor"),
     dict(
@@ -613,13 +642,7 @@ val_transform = [
         max_retries=100,
         fallback_to_random=True),
     dict(type="NormalizeCoord", center=[125.0, 0.0, 1036.0 / 2.0], scale=coord_scale),
-    dict(
-        type="LogTransform",
-        min_val=0.01,
-        max_val=1000.0,
-        log=True,
-        keys=("strength",),
-    ),
+@STRENGTH_TRANSFORM@
 @ZERO_CHARGE@    dict(type="CenterShift", apply_z=False, axes=("x", "y", "z")),
     dict(type="ToTensor"),
     dict(
@@ -702,18 +725,24 @@ PROBE_TEMPLATE = BANNER + '''
 _base_ = ["../../_base_/default_runtime.py"]
 
 seed = 0
-# P100 (Tufts) settings, as in linearprobe-sonata-lartpc-v5-noghost.py
-batch_size = 288
-batch_size_val = 132
-num_worker = 22
-num_worker_val = 20
+# Probe batch/GPU decision (PI, 2026-07-16, measured on A100-80G job 1632758):
+# all probes run on Tufts A100s (sbatch --constraint=a100) at batch 64.
+# B=64 fits EVERY rtgpu card incl. A100-40G (peak 7.8/14.2 GiB alloc/reserved)
+# and costs only ~18% throughput vs 288 (103 vs 125 samples/s — the ~0.5M-pt
+# batches already saturate the GPU). The head is a pure nn.Linear (no BN), so
+# batch size does not affect model statistics — but it couples to the LR
+# schedule: calibrate the probe budget AT this batch size and freeze both.
+batch_size = 64
+batch_size_val = 64
+num_worker = 14
+num_worker_val = 12
 mix_prob = 0.0
 empty_cache = False
 enable_amp = False
 evaluate = True
 find_unused_parameters = False
 
-flash_backend = "xformers"   # backend needed on the Tufts P100s
+flash_backend = "xformers"   # works on the A100s; keep ONE backend for all probes
 amp_dtype = "float16"
 
 enable_wandb = True
@@ -837,13 +866,7 @@ train_transform = [
         max_retries=100,
         fallback_to_random=True),
     dict(type="NormalizeCoord", center=[125.0, 0.0, 1036.0 / 2.0], scale=coord_scale),
-@PROBE_REDUCE@    dict(
-        type="LogTransform",
-        min_val=0.01,
-        max_val=1000.0,
-        log=True,
-        keys=("strength",),
-    ),
+@PROBE_REDUCE@@STRENGTH_TRANSFORM@
 @AUG_BLOCK@
     dict(type="ToTensor"),
     dict(
@@ -871,13 +894,7 @@ val_transform = [
         max_retries=100,
         fallback_to_random=True),
     dict(type="NormalizeCoord", center=[125.0, 0.0, 1036.0 / 2.0], scale=coord_scale),
-@PROBE_REDUCE@    dict(
-        type="LogTransform",
-        min_val=0.01,
-        max_val=1000.0,
-        log=True,
-        keys=("strength",),
-    ),
+@PROBE_REDUCE@@STRENGTH_TRANSFORM@
     dict(type="CenterShift", apply_z=False, axes=("x", "y", "z")),
     dict(type="ToTensor"),
     dict(
@@ -971,7 +988,25 @@ PROBE_RUNS = {
         "      --options weight=<snapshot.pth> save_path=exp/probes/<run>/<imgM>",
         {"AUG": "detsym", "SWAP": "None", "SUMCHARGE": True, "IN_CHANNELS": 4},
     ),
+    "PROBE-p05-mc_noghost-asinh": (
+        "linearprobe-sonata-p05-mc-noghost-asinh-tufts.py",
+        "Linear probe for P05B.5/P05B.6 snapshots: identical to the base P05\n"
+        "probe except the strength scaling is asinh(scale=50, xmax=1000) —\n"
+        "snapshots pretrained on asinh inputs MUST be probed with matching\n"
+        "scaling or the probe numbers are meaningless. Probes carry no\n"
+        "strength jitter, so this one config serves both B.5 and B.6.\n"
+        "Per-snapshot launch:\n"
+        "  python tools/train.py --config-file configs/lartpc/p05/linearprobe-sonata-p05-mc-noghost-asinh-tufts.py \\\n"
+        "      --options weight=<snapshot.pth> save_path=exp/probes/<run>/<imgM>",
+        {"AUG": "detsym", "SWAP": "(0, 1)", "STRENGTH": "asinh"},
+    ),
 }
+
+
+def strength_transform_block(overrides):
+    if overrides.get("STRENGTH") == "asinh":
+        return ASINH_STRENGTH_TRANSFORM
+    return LOG_STRENGTH_TRANSFORM
 
 
 def build_probe(run_id, filename, header, overrides):
@@ -981,6 +1016,7 @@ def build_probe(run_id, filename, header, overrides):
         RUN_ID=run_id,
         IN_CHANNELS=overrides.get("IN_CHANNELS", 6),
         AUG_BLOCK=aug_block,
+        STRENGTH_TRANSFORM=strength_transform_block(overrides),
         PROBE_REDUCE=CHANNEL_REDUCE_LINE if overrides.get("SUMCHARGE") else "",
     )
     return filename, render(PROBE_TEMPLATE, subs)
@@ -1020,6 +1056,27 @@ SSL_RUNS = {
         "P05B.4 — SSL on ghost-dropped MC, detector-symmetry augmentations with\n"
         "PLANE-SUMMED charge scalar (rotation/flip-compatible charge feature).",
         {"AUG": "detsym", "SWAP": "None", "SUMCHARGE": True, "IN_CHANNELS": 4},
+    ),
+    "P05B.5-mc_noghost-s0": (
+        "pretrain-sonata-p05b5-mc-noghost-asinh.py",
+        "P05B.5 — SSL on ghost-dropped MC, free-rotation augs (as P05B.1) with\n"
+        "ASINH input scaling asinh(scale=50, xmax=1000) per the P05F verdict\n"
+        "(input_dist_study/README.md) and EXACT value-space charge jitter\n"
+        "sigma=clip=0.125 — a first-order match to the siblings' effective\n"
+        "(1+n)^2.5 ~ +/-12.5% legacy jitter, so this is ONE delta (the\n"
+        "transform) against P05B.1. PI decision 2026-07-16. Probe snapshots\n"
+        "with linearprobe-sonata-p05-mc-noghost-asinh-tufts.py ONLY.",
+        {"STRENGTH": "asinh", "JITTER_SIGMA": 0.125},
+    ),
+    "P05B.6-mc_noghost-s0": (
+        "pretrain-sonata-p05b6-mc-noghost-asinh-jitter005.py",
+        "P05B.6 — as P05B.5 (asinh scaling, exact value-space jitter) but\n"
+        "sigma=clip=0.05: ONE delta (jitter magnitude) against P05B.5 —\n"
+        "does the charge-jitter strength itself matter under asinh?\n"
+        "PI decision 2026-07-16. (The 4th factorial cell — log transform with\n"
+        "exact 0.05 jitter — is intentionally not generated; handoff §2.3.)\n"
+        "Probe snapshots with linearprobe-sonata-p05-mc-noghost-asinh-tufts.py.",
+        {"STRENGTH": "asinh", "JITTER_SIGMA": 0.05},
     ),
     "P05C.1-mc_noghost-s0": (
         "pretrain-sonata-p05c1-mc-noghost-proto2048.py",
@@ -1073,6 +1130,13 @@ SUPERVISED_RUNS = {
         "(charge frozen): does rotation+frozen-charge hurt even supervised training?",
         {"AUG": "freerot"},
     ),
+    "P05A.5-mc_noghost-s0": (
+        "supervised-ceiling-p05a5-mc-noghost-asinh.py",
+        "P05A.5 — OPTIONAL supervised ceiling with the asinh(scale=50,\n"
+        "xmax=1000) input scaling (P05F verdict). Generated for completeness;\n"
+        "DO NOT SCHEDULE unless P05B.5 shows an effect (handoff §2.4).",
+        {"AUG": "detsym", "SWAP": "(0, 1)", "STRENGTH": "asinh"},
+    ),
 }
 
 
@@ -1101,6 +1165,10 @@ def build_ssl(run_id, filename, header, overrides):
         CROP_PROB_RANDOM=overrides.get("CROP_PROB_RANDOM", 1.0),
         DROP_COSMICS=overrides.get("DROP_COSMICS", False),
         DROP_COSMICS_PROB=overrides.get("DROP_COSMICS_PROB", 0.5),
+        STRENGTH_TRANSFORM=strength_transform_block(overrides),
+        STRENGTH_JITTER=(asinh_strength_jitter(overrides["JITTER_SIGMA"])
+                         if overrides.get("STRENGTH") == "asinh"
+                         else LOG_STRENGTH_JITTER),
         TRAIN_LIST=MC_TRAIN,
         VAL_LIST=MC_VAL,
     )
@@ -1125,6 +1193,7 @@ def build_supervised(run_id, filename, header, overrides):
         IN_CHANNELS=6,
         AUG_BLOCK=aug_lines,
         ZERO_CHARGE=ZERO_CHARGE_LINE if overrides.get("ZERO_CHARGE") else "",
+        STRENGTH_TRANSFORM=strength_transform_block(overrides),
         TRAIN_LIST=MC_TRAIN,
         VAL_LIST=MC_VAL,
     )

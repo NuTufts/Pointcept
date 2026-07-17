@@ -16,18 +16,24 @@ Per-snapshot launch:
 _base_ = ["../../_base_/default_runtime.py"]
 
 seed = 0
-# P100 (Tufts) settings, as in linearprobe-sonata-lartpc-v5-noghost.py
-batch_size = 288
-batch_size_val = 132
-num_worker = 22
-num_worker_val = 20
+# Probe batch/GPU decision (PI, 2026-07-16, measured on A100-80G job 1632758):
+# all probes run on Tufts A100s (sbatch --constraint=a100) at batch 64.
+# B=64 fits EVERY rtgpu card incl. A100-40G (peak 7.8/14.2 GiB alloc/reserved)
+# and costs only ~18% throughput vs 288 (103 vs 125 samples/s — the ~0.5M-pt
+# batches already saturate the GPU). The head is a pure nn.Linear (no BN), so
+# batch size does not affect model statistics — but it couples to the LR
+# schedule: calibrate the probe budget AT this batch size and freeze both.
+batch_size = 64
+batch_size_val = 64
+num_worker = 14
+num_worker_val = 12
 mix_prob = 0.0
 empty_cache = False
 enable_amp = False
 evaluate = True
 find_unused_parameters = False
 
-flash_backend = "xformers"   # backend needed on the Tufts P100s
+flash_backend = "xformers"   # works on the A100s; keep ONE backend for all probes
 amp_dtype = "float16"
 
 enable_wandb = True

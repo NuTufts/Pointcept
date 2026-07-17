@@ -7,10 +7,13 @@
 # script runs; missing logs/ kills the job instantly with exit code 53).
 #
 #SBATCH --job-name=p05probe
-#SBATCH --partition=gpu            # ADJUST: Tufts GPU partition
-#SBATCH --gres=gpu:1               # ADJUST: e.g. gpu:p100:1
+#SBATCH --partition=gpu
+#SBATCH --gres=gpu:1
+#SBATCH --constraint=a100          # PIN one arch for the whole sweep (PI decision
+                                   # 2026-07-16): batch 64 fits 40G and 80G variants;
+                                   # do NOT mix archs (L40S/H100) within a comparison.
 #SBATCH --time=08:00:00
-#SBATCH --cpus-per-task=8
+#SBATCH --cpus-per-task=16         # probe configs use num_worker=14
 #SBATCH --mem=48G
 #SBATCH --output=logs/p05probe.%j.log
 #SBATCH --error=logs/p05probe.%j.err

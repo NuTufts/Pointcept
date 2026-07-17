@@ -32,10 +32,27 @@ via ssh/rsync to Isambard (alias assumed `isambard`; override with
    `lartpc/filelists/h5list_v3_mc_only_{train,val}_tufts.txt`. The probe
    configs now point at them — probe numbers are only ceiling-comparable on
    this split. If the val list is missing, stop and run the remap task first.
-3. Adjust `submit_probe_tufts.sbatch`: partition/gres for the Tufts GPU
-   nodes; REPO/CONTAINER paths if different. `mkdir -p logs` here BEFORE the
+3. GPU + batch size are SETTLED (PI decision 2026-07-16, measured on an
+   A100-80G, SLURM job 1632758): all probes run at **batch 64 on
+   `--constraint=a100`** (already set in `submit_probe_tufts.sbatch` and the
+   generated probe configs). Rationale: B=64 needs 7.8/14.2 GiB
+   alloc/reserved so it fits BOTH A100 variants (40G ~18 GPUs + 80G 40
+   GPUs), and throughput is nearly flat in batch size (103 vs 125
+   samples/s at B=288 — a probe epoch is ~1.1 h either way) because even
+   64-crop batches are ~0.5M points. The probe head is a pure nn.Linear
+   (no BatchNorm), so batch size cannot affect model statistics — but the
+   step-2 LR calibration MUST be done at batch 64 and frozen with it.
+   Do NOT mix architectures within the comparison set: L40S (Ada) or
+   H100/H200 (Hopper) runs are fine only as a wholesale replacement, never
+   as overflow alongside A100 probes. `mkdir -p logs` here BEFORE the
    first sbatch (SLURM opens --output pre-script; missing dir = exit 53).
-4. Confirm the ssh alias works: `ssh isambard hostname`.
+4. Confirm ssh works: `ssh u6jo.aip2.isambard hostname` (the Tufts-side
+   alias; sync_from_isambard.sh defaults to it). Isambard auth is a
+   **short-lived (~12 h) clifton certificate** — if ssh fails with
+   "kex_exchange_identification: Connection closed", run `./clifton auth`
+   (repo root, interactive browser OIDC, so a human must do it) and retry.
+   Check remaining validity with:
+   `ssh-keygen -L -f ~/.cache/clifton/u6jo.aip2.isambard-cert.pub | grep Valid`.
 
 ## Step 1 — sync (repeat daily / per loop)
 
