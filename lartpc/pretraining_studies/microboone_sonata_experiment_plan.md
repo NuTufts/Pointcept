@@ -65,6 +65,17 @@ question for the reconstruction cascade + embedding-space domain-shift study
 analysis runs on frozen features at Tufts against the frozen MC/EXTBNB
 diag1k sets. **E.1 remains on hold** (PI, 2026-07-17).
 
+**LArMatch naming-bug fix + symmetric-filter runs — LAUNCHED 2026-07-17**
+(jobs 5692768/5692769): the MC production stores the LArMatch score as
+`lm_score` (writer mismatch vs EXTBNB's `larmatch_score`), so every prior
+"filtered" run silently left MC unfiltered — including v8, now understood as
+an asymmetric mixture. Fixed via an opt-in `larmatch_score_keys` dataset
+parameter (default preserves legacy behavior bit-identically; gate-tested).
+New runs: **P1A.4b** (MC + stochastic LArMatch filter — vs P1A.4 isolates
+pure domain at matched preprocessing; vs P1A.1 isolates reco-vs-truth
+cleaning within MC) and **P5B.3** (symmetric LArMatch-filtered 1:1 mixture,
+no truth anywhere — the method-symmetric alternative to P5B.2).
+
 ---
 
 ## 0. Conventions
