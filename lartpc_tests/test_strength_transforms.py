@@ -32,7 +32,11 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 REPO = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 CONFIG_DIR = os.path.join(REPO, "configs", "lartpc", "p05")
 GOLDEN_PATH = os.path.join(REPO, "lartpc_tests", "golden", "p05b1_pipeline_golden.npz")
-DIAG1K_LIST = os.path.join(REPO, "lartpc", "filelists", "h5list_v3_mc_diag1k_tufts.txt")
+# Override with P05_DIAG1K_LIST to run on another cluster (e.g. the
+# Isambard squashfs list lartpc/filelists/h5list_v3_mc_diag1k.txt).
+DIAG1K_LIST = os.environ.get(
+    "P05_DIAG1K_LIST",
+    os.path.join(REPO, "lartpc", "filelists", "h5list_v3_mc_diag1k_tufts.txt"))
 
 B1_CONFIG = os.path.join(CONFIG_DIR, "pretrain-sonata-p05b1-mc-noghost-freerot.py")
 B5_CONFIG = os.path.join(CONFIG_DIR, "pretrain-sonata-p05b5-mc-noghost-asinh.py")
@@ -64,13 +68,21 @@ def ref_linear_transform(x, min_val, max_val):
 
 
 def ref_legacy_jitter(y, sigma, clip, p, log_space):
-    """Replicates the pre-change MultiplicativeRandomJitter draw-for-draw."""
+    """Replicates the pre-change MultiplicativeRandomJitter draw-for-draw.
+
+    NOTE: production applies the jitter IN-PLACE (+=, *=), which under
+    numpy<2 value-based casting keeps a float32 array float32 (downcasting
+    the float64 noise term), whereas out-of-place ops promote to float64.
+    The reference must be in-place too, or this test fails on numpy 1.x
+    (Isambard container) while silently passing on numpy 2.x (Tufts)."""
     if random.random() > p:
         return y
     noise = np.clip(np.random.randn(*y.shape) * sigma, -clip, clip)
     if log_space:
-        return y + np.log10(1.0 + noise)
-    return y * (1.0 + noise)
+        y += np.log10(1.0 + noise)
+    else:
+        y *= 1.0 + noise
+    return y
 
 
 # Closed forms for the NEW modes (handoff §2.1/§2.2), written independently.
