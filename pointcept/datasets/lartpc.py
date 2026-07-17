@@ -176,6 +176,7 @@ class LArTPCDataset(DefaultDataset):
         data_only=False,
         filter_larmatch=False,
         larmatch_threshold_range=(0.15, 0.75),
+        larmatch_score_keys=("larmatch_score",),
         **kwargs
     ):
         self.use_reco_coords = use_reco_coords
@@ -205,6 +206,16 @@ class LArTPCDataset(DefaultDataset):
         self.data_only = data_only
         self.filter_larmatch = filter_larmatch
         self.larmatch_threshold_range = larmatch_threshold_range
+        # HDF5 dataset names tried IN ORDER for the LArMatch score. The MC
+        # production wrote the score as 'lm_score' while the EXTBNB pipeline
+        # wrote 'larmatch_score' (writer naming mismatch, found 2026-07-17),
+        # so with the default single-name tuple the filter silently no-ops on
+        # MC files. The default preserves that legacy behavior exactly (v8 and
+        # every pre-P1A.4b config depends on it); symmetric-filtering configs
+        # opt in with larmatch_score_keys=("larmatch_score", "lm_score").
+        if isinstance(larmatch_score_keys, str):
+            larmatch_score_keys = (larmatch_score_keys,)
+        self.larmatch_score_keys = tuple(larmatch_score_keys)
         self.min_points_required = 100
 
         # Call parent init (this will call get_data_list)
@@ -424,11 +435,15 @@ class LArTPCDataset(DefaultDataset):
             wire_feat *= self.wire_scale
 
             # Load larmatch score if available and filtering is enabled
+            # (first present name in larmatch_score_keys wins; see __init__)
             larmatch_score = None
-            if self.filter_larmatch and 'larmatch_score' in f['/entry_0/triplet_data']:
-                larmatch_score = np.array(
-                    f['/entry_0/triplet_data/larmatch_score'], dtype=np.float32
-                )
+            if self.filter_larmatch:
+                for lm_key in self.larmatch_score_keys:
+                    if lm_key in f['/entry_0/triplet_data']:
+                        larmatch_score = np.array(
+                            f[f'/entry_0/triplet_data/{lm_key}'], dtype=np.float32
+                        )
+                        break
 
         data_dict = {
             "coord": coord,
