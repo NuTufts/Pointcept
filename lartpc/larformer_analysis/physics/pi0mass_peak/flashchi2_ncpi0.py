@@ -164,6 +164,10 @@ def main():
                          "run3 dead PMT; masked in ALL samples for fairness)")
     ap.add_argument("--plots", required=True)
     ap.add_argument("--pot", type=float, default=4.4e19)
+    ap.add_argument("--chi2-cut-nc", type=float, default=None,
+                    help="separate (tighter) cut for the reco-NC cut LINE + tail "
+                         "ratio; defaults to --chi2-cut. Matches the per-stream "
+                         "cut used in datamc_ext_overlay (NC log10<3.5=3162).")
     ap.add_argument("--chi2-cut", type=float, default=10000.0,
                     help="high-chi2 (out-of-time) cut line + ratio table; "
                          "10^4 accommodates the run1 beam-data light-yield "
@@ -198,6 +202,9 @@ def main():
     # reco-CC = likely genuine in-time neutrinos (control); reco-NC = probe
     for want_cc, slab, sabb in ((True, "reco-CC (likely nu, in-time)", "cc"),
                                 (False, "reco-NC", "nc")):
+        cutv = (args.chi2_cut if want_cc or args.chi2_cut_nc is None
+                else args.chi2_cut_nc)
+        lcut_s = np.log10(cutv)
         for eq2, vlab, vabb in ((True, "exactly 2", "eq2"),
                                 (False, ">=2", "ge2")):
             sm = sel(mc, eq2, want_cc); sd = sel(da, eq2, want_cc)
@@ -230,8 +237,8 @@ def main():
                 ax.errorbar(ctr, dh, yerr=np.sqrt(np.clip(dh, 1, None)),
                             fmt="ko", ms=3.5, lw=1, capsize=0,
                             label=f"beam data ({int(dh.sum())})")
-                ax.axvline(lcut, color="crimson", ls="--", lw=1.4,
-                           label=f"cut chi2={args.chi2_cut:.0f}")
+                ax.axvline(lcut_s, color="crimson", ls="--", lw=1.4,
+                           label=f"cut chi2={cutv:.0f}")
                 ax.set(xlabel=r"$\log_{10}$ flash $\chi^2$ (primary nu vtx)",
                        ylabel=f"events / {args.pot:.1e} POT", title=ttl)
                 ax.legend(fontsize=7)
@@ -247,6 +254,8 @@ def main():
     # EXT nu-slice chi2 is high, so a cut would separate it.
     print("== median flash-chi2 (data vs MC vs EXT) + high-chi2 tail share ==")
     for want_cc, slab in ((True, "reco-CC"), (False, "reco-NC")):
+        cutv = (args.chi2_cut if want_cc or args.chi2_cut_nc is None
+                else args.chi2_cut_nc)
         for eq2, vlab in ((False, ">=2"), (True, "exactly-2")):
             sm = sel(mc, eq2, want_cc); sd = sel(da, eq2, want_cc)
             med_d = np.median(da["chi2"][sd]) if sd.any() else np.nan
@@ -255,11 +264,11 @@ def main():
             med_e = (np.median(ex["chi2"][se]) if se is not None and se.any()
                      else np.nan)
             # fraction of each above the cut (the putative cosmic/out-of-time band)
-            hi = lambda d, s: (float(np.mean(d["chi2"][s] > args.chi2_cut))
+            hi = lambda d, s: (float(np.mean(d["chi2"][s] > cutv))
                                if s.any() else np.nan)
             print(f"  [{slab} {vlab:9s}] median chi2: data {med_d:8.0f} | "
                   f"MC {med_m:8.0f} | EXT {med_e:9.0f}  ||  frac chi2>"
-                  f"{args.chi2_cut:.0f}: data {hi(da,sd):.2f} MC {hi(mc,sm):.2f}"
+                  f"{cutv:.0f}: data {hi(da,sd):.2f} MC {hi(mc,sm):.2f}"
                   f" EXT {hi(ex,se) if ex is not None else float('nan'):.2f}")
     print(f">>> plots -> {args.plots}  (EXT scale "
           f"{args.ext_scale if ex is not None else float('nan'):.4f})")
