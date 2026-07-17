@@ -126,7 +126,19 @@ def main():
     # ---- purity vs reco observable: true pi0 signal / (all MC + EXT cosmic) -
     # with (solid) and without (dashed) the flash-chi2 cut, showing its gain.
     if "flash_chi2" in mc.files and "flash_chi2" in ex.files:
-        def purity_plot(obs_key, bins, xlabel, fname, vline=None):
+        def purity_plot(obs_key, bins, xlabel, fname, vline=None,
+                        stream_matched=False):
+            """purity vs a reco observable.
+
+            stream_matched=False: numerator = ANY true-pi0 nu interaction
+                (cat 0 or 1) -- "did we select a pi0 event at all".
+            stream_matched=True : numerator = the true-pi0 interaction OF THIS
+                STREAM'S TYPE only (reco-CC -> true CC pi0 = cat 0; reco-NC ->
+                true NC pi0 = cat 1). This is the stricter question -- how well
+                each sample ISOLATES its own interaction type -- so a true NC
+                pi0 landing in the reco-CC sample now counts against CC purity
+                instead of for it.
+            """
             ctr = 0.5 * (bins[:-1] + bins[1:])
             for selk, vabb, vlab in (("sel_ge2", "ge2", ">=2 gamma"),
                                      ("sel_eq2", "eq2", "exactly 2 gamma")):
@@ -153,7 +165,12 @@ def main():
                         for lo, hi in zip(bins[:-1], bins[1:]):
                             mb = mm & (mc[obs_key] >= lo) & (mc[obs_key] < hi)
                             eb = em & (ex[obs_key] >= lo) & (ex[obs_key] < hi)
-                            sig = mc["w"][mb & (mc["cat"] <= 1)].sum()
+                            if stream_matched:
+                                # cat 0 = true signal CC, cat 1 = true signal NC
+                                sig_cat = mc["cat"] == (0 if want_cc else 1)
+                            else:
+                                sig_cat = mc["cat"] <= 1
+                            sig = mc["w"][mb & sig_cat].sum()
                             tot = (mc["w"][mb].sum()
                                    + args.ext_scale * int(eb.sum()))
                             p = sig / tot if tot > 0 else np.nan
@@ -165,9 +182,11 @@ def main():
                                     color="#1f77b4", alpha=al, label=lab)
                     if vline is not None:
                         ax.axvline(vline, color="0.4", ls=":", lw=1.1)
+                    numlab = (f"true {'CC' if want_cc else 'NC'} pi0 signal"
+                              if stream_matched else "true pi0 signal (CC+NC)")
                     ax.set(xlabel=xlabel, ylabel="purity", ylim=(0, 1.05),
                            title=f"{slab}: pi0 purity vs {xlabel} ({vlab})\n"
-                                 "true pi0 signal / (all MC + EXT cosmic)")
+                                 f"{numlab} / (all MC + EXT cosmic)")
                     ax.legend(fontsize=8)
                     ax.grid(alpha=0.3)
                     fig.tight_layout()
@@ -180,6 +199,13 @@ def main():
                     vline=PI0_MASS)
         purity_plot("p_reco", np.linspace(0, 1200, 25),
                     r"reco $p_{\pi^0}$ [MeV/c]", "purity_ppi0")
+        # stream-matched: how well does each sample isolate its OWN type?
+        purity_plot("m_vtx2start", np.linspace(0, 500, 26),
+                    r"reco $m_{\gamma\gamma}$ [MeV]", "puritySameStream_mgg",
+                    vline=PI0_MASS, stream_matched=True)
+        purity_plot("p_reco", np.linspace(0, 1200, 25),
+                    r"reco $p_{\pi^0}$ [MeV/c]", "puritySameStream_ppi0",
+                    stream_matched=True)
 
     # near-peak reco-NC data/pred ratio, with and without the EXT component
     print("== reco-NC near-peak (100-170 MeV) data vs prediction ==")
