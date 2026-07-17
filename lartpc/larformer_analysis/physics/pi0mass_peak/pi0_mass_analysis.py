@@ -90,6 +90,12 @@ def main():
                          "masked nu-slice flash_chi2 per event in the --out npz "
                          "(analysis-level flash-fix preview)")
     ap.add_argument("--dead-channels", default="15")
+    ap.add_argument("--saturation-mask", action="store_true",
+                    help="also mask SATURATED PMTs in the flash-chi2 recompute "
+                         "(lartpc/flashmatch/saturation.py). Pass it for EVERY "
+                         "sample or none: the MC cascade may bake the mask into "
+                         "its stored chi2 while data/EXT cascades predate it, "
+                         "and this recompute would otherwise silently drop it.")
     ap.add_argument("--flashchi2-cut", type=float, default=10000.0,
                     help="provisional flash-chi2 cut for the CC/NC efficiency-"
                          "vs-true-momentum plot (needs --cascade-dir)")
@@ -236,7 +242,8 @@ def main():
                 args.cascade_dir.rstrip("/"))) + "_"
             + _os.path.basename(args.cascade_dir.rstrip("/")) + ".npz")
         cc = corrected_chi2_by_rse(args.cascade_dir, run_, sub_, evt_, ent,
-                                   dead, cache)
+                                   dead, cache,
+                                   saturation=args.saturation_mask)
         for i in ent:
             flash_chi2[i] = cc.get(int(i), np.nan)
         print(f">>> flash-fix: corrected chi2 for "
