@@ -9,3 +9,5 @@ h5list_v3_extbnb_only_val.txt: n=5000 sha256=7a0eadb5043465c4ed8fb8d91af8232ab13
 h5list_v3_combined_train.txt: n=943325 sha256=508e674827cb4c2a14a91aaa8c4e5d63ec95e27f6ae75f8fe87d7348b41d4619
 h5list_v3_combined_val.txt: n=10000 sha256=e9bd630529ef51672e5b59ec5bebbf42564f23ba453f5249c3703e39e0fb7460
 h5list_v3_extbnb_only_train_415680.txt: n=415680 sha256=ec437e8bee64598bb5a0da0e688178c7ce5924f40f45e1384570a64348c24d8f (first 415680 lines of h5list_v3_extbnb_only_train.txt; P1A budget matching)
+h5list_v3_mix1to1_train.txt: n=831360 sha256=a94cc08dbcf775d6ab7119d3c36de5d23469dd2e60d05676a77ea7d8bda8b22c (line-interleaved mc_only_train + extbnb_only_train_415680; P5B mixture)
+h5list_v3_extbnb_diag1k.txt: n=1000 sha256=ec30145befa6babd3d861ff299f9fd6a816ecde3ee946bdd199cab7e5c40cf69 (first 1000 of extbnb_only_val; frozen EXTBNB diagnostic set)

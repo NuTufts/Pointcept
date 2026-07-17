@@ -1278,6 +1278,55 @@ P1A_RUNS = {
 }
 
 
+# =============================================================================
+# P5B mixture pretraining (plan §6, promoted 2026-07-17): MC + EXTBNB jointly,
+# 1:1 by events on the line-interleaved 831,360-file list. 18 epochs x 831,360
+# = 14,964,480 images = MATCHED_BUDGET exactly, each domain contributing half.
+# data_only="auto" probes each file for truth: MC files load labels (M5 sees
+# them; ghost filtering applies), EXTBNB files load none (the M5 "unlabeled"
+# fraction is the realized data fraction). In P5B.2, true_points_only drops
+# ghosts on MC only (guarded on truth presence) and the LArMatch filter
+# applies to EXTBNB only (MC files carry no larmatch_score) — the per-domain
+# asymmetry composes correctly by construction.
+# =============================================================================
+MIX_TRAIN = f"{FILELIST_DIR}/h5list_v3_mix1to1_train.txt"
+MIX_VAL = f"{FILELIST_DIR}/h5list_v3_combined_val.txt"
+
+P5B_COMMON = dict(
+    AUG="detsym", SWAP="(0, 1)",
+    EPOCH=18,
+    SNAPSHOT_ITERS=[img // BATCH_SIZE for img in P1A_SNAPSHOT_IMG_ANCHORS],
+    WANDB_PROJECT="pointcept_p1_pretrain",
+    SAVE_ROOT="p5b",
+    TRAIN_LIST=MIX_TRAIN, VAL_LIST=MIX_VAL,
+    DATA_ONLY='"auto"',
+)
+
+P5B_RUNS = {
+    "P5B.1-mix_raw-s0": (
+        "pretrain-sonata-p5b1-mix-raw-detsym.py",
+        "P5B.1 — RAW 1:1 MC+EXTBNB mixture, both domains with natural ghost\n"
+        "contamination (no filtering). Compare against P1A.2 (MC-ghosts) and\n"
+        "P1A.3 (EXTBNB-full) at identical base/budget.",
+        dict(P5B_COMMON,
+             TRUE_POINTS_ONLY=False,
+             INCLUDE_GHOSTS=True,
+             DATASET_COMMENT="# ---- P5B.1: raw mixture, all points both domains ----"),
+    ),
+    "P5B.2-mix_clean-s0": (
+        "pretrain-sonata-p5b2-mix-clean-detsym.py",
+        "P5B.2 — CLEANED 1:1 mixture: MC ghost-dropped (truth), EXTBNB\n"
+        "LArMatch-filtered (U[0.15,0.75]) — each domain at deployment-quality\n"
+        "prep. Compare against P1A.1 (MC-clean) and P1A.4 (EXTBNB+LArMatch).",
+        dict(P5B_COMMON,
+             TRUE_POINTS_ONLY=True,
+             FILTER_LARMATCH=True,
+             EXTRA_DATASET_LINES="        larmatch_threshold_range=(0.15, 0.75),\n",
+             DATASET_COMMENT="# ---- P5B.2: cleaned mixture (per-domain best prep) ----"),
+    ),
+}
+
+
 def build_supervised(run_id, filename, header, overrides):
     aug = overrides.get("AUG", "detsym")
     if aug == "freerot":
@@ -1311,7 +1360,7 @@ def main():
         with open(os.path.join(OUT_DIR, fn), "w") as f:
             f.write(text)
         written.append(fn)
-    for run_id, (filename, header, overrides) in P1A_RUNS.items():
+    for run_id, (filename, header, overrides) in {**P1A_RUNS, **P5B_RUNS}.items():
         fn, text = build_ssl(run_id, filename, header, overrides)
         with open(os.path.join(OUT_DIR, fn), "w") as f:
             f.write(text)

@@ -40,6 +40,8 @@ PROBE_MAP = [
     # standard 6-channel MC probe applies (data-domain backbones P1A.3/.4 are
     # probed on MC truth by design — same protocol for every cell).
     ("P1A", "configs/lartpc/p05/linearprobe-sonata-p05-mc-noghost-tufts.py", []),
+    # P5B mixture backbones: same base/scaling — standard MC probe.
+    ("P5B", "configs/lartpc/p05/linearprobe-sonata-p05-mc-noghost-tufts.py", []),
 ]
 
 SNAP_RE = re.compile(r"snapshot_iter(\d+)_img(\d+)\.pth$")
