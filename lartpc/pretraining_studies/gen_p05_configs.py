@@ -1078,6 +1078,21 @@ SSL_RUNS = {
         "Probe snapshots with linearprobe-sonata-p05-mc-noghost-asinh-tufts.py.",
         {"STRENGTH": "asinh", "JITTER_SIGMA": 0.05},
     ),
+    "P05E.1-mc_noghost-s0": (
+        "pretrain-sonata-p05e1-mc-noghost-detsym-dropcosmic.py",
+        "P05E.1 — WAVE C COMBINATION (PI decision 2026-07-17, from the Tufts\n"
+        "linear-probe sweep at matched img768k/1536k; rankings stable at both):\n"
+        "detector-symmetry augmentations (P05B.2 winner: +2.4 mIoU over free\n"
+        "rotations) x drop_cosmics=0.9 batch composition (P05C.5 winner:\n"
+        "+7.3 mIoU / +10 pion / +20 proton IoU points over P05B.1 baseline),\n"
+        "prototypes 4096 (dead knob: 2048 ~ 4096 > 8192). B.4's sum-charge was\n"
+        "declined: its +1 pion costs -3.7 proton vs B.2. If this run confirms,\n"
+        "it is promoted to the v9 reference config. Probe with the standard\n"
+        "6-channel Tufts probe config. Full evidence:\n"
+        "lartpc/pretraining_studies/probe_orchestration/RESULTS_WAVE_A_DECISION.md",
+        {"AUG": "detsym", "SWAP": "(0, 1)",
+         "DROP_COSMICS": True, "DROP_COSMICS_PROB": 0.9},
+    ),
     "P05C.1-mc_noghost-s0": (
         "pretrain-sonata-p05c1-mc-noghost-proto2048.py",
         "P05C.1 — prototype-count sweep: head_num_prototypes=2048\n"
