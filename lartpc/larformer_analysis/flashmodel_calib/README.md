@@ -130,23 +130,40 @@ while run-3 MC/EXT use 1.0. Fitted γ arrays are the `gamma_*_run*.npz` files.
 
 ---
 
-## Downstream physics impact (30 k pilot; full-MC refresh pending)
+## Downstream physics impact
 
-- **pi0 mass peak**: unchanged (the mask only touches the flash-match / fm
+Plots: `../physics/pi0mass_peak/plots_ext_cut1e4_satfix/` (full MC =
+`mcc9_bnbnu_overlay_1500_full_satfix`, 67 211 events; data = bnb5e19 full; EXT =
+run-3 val). Cuts: reco-CC log₁₀χ² < 4 (10 000), reco-NC log₁₀χ² < 3.5 (3162);
+EXT scale 4.1258.
+
+- **pi0 mass peak**: unchanged by the mask (it only touches the flash-match / fm
   stream, not the nu-stream pi0 selection). Signal mass median CC 140.0 →
-  140.0 MeV, NC 134.7 → 134.4 MeV; total true-π0 signal −0.1 %.
-- **Vertex purity**: 46.8 → 47.1 % (+9 real ν, −72 cosmic fakes).
+  140.0 MeV, NC 134.7 → 134.4 MeV; total true-π0 signal −0.1 % (pilot before/after).
 - **flash-χ² as a cut**: MC reco-NC eq2 high-χ² fraction 48.6 → 9.5 %. With the
-  cut, the reco-NC near-peak (100–170 MeV) data/prediction ratio is 1.04–1.08
-  once the EXT cosmic component is included; that population is ~87 % cosmic, i.e.
-  the high-log(χ²) NC near-peak IS cosmogenic. NC can take a tighter cut
-  (log₁₀χ² < 3.5) than CC (< 4) for free: 0 % signal lost, ~23 % more cosmic
-  removed. Plots in `../physics/pi0mass_peak/plots_ext_cut1e4_satfix/`.
+  cut and the EXT cosmic component included, the reco-NC near-peak (100–170 MeV)
+  data/prediction ratio is **1.00 (eq2) / 1.03 (≥2)** on full MC (was 1.04–1.08
+  on the 30 k pilot). That near-peak high-χ² population is ~87 % cosmic — the
+  high-log(χ²) reco-NC near-peak IS cosmogenic, and once EXT is included there is
+  no unexplained excess. The tighter NC cut (3.5 vs 4) is free: 0 % NC signal
+  lost, ~23 % more cosmic removed.
+- **pi0 purity at the peak (100–170 MeV, eq2, full MC)**, inclusive (any true π0)
+  vs stream-matched (true π0 of the stream's own type):
 
-Statistics caveat: the physics numbers above are the 30 k pilot; the full MC
-(67 k, `mcc9_bnbnu_overlay_1500_full_satfix`) is done and the full bnb5e19 (176 k)
-+ EXT (668 k) reruns are pending — those shrink the reco-NC ratio error from
-~±0.09 toward ±0.03.
+  | stream  | inclusive | stream-matched | right-type frac |
+  |---------|-----------|----------------|-----------------|
+  | reco-CC | 0.898     | 0.876 (true CC π0) | 97.5 %       |
+  | reco-NC | 0.711     | 0.420 (true NC π0) | 59.0 %       |
+
+  reco-CC isolates its own type nearly perfectly. reco-NC does not: true CC π0 is
+  as large a component as true NC π0 (muon feed-down from missed / sub-threshold
+  muons), so the dominant reco-NC impurity is now CC misID, which flash-χ² cannot
+  address — the cosmic contamination is already down to ~16 %.
+
+Statistics caveat: MC is now full (67 k); the **data and EXT sides are still the
+bnb5e19-full / EXT-val samples**. The full bnb5e19 (176 k) + EXT (668 k) reruns
+(Phase 2) are what shrink the reco-NC data/pred ratio error from ~±0.09 toward
+±0.03.
 
 ---
 
