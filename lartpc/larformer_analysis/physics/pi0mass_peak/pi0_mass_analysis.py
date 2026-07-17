@@ -99,6 +99,10 @@ def main():
     ap.add_argument("--flashchi2-cut", type=float, default=10000.0,
                     help="provisional flash-chi2 cut for the CC/NC efficiency-"
                          "vs-true-momentum plot (needs --cascade-dir)")
+    ap.add_argument("--flashchi2-cut-nc", type=float, default=None,
+                    help="separate (tighter) cut for the NC curve; defaults to "
+                         "--flashchi2-cut. NC cosmic contamination reaches lower "
+                         "chi2 than CC, so NC can afford log10(chi2)<3.5 (=3162).")
     ap.add_argument("--data", action="store_true",
                     help="real-data mode: unit weights (no xsecWeight/POT "
                          "scaling), no truth categories (all events tagged "
@@ -402,8 +406,10 @@ def main():
     # numerator = selected + correct stream tag (+ flash-chi2 cut); denom =
     # true signal of that CC/NC type. Needs the masked flash_chi2 (cascade-dir).
     if args.cascade_dir and np.isfinite(flash_chi2[sel2p]).any():
-        cutv = args.flashchi2_cut
-        pass_cut = np.isfinite(flash_chi2) & (flash_chi2 < cutv)
+        # per-stream cuts: cat 0 = signal CC, cat 1 = signal NC
+        cut_by_cat = {0: args.flashchi2_cut,
+                      1: (args.flashchi2_cut if args.flashchi2_cut_nc is None
+                          else args.flashchi2_cut_nc)}
 
         def binned_eff(num, den):
             e, er = [], []
@@ -418,10 +424,12 @@ def main():
 
         for base_sel, vabb, vlab in ((sel2p, "ge2", ">=2 gamma"),
                                      (sel2x, "eq2", "exactly 2 gamma")):
-            fig, ax = plt.subplots(figsize=(6.6, 4.5))
+            fig, ax = plt.subplots(figsize=(7.4, 4.8))
             for cc, tag, col in ((0, "CC", "#d62728"), (1, "NC", "#1f77b4")):
                 den = (cat == cc) & np.isfinite(p_true)
                 tagged = base_sel & ((cat == 0) == reco_cc)  # correct stream tag
+                cutv = cut_by_cat[cc]
+                pass_cut = np.isfinite(flash_chi2) & (flash_chi2 < cutv)
                 for m, sty, suff in ((tagged, "--", "no cut"),
                                      (tagged & pass_cut, "o-",
                                       f"flash chi2<{cutv:.0f}")):
@@ -430,10 +438,11 @@ def main():
                                 alpha=1.0 if suff.startswith("flash") else 0.45,
                                 label=f"{tag} ({suff})")
             ax.set(xlabel=r"true $p_{\pi^0}$ [MeV/c]", ylabel="efficiency",
-                   ylim=(0, 1.05),
-                   title=f"CC / NC signal efficiency vs true momentum "
-                         f"({vlab})\nselected + correct tag; dashed = no cut, "
-                         f"solid = flash-chi2 < {cutv:.0f}")
+                   ylim=(0, 1.05))
+            ax.set_title(f"CC / NC signal efficiency vs true momentum ({vlab})\n"
+                         f"selected + correct tag; dashed = no cut, solid = "
+                         f"flash-$\\chi^2$ < {cut_by_cat[0]:.0f} (CC) / "
+                         f"{cut_by_cat[1]:.0f} (NC)", fontsize=10)
             ax.legend(fontsize=8, ncol=2)
             ax.grid(alpha=0.3)
             fig.tight_layout()

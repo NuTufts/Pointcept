@@ -38,6 +38,11 @@ def main():
                     help="per-EXT-event weight (0.17682554549 / fraction)")
     ap.add_argument("--plots", required=True)
     ap.add_argument("--pot", type=float, default=4.4e19)
+    ap.add_argument("--flashchi2-cut-nc", type=float, default=None,
+                    help="separate (tighter) flash-chi2 cut for the reco-NC "
+                         "stream; defaults to --flashchi2-cut. The NC cosmic "
+                         "contamination extends to lower chi2 than CC, so NC "
+                         "can afford log10(chi2)<3.5 (=3162) where CC uses 1e4.")
     ap.add_argument("--flashchi2-cut", type=float, default=None,
                     help="provisional cut: keep events with dead-PMT-masked "
                          "flash_chi2 < this (requires flash_chi2 in the npz)")
@@ -52,15 +57,23 @@ def main():
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
+    def cut_for(want_cc):
+        """Per-stream flash-chi2 cut: CC keeps --flashchi2-cut, NC may be
+        tighter (--flashchi2-cut-nc)."""
+        if want_cc or args.flashchi2_cut_nc is None:
+            return args.flashchi2_cut
+        return args.flashchi2_cut_nc
+
     def stream_mask(t, want_cc, eq2):
         sel = t["sel_eq2"] if eq2 else t["sel_ge2"]
         sel = sel & (t["reco_cc"] == want_cc)
-        if args.flashchi2_cut is not None:
+        cv = cut_for(want_cc)
+        if cv is not None:
             if "flash_chi2" not in t.files:
                 raise SystemExit("--flashchi2-cut needs flash_chi2 in the npz "
                                  "(rebuild tables with --cascade-dir)")
             fc = t["flash_chi2"]
-            sel = sel & np.isfinite(fc) & (fc < args.flashchi2_cut)
+            sel = sel & np.isfinite(fc) & (fc < cv)
         return sel
 
     def panel(obs_key, bins, xlabel, fname_base, clip_hi):
@@ -112,7 +125,6 @@ def main():
 
     # ---- purity vs reco observable: true pi0 signal / (all MC + EXT cosmic) -
     # with (solid) and without (dashed) the flash-chi2 cut, showing its gain.
-    cutv = args.flashchi2_cut if args.flashchi2_cut is not None else 10000.0
     if "flash_chi2" in mc.files and "flash_chi2" in ex.files:
         def purity_plot(obs_key, bins, xlabel, fname, vline=None):
             ctr = 0.5 * (bins[:-1] + bins[1:])
@@ -120,6 +132,9 @@ def main():
                                      ("sel_eq2", "eq2", "exactly 2 gamma")):
                 for want_cc, sabb, slab in ((True, "recoCC", "reco-CC"),
                                             (False, "recoNC", "reco-NC")):
+                    cutv = cut_for(want_cc)
+                    if cutv is None:
+                        cutv = 10000.0
                     base_mc = (mc[selk] & (mc["reco_cc"] == want_cc)
                                & np.isfinite(mc[obs_key]))
                     base_ex = (ex[selk] & (ex["reco_cc"] == want_cc)
