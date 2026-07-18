@@ -466,7 +466,7 @@ MC eval set (with ghost truth) + 1k EXTBNB events.
 
 | ID | Study | Runs |
 |---|---|---|
-| P5A | Data scaling: EXTBNB+LArMatch pretraining at 10k / 100k / 857k events, fixed iterations | 2 new (857k = reuse) |
+| P5A | Data scaling: EXTBNB+LArMatch at fixed compute (MATCHED_BUDGET), nested ×4 subsets 6,495 / 25,980 / 103,920 / 415,680 events (= 2304/576/144/36 epochs; full size ≡ P1A.4 reuse) — **detailed design in `p5a_scaling_study_plan.md`** | 3 new (+1 optional seed-variance slice) |
 | P5B | Mixture pretraining at matched budget, EVALSUITE — **PROMOTED + LAUNCHED 07-17 as three variants** on the interleaved 1:1 831,360-file list (18 epochs = MATCHED_BUDGET, half per domain): P5B.1 raw (both domains natural ghosts; pairs w/ P1A.2+P1A.3), P5B.2 deployment-prep (MC truth-cleaned, EXTBNB LArMatch-filtered; pairs w/ P1A.1+P1A.4), P5B.3 symmetric LArMatch filter both domains via lm_score fallback (truth-free; pairs w/ P1A.4+P1A.4b) | 3; interpret against P1A 2×2 + embedding-space domain study (data-vs-MC axis, cosmic prototype sharing, nu-origin representation) on the frozen MC/EXTBNB diag1k sets |
 | P5C | Seeds: s1, s2 for flagship configs (P1A.2, P1A.4, tuned) | 6 pretraining runs |
 | P5D | One instance-level downstream task (particle clustering or keypoints) on top 2 backbones | scope-limited; only if schedule allows |
