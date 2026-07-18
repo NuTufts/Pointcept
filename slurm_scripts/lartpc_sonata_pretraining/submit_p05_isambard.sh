@@ -52,9 +52,15 @@ fi
 
 rm -f "$RESUBMIT_MARKER"
 
-# srun + exec: see submit_pretraining_isambard_extbnbmc_ghop.sh for why this
-# shape is required for SIGUSR1 to reach python.
-srun apptainer exec --nv --bind $SQASHFILE:/data:image-src=,ro,/projects/u6jo:/projects/u6jo $container \
+# The srun is wrapped in `timeout` 30 min short of the 24h #SBATCH limit:
+# at a hard SLURM TIMEOUT the batch script dies WITH the step, so the
+# resubmit block below never runs (observed 2026-07-18: six Wave A second
+# slots stranded at epoch 10-11/12). The SIGUSR1 graceful path does not
+# survive the apptainer layer reliably, so guarantee an early srun return
+# instead — model_last.pth is at most save_iter_freq (50) iters stale, so
+# the TERM kill costs ~2 minutes of work and the chain always continues.
+timeout --signal=TERM --kill-after=300 84600 \
+    srun apptainer exec --nv --bind $SQASHFILE:/data:image-src=,ro,/projects/u6jo:/projects/u6jo $container \
     bash -c "cd ${WORKDIR} && \
              source setenv_isambard_project_repo.sh && \
              exec python3 tools/train.py --config ${CONFIG} --num-gpus 4 ${RESUME_OPTS}"
