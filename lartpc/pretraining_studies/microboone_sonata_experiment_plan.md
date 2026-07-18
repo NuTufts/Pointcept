@@ -470,6 +470,75 @@ MC eval set (with ghost truth) + 1k EXTBNB events.
 | P5B | Mixture pretraining at matched budget, EVALSUITE — **PROMOTED + LAUNCHED 07-17 as three variants** on the interleaved 1:1 831,360-file list (18 epochs = MATCHED_BUDGET, half per domain): P5B.1 raw (both domains natural ghosts; pairs w/ P1A.2+P1A.3), P5B.2 deployment-prep (MC truth-cleaned, EXTBNB LArMatch-filtered; pairs w/ P1A.1+P1A.4), P5B.3 symmetric LArMatch filter both domains via lm_score fallback (truth-free; pairs w/ P1A.4+P1A.4b) | 3; interpret against P1A 2×2 + embedding-space domain study (data-vs-MC axis, cosmic prototype sharing, nu-origin representation) on the frozen MC/EXTBNB diag1k sets |
 | P5C | Seeds: s1, s2 for flagship configs (P1A.2, P1A.4, tuned) | 6 pretraining runs |
 | P5D | One instance-level downstream task (particle clustering or keypoints) on top 2 backbones | scope-limited; only if schedule allows |
+| P5E | **Scaling-law grid** (model width × unique data × compute) — full design below | ~11 new cells; small/mid-width column fits in a current-allocation remainder, XL needs a new allocation |
+
+### P5E — scaling-law grid (designed 2026-07-18)
+
+**Goal:** go beyond the single fixed-compute data slice (P5A, see
+`p5a_scaling_study_plan.md`) to a designed (N, D, C) grid sufficient to FIT
+scaling behavior: loss L(N, D, C) with a data-repetition term (Muennighoff-
+style), with probe metrics as the downstream check. This is the study a new
+allocation — or Tufts A100 time — can complete incrementally; every cell is
+independent and the machinery (configs via the generator, timeout-wrapped
+chains, snapshots, Tufts probes) is already in production.
+
+**Axes.**
+- **Model width N** (PT-v3m2 `enc_channels` scaled; params ∝ width²):
+  S = 0.25× (≈5.7M enc params), M = 0.5× (≈23M), L = 1× (≈91M, current),
+  XL = 2× (≈363M). Per width, `enc_num_head` must be rescaled to divide the
+  channels, `head_in_channels` recomputed (sum of last 3 enc channels at
+  up_cast_level=2), and the matching probe config's `backbone_out_channels`
+  regenerated — all generator work, no new model code.
+- **Unique data D:** reuse the nested EXTBNB subsets from P5A
+  (6,495 / 25,980 / 103,920 / 415,680 events), base config = P1A.4 deltas.
+- **Compute C:** C_full = MATCHED_BUDGET (14.96M images) and C/4 = 3.74M
+  images **as dedicated runs with their own full OneCycle schedule** — NOT
+  mid-training snapshots of longer runs: a snapshot at 3.74M images has the
+  wrong LR-schedule state (the Chinchilla lesson), so snapshot points may
+  supplement but not substitute for fitted-C cells.
+
+**Hyperparameter policy (the classic trap):** optimal LR shifts with width.
+Primary grid runs at the frozen lr 2e-4 for internal consistency, with the
+confound BOUNDED by a 3-point LR mini-sweep (1e-4 / 2e-4 / 4e-4) on the
+cheapest cell (S @ C/4, full data — ~6 node-hours each). If the sweep shows
+>few-% sensitivity, a μP-style re-parameterization pass is the rigorous
+follow-up; document either way.
+
+**The grid (est. node-hours on GH200; wall ∝ ~width^1.8, re-measure at first
+S run and update):**
+
+| cell | width | data | compute | est nh | venue / priority |
+|---|---|---|---|---|---|
+| existing | L | 415,680 | C | (done: ≡P1A.4) | anchor |
+| P5A.1–.3 | L | 104k/26k/6.5k | C | 3×165 | P5A (launch pending) |
+| E-1 | S | 415,680 | C | ~25 | **allocation remainder** |
+| E-2 | S | 103,920 | C | ~25 | allocation remainder |
+| E-3 | S | 25,980 | C | ~25 | allocation remainder |
+| E-4 | S | 6,495 | C | ~25 | allocation remainder |
+| E-5 | S | 415,680 | C/4 | ~6 | allocation remainder |
+| E-6..8 | S LR-sweep | 415,680 | C/4 | 3×6 | allocation remainder |
+| E-9 | M | 415,680 | C | ~66 | allocation remainder / Tufts |
+| E-10 | M | 103,920 | C | ~66 | Tufts or next allocation |
+| E-11 | M | 415,680 | C/4 | ~17 | allocation remainder |
+| E-12 | L | 415,680 | C/4 | ~41 | allocation remainder / Tufts |
+| E-13 | XL | 415,680 | C | ~580 | **next allocation only** |
+| E-14 | XL | 415,680 | C/4 | ~145 | next allocation |
+
+Small+mid column (E-1..E-12) ≈ **330 node-hours** — completable in a
+current-allocation remainder as nodes free; the XL column (~725 nh) plus
+any seed repeats are the new-allocation ask. Tufts A100s can carry any cell
+(same container; expect ~2–3× the GH200 wall time per node).
+
+**Fitting & readout:** fit on pretraining loss components (final value +
+plateau) across cells — L(N, D) at fixed C per compute tier, then joint
+with a repetition-decay term for the small-D cells; report exponents with
+bootstrap-over-cells uncertainty and the compute-optimal implication
+(processing more events vs training longer vs bigger model). Probe
+mIoU/pion/proton per cell via the standard Tufts sweep as the downstream
+sanity check (bounded metrics are NOT the fit target). Honest scope: with
+one seed per cell this yields fitted trends with stated uncertainty, not
+precision exponents — seed repeats on the S column (cheap) are the first
+upgrade if the fits look clean.
 
 ---
 
