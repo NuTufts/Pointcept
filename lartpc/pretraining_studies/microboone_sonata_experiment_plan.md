@@ -76,6 +76,13 @@ pure domain at matched preprocessing; vs P1A.1 isolates reco-vs-truth
 cleaning within MC) and **P5B.3** (symmetric LArMatch-filtered 1:1 mixture,
 no truth anywhere — the method-symmetric alternative to P5B.2).
 
+**P5E scaling grid + P5A dual-row data scaling — LAUNCHED 2026-07-19**
+(jobs 5710033-43 and 5710046-54): 11 P5E cells (S/M/L widths x data x
+compute per the §6 design, MC+LArMatch base) and 6 P5A runs (MC and EXTBNB
+rows at 1x width, nested 104k/26k/6.5k subsets, full budget). P5E queued
+first per PI priority; goal = allocation to zero by 07-22, small-width
+cells completable, everything else resumes post-allocation.
+
 ---
 
 ## 0. Conventions
