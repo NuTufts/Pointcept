@@ -134,36 +134,54 @@ while run-3 MC/EXT use 1.0. Fitted γ arrays are the `gamma_*_run*.npz` files.
 
 Plots: `../physics/pi0mass_peak/plots_ext_cut1e4_satfix/` (full MC =
 `mcc9_bnbnu_overlay_1500_full_satfix`, 67 211 events; data = bnb5e19 full; EXT =
-run-3 val). Cuts: reco-CC log₁₀χ² < 4 (10 000), reco-NC log₁₀χ² < 3.5 (3162);
-EXT scale 4.1258.
+run-3 val). Working point: reco-CC muon tag KE > 50 MeV; flash-χ² cut reco-CC
+log₁₀ < 4 (10 000), reco-NC log₁₀ < 3.25 (1778); EXT scale 4.1258. (All three are
+CLI flags: `--mu-ke-min`, `--flashchi2-cut`, `--flashchi2-cut-nc`.)
 
-- **pi0 mass peak**: unchanged by the mask (it only touches the flash-match / fm
-  stream, not the nu-stream pi0 selection). Signal mass median CC 140.0 →
-  140.0 MeV, NC 134.7 → 134.4 MeV; total true-π0 signal −0.1 % (pilot before/after).
+- **pi0 mass peak**: unchanged by the saturation mask (it only touches the
+  flash-match / fm stream, not the nu-stream pi0 selection). Signal mass median
+  CC 140.0 → 140.0 MeV, NC 134.7 → 134.4 MeV; total true-π0 signal −0.1 %.
 - **flash-χ² as a cut**: MC reco-NC eq2 high-χ² fraction 48.6 → 9.5 %. With the
-  cut and the EXT cosmic component included, the reco-NC near-peak (100–170 MeV)
-  data/prediction ratio is **1.00 (eq2) / 1.03 (≥2)** on full MC (was 1.04–1.08
-  on the 30 k pilot). That near-peak high-χ² population is ~87 % cosmic — the
-  high-log(χ²) reco-NC near-peak IS cosmogenic, and once EXT is included there is
-  no unexplained excess. The tighter NC cut (3.5 vs 4) is free: 0 % NC signal
-  lost, ~23 % more cosmic removed.
-- **pi0 purity at the peak (100–170 MeV, eq2, full MC)**, inclusive (any true π0)
-  vs stream-matched (true π0 of the stream's own type):
+  cut and the EXT cosmic included, the reco-NC near-peak (100–170 MeV)
+  data/prediction ratio is **1.00 (eq2) / 1.02 (≥2)**. That near-peak high-χ²
+  population is cosmic-dominated — once EXT is included there is no unexplained
+  excess. Tightening the NC cut 3.5 → 3.25 removes a further ~20 % of the cosmic
+  (EXT 41 → 33 near-peak) at essentially zero NC-signal cost; the removed
+  log₁₀ ∈ [3.25, 3.5] slice is 78 % cosmic with ~1 true NC-π0 event and data
+  (28) ≈ pred (27), i.e. it sits on the EXT contribution, not a data excess.
 
-  | stream  | inclusive | stream-matched | right-type frac |
-  |---------|-----------|----------------|-----------------|
-  | reco-CC | 0.898     | 0.876 (true CC π0) | 97.5 %       |
-  | reco-NC | 0.711     | 0.420 (true NC π0) | 59.0 %       |
+### reco-NC pi0 purity levers (near-peak 100–170 MeV, eq2)
 
-  reco-CC isolates its own type nearly perfectly. reco-NC does not: true CC π0 is
-  as large a component as true NC π0 (muon feed-down from missed / sub-threshold
-  muons), so the dominant reco-NC impurity is now CC misID, which flash-χ² cannot
-  address — the cosmic contamination is already down to ~16 %.
+True NC-π0 purity of the reco-NC sample, building up the selection (full MC +
+bnb5e19-full + EXT-val):
 
-Statistics caveat: MC is now full (67 k); the **data and EXT sides are still the
-bnb5e19-full / EXT-val samples**. The full bnb5e19 (176 k) + EXT (668 k) reruns
-(Phase 2) are what shrink the reco-NC data/pred ratio error from ~±0.09 toward
-±0.03.
+  | selection                                  | NC-π0 purity |
+  |--------------------------------------------|--------------|
+  | muon tag 100 MeV, NC cut 3.5               | 0.420        |
+  | muon tag **50** MeV, NC cut 3.5            | 0.492        |
+  | muon tag 50 MeV, NC cut **3.25**           | 0.511        |
+  | + **0 charged-π veto** (n_cpi_reco == 0)   | **0.543**    |
+
+Three handles, in order of leverage:
+1. **Muon tag 100 → 50 MeV** (+7 pt): most reco-NC CC feed-down was soft muons
+   below the old 100 MeV tag, not muon→π misID. Justified by `stage_mu.png` — the
+   mu instance finder is usable down to ~50 MeV KE. Biggest single lever.
+2. **NC flash-χ² cut 3.5 → 3.25** (+2 pt): removes cosmic, no signal cost (above).
+3. **Charged-π veto** (+3 pt): rejects a CC-rich sub-sample (of its signal, CC
+   outweighs NC ~3:1), but only catches the ~18 % of CC feed-down that is
+   muon→π misID.
+
+Stacked, these bring reco-NC 0-charged-π NC-π0 purity to **0.543**, at the ~54 %
+benchmark. The complementary stream-matched result: reco-CC isolates true CC π0
+at ~0.88 (97 % right-type); reco-NC's residual impurity after these cuts is the
+remaining CC feed-down (missed muons) plus the ~13 % cosmic that survives.
+
+Statistics caveat: MC is full (67 k); the **data and EXT sides are still
+bnb5e19-full / EXT-val**. The full bnb5e19 (176 k) + EXT (668 k) reruns (Phase 2)
+shrink the reco-NC data/pred ratio error from ~±0.09 toward ±0.03. Tables carry
+`n_cpi_reco`/`n_cpi_true` (charged-π counts) and a `reco_cc` built at the chosen
+`--mu-ke-min`; `flashchi2_from_tables.py` rebuilds the flash-χ² plots from the
+tables when the cascades are unavailable (e.g. mid-reprocessing).
 
 ---
 
