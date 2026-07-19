@@ -34,7 +34,7 @@ TPC_HI = np.array([256.35, 116.5, 1036.8])
 
 
 def load(ntuple, is_data, pot, cascade_dir=None, dead=(15,),
-         saturation=False):
+         saturation=False, mu_ke_min=MU_KE_MIN):
     """Return per-event arrays for the reco-NC pi0 study. If cascade_dir is
     given, the primary-vertex flash chi2 is REPLACED (for the pre-selected
     events) by the dead-PMT-masked nu-slice chi2 recomputed from the cascade
@@ -74,7 +74,7 @@ def load(ntuple, is_data, pot, cascade_dir=None, dead=(15,),
     is_g = (a["showerLArFormerPID"] == 22) & (a["showerRecoE"] > RECO_G_MIN)
     n_g = ak.to_numpy(ak.sum(is_g, axis=1))
     is_mu = ((a["trackLArFormerPID"] == 13) & (a["trackIsSecondary"] == 0)
-             & (a["trackRecoE"] > MU_KE_MIN))
+             & (a["trackRecoE"] > mu_ke_min))
     reco_cc = ak.to_numpy(ak.any(is_mu, axis=1))
 
     mA = np.full(n, np.nan)
@@ -152,6 +152,9 @@ def main():
                          "flash-chi2 recompute (analysis-level flash fix)")
     ap.add_argument("--data-cascade", default=None)
     ap.add_argument("--ext-cascade", default=None)
+    ap.add_argument("--mu-ke-min", type=float, default=MU_KE_MIN,
+                    help="reco muon KE threshold [MeV] for the reco-CC tag "
+                         "(default 100; 50 recovers soft-muon CC events).")
     ap.add_argument("--saturation-mask", action="store_true",
                     help="also mask SATURATED PMTs in the chi2 recompute (see "
                          "lartpc/flashmatch/saturation.py). Applied to ALL "
@@ -177,9 +180,10 @@ def main():
     dead = tuple(int(x) for x in args.dead_channels.split(",") if x != "")
 
     S = args.saturation_mask
-    mc = load(args.mc_ntuple, False, args.pot, args.mc_cascade, dead, S)
-    da = load(args.data_ntuple, True, args.pot, args.data_cascade, dead, S)
-    ex = (load(args.ext_ntuple, True, args.pot, args.ext_cascade, dead, S)
+    MU = args.mu_ke_min
+    mc = load(args.mc_ntuple, False, args.pot, args.mc_cascade, dead, S, MU)
+    da = load(args.data_ntuple, True, args.pot, args.data_cascade, dead, S, MU)
+    ex = (load(args.ext_ntuple, True, args.pot, args.ext_cascade, dead, S, MU)
           if args.ext_ntuple else None)
 
     import matplotlib

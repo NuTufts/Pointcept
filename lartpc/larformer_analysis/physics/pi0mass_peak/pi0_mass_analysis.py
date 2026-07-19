@@ -103,6 +103,11 @@ def main():
                     help="separate (tighter) cut for the NC curve; defaults to "
                          "--flashchi2-cut. NC cosmic contamination reaches lower "
                          "chi2 than CC, so NC can afford log10(chi2)<3.5 (=3162).")
+    ap.add_argument("--mu-ke-min", type=float, default=100.0,
+                    help="reco muon KE threshold [MeV] for the reco-CC tag. "
+                         "Default 100; the mu instance finder is usable down to "
+                         "~50 (stage_mu.png), so 50 recovers soft-muon CC events "
+                         "out of the reco-NC feed-down.")
     ap.add_argument("--cpi-ke-min", type=float, default=60.0,
                     help="reco/true primary charged-pion KE threshold [MeV] for "
                          "the NC 0-charged-pi veto (stored as n_cpi_reco / "
@@ -161,7 +166,7 @@ def main():
     is_g = (a["showerLArFormerPID"] == 22) & (a["showerRecoE"] > RECO_G_MIN)
     n_g = ak.to_numpy(ak.sum(is_g, axis=1))
     is_mu = ((a["trackLArFormerPID"] == 13) & (a["trackIsSecondary"] == 0)
-             & (a["trackRecoE"] > MU_KE_MIN))
+             & (a["trackRecoE"] > args.mu_ke_min))
     reco_cc = ak.to_numpy(ak.any(is_mu, axis=1))
 
     # reco primary charged-pion count (PID 211) above KE threshold -- the veto
