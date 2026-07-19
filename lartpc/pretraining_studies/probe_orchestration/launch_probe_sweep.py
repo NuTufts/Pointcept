@@ -42,6 +42,12 @@ PROBE_MAP = [
     ("P1A", "configs/lartpc/p05/linearprobe-sonata-p05-mc-noghost-tufts.py", []),
     # P5B mixture backbones: same base/scaling — standard MC probe.
     ("P5B", "configs/lartpc/p05/linearprobe-sonata-p05-mc-noghost-tufts.py", []),
+    # P5E scaling grid: width-matched probes (checkpoint dims must match).
+    ("P5E.S", "configs/lartpc/p05/linearprobe-sonata-p5e-smallwidth-tufts.py", []),
+    ("P5E.M", "configs/lartpc/p05/linearprobe-sonata-p5e-midwidth-tufts.py", []),
+    ("P5E.L", "configs/lartpc/p05/linearprobe-sonata-p05-mc-noghost-tufts.py", []),
+    # P5A data-scaling rows: 1x width — standard probe.
+    ("P5A", "configs/lartpc/p05/linearprobe-sonata-p05-mc-noghost-tufts.py", []),
 ]
 
 SNAP_RE = re.compile(r"snapshot_iter(\d+)_img(\d+)\.pth$")

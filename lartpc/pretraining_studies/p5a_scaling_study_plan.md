@@ -1,5 +1,15 @@
 # P5A — Data-scaling study: detailed plan
 
+**REVISED 2026-07-19 (PI concern):** EXTBNB contains no neutrino
+interactions, so an EXTBNB-only scaling curve read out by the nu-centric
+probe would measure cosmic-feature transfer saturation, not nu-physics
+learning. P5A therefore runs TWO single-domain rows at 1x width — **MC +
+LArMatch (P1A.4b base, contains nu interactions)** and **EXTBNB + LArMatch
+(P1A.4 base)** — same nested subset sizes, same probe. The row pair adds the
+cross-domain data-value readout (how many cosmic-only events equal one
+nu-containing event at fixed compute). The P5E width grid (experiment plan
+§6) uses the **MC + LArMatch base** for the same reason.
+
 **Expands the one-row entry in `microboone_sonata_experiment_plan.md` §6.**
 Drafted 2026-07-18, incorporating everything Phase 0.5 / Phase 1 established
 (locked budget, snapshot machinery, Tufts probe protocol, lm_score fix).

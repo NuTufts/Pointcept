@@ -212,8 +212,8 @@ model = dict(
         order=("z", "z-trans", "hilbert", "hilbert-trans"),
         stride=(2, 2, 2, 2),
         enc_depths=(3, 3, 3, 9, 3),
-        enc_channels=(48, 96, 192, 384, 512),
-        enc_num_head=(3, 6, 12, 24, 32),
+        enc_channels=@ENC_CHANNELS@,
+        enc_num_head=@ENC_HEADS@,
         enc_patch_size=(256, 256, 256, 256, 256),
         mlp_ratio=4,
         qkv_bias=True,
@@ -237,7 +237,7 @@ model = dict(
         proj_drop=0.0,
         drop_path=0.0,
     ),
-    head_in_channels=1088,  # up_cast_level=2: 192 + 384 + 512
+    head_in_channels=@HEAD_IN_LINE@
     head_hidden_channels=2048,
     head_embed_channels=256,
     head_num_prototypes=@PROTOTYPES@,
@@ -781,7 +781,7 @@ biased_spherecrop_radius = 20.0
 model = dict(
     type="SonataSegmentor",
     num_classes=8,
-    backbone_out_channels=1232,  # 48+96+192+384+512 at up_cast_level=4
+    backbone_out_channels=@P_OUT_LINE@
     backbone=dict(
         type="Sonata-v1m1",
         backbone=dict(
@@ -790,8 +790,8 @@ model = dict(
             order=("z", "z-trans", "hilbert", "hilbert-trans"),
             stride=(2, 2, 2, 2),
             enc_depths=(3, 3, 3, 9, 3),
-            enc_channels=(48, 96, 192, 384, 512),
-            enc_num_head=(3, 6, 12, 24, 32),
+            enc_channels=@P_ENC_CHANNELS@,
+            enc_num_head=@P_ENC_HEADS@,
             enc_patch_size=(256, 256, 256, 256, 256),
             mlp_ratio=4,
             qkv_bias=True,
@@ -810,7 +810,7 @@ model = dict(
             enc_mode=True,
             mask_token=True,
         ),
-        head_in_channels=1088,
+        head_in_channels=@P_HEAD_IN@,
         head_hidden_channels=2048,
         head_embed_channels=256,
         head_num_prototypes=4096,
@@ -1009,6 +1009,24 @@ def strength_transform_block(overrides):
     return LOG_STRENGTH_TRANSFORM
 
 
+PROBE_RUNS["PROBE-p5e-smallwidth"] = (
+    "linearprobe-sonata-p5e-smallwidth-tufts.py",
+    "Linear probe for P5E S-width snapshots (enc (16,32,64,128,160)).",
+    {"AUG": "detsym", "SWAP": "(0, 1)",
+     "P_ENC_CHANNELS": "(16, 32, 64, 128, 160)",
+     "P_ENC_HEADS": "(2, 4, 8, 16, 20)", "P_HEAD_IN": 352,
+     "P_OUT_LINE": "400,  # 16+32+64+128+160 at up_cast_level=4 (S width)"},
+)
+PROBE_RUNS["PROBE-p5e-midwidth"] = (
+    "linearprobe-sonata-p5e-midwidth-tufts.py",
+    "Linear probe for P5E M-width snapshots (enc (24,48,96,192,256)).",
+    {"AUG": "detsym", "SWAP": "(0, 1)",
+     "P_ENC_CHANNELS": "(24, 48, 96, 192, 256)",
+     "P_ENC_HEADS": "(3, 6, 12, 24, 32)", "P_HEAD_IN": 544,
+     "P_OUT_LINE": "616,  # 24+48+96+192+256 at up_cast_level=4 (M width)"},
+)
+
+
 def build_probe(run_id, filename, header, overrides):
     aug_block = DETSYM_AUG.replace("@SWAP@", overrides.get("SWAP", "(0, 1)"))
     subs = dict(
@@ -1018,6 +1036,11 @@ def build_probe(run_id, filename, header, overrides):
         AUG_BLOCK=aug_block,
         STRENGTH_TRANSFORM=strength_transform_block(overrides),
         PROBE_REDUCE=CHANNEL_REDUCE_LINE if overrides.get("SUMCHARGE") else "",
+        P_ENC_CHANNELS=overrides.get("P_ENC_CHANNELS", "(48, 96, 192, 384, 512)"),
+        P_ENC_HEADS=overrides.get("P_ENC_HEADS", "(3, 6, 12, 24, 32)"),
+        P_HEAD_IN=overrides.get("P_HEAD_IN", 1088),
+        P_OUT_LINE=overrides.get(
+            "P_OUT_LINE", "1232,  # 48+96+192+384+512 at up_cast_level=4"),
     )
     return filename, render(PROBE_TEMPLATE, subs)
 
@@ -1166,7 +1189,7 @@ def build_ssl(run_id, filename, header, overrides):
         HEADER=header,
         RUN_ID=run_id,
         BATCH_SIZE=batch,
-        BASE_LR=BASE_LR,
+        BASE_LR=overrides.get("BASE_LR", BASE_LR),
         EPOCH=EPOCH,
         PROTOTYPES=overrides.get("PROTOTYPES", 4096),
         POINT_MAX=overrides.get("POINT_MAX", 20480),
@@ -1184,6 +1207,13 @@ def build_ssl(run_id, filename, header, overrides):
         STRENGTH_JITTER=(asinh_strength_jitter(overrides["JITTER_SIGMA"])
                          if overrides.get("STRENGTH") == "asinh"
                          else LOG_STRENGTH_JITTER),
+        # Model width (P5E scaling grid): defaults render the 1x (L) model
+        # byte-identically; S/M cells override. Head counts keep head_dim>=8
+        # (flash_attn requires a multiple of 8).
+        ENC_CHANNELS=overrides.get("ENC_CHANNELS", "(48, 96, 192, 384, 512)"),
+        ENC_HEADS=overrides.get("ENC_HEADS", "(3, 6, 12, 24, 32)"),
+        HEAD_IN_LINE=overrides.get(
+            "HEAD_IN_LINE", "1088,  # up_cast_level=2: 192 + 384 + 512"),
         TRAIN_LIST=overrides.get("TRAIN_LIST", MC_TRAIN),
         VAL_LIST=overrides.get("VAL_LIST", MC_VAL),
         # Data-selection flags: P05 defaults reproduce the ghost-dropped-MC
@@ -1359,6 +1389,111 @@ P5B_RUNS["P5B.3-mix_larmatch-s0"] = (
 )
 
 
+# =============================================================================
+# P5E scaling-law grid + P5A data-scaling rows (plan §6, designed 2026-07-18,
+# base revised to MC+LArMatch 2026-07-19: EXTBNB has no nu interactions, so
+# scaling it against the nu-centric probe measures the wrong thing).
+# Widths: S=(16,32,64,128,160) ~8.9M enc params, M=(24,48,96,192,256) ~23M,
+# L=default ~91M; head_dim >= 8 for flash_attn. Sonata head (hidden/embed/
+# prototypes) FIXED across widths. Compute tiers: C = MATCHED_BUDGET
+# (36 ep x 415,680) and C/4 (9 ep) as dedicated runs with own schedules.
+# =============================================================================
+WIDTH_S = dict(
+    ENC_CHANNELS="(16, 32, 64, 128, 160)", ENC_HEADS="(2, 4, 8, 16, 20)",
+    HEAD_IN_LINE="352,  # up_cast_level=2: 64 + 128 + 160 (S width)")
+WIDTH_M = dict(
+    ENC_CHANNELS="(24, 48, 96, 192, 256)", ENC_HEADS="(3, 6, 12, 24, 32)",
+    HEAD_IN_LINE="544,  # up_cast_level=2: 96 + 192 + 256 (M width)")
+
+SCALING_LM_EXTRA = ("        larmatch_threshold_range=(0.15, 0.75),\n"
+                    '        larmatch_score_keys=("larmatch_score", "lm_score"),\n')
+
+MC_LM_BASE = dict(
+    AUG="detsym", SWAP="(0, 1)",
+    TRUE_POINTS_ONLY=False, INCLUDE_GHOSTS=True, FILTER_LARMATCH=True,
+    EXTRA_DATASET_LINES=SCALING_LM_EXTRA,
+    DATASET_COMMENT="# ---- MC + LArMatch filter (lm_score fallback) ----",
+    WANDB_PROJECT="pointcept_scaling",
+)
+EXTBNB_LM_BASE = dict(
+    AUG="detsym", SWAP="(0, 1)",
+    TRUE_POINTS_ONLY=False, DATA_ONLY=True, FILTER_LARMATCH=True,
+    EXTRA_DATASET_LINES="        larmatch_threshold_range=(0.15, 0.75),\n",
+    DATASET_COMMENT="# ---- EXTBNB + LArMatch filter ----",
+    WANDB_PROJECT="pointcept_scaling",
+    VAL_LIST=EXTBNB_VAL,
+)
+
+C4_SNAPSHOT_ITERS = [img // BATCH_SIZE for img in
+                     ([24_000 * 2 ** i for i in range(6)]
+                      + [1_536_000, 2_304_000, 3_072_000])]
+FULL_SNAPSHOT_ITERS = [img // BATCH_SIZE for img in P1A_SNAPSHOT_IMG_ANCHORS]
+
+SUBSET_M = {
+    "416k": (MC_TRAIN, 36),
+    "104k": (f"{FILELIST_DIR}/h5list_v3_mc_only_train_103920.txt", 144),
+    "26k": (f"{FILELIST_DIR}/h5list_v3_mc_only_train_25980.txt", 576),
+    "6k5": (f"{FILELIST_DIR}/h5list_v3_mc_only_train_6495.txt", 2304),
+}
+SUBSET_E = {
+    "104k": (f"{FILELIST_DIR}/h5list_v3_extbnb_only_train_103920.txt", 144),
+    "26k": (f"{FILELIST_DIR}/h5list_v3_extbnb_only_train_25980.txt", 576),
+    "6k5": (f"{FILELIST_DIR}/h5list_v3_extbnb_only_train_6495.txt", 2304),
+}
+
+P5E_RUNS = {}
+
+def _p5e(run_id, fname, hdr, **kw):
+    cfg = dict(MC_LM_BASE, SAVE_ROOT="p5e", SNAPSHOT_ITERS=FULL_SNAPSHOT_ITERS)
+    cfg.update(kw)
+    P5E_RUNS[run_id] = (fname, hdr, cfg)
+
+_sizes = ("416k", "104k", "26k", "6k5")
+for tag, width in (("s", WIDTH_S), ("m", WIDTH_M)):
+    W = tag.upper()
+    sizes = _sizes if tag == "s" else _sizes[:2]
+    for k, size in enumerate(sizes):
+        lst, ep = SUBSET_M[size]
+        _p5e(f"P5E.{W}{k+1}-mc_lm_{size}-s0",
+             f"pretrain-sonata-p5e-{tag}{k+1}-mc-lm-{size}.py",
+             f"P5E {W}-width x {size} unique MC events at full compute C\n"
+             f"(MATCHED_BUDGET). Scaling-law grid cell; base = P1A.4b deltas.",
+             TRAIN_LIST=lst, EPOCH=ep, **width)
+    c4_idx = len(sizes) + 1
+    _p5e(f"P5E.{W}{c4_idx}-mc_lm_416k_c4-s0",
+         f"pretrain-sonata-p5e-{tag}{c4_idx}-mc-lm-416k-c4.py",
+         f"P5E {W}-width, full data, C/4 compute tier (9 epochs, own schedule).",
+         EPOCH=9, SNAPSHOT_ITERS=C4_SNAPSHOT_ITERS, **width)
+
+for n, (lrtag, lr) in ((6, ("lr1", 1.0e-4)), (7, ("lr4", 4.0e-4))):
+    _p5e(f"P5E.S{n}-mc_lm_416k_c4_{lrtag}-s0",
+         f"pretrain-sonata-p5e-s{n}-mc-lm-416k-c4-{lrtag}.py",
+         f"P5E S-width LR-sweep point (lr={lr}) at C/4: bounds the fixed-LR\n"
+         "confound across widths (the 2e-4 point is P5E.S5).",
+         EPOCH=9, SNAPSHOT_ITERS=C4_SNAPSHOT_ITERS, BASE_LR=lr, **WIDTH_S)
+
+_p5e("P5E.L1-mc_lm_416k_c4-s0", "pretrain-sonata-p5e-l1-mc-lm-416k-c4.py",
+     "P5E L-width (1x), full data, C/4 compute tier (9 epochs, own schedule).",
+     EPOCH=9, SNAPSHOT_ITERS=C4_SNAPSHOT_ITERS)
+
+P5A_SCALING_RUNS = {}
+for n, size in ((1, "104k"), (2, "26k"), (3, "6k5")):
+    lst, ep = SUBSET_M[size]
+    P5A_SCALING_RUNS[f"P5A.{n}m-mc_lm_{size}-s0"] = (
+        f"pretrain-sonata-p5a-{n}m-mc-lm-{size}.py",
+        f"P5A row-M: MC+LArMatch, {size} unique events at MATCHED_BUDGET\n"
+        "(nu-containing domain; full-size anchor = P1A.4b).",
+        dict(MC_LM_BASE, SAVE_ROOT="p5a", TRAIN_LIST=lst, EPOCH=ep,
+             SNAPSHOT_ITERS=FULL_SNAPSHOT_ITERS))
+    lst_e, ep_e = SUBSET_E[size]
+    P5A_SCALING_RUNS[f"P5A.{n}e-extbnb_lm_{size}-s0"] = (
+        f"pretrain-sonata-p5a-{n}e-extbnb-lm-{size}.py",
+        f"P5A row-E: EXTBNB+LArMatch, {size} unique events at MATCHED_BUDGET\n"
+        "(cosmic-only domain; full-size anchor = P1A.4). Cross-domain pair.",
+        dict(EXTBNB_LM_BASE, SAVE_ROOT="p5a", TRAIN_LIST=lst_e, EPOCH=ep_e,
+             SNAPSHOT_ITERS=FULL_SNAPSHOT_ITERS))
+
+
 def build_supervised(run_id, filename, header, overrides):
     aug = overrides.get("AUG", "detsym")
     if aug == "freerot":
@@ -1392,7 +1527,7 @@ def main():
         with open(os.path.join(OUT_DIR, fn), "w") as f:
             f.write(text)
         written.append(fn)
-    for run_id, (filename, header, overrides) in {**P1A_RUNS, **P5B_RUNS}.items():
+    for run_id, (filename, header, overrides) in {**P1A_RUNS, **P5B_RUNS, **P5E_RUNS, **P5A_SCALING_RUNS}.items():
         fn, text = build_ssl(run_id, filename, header, overrides)
         with open(os.path.join(OUT_DIR, fn), "w") as f:
             f.write(text)

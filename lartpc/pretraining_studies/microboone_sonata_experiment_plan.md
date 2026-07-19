@@ -482,6 +482,12 @@ allocation — or Tufts A100 time — can complete incrementally; every cell is
 independent and the machinery (configs via the generator, timeout-wrapped
 chains, snapshots, Tufts probes) is already in production.
 
+**Base revised 2026-07-19:** all P5E cells use the **MC + LArMatch base
+(≡ P1A.4b, lm_score keys)** — EXTBNB has no neutrino interactions, so scaling
+it against the nu-centric probe would measure the wrong thing; MC+LArMatch is
+single-domain, nu-containing, and reco-score-prepped like data. EXTBNB
+scaling stays as the second P5A row at 1x width (cross-domain data value).
+
 **Axes.**
 - **Model width N** (PT-v3m2 `enc_channels` scaled; params ∝ width²):
   S = 0.25× (≈5.7M enc params), M = 0.5× (≈23M), L = 1× (≈91M, current),
