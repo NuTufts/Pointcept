@@ -207,6 +207,135 @@ def main():
                     r"reco $p_{\pi^0}$ [MeV/c]", "puritySameStream_ppi0",
                     stream_matched=True)
 
+    # ---- NC charged-pion veto: split reco-NC into 0-charged-pi and the rest --
+    # Goal: enrich true NC-pi0 (+Np, 0 charged-pi) by vetoing reco charged pions,
+    # which removes CC feed-down (a CC muon mis-called a pi, or a real charged
+    # pion). Applied on top of the per-stream flash-chi2 cut, NC-only.
+    have_cpi = all("n_cpi_reco" in t.files for t in (mc, ex, da))
+    if have_cpi:
+        nc_cut = cut_for(False)
+
+        def nc_sub(t, selk, sub, obs_key=None):
+            m = t[selk] & (~t["reco_cc"]) & np.isfinite(t["flash_chi2"])
+            if nc_cut is not None:
+                m = m & (t["flash_chi2"] < nc_cut)
+            if sub == "0cpi":
+                m = m & (t["n_cpi_reco"] == 0)
+            elif sub == "hascpi":
+                m = m & (t["n_cpi_reco"] > 0)
+            if obs_key is not None:
+                m = m & np.isfinite(t[obs_key])
+            return m
+
+        SUBS = [("0cpi", "reco-NC, 0 charged-$\\pi$", "recoNC0cpi"),
+                ("hascpi", r"reco-NC, $\geq$1 charged-$\pi$", "recoNChascpi")]
+
+        def nc_panel(obs_key, bins, xlabel, fbase, clip_hi):
+            for sub, slab, sabb in SUBS:
+                for selk, vabb, vlab in (("sel_ge2", "ge2", ">=2"),
+                                         ("sel_eq2", "eq2", "exactly 2")):
+                    mm = nc_sub(mc, selk, sub, obs_key)
+                    dm = nc_sub(da, selk, sub, obs_key)
+                    em = nc_sub(ex, selk, sub, obs_key)
+                    ctr = 0.5 * (bins[:-1] + bins[1:])
+                    stack = [np.clip(mc[obs_key][mm & (mc["cat"] == c)],
+                                     bins[0], clip_hi) for c in range(6)]
+                    ws = [mc["w"][mm & (mc["cat"] == c)] for c in range(6)]
+                    stack.append(np.clip(ex[obs_key][em], bins[0], clip_hi))
+                    ws.append(np.full(int(em.sum()), args.ext_scale))
+                    colors = CAT_COLORS + [EXT_COLOR]
+                    labels = [f"{CATS[c]} ({ws[c].sum():.0f})" for c in range(6)]
+                    labels.append(f"EXT cosmic ({ws[6].sum():.0f})")
+                    fig, ax = plt.subplots(figsize=(6.8, 4.6))
+                    ax.hist(stack, bins=bins, weights=ws, stacked=True,
+                            color=colors, label=labels)
+                    pred_tot = sum(w.sum() for w in ws)
+                    dh, _ = np.histogram(np.clip(da[obs_key][dm], bins[0],
+                                                 clip_hi), bins=bins)
+                    ax.errorbar(ctr, dh, yerr=np.sqrt(np.clip(dh, 1, None)),
+                                fmt="ko", ms=3.5, lw=1, capsize=0,
+                                label=f"beam data ({int(dh.sum())})")
+                    if obs_key.startswith("m_"):
+                        ax.axvline(PI0_MASS, color="0.4", ls=":", lw=1.1)
+                    ax.set(xlabel=xlabel, ylabel=f"events / {args.pot:.1e} POT",
+                           title=f"{slab} (flash $\\chi^2$<{nc_cut:.0f}): "
+                                 f"{fbase} ({vlab} photons)\n"
+                                 f"data {int(dh.sum())} vs pred "
+                                 f"{pred_tot:.0f} (MC+EXT)")
+                    ax.legend(fontsize=7)
+                    ax.grid(alpha=0.3)
+                    fig.tight_layout()
+                    fig.savefig(f"{args.plots}/{fbase}_{sabb}_{vabb}.png",
+                                dpi=110)
+                    plt.close(fig)
+
+        nc_panel("m_vtx2start", np.linspace(0, 500, 51),
+                 r"$m_{\gamma\gamma}$ [MeV]", "mgg_ext", 499)
+        nc_panel("p_reco", np.linspace(0, 1200, 49),
+                 r"reco $p_{\pi^0}$ [MeV/c]", "ppi0_ext", 1199)
+
+        # true-NC-pi0 purity vs reco observable: all NC vs 0cpi vs the rest
+        def nc_purity(obs_key, bins, xlabel, fname, vline=None):
+            ctr = 0.5 * (bins[:-1] + bins[1:])
+            for selk, vabb, vlab in (("sel_ge2", "ge2", ">=2 gamma"),
+                                     ("sel_eq2", "eq2", "exactly 2 gamma")):
+                fig, ax = plt.subplots(figsize=(6.8, 4.6))
+                for sub, slab, col in (("all", "all reco-NC", "0.5"),
+                                       ("0cpi", "0 charged-$\\pi$", "tab:green"),
+                                       ("hascpi", r"$\geq$1 charged-$\pi$",
+                                        "tab:red")):
+                    mm = nc_sub(mc, selk, sub, obs_key)
+                    em = nc_sub(ex, selk, sub, obs_key)
+                    pur, err = [], []
+                    for lo, hi in zip(bins[:-1], bins[1:]):
+                        mb = mm & (mc[obs_key] >= lo) & (mc[obs_key] < hi)
+                        eb = em & (ex[obs_key] >= lo) & (ex[obs_key] < hi)
+                        sig = mc["w"][mb & (mc["cat"] == 1)].sum()
+                        tot = mc["w"][mb].sum() + args.ext_scale * int(eb.sum())
+                        p = sig / tot if tot > 0 else np.nan
+                        nn = int(mb.sum()) + int(eb.sum())
+                        pur.append(p)
+                        err.append(np.sqrt(p * (1 - p) / nn)
+                                   if nn and np.isfinite(p) else 0)
+                    ax.errorbar(ctr, pur, yerr=err, fmt="o-", ms=4, color=col,
+                                label=slab)
+                if vline is not None:
+                    ax.axvline(vline, color="0.4", ls=":", lw=1.1)
+                ax.set(xlabel=xlabel, ylabel="purity", ylim=(0, 1.05),
+                       title=f"reco-NC: TRUE NC-pi0 purity vs {xlabel} ({vlab})\n"
+                             "charged-pi veto -- true NC pi0 / (all MC + EXT)")
+                ax.legend(fontsize=8)
+                ax.grid(alpha=0.3)
+                fig.tight_layout()
+                fig.savefig(f"{args.plots}/{fname}_{vabb}.png", dpi=110)
+                plt.close(fig)
+
+        nc_purity("m_vtx2start", np.linspace(0, 500, 26),
+                  r"reco $m_{\gamma\gamma}$ [MeV]", "purity_nccpi_mgg",
+                  vline=PI0_MASS)
+        nc_purity("p_reco", np.linspace(0, 1200, 25),
+                  r"reco $p_{\pi^0}$ [MeV/c]", "purity_nccpi_ppi0")
+
+        # composition: reco-NC near-peak (100-170), all vs 0cpi vs the rest
+        print("== reco-NC near-peak (100-170 MeV, eq2, flash chi2<%.0f): "
+              "charged-pi veto composition ==" % nc_cut)
+        hdr = "%-16s %7s %7s %7s %7s %7s %7s %7s %8s"
+        print(hdr % ("sample", "sigCC", "sigNC", "outFV", "no-pi0", "multi",
+                     "undet", "EXT", "NCpi0pur"))
+        for sub, slab in (("all", "all reco-NC"), ("0cpi", "0 charged-pi"),
+                          ("hascpi", ">=1 charged-pi")):
+            mm = nc_sub(mc, "sel_eq2", sub, "m_vtx2start")
+            em = nc_sub(ex, "sel_eq2", sub, "m_vtx2start")
+            pk = lambda t, m: (m & (t["m_vtx2start"] >= 100)
+                               & (t["m_vtx2start"] < 170))
+            mpk = pk(mc, mm)
+            cw = [mc["w"][mpk & (mc["cat"] == c)].sum() for c in range(6)]
+            extw = args.ext_scale * int(pk(ex, em).sum())
+            tot = sum(cw) + extw
+            print(hdr % (slab, "%.1f" % cw[0], "%.1f" % cw[1], "%.1f" % cw[2],
+                         "%.1f" % cw[3], "%.1f" % cw[4], "%.1f" % cw[5],
+                         "%.1f" % extw, "%.3f" % (cw[1] / max(tot, 1e-9))))
+
     # near-peak reco-NC data/pred ratio, with and without the EXT component
     print("== reco-NC near-peak (100-170 MeV) data vs prediction ==")
     for eq2, vlab in ((False, ">=2"), (True, "exactly-2")):

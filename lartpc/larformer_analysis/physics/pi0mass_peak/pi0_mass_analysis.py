@@ -103,6 +103,10 @@ def main():
                     help="separate (tighter) cut for the NC curve; defaults to "
                          "--flashchi2-cut. NC cosmic contamination reaches lower "
                          "chi2 than CC, so NC can afford log10(chi2)<3.5 (=3162).")
+    ap.add_argument("--cpi-ke-min", type=float, default=60.0,
+                    help="reco/true primary charged-pion KE threshold [MeV] for "
+                         "the NC 0-charged-pi veto (stored as n_cpi_reco / "
+                         "n_cpi_true in the --out table). Default 60.")
     ap.add_argument("--data", action="store_true",
                     help="real-data mode: unit weights (no xsecWeight/POT "
                          "scaling), no truth categories (all events tagged "
@@ -159,6 +163,25 @@ def main():
     is_mu = ((a["trackLArFormerPID"] == 13) & (a["trackIsSecondary"] == 0)
              & (a["trackRecoE"] > MU_KE_MIN))
     reco_cc = ak.to_numpy(ak.any(is_mu, axis=1))
+
+    # reco primary charged-pion count (PID 211) above KE threshold -- the veto
+    # variable for the NC "pi0 + Np + 0 charged-pi" sub-selection. Removing reco
+    # charged pions targets CC feed-down (a CC muon mis-called a pi, or a genuine
+    # charged pion in the interaction). Works on data too (reco-only).
+    is_cpi = ((a["trackLArFormerPID"] == 211) & (a["trackIsSecondary"] == 0)
+              & (a["trackRecoE"] > args.cpi_ke_min))
+    n_cpi_reco = ak.to_numpy(ak.sum(is_cpi, axis=1)).astype(np.int64)
+    # true primary charged-pion count above the same KE threshold (MC only) --
+    # defines the refined true signal "NC pi0 + 0 charged pi".
+    if args.data:
+        n_cpi_true = np.zeros(n, np.int64)
+    else:
+        M_PI = 0.13957      # GeV; truePrimPart momenta are GeV
+        p2 = (a["truePrimPartPx"] ** 2 + a["truePrimPartPy"] ** 2
+              + a["truePrimPartPz"] ** 2)
+        ke_mev = (np.sqrt(p2 + M_PI ** 2) - M_PI) * 1000.0
+        is_tcpi = (np.abs(a["truePrimPartPDG"]) == 211) & (ke_mev > args.cpi_ke_min)
+        n_cpi_true = ak.to_numpy(ak.sum(is_tcpi, axis=1)).astype(np.int64)
 
     # per-event two most-energetic photons -> E, dirs (both variants)
     E1 = np.full(n, np.nan); E2 = np.full(n, np.nan)
@@ -286,7 +309,8 @@ def main():
         np.savez(args.out, cat=cat, sel_ge2=sel2p, sel_eq2=sel2x,
                  reco_cc=reco_cc, m_vtx2start=mA, m_trunkdir=mB,
                  n_gamma=n_g, w=w, E1=E1, E2=E2,
-                 p_reco=p_reco, p_true=p_true, flash_chi2=flash_chi2)
+                 p_reco=p_reco, p_true=p_true, flash_chi2=flash_chi2,
+                 n_cpi_reco=n_cpi_reco, n_cpi_true=n_cpi_true)
 
     # ---- plots -------------------------------------------------------------
     import matplotlib
