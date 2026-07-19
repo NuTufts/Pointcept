@@ -76,6 +76,15 @@ pure domain at matched preprocessing; vs P1A.1 isolates reco-vs-truth
 cleaning within MC) and **P5B.3** (symmetric LArMatch-filtered 1:1 mixture,
 no truth anywhere — the method-symmetric alternative to P5B.2).
 
+**P5E composition revision — RELAUNCHED 2026-07-19** (jobs 5710381-96,
+now 12 cells incl. the new L0 full-C anchor): a CPU composition study showed
+random crops leave the median crop with ZERO nu points (57% nu-free, 4% nu
+overall) and anchoring saturates at ~8%; the grid now uses the nu-FOCUSED
+recipe (MC + LArMatch + drop_cosmics=0.9 → ~85% nu points, median crop pure
+nu, matching the probe/ceiling distribution). P5E.L0 vs P1A.4b doubles as a
+full-budget composition replication. P5A rows deliberately keep random
+crops (cross-domain symmetry). Original launch note follows:
+
 **P5E scaling grid + P5A dual-row data scaling — LAUNCHED 2026-07-19**
 (jobs 5710033-43 and 5710046-54): 11 P5E cells (S/M/L widths x data x
 compute per the §6 design, MC+LArMatch base) and 6 P5A runs (MC and EXTBNB
