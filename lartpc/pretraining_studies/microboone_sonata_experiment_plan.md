@@ -555,6 +555,81 @@ upgrade if the fits look clean.
 
 ---
 
+## 6.5 P6 — Capability-emergence suite (FUTURE WORK, framed 2026-07-19)
+
+**Question:** across the P5E checkpoint array (widths × data × compute, plus
+within-training snapshots), do different reconstruction capabilities "turn
+on" at different scales — and in what order? The LM analog is the
+emergent-abilities literature; the LArTPC version would be among the first
+such studies on detector data.
+
+**The metric trap (design rule #1).** Much of the claimed LM "emergence"
+is an artifact of thresholded, nonlinear metrics (exact-match accuracy)
+applied to capabilities that improve *smoothly* in log-likelihood
+(Schaeffer et al. 2023). LArTPC metrics like "vertex within 1 cm" or
+binary event classification are exactly this kind of metric. Therefore
+every task reports BOTH: (a) a smooth quantity — per-task val loss, logit
+likelihoods, continuous vertex-distance distributions — and (b) the physics
+metric. A genuine turn-on claim requires a break in (a) too, or an explicit
+argument that the task's *utility* is inherently thresholded (defensible
+for vertex-within-tolerance; not for class accuracy).
+
+**Task ladder** (difficulty-ordered; ≈ the reconstruction cascade, so the
+task datasets and heads largely exist or are in progress):
+
+1. Deghosting (E4-style; local charge/geometry) — expected earliest.
+2. MIP-level semantic classes (muon/track vs shower).
+3. Calorimetric PID: p/π/μ separation (dE/dx integrated along tracks).
+4. Instance clustering / track–shower separation (longer-range aggregation).
+5. Nu-slice masking and vertex finding (event-level, relational) —
+   expected latest. Vertexing head = small offset-regression, not linear.
+6. Alongside: M1/M2 prototype–label MI/purity as the interpretability track.
+
+**Protocol.** Frozen backbone + fixed-budget lightweight head per task
+(the existing probe machinery generalized), run over the checkpoint array;
+per-task fits of performance vs scale (N, D, C axes separately, as in the
+P5E analysis). Run the suite at TWO adaptation strengths (linear probe AND
+LoRA/small-FT at a frozen budget): a capability can be *present but not
+linearly accessible*, and the gap between the two curves distinguishes
+"the representation lacks it" from "the probe can't read it".
+
+**Expectation-setting:** the array spans ~1.5 decades of model scale
+(9.7M→91M; 2.5 with XL) vs the 3–5 decades behind LM emergence claims —
+the likely (and arguably more useful) result is a task *ordering* ("local
+tasks saturate by width S / 26k events; relational tasks still climbing at
+L / 416k"), i.e., which reconstruction stages justify foundation-model
+scale. Cost: Tufts-scale, not an allocation ask — checkpoints exist or are
+being produced; ~5 tasks × ~20 checkpoints × ~2 GPU-h × 2 adaptation
+strengths ≈ a few hundred A100-hours. The real work is freezing task
+datasets + heads.
+
+**Literature starting points** (annotated for onboarding):
+
+- Wei et al. 2022, "Emergent Abilities of Large Language Models" — the
+  original claim: abilities appearing discontinuously with scale.
+- Schaeffer et al. 2023, "Are Emergent Abilities of LLMs a Mirage?" — the
+  metric-artifact rebuttal; the reason for design rule #1.
+- Michaud et al. 2023, "The Quantization Model of Neural Scaling" —
+  emergence and scaling-law exponents unified as discrete skill ("quanta")
+  acquisition; natural lens for a task-ladder analysis.
+- Kaplan et al. 2020 / Hoffmann et al. 2022 (Chinchilla) — scaling-law
+  methodology the P5E fits follow; Chinchilla also documents the
+  LR-schedule pitfall behind our dedicated-C/4-runs rule.
+- Muennighoff et al. 2023, "Scaling Data-Constrained Language Models" —
+  repetition-vs-fresh-data laws; the direct template for P5A.
+- Srivastava et al. 2022 (BIG-bench) — how large task suites are curated
+  and reported; useful for suite hygiene even at our 5-task scale.
+- Alain & Bengio 2016, "Understanding intermediate layers using linear
+  classifier probes" — the linear-probe methodology itself.
+- Power et al. 2022, "Grokking" — delayed generalization vs *training
+  time* (a different axis than scale; relevant when reading within-training
+  snapshot curves).
+- Oquab et al. 2023 (DINOv2) — vision-SSL scaling observations closest in
+  spirit to our setup (frozen-feature evaluation across model/data scale).
+- (Domain-shift analysis toolbox — Ben-David 2010, Gretton 2012 MMD,
+  Kornblith 2019 CKA, Ravfogel 2020 INLP — already listed in the P5B
+  mixture/embedding study notes.)
+
 ## 7. Run registry schema (`registry.csv`)
 
 ```
