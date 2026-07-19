@@ -1444,7 +1444,16 @@ SUBSET_E = {
 P5E_RUNS = {}
 
 def _p5e(run_id, fname, hdr, **kw):
-    cfg = dict(MC_LM_BASE, SAVE_ROOT="p5e", SNAPSHOT_ITERS=FULL_SNAPSHOT_ITERS)
+    # P5E composition revision 2026-07-19: nu-FOCUSED recipe. Random crops on
+    # MC+LArMatch give a median crop with ZERO nu points (57% of crops nu-free,
+    # 4% nu points); anchoring saturates at ~8% (vertex-centered 20cm crops
+    # are still cosmic-dominated). drop_cosmics=0.9 (the Wave A winner) takes
+    # nu exposure to ~85% with median crops PURE nu; anchoring adds nothing on
+    # top and is omitted. Matches the probe/ceiling protocol distribution.
+    # Crops shrink to ~6k points — internally consistent across cells, but
+    # absolute FLOPs/image differ from P1A (cross-recipe comparisons only).
+    cfg = dict(MC_LM_BASE, SAVE_ROOT="p5e", SNAPSHOT_ITERS=FULL_SNAPSHOT_ITERS,
+               DROP_COSMICS=True, DROP_COSMICS_PROB=0.9)
     cfg.update(kw)
     P5E_RUNS[run_id] = (fname, hdr, cfg)
 
@@ -1475,6 +1484,14 @@ for n, (lrtag, lr) in ((6, ("lr1", 1.0e-4)), (7, ("lr4", 4.0e-4))):
 _p5e("P5E.L1-mc_lm_416k_c4-s0", "pretrain-sonata-p5e-l1-mc-lm-416k-c4.py",
      "P5E L-width (1x), full data, C/4 compute tier (9 epochs, own schedule).",
      EPOCH=9, SNAPSHOT_ITERS=C4_SNAPSHOT_ITERS)
+
+# L-width full-C anchor for the nu-focused grid (P1A.4b cannot serve as the
+# anchor after the composition revision — different crop composition).
+_p5e("P5E.L0-mc_lm_416k-s0", "pretrain-sonata-p5e-l0-mc-lm-416k.py",
+     "P5E L-width (1x), full data, full compute C: the grid's own anchor.\n"
+     "vs P1A.4b (identical except nu-focused composition) this doubles as a\n"
+     "full-budget replication of the composition effect (C.5 lineage).",
+     EPOCH=36)
 
 P5A_SCALING_RUNS = {}
 for n, size in ((1, "104k"), (2, "26k"), (3, "6k5")):

@@ -313,8 +313,8 @@ data = dict(
         filter_larmatch=True,
         larmatch_threshold_range=(0.15, 0.75),
         larmatch_score_keys=("larmatch_score", "lm_score"),
-        drop_cosmics=False,
-        drop_cosmics_prob=0.5,
+        drop_cosmics=True,
+        drop_cosmics_prob=0.9,
     ),
     val=dict(
         type=dataset_type,
