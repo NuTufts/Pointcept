@@ -83,9 +83,10 @@ def _in_fv(x, y, z):
 
 
 def _pi0_detectable(a, i):
-    """(n_primary_pi0, pair_ok): exactly the repo's detectable-pi0-photon-pair
-    test (Process==1 photons whose mother id is absent from the TID table, one
-    MID group of 2 with both visible energies > 20 MeV)."""
+    """(n_primary_pi0, pair_ok, evis_total): the repo's detectable-pi0-photon-
+    pair test (Process==1 photons whose mother id is absent from the TID table,
+    one MID group of 2 with both visible energies > 20 MeV). evis_total is the
+    sum of that pair's visible energies [MeV] (NaN if no detectable pair)."""
     npi0 = int(np.sum(np.asarray(a["truePrimPartPDG"][i]) == 111))
     pdg = np.asarray(a["trueSimPartPDG"][i])
     proc = np.asarray(a["trueSimPartProcess"][i])
@@ -101,29 +102,30 @@ def _pi0_detectable(a, i):
             continue
         evis = A_GAMMA * np.clip(q[orphan & (mid == m)], 0, None)
         if np.all(evis > EVIS_MIN):
-            return npi0, True
-    return npi0, False
+            return npi0, True, float(evis.sum())
+    return npi0, False, np.nan
 
 
 def sbnd_truth_cat(a, i):
-    """SBND CC-1pi0 truth category (0=signal, 1..5 backgrounds by first-failed
-    requirement)."""
+    """(cat, evis_2gamma): SBND CC-1pi0 truth category (0=signal, 1..5
+    backgrounds by first-failed requirement) plus the signal photon pair's total
+    true visible energy [MeV] (NaN unless a detectable pair exists)."""
     if not _in_fv(a["trueVtxX"][i], a["trueVtxY"][i], a["trueVtxZ"][i]):
-        return 1
+        return 1, np.nan
     if a["trueNuCCNC"][i] == 1:
-        return 2                                   # NC
-    npi0, pair_ok = _pi0_detectable(a, i)
+        return 2, np.nan                           # NC
+    npi0, pair_ok, evis = _pi0_detectable(a, i)
     if not (npi0 == 1 and pair_ok):
-        return 3                                   # CC, wrong/undetectable pi0
+        return 3, np.nan                           # CC, wrong/undetectable pi0
     pdg = np.abs(np.asarray(a["truePrimPartPDG"][i]))
     E = np.asarray(a["truePrimPartE"][i])          # GeV, total energy
     ke_cpi = (E - M_CPI) * 1000.0
     if np.any((pdg == 211) & (ke_cpi > CPI_KE_MIN)):
-        return 4                                   # CC 1pi0 but charged pi
+        return 4, evis                             # CC 1pi0 but charged pi
     ke_mu = (E - M_MU) * 1000.0
     if not np.any((pdg == 13) & (ke_mu > MU_KE_MIN)):
-        return 5                                   # CC 1pi0 0cpi but soft muon
-    return 0                                        # signal
+        return 5, evis                             # CC 1pi0 0cpi but soft muon
+    return 0, evis                                  # signal
 
 
 def load(ntuple, table, is_data):
@@ -175,13 +177,17 @@ def load(ntuple, table, is_data):
 
     if is_data:
         cat = np.zeros(n, np.int64)
+        evis2 = np.full(n, np.nan)
         n_sig_true = 0
     else:
-        cat = np.array([sbnd_truth_cat(a, i) for i in range(n)], np.int64)
+        cat = np.zeros(n, np.int64)
+        evis2 = np.full(n, np.nan)
+        for i in range(n):
+            cat[i], evis2[i] = sbnd_truth_cat(a, i)
         n_sig_true = float(w[cat == 0].sum())
 
     return dict(w=w, fchi2=fchi2, sel=sel, cat=cat, m_gg=m_gg, p_pi0=p_pi0,
-                n=n, n_sig_true=n_sig_true)
+                evis2=evis2, n=n, n_sig_true=n_sig_true)
 
 
 def main():
@@ -259,6 +265,69 @@ def main():
         print(f"  [{tag}] MC pred {pm:.0f} | signal {sm:.0f} | data {dm} "
               f"| purity {sm/max(pm,1e-9):.3f} | efficiency {eff:.3f} "
               f"(true signal {mc['n_sig_true']:.0f})")
+
+    # ---- log10(flash chi2) of the SELECTED sample, BEFORE the flash cut ------
+    lbins = np.linspace(0, 8, 33)
+    ctr = 0.5 * (lbins[:-1] + lbins[1:])
+
+    def lchi(d, m):
+        return np.log10(np.clip(d["fchi2"][m], 1, None))
+    mm = mc["sel"] & np.isfinite(mc["fchi2"])
+    dm = da["sel"] & np.isfinite(da["fchi2"])
+    em = ex["sel"] & np.isfinite(ex["fchi2"])
+    stack = [np.clip(lchi(mc, mm & (mc["cat"] == c)), 0, 7.999) for c in range(6)]
+    ws = [mc["w"][mm & (mc["cat"] == c)] for c in range(6)]
+    stack.append(np.clip(lchi(ex, em), 0, 7.999))
+    ws.append(np.full(int(em.sum()), args.ext_scale))
+    colors = CAT_COLORS + [EXT_COLOR]
+    labels = [f"{CATS[c]} ({ws[c].sum():.0f})" for c in range(6)]
+    labels.append(f"EXT cosmic ({ws[6].sum():.0f})")
+    fig, ax = plt.subplots(figsize=(7.4, 4.8))
+    ax.hist(stack, bins=lbins, weights=ws, stacked=True, color=colors,
+            label=labels)
+    dh, _ = np.histogram(np.clip(lchi(da, dm), 0, 7.999), bins=lbins)
+    ax.errorbar(ctr, dh, yerr=np.sqrt(np.clip(dh, 1, None)), fmt="ko", ms=3.5,
+                lw=1, capsize=0, label=f"beam data ({int(dh.sum())})")
+    ax.axvline(np.log10(args.flashchi2_cut), color="crimson", ls="--", lw=1.4,
+               label=f"cut chi2={args.flashchi2_cut:.0f}")
+    ax.set(xlabel=r"$\log_{10}$ flash $\chi^2$ (primary nu vtx)",
+           ylabel=f"events / {args.pot:.1e} POT",
+           title="SBND-style CC 1$\\pi^0$: flash $\\chi^2$ (before cut, tight FV)"
+                 f"\ndata {int(dh.sum())} vs pred {sum(w.sum() for w in ws):.0f}")
+    ax.legend(fontsize=7)
+    ax.grid(alpha=0.3)
+    fig.tight_layout()
+    fig.savefig(f"{args.plots}/flashchi2_sbnd_cc1pi0_beforeflash.png", dpi=110)
+    plt.close(fig)
+
+    # ---- signal efficiency vs total true visible energy of the pi0 photons ---
+    ebins = np.linspace(0, 1000, 21)
+    ectr = 0.5 * (ebins[:-1] + ebins[1:])
+    den = (mc["cat"] == 0) & np.isfinite(mc["evis2"])
+    fig, ax = plt.subplots(figsize=(7.0, 4.8))
+    for after, sty, lab in ((False, "s--", "before flash cut"),
+                            (True, "o-", "after flash cut")):
+        num = den & flashmask(mc, after)
+        eff, err = [], []
+        for lo, hi in zip(ebins[:-1], ebins[1:]):
+            b = den & (mc["evis2"] >= lo) & (mc["evis2"] < hi)
+            N = int(b.sum())
+            k = int((num & b).sum())
+            p = k / N if N else np.nan
+            eff.append(p)
+            err.append(np.sqrt(p * (1 - p) / N) if N and np.isfinite(p) else 0)
+        ax.errorbar(ectr, eff, yerr=err, fmt=sty, ms=4,
+                    alpha=1.0 if after else 0.5, label=lab)
+    ax.set(xlabel=r"total true visible energy of the $\pi^0$ photons [MeV]",
+           ylabel="signal selection efficiency", ylim=(0, 1.02),
+           title="SBND-style CC 1$\\pi^0$: efficiency vs true $\\gamma\\gamma$ "
+                 "visible energy\n(unweighted; true signal events passing reco)")
+    ax.legend(fontsize=9)
+    ax.grid(alpha=0.3)
+    fig.tight_layout()
+    fig.savefig(f"{args.plots}/efficiency_vs_evis_sbnd_cc1pi0.png", dpi=110)
+    plt.close(fig)
+
     print(f">>> plots -> {args.plots}")
 
 
