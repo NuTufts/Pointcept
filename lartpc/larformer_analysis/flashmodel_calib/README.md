@@ -176,12 +176,23 @@ benchmark. The complementary stream-matched result: reco-CC isolates true CC π0
 at ~0.88 (97 % right-type); reco-NC's residual impurity after these cuts is the
 remaining CC feed-down (missed muons) plus the ~13 % cosmic that survives.
 
-Statistics caveat: MC is full (67 k); the **data and EXT sides are still
-bnb5e19-full / EXT-val**. The full bnb5e19 (176 k) + EXT (668 k) reruns (Phase 2)
-shrink the reco-NC data/pred ratio error from ~±0.09 toward ±0.03. Tables carry
-`n_cpi_reco`/`n_cpi_true` (charged-π counts) and a `reco_cc` built at the chosen
-`--mu-ke-min`; `flashchi2_from_tables.py` rebuilds the flash-χ² plots from the
-tables when the cascades are unavailable (e.g. mid-reprocessing).
+### Full-statistics result (all three samples reprocessed)
+
+MC 67 k + bnb5e19 176 k + EXT 668 k, all with dead-mask + hole-finder + per-run γ
+baked into the cascade ranking. EXT normalized at the full spill ratio
+0.17682554549 (the val used 4.1258 = 0.17683 / fraction). reco-NC near-peak
+(100–170 MeV, eq2, μ>50, NC cut 3.25):
+
+  data 241 ± 16 | MC 199.6 ± 10.2 | EXT 31.5 ± 2.4 | pred 231.1 ± 10.5
+  **data/pred = 1.043 ± 0.082 (0.5 σ)** — consistent, no unexplained excess.
+
+The EXT statistical error fell from 35 % (8 raw val events) to 7 % (178 raw), so
+the prediction error is now data-stat-dominated, not cosmic-limited. reco-NC
+0-charged-π true-NC-π0 purity: **0.555** (at the ~54 % benchmark).
+
+Tables carry `n_cpi_reco`/`n_cpi_true` (charged-π counts) and a `reco_cc` built at
+the chosen `--mu-ke-min`; `flashchi2_from_tables.py` rebuilds the flash-χ² plots
+from the tables when the cascades are unavailable (e.g. mid-reprocessing).
 
 ---
 
