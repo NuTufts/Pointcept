@@ -25,6 +25,10 @@ set -u
 
 CONFIG=${1:?usage: sbatch submit_p05_isambard.sh <config.py>}
 MAX_RESUBMITS=${2:-6}
+# Wrapper timeout (seconds). Default 23.5h pairs with the 24h #SBATCH
+# limit; end-of-allocation submissions pass a larger value with a
+# matching sbatch --time so early starts burn to the allocation end.
+TIMEOUT_S=${3:-84600}
 
 WORKDIR=/projects/u6jo/work/pointcept
 SQASHFILE=/projects/u6jo/datasets/combined_pretrain-sonata-v7-extbnb-larmatch.sqsh
@@ -59,7 +63,7 @@ rm -f "$RESUBMIT_MARKER"
 # survive the apptainer layer reliably, so guarantee an early srun return
 # instead — model_last.pth is at most save_iter_freq (50) iters stale, so
 # the TERM kill costs ~2 minutes of work and the chain always continues.
-timeout --signal=TERM --kill-after=300 84600 \
+timeout --signal=TERM --kill-after=300 "$TIMEOUT_S" \
     srun apptainer exec --nv --bind $SQASHFILE:/data:image-src=,ro,/projects/u6jo:/projects/u6jo $container \
     bash -c "cd ${WORKDIR} && \
              source setenv_isambard_project_repo.sh && \
@@ -84,7 +88,7 @@ if [ -f "$RESUBMIT_MARKER" ] || [ "$TRAIN_RC" -ne 0 ]; then
         echo $((COUNT + 1)) > "$COUNTER_FILE"
         rm -f "$RESUBMIT_MARKER"
         echo "[$(date)] Resubmitting (rc=$TRAIN_RC, count=$((COUNT + 1))/$MAX_RESUBMITS)"
-        sbatch --job-name="$SLURM_JOB_NAME" --dependency=afterany:$SLURM_JOB_ID "$0" "$CONFIG" "$MAX_RESUBMITS"
+        sbatch --job-name="$SLURM_JOB_NAME" --dependency=afterany:$SLURM_JOB_ID "$0" "$CONFIG" "$MAX_RESUBMITS" "$TIMEOUT_S"
     fi
 else
     echo "[$(date)] Clean exit (rc=0) with no RESUBMIT marker: training finished."
