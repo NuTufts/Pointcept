@@ -17,13 +17,33 @@ REMOTE=/projects/u6jo/work/pointcept
 LOCAL=${LOCAL_REPO:-/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/isambard_pointcept}
 
 echo "[sync] snapshots + run configs from ${ISAMBARD}:${REMOTE}/sonata/p05/"
+# PRESERVATION MODE (post-allocation, 2026-07-22): also pull each run's
+# model_last.pth (full resume state), train.log, and tfevents — WITHOUT the
+# redundant per-epoch epoch_*.pth pile (P5A alone holds 2.6 TB of those; the
+# essential set is ~200 GB). Sync sonata/p05 p1a p5a p5b p5e roots.
 rsync -av -m \
     --exclude='smoke/' \
+    --exclude='epoch_*.pth' \
     --include='*/' \
     --include='snapshot/*.pth' \
+    --include='model/model_last.pth' \
+    --include='train.log' \
+    --include='events.out.tfevents.*' \
     --include='config.py' \
     --exclude='*' \
     "${ISAMBARD}:${REMOTE}/sonata/p05/" "${LOCAL}/sonata/p05/"
+for SUB in p1a p5a p5b p5e; do
+    rsync -av -m \
+        --exclude='epoch_*.pth' \
+        --include='*/' \
+        --include='snapshot/*.pth' \
+        --include='model/model_last.pth' \
+        --include='train.log' \
+        --include='events.out.tfevents.*' \
+        --exclude='*' \
+        "${ISAMBARD}:${REMOTE}/sonata/${SUB}/" "${LOCAL}/sonata/${SUB}/" || true
+done
+rsync -av "${ISAMBARD}:${REMOTE}/exp/logs/" "${LOCAL}/exp/logs_isambard/" || true
 
 echo "[sync] run registry"
 mkdir -p "${LOCAL}/exp"
