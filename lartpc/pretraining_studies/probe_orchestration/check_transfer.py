@@ -41,8 +41,13 @@ def main():
     missing = defaultdict(list)
     mismatched = defaultdict(list)
     ok_files, ok_bytes, want_bytes = 0, 0, sum(s for _, s in rows)
+    # The sync intentionally renames the Isambard registry to avoid
+    # clobbering the Tufts-local one; accept the alias.
+    ALIASES = {"exp/registry.csv": "exp/registry_isambard.csv"}
     for rel, size in rows:
         local = os.path.join(args.repo, rel)
+        if not os.path.isfile(local) and rel in ALIASES:
+            local = os.path.join(args.repo, ALIASES[rel])
         if not os.path.isfile(local):
             missing[run_of(rel)].append(rel)
         elif os.path.getsize(local) != size:

@@ -40,6 +40,7 @@ for SUB in p1a p5a p5b p5e; do
         --include='model/model_last.pth' \
         --include='train.log' \
         --include='events.out.tfevents.*' \
+        --include='config.py' \
         --exclude='*' \
         "${ISAMBARD}:${REMOTE}/sonata/${SUB}/" "${LOCAL}/sonata/${SUB}/" || true
 done
