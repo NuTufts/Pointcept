@@ -13,7 +13,14 @@ templates in `slurm_scripts/lartpc_sonata_pretraining/`.
 
 ---
 
-## STATUS (2026-07-17) — what has been launched / completed
+## STATUS — see `STATUS_AND_HANDOFF.md` for the CURRENT state
+
+**The Isambard allocation ended 2026-07-22.** Run-by-run progress, the
+verified preservation archive, and the Tufts take-over sequence live in
+`lartpc/pretraining_studies/STATUS_AND_HANDOFF.md` — start there. The
+section below is the dated launch log from the allocation period.
+
+## STATUS (2026-07-17, historical launch log) — what was launched / completed
 
 Infrastructure and per-decision detail live in
 `phase0_phase05_implementation_plan.md` (Phase 0/0.5) and
