@@ -42,14 +42,46 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 HDF5_MARKER = "/hdf5/"
 
 # (Isambard input list, Tufts output list). Order preserved within each.
+# EXTBNB/mixture lists (added 2026-07-27 for the P5B/P1A resume at Tufts)
+# need the merged MC+EXTBNB source list:
+#   --source h5list_tufts_source_mc_plus_extbnb.txt
+# (h5list_mcall_lantern_validated.txt + the v7 EXTBNB validated list,
+#  see filelist_stats_tufts.txt for the exact provenance/hashes).
 LIST_PAIRS = [
     ("h5list_v3_mc_only_train.txt", "h5list_v3_mc_only_train_tufts.txt"),
     ("h5list_v3_mc_only_val.txt", "h5list_v3_mc_only_val_tufts.txt"),
     ("h5list_v3_mc_diag1k.txt", "h5list_v3_mc_diag1k_tufts.txt"),
+    ("h5list_v3_extbnb_only_train.txt", "h5list_v3_extbnb_only_train_tufts.txt"),
+    ("h5list_v3_extbnb_only_val.txt", "h5list_v3_extbnb_only_val_tufts.txt"),
+    ("h5list_v3_extbnb_diag1k.txt", "h5list_v3_extbnb_diag1k_tufts.txt"),
+    ("h5list_v3_extbnb_only_train_415680.txt",
+     "h5list_v3_extbnb_only_train_415680_tufts.txt"),
+    ("h5list_v3_mix1to1_train.txt", "h5list_v3_mix1to1_train_tufts.txt"),
+    ("h5list_v3_combined_val.txt", "h5list_v3_combined_val_tufts.txt"),
+    ("h5list_v3_extbnb_only_train_103920.txt",
+     "h5list_v3_extbnb_only_train_103920_tufts.txt"),
+    ("h5list_v3_extbnb_only_train_25980.txt",
+     "h5list_v3_extbnb_only_train_25980_tufts.txt"),
+    ("h5list_v3_extbnb_only_train_6495.txt",
+     "h5list_v3_extbnb_only_train_6495_tufts.txt"),
+    ("h5list_v3_mc_only_train_103920.txt",
+     "h5list_v3_mc_only_train_103920_tufts.txt"),
+    ("h5list_v3_mc_only_train_25980.txt",
+     "h5list_v3_mc_only_train_25980_tufts.txt"),
+    ("h5list_v3_mc_only_train_6495.txt",
+     "h5list_v3_mc_only_train_6495_tufts.txt"),
 ]
 
-REQUIRED_KEYS = ("pos", "hasmatch", "ssnet_label")
+# Required HDF5 keys differ by domain (WP1 smoke-check findings): MC files
+# carry truth and no larmatch_score; EXTBNB real-data files carry
+# larmatch_score and no truth.
+REQUIRED_KEYS_MC = ("pos", "hasmatch", "ssnet_label")
+REQUIRED_KEYS_DATA = ("pos", "larmatch_score")
 TRIPLET_GROUP = "/entry_0/triplet_data"
+
+
+def required_keys_for(path):
+    return REQUIRED_KEYS_DATA if "extbnb" in path else REQUIRED_KEYS_MC
 
 
 def sha256_of(path):
@@ -204,18 +236,36 @@ def main():
             print("  !! diag1k did NOT match 1000/1000 -- this is a hard requirement")
             ok = False
 
-    # --- sanity: pairwise disjoint outputs ---
+    # --- sanity: disjointness where it is REQUIRED (not all pairs: subsets,
+    # the mix1to1 interleave, and combined_val overlap their parents by
+    # construction — see filelist_stats.txt provenance notes) ---
+    REQUIRED_DISJOINT = [
+        ("h5list_v3_mc_only_train_tufts.txt", "h5list_v3_mc_only_val_tufts.txt"),
+        ("h5list_v3_mc_only_train_tufts.txt", "h5list_v3_mc_diag1k_tufts.txt"),
+        ("h5list_v3_mc_only_val_tufts.txt", "h5list_v3_mc_diag1k_tufts.txt"),
+        ("h5list_v3_extbnb_only_train_tufts.txt",
+         "h5list_v3_extbnb_only_val_tufts.txt"),
+        ("h5list_v3_extbnb_only_train_tufts.txt",
+         "h5list_v3_extbnb_diag1k_tufts.txt"),
+        # train/eval separation for the runs that consume the derived lists
+        ("h5list_v3_mix1to1_train_tufts.txt", "h5list_v3_combined_val_tufts.txt"),
+        ("h5list_v3_mix1to1_train_tufts.txt", "h5list_v3_mc_diag1k_tufts.txt"),
+        ("h5list_v3_mix1to1_train_tufts.txt",
+         "h5list_v3_extbnb_diag1k_tufts.txt"),
+        ("h5list_v3_extbnb_only_train_415680_tufts.txt",
+         "h5list_v3_extbnb_only_val_tufts.txt"),
+    ]
     sets = {out: set(results[out][0]) for _, out in LIST_PAIRS}
-    names = list(sets)
-    for i in range(len(names)):
-        for j in range(i + 1, len(names)):
-            inter = sets[names[i]] & sets[names[j]]
-            status = "OK" if not inter else f"FAIL ({len(inter)} shared)"
-            print(f"  disjoint {names[i]} vs {names[j]}: {status}")
-            if inter:
-                ok = False
-                for p in list(inter)[:3]:
-                    print(f"      shared: {p}")
+    for a, b in REQUIRED_DISJOINT:
+        if a not in sets or b not in sets:
+            continue
+        inter = sets[a] & sets[b]
+        status = "OK" if not inter else f"FAIL ({len(inter)} shared)"
+        print(f"  disjoint {a} vs {b}: {status}")
+        if inter:
+            ok = False
+            for p in list(inter)[:3]:
+                print(f"      shared: {p}")
 
     # --- sanity: spot-open matched files with h5py ---
     if args.n_spotcheck > 0:
@@ -270,7 +320,7 @@ def spotcheck(results, n):
         try:
             with h5py.File(path, "r") as f:
                 td = f[TRIPLET_GROUP]
-                missing = [k for k in REQUIRED_KEYS if k not in td]
+                missing = [k for k in required_keys_for(path) if k not in td]
                 assert not missing, f"missing {missing}"
             print(f"    OK  [{out_name}] {os.path.basename(path)}")
         except Exception as e:
