@@ -27,3 +27,31 @@ To start, use only the neutrino slice stream. Use only confidently attached phot
 
 Besides the invariant mass plot, I would also be interested efficiency of finding events as well as a function of the total true visible energy of the two photons.
 
+## Secondary SBND-SPINE Comparison
+
+SBND has a CC 1pi0 selection using the SPINE reconstruction to compare to.
+While not on MicroBooNE, this is closer to what I would think is the state-of-the-art 
+reconstruction for this channel in current LArTPC experiments.
+
+The signal definition is:
+
+- Flash Matched
+    - Interaction is matched to ‘valid_flashmatch’ variable
+- Fiducial Volume
+    - Require interaction vertex to be at least 20 cm from
+    - X,Y detector boundaries and 10 [50] cm from
+    - upstream [downstream] Z detector boundaries
+- Topology
+    - 1 primary muon: muon kinetic energy > 143.425 MeV (50 cm long)
+    - 1 primary neutral pion (2 primary photons)
+        - photon kinetic energy > 20 MeV
+        - diphoton mass < 400 MeV/c2
+    - 0 charged pions
+        - pion kinetic energy > 25 MeV
+    - Inclusive to all other particles
+
+From doc-db: https://sbn-docdb.fnal.gov/cgi-bin/sso/RetrieveFile?docid=47857&filename=June%2026%20SBND%20Collaboration.pdf
+
+After their selection, they report:
+  - 86% purity
+  - 65% efficiency

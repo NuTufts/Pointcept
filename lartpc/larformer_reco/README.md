@@ -24,6 +24,69 @@ eval/eval_reco_performance.py                          (slurm/submit_eval_reco_{
 stream + linkage conventions):
 [larformer_reco_output_data_schema.md](larformer_reco_output_data_schema.md).
 
+## Running the full chain (merged_sp → ntuple)
+
+The whole downstream campaign is orchestrated by one dependency-chained SLURM
+submitter, **`slurm/submit_extbnb_chain.sh`** (the name is historical — it is the
+*general* chain and handles both data and MC via the `TRUTH_DIR` knob). Stages:
+
+```
+merged_sp/  (built upstream by data_prep Step A — see
+             ../data_prep/uboone_official/LARFORMER_DATAPREP.md)
+  [MC only] truth_sidecar/   slurm/submit_truth_sidecar_shard.sh
+  └─ submit_extbnb_chain.sh:
+       0 prep       build merged_sp list (list_merged_sp.py) + clean downstream dirs
+       1 inference  GPU array: merged_sp → keypoint2_streams/ (nu + fm kp2 h5)
+       2 regen      split keypoint2_streams → per-stream nu / fm lists
+       3 nu_reco    CPU arrays, per stream → nu_reco_streams_{nu,fm}/ (run_nu_reco.py)
+       4 larpid     CPU arrays, per stream → nu_reco_larpid_{nu,fm}/ (apply_larpid.py)
+       5 export     gen2ntuple shards (export_gen2ntuple.py)
+       6 hadd       merge → dlgen2_larformer_ntuple_<TAG>.root
+```
+
+Output lands in `DATADIR/` (the same dir that holds `merged_sp/`), mirroring the
+reference `output/mcc9_bnbnu_overlay_1500_full_satfix/` layout.
+
+**Data vs MC knobs** (env vars to the chain):
+- `TRUTH_DIR` — set to a real `truth_sidecar/` dir → MC mode (fills truth
+  branches + `potTree` + `xsecWeight` in the ntuple). Leave unset → data mode.
+- `LARPID_SAMPLE_TAG` — `apply_larpid.py`'s `select_checkpoint`: **`run3` anywhere
+  in the tag → alternate (run-1 MC) weights**, else default. MC overlay samples
+  (bnb_nu, intrinsic_nue) use the alternate weights → put `run3` in the tag.
+- `WEIGHTS_PKL` — per-sample CV xsecWeight pickle in
+  `pointcept_env/gen2ntuple/event_weighting/` (e.g.
+  `weights_forCV_v48_Sep24_intrinsic_nue_run3.pkl` for the nue overlay;
+  `..._bnb_nu_run3.pkl` for bnb overlay). Propagates to the export shard via
+  `--export=ALL`. Wrong/missing pickle → per-event `xsecWeight=-1` (tolerated).
+- `NINF` / `NNR` / `NEXP` — shard counts (inference GPU / nu_reco per stream /
+  export). `EXCLUDE_NODES` — comma-sep bad nodes. `DEP` — `afterany:` gate job(s)
+  (e.g. the Step-A + truth_sidecar array ids) so the chain auto-starts when the
+  merged_sp are ready.
+
+### Worked example — mcc9 v29e run3b intrinsic-nue overlay (MC)
+
+```bash
+# 1) merged_sp (Step A) — see ../data_prep/uboone_official/LARFORMER_DATAPREP.md
+CONF=lartpc/data_prep/uboone_official/larformer_configs/mcc9_v29e_nue_overlay_tufts.conf
+STEPA=$(CONF=$CONF STRIDE=5 sbatch --parsable --array=0-666%100 \
+        lartpc/data_prep/uboone_official/submit_stepA_shard.sh)
+
+# 2) truth_sidecar (MC only), same dlmerged list so fileno tags align with Step A
+DATADIR=/cluster/tufts/wongjiradlabnu/nutufts/data/larformer/mcc9_v29e_dl_run3b_bnb_intrinsic_nue_overlay_nocrtremerge
+DLLIST=lartpc/data_prep/uboone_official/inputlists/mcc9_v29e_dl_run3b_bnb_intrinsic_nue_overlay_nocrtremerge.txt
+TRUTHSC=$(INPUT_LIST=$DLLIST OUTPUT_DIR=${DATADIR}/truth_sidecar NSHARDS=50 \
+          sbatch --parsable --array=0-49 lartpc/larformer_reco/slurm/submit_truth_sidecar_shard.sh)
+
+# 3) downstream chain, gated on Step A + truth_sidecar
+DEP=${STEPA}:${TRUTHSC} TAG=mcc9_v29e_nue_overlay DATADIR=$DATADIR \
+  TRUTH_DIR=${DATADIR}/truth_sidecar \
+  LARPID_SAMPLE_TAG=mcc9_v29e_dl_run3b_bnb_intrinsic_nue_overlay \
+  WEIGHTS_PKL=/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/gen2ntuple/event_weighting/weights_forCV_v48_Sep24_intrinsic_nue_run3.pkl \
+  NINF=8 NNR=8 NEXP=4 \
+  bash lartpc/larformer_reco/slurm/submit_extbnb_chain.sh
+# final ntuple: ${DATADIR}/dlgen2_larformer_ntuple_mcc9_v29e_nue_overlay.root
+```
+
 ## Streams and flash products
 
 Cascade inference emits up to TWO labeled slice streams per event (file attr

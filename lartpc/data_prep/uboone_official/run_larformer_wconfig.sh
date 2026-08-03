@@ -83,10 +83,9 @@ for (( i=1; i<=stride; i++ )); do
         fi
     fi
 
-    # ---- Copy outputs to 3-level hashed output dir ----
-    nsubdir1=$(( lineno / 1000 )); zsubdir1=$(printf "%03d" ${nsubdir1})
-    nsubdir2=$(( lineno / 100 ));  zsubdir2=$(printf "%03d" ${nsubdir2})
-    outfolder="${OUTPUT_DIR}/${zsubdir1}/${zsubdir2}"
+    # ---- Copy outputs into the 2-level fileno tree (matches
+    #      reorg_merged_sp.py; no post-hoc reorg needed) ----
+    outfolder=$(merged_sp_leaf "${OUTPUT_DIR}" "${lineno}")
     mkdir -p "${outfolder}"
 
     nmerged=$(ls "${local_jobdir}"/merged_${TAG}_fileno*_entry*.h5 2>/dev/null | wc -l)

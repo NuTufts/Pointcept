@@ -26,6 +26,35 @@ Training generally uses the **cached** configs (Stage-1+2 outputs precomputed wi
 `tools/build_stage12_cache_*.py`); the full-cascade configs are for inference on raw
 merged H5.
 
+## Slicer `max_spacepoints` cap (pre-deghost point budget)
+
+`LArFormerDataset` applies `max_spacepoints` inside `get_data` — AFTER the
+lm_score filter + 0.25 cm backbone dedup but BEFORE the on-the-fly deghoster —
+so it caps the **pre-deghost** point count the backbone sees. When an event
+exceeds the cap the loader **randomly subsamples** down to it, thinning the event
+before the model ever sees it (sparse soft showers are the first casualty).
+
+Study: `lartpc/larformer_reco/tools/cap_study_spacepoints.py` replicates the
+filter+dedup over a random sample of the train list and reports the bite rate.
+Run on 4000 random train events (`h5list_mcall_lantern_train.txt`, seed 0):
+
+| stat | post-dedup SP count | | cap | % events cut | mean SP lost (cut evts) |
+|---|---|---|---|---|---|
+| median | 117.5k | | 100k **(old)** | **66.7%** | 29.8% (max 86%) |
+| mean | 129k | | 150k | 28.0% | 20.9% |
+| p90 | 197k | | 200k | 9.5% | 18.5% |
+| p95 | 233k | | 250k | 3.6% | 17.4% |
+| p99 | 328k | | 300k | 1.6% | 16.4% |
+| p99.9 | 533k | | 400k | 0.4% | 17.5% |
+| max | 713k | | 500k | 0.12% | 21.9% |
+
+The old 100k train cap (150k val) thinned ~2/3 of events. **Applied cap: 300k
+train / 450k val** (bite 66.7% -> 1.6%). To keep the memory budget in check the
+retrain runs `batch_size=8` (4/GPU on 2x A100-80GB) x `gradient_accumulation_steps=2`
+(effective batch 16); a worst-case smoke on the 40 biggest events (231k-481k SP)
+peaked at 41.5 GB/GPU. The full-cascade inference path uses 500k. Re-run the
+study and update this table whenever the cap changes.
+
 ## Per-stage notes
 
 - **stage1_deghost/**: the production config is a duplicate of the one in

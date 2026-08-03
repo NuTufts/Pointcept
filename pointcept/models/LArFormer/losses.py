@@ -786,6 +786,18 @@ class LArFormerLoss(nn.Module):
         deep_supervision:     apply mask + class + origin at init + every layer
         match_layer:          "final" (default) or "init" — which layer's
                               predictions to run the Hungarian matcher on
+        match_per_layer:      when True (default False), re-run the Hungarian
+                              matcher on EACH supervision layer's own
+                              predictions and supervise that layer with its
+                              own assignment — the standard DETR/Mask2Former
+                              deep-supervision scheme. All layers share the
+                              single `sampled` cost-point set (consistent
+                              costs, one sample pass). The `match_layer`
+                              match is still computed and is what
+                              return_matching / diagnostics / n_matched
+                              report. When False, the single `match_layer`
+                              assignment is reused for every layer (legacy
+                              behavior)
         cost_*:               matcher cost weights (matched to weight_*)
     """
 
@@ -828,6 +840,7 @@ class LArFormerLoss(nn.Module):
         aux_max_tokens: int = 10_000,
         deep_supervision: bool = True,
         match_layer: str = "final",
+        match_per_layer: bool = False,
         cost_class: float = 2.0,
         cost_mask: float = 5.0,
         cost_dice: float = 5.0,
@@ -918,6 +931,7 @@ class LArFormerLoss(nn.Module):
         self.aux_max_tokens = int(aux_max_tokens)
         self.deep_supervision = bool(deep_supervision)
         self.match_layer = match_layer
+        self.match_per_layer = bool(match_per_layer)
         self.use_importance_sampling = bool(use_importance_sampling)
         self.importance_oversample_ratio = float(importance_oversample_ratio)
         self.importance_ratio = float(importance_ratio)
@@ -1513,17 +1527,44 @@ class LArFormerLoss(nn.Module):
         else:
             sup_layers.append(decoder_output["final"])
 
-        per_layer_losses = [
-            self._compute_layer_loss(
-                layer_pred=lyr,
-                gt_classes=gt_classes,
-                gt_origin=gt_origin,
-                per_level_gt_mask=per_level_gt_mask,
-                q_idx=q_idx, k_idx=k_idx,
-                gt_end=gt_end, gt_has_end=gt_has_end,
-            )
-            for lyr in sup_layers
-        ]
+        if self.match_per_layer and self.primary_level is not None and K > 0:
+            # Standard DETR/M2F deep supervision: each layer is supervised
+            # with the assignment ITS OWN predictions would choose, so early
+            # layers aren't pushed toward a pairing that only the final
+            # layer's (initially noisy) outputs support. All layers reuse
+            # the single `sampled` / `gt_sampled` cost-point set from the
+            # match_layer block above.
+            per_layer_losses = []
+            for lyr in sup_layers:
+                lq_idx, lk_idx = self.matcher(
+                    class_logits=lyr["class_logits"],
+                    primary_mask_logits=lyr["mask_logits"][self.primary_level],
+                    gt_classes=gt_classes,
+                    gt_masks_sampled=gt_sampled,
+                    sampled_indices=sampled,
+                    origin_pred=lyr.get("origin"),
+                    gt_origin=gt_origin,
+                )
+                per_layer_losses.append(self._compute_layer_loss(
+                    layer_pred=lyr,
+                    gt_classes=gt_classes,
+                    gt_origin=gt_origin,
+                    per_level_gt_mask=per_level_gt_mask,
+                    q_idx=lq_idx, k_idx=lk_idx,
+                    gt_end=gt_end, gt_has_end=gt_has_end,
+                ))
+        else:
+            per_layer_losses = [
+                self._compute_layer_loss(
+                    layer_pred=lyr,
+                    gt_classes=gt_classes,
+                    gt_origin=gt_origin,
+                    per_level_gt_mask=per_level_gt_mask,
+                    q_idx=q_idx, k_idx=k_idx,
+                    gt_end=gt_end, gt_has_end=gt_has_end,
+                )
+                for lyr in sup_layers
+            ]
         agg: Dict[str, torch.Tensor] = {
             k: torch.stack([pl[k] for pl in per_layer_losses]).sum()
             for k in per_layer_losses[0].keys()

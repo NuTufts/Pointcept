@@ -31,6 +31,18 @@ wconfig_is_config_file() {
     [ -n "$f" ] && [ -f "$f" ] && grep -q '^[[:space:]]*INPUTLIST=' "$f" 2>/dev/null
 }
 
+# merged_sp_leaf <output_root> <fileno> [bucket]
+# Echoes the 2-level fileno-tree leaf dir, IDENTICAL to reorg_merged_sp.py:
+#   <root>/<fileno//1000 : %03d>/<(fileno%1000)//bucket : %02d>   (bucket=25)
+# Stage A writes merged_sp H5 straight here so the flat->tree reorg step is no
+# longer needed (reorg_merged_sp.py remains only for pre-existing flat dirs).
+# `fileno` must be a plain (non-zero-padded) integer to avoid octal parsing.
+merged_sp_leaf() {
+    local root=$1 fn=$2 bucket=${3:-25}
+    printf "%s/%03d/%02d" "${root}" $(( 10#${fn} / 1000 )) \
+           $(( (10#${fn} % 1000) / bucket ))
+}
+
 wconfig_bootstrap() {
     WCONFIG_STANDALONE=0
     WCONFIG_RE_EXECED=0

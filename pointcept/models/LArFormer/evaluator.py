@@ -75,6 +75,8 @@ class LArFormerSlicerEvaluator(HookBase):
         nu_class_id: int = 0,
         empty_cache: bool = True,
         log_per_event: bool = False,
+        probe_freq: int = 0,
+        probe_max_events: int = 128,
     ):
         self.eval_freq = int(eval_freq)
         self.best_metric = str(best_metric)
@@ -83,6 +85,17 @@ class LArFormerSlicerEvaluator(HookBase):
         self.nu_class_id = int(nu_class_id)
         self.empty_cache = bool(empty_cache)
         self.log_per_event = bool(log_per_event)
+        # Lightweight intra-epoch val-LOSS probe (overfitting watch). Distinct
+        # from the full per-epoch eval(): every `probe_freq` global iters it
+        # runs the model in eval mode over the first `probe_max_events` val
+        # events, accumulating ONLY the per-component loss dict (no IoU /
+        # nu-purity / per-pair machinery -- those are the expensive parts), and
+        # logs to the `valprobe/*` namespace on the SAME global-step axis as the
+        # training loss so overfitting is read straight off the two curves. It
+        # deliberately does NOT touch comm_info["val_loss"] -- the plateau LR
+        # scheduler stays driven by the full, stable per-epoch eval.
+        self.probe_freq = int(probe_freq)
+        self.probe_max_events = int(probe_max_events)
 
     # ------------------------------------------------------------------
     # Hook lifecycle
@@ -100,22 +113,96 @@ class LArFormerSlicerEvaluator(HookBase):
                 )
 
     def after_step(self):
+        if self.trainer.val_loader is None:
+            return
+        iter_per_epoch = len(self.trainer.train_loader)
+        global_iter = (
+            self.trainer.comm_info["iter"]
+            + iter_per_epoch * self.trainer.epoch
+        )
         if (self.trainer.cfg.evaluate
                 and self.eval_freq > 0
-                and self.trainer.val_loader is not None):
-            iter_per_epoch = len(self.trainer.train_loader)
-            global_iter = (
-                self.trainer.comm_info["iter"]
-                + iter_per_epoch * self.trainer.epoch
-            )
-            if (global_iter + 1) % self.eval_freq == 0:
-                self.eval()
+                and (global_iter + 1) % self.eval_freq == 0):
+            self.eval()
+        if (self.probe_freq > 0
+                and (global_iter + 1) % self.probe_freq == 0):
+            self._loss_probe(global_iter + 1)
 
     def after_epoch(self):
         if (self.trainer.cfg.evaluate
                 and self.eval_freq == 0
                 and self.trainer.val_loader is not None):
             self.eval()
+
+    # ------------------------------------------------------------------
+    # Lightweight intra-epoch val-loss probe (overfitting watch)
+    # ------------------------------------------------------------------
+
+    def _loss_probe(self, global_iter: int):
+        """Run a loss-only eval over the first `probe_max_events` val events and
+        log `valprobe/loss[_*]` on the training step axis. Cheap: skips all the
+        IoU / nu-purity / per-pair metric computation that `eval()` does.
+
+        Failures never propagate -- a probe must not be able to kill training.
+        Restores the model to train mode on exit (we are mid-epoch).
+        """
+        was_training = self.trainer.model.training
+        try:
+            if self.empty_cache:
+                torch.cuda.empty_cache()
+            self.trainer.model.eval()
+            loss_acc: dict = {}
+            n_events = 0
+            with torch.no_grad():
+                for input_dict in self.trainer.val_loader:
+                    for key in input_dict.keys():
+                        if isinstance(input_dict[key], torch.Tensor):
+                            input_dict[key] = input_dict[key].cuda(
+                                non_blocking=True)
+                    output = self.trainer.model(input_dict)
+                    for ev_pred in output.get("predictions", []):
+                        eval_loss = ev_pred.get("eval_loss")
+                        if eval_loss is None:
+                            continue
+                        n_events += 1
+                        for k, v in eval_loss.items():
+                            if (isinstance(v, torch.Tensor) and v.dim() == 0
+                                    and k not in ("n_matched",
+                                                  "n_gt_instances")):
+                                loss_acc[k] = (loss_acc.get(k, 0.0)
+                                               + float(v.item()))
+                    if n_events >= self.probe_max_events:
+                        break
+            if n_events == 0:
+                return
+            scalars = {
+                (f"valprobe/loss_{k}" if k != "total" else "valprobe/loss"):
+                    v / n_events
+                for k, v in loss_acc.items()
+            }
+            self.trainer.logger.info(
+                f"ValProbe @iter {global_iter} (n={n_events}): "
+                f"loss {scalars.get('valprobe/loss', float('nan')):.4f}"
+            )
+            writer = getattr(self.trainer, "writer", None)
+            if writer is not None:
+                for k, v in scalars.items():
+                    if v == v:
+                        writer.add_scalar(k, v, global_iter)
+                if getattr(self.trainer.cfg, "enable_wandb", False):
+                    try:
+                        import wandb
+                        # Log on the SAME global-step axis as the training loss
+                        # so train-vs-val divergence is read off one plot.
+                        wandb.log({k: v for k, v in scalars.items() if v == v},
+                                  step=wandb.run.step)
+                    except ImportError:
+                        pass
+        except Exception as e:                        # noqa: BLE001
+            self.trainer.logger.warning(f"ValProbe failed (skipped): {e}")
+        finally:
+            if was_training:
+                self.trainer.model.train()
 
     # ------------------------------------------------------------------
     # Per-pair metrics

@@ -139,8 +139,13 @@ source run_larformer_wconfig.sh larformer_configs/bnb_nu_pi0filter_corsika.conf
 ```
 
 `SLURM_ARRAY_TASK_ID` (default 0) selects the stride block:
-`lineno = OFFSET + stride*SLURM_ARRAY_TASK_ID + i`, `i=1..stride`. Outputs go
-to `OUTPUT_DIR/<lineno/1000>/<lineno/100>/` (3-level hash).
+`lineno = OFFSET + stride*SLURM_ARRAY_TASK_ID + i`, `i=1..stride`. Outputs are
+written **directly into the 2-level fileno tree**
+`OUTPUT_DIR/<fileno//1000 : %03d>/<(fileno%1000)//25 : %02d>/` via the shared
+`merged_sp_leaf()` in `_wconfig_common.sh` (identical layout to
+`reorg_merged_sp.py`), so the old flat-then-`reorg_merged_sp.py` step is no
+longer needed — `reorg_merged_sp.py` is now only for migrating pre-existing flat
+directories.
 
 ### Run a single stage standalone
 

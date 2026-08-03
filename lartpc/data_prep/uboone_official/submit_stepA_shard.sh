@@ -36,6 +36,9 @@ mkdir -p "${WORKROOT}/logs/data_prep"
 POINTCEPT_DIR=${WORKROOT}
 REPO_ROOT=${SCRIPT_DIR}
 source "${CONF}"
+# merged_sp_leaf() -- write Stage A output straight into the 2-level fileno tree
+# (no post-hoc reorg_merged_sp.py needed). Sourcing only defines functions.
+source "${SCRIPT_DIR}/_wconfig_common.sh"
 WORKDIR_BASE=${WORKDIR_BASE:-/tmp}
 NLINES=$(grep -c . "${INPUTLIST}")
 mkdir -p "${OUTPUT_DIR}"
@@ -47,7 +50,8 @@ for i in $(seq 0 $((STRIDE - 1))); do
     [ "${LINENO_}" -gt "${NLINES}" ] && break
     # skip if this line's output already exists (resume-friendly)
     ZF=$(printf "%05d" ${LINENO_})
-    if ls "${OUTPUT_DIR}"/merged_${TAG}_fileno${ZF}_entry*.h5 >/dev/null 2>&1; then
+    LEAFDIR=$(merged_sp_leaf "${OUTPUT_DIR}" "${LINENO_}")
+    if ls "${LEAFDIR}"/merged_${TAG}_fileno${ZF}_entry*.h5 >/dev/null 2>&1; then
         echo ">>> line ${LINENO_}: output exists, skip"
         continue
     fi
@@ -57,8 +61,9 @@ for i in $(seq 0 $((STRIDE - 1))); do
     WD=$(printf "%s/lantern_%s_jobid%04d_line%05d" "${WORKDIR_BASE}" \
          "${TAG}" "${SLURM_ARRAY_TASK_ID}" "${LINENO_}")
     if [ ${rc} -eq 0 ] && ls "${WD}"/merged_${TAG}_fileno*_entry*.h5 >/dev/null 2>&1; then
-        cp "${WD}"/merged_${TAG}_fileno*_entry*.h5 "${OUTPUT_DIR}/"
-        echo ">>> line ${LINENO_}: $(ls "${WD}"/merged_${TAG}_fileno*_entry*.h5 | wc -l) files -> ${OUTPUT_DIR}"
+        mkdir -p "${LEAFDIR}"
+        cp "${WD}"/merged_${TAG}_fileno*_entry*.h5 "${LEAFDIR}/"
+        echo ">>> line ${LINENO_}: $(ls "${WD}"/merged_${TAG}_fileno*_entry*.h5 | wc -l) files -> ${LEAFDIR}"
     else
         echo ">>> line ${LINENO_}: FAILED (rc=${rc})"
         nfail=$((nfail + 1))

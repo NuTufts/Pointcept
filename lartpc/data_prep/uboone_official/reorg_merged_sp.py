@@ -1,6 +1,11 @@
 """Move a flat merged_sp directory into a 2-level fileno tree, to relieve the
 shared-filesystem metadata hotspot of a single 100k-1M-file directory.
 
+NOTE: Stage A now writes straight into this 2-level tree (submit_stepA_shard.sh
+/ run_larformer_wconfig.sh use the shared merged_sp_leaf() in _wconfig_common.sh,
+whose layout is identical to leaf() below). This script is therefore only needed
+to migrate PRE-EXISTING flat merged_sp directories.
+
 Tree layout (deterministic, filename-derived -> cheap, no file reads):
     <dir>/<fileno//1000 : %03d>/<(fileno%1000)//bucket : %02d>/<file>.h5
 default bucket=25 -> ~25 filenos/leaf x ~15 entries ~= 375 files/leaf.
