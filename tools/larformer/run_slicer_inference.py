@@ -43,7 +43,15 @@ import numpy as np
 import torch
 
 
+# Repo root = nearest ancestor containing the `pointcept` package (the
+# script moved from tools/ to tools/larformer/ in the repo reorganization,
+# so a fixed ".." is wrong; walk up and check instead).
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+for _up in ("..", os.path.join("..", "..")):
+    _cand = os.path.abspath(os.path.join(os.path.dirname(__file__), _up))
+    if os.path.isdir(os.path.join(_cand, "pointcept")):
+        REPO_ROOT = _cand
+        break
 sys.path.insert(0, REPO_ROOT)
 
 # Import the shared helpers from the LArFormer model package — same

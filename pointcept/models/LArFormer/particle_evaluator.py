@@ -52,6 +52,11 @@ class LArFormerParticleEvaluator(LArFormerSlicerEvaluator):
         log_per_event: bool = False,
         report_origin_error: bool = True,
         coord_scale: float = 179.55,
+        # Intra-epoch val-LOSS probe (overfitting watch) — implemented in the
+        # parent LArFormerSlicerEvaluator; forwarded here so Stage-3 configs
+        # can enable it. 0 = off (default, preserves existing behavior).
+        probe_freq: int = 0,
+        probe_max_events: int = 128,
     ):
         super().__init__(
             eval_freq=eval_freq,
@@ -62,6 +67,8 @@ class LArFormerParticleEvaluator(LArFormerSlicerEvaluator):
                                    # metrics are stripped in _aggregate.
             empty_cache=empty_cache,
             log_per_event=log_per_event,
+            probe_freq=probe_freq,
+            probe_max_events=probe_max_events,
         )
         self.report_origin_error = bool(report_origin_error)
         self.coord_scale = float(coord_scale)

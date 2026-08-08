@@ -204,9 +204,19 @@ def main():
             print(f"[task {args.task_id}] no pending inference files; "
                   f"skipping inference step")
         else:
-            infer_script = os.path.join(REPO_ROOT, "tools", "run_slicer_inference.py")
-            if not os.path.exists(infer_script):
-                sys.exit(f"missing inference script: {infer_script}")
+            # Reorganized layout first (tools/larformer/), legacy flat
+            # tools/ as fallback so the driver still runs from the old
+            # checkout.
+            _infer_candidates = [
+                os.path.join(REPO_ROOT, "tools", "larformer",
+                             "run_slicer_inference.py"),
+                os.path.join(REPO_ROOT, "tools", "run_slicer_inference.py"),
+            ]
+            infer_script = next(
+                (p for p in _infer_candidates if os.path.exists(p)), None)
+            if infer_script is None:
+                sys.exit(f"missing inference script; tried: "
+                         f"{_infer_candidates}")
             _run([
                 sys.executable, infer_script,
                 "--config",     args.model_config,
@@ -221,12 +231,17 @@ def main():
 
     # ---- 4. Per-event analysis ---------------------------------------
     if not args.skip_analysis:
-        analyze_script = os.path.join(
-            REPO_ROOT, "lartpc_data_prep", "larformer_analysis",
-            "analyze_event.py",
-        )
-        if not os.path.exists(analyze_script):
-            sys.exit(f"missing analyzer: {analyze_script}")
+        # Reorganized layout first, legacy location as fallback.
+        _analyze_candidates = [
+            os.path.join(REPO_ROOT, "lartpc", "larformer_analysis",
+                         "slicer_eval", "analyze_event.py"),
+            os.path.join(REPO_ROOT, "lartpc_data_prep", "larformer_analysis",
+                         "analyze_event.py"),
+        ]
+        analyze_script = next(
+            (p for p in _analyze_candidates if os.path.exists(p)), None)
+        if analyze_script is None:
+            sys.exit(f"missing analyzer; tried: {_analyze_candidates}")
         n_already_analysis = 0
         for r in rows:
             merged_p  = r["merged_h5"]
@@ -294,6 +309,11 @@ def main():
                 "--gamma-cosmic",    str(args.gamma_cosmic),
                 "--charge-source",   args.charge_source,
                 "--charge-share-norm", args.charge_share_norm,
+                # Optional passthrough (e.g. "--flash-charge-preal-min 0.5")
+                # via env var, so conf-driven variant runs don't need new
+                # driver flags.
+                *([a for a in os.environ.get(
+                    "EXTRA_ANALYZE_ARGS", "").split() if a]),
             ], log_prefix=f"[task {args.task_id}][analyze entry={entry}] ")
         print(
             f"[task {args.task_id}] analysis: {n_already_analysis} of "

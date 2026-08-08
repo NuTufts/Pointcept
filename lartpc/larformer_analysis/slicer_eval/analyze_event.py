@@ -60,6 +60,8 @@ Usage:
 """
 
 import argparse
+
+FLASH_PREAL_MIN_ATTR = None  # set from CLI; recorded in perevent attrs
 import os
 import sys
 
@@ -97,6 +99,8 @@ def _load_inference(p):
             post_slice_gt    = f["post/slice_id_gt"][:].astype(np.int64),
             pre_pixval       = f["pre/pixval"][:].astype(np.float32),
             pre_keep         = f["pre/keep"][:].astype(bool),
+            pre_p_real       = (f["pre/p_real"][:].astype(np.float32)
+                                if "pre/p_real" in f else None),
             q_class_argmax   = f["queries/class_argmax"][:].astype(np.int64),
             gt_origin_type   = f["gt/origin_type"][:].astype(np.int64),
             gt_primary_trackid = f["gt/primary_trackid"][:].astype(np.int64),
@@ -113,6 +117,8 @@ def _load_inference(p):
         out["event"] = int(f.attrs.get("meta_event", -1))
         out["no_object_class_id"] = int(f.attrs.get("meta_no_object_class_id", 2))
     out["post_pixval"] = out["pre_pixval"][out["pre_keep"]]
+    out["post_p_real"] = (out["pre_p_real"][out["pre_keep"]]
+                          if out["pre_p_real"] is not None else None)
     return out
 
 
@@ -312,9 +318,18 @@ def _compute_pred_slices(
     gamma_by_producer, readout_factor_by_producer,
     photonlib_cache, oob_thresholds, f_sys, eps,
     v_drift, charge_source="raw_adc", share_norm="none",
+    flash_preal_min=None,
 ):
     """Returns a dict of (Q,) arrays describing every non-empty predicted
     slice in the event, sorted by query_id ascending.
+
+    flash_preal_min: when set, SPs with deghoster p_real < this threshold
+    are EXCLUDED from the flash-charge sum (zero charge, excluded from the
+    pixel-share normalization and from the OOB position set) while still
+    counting toward slice membership (n_sp, iou_vs_gt_nu). This implements
+    the loose-slicing / tight-flash-charge scheme: the slicer keeps soft
+    real charge at low deghost tau, but the light prediction only uses
+    confidently-real SPs.
     """
     no_obj = inf["no_object_class_id"]
     # Group SPs by the panoptic-argmax-winning QUERY ID. Earlier
@@ -359,16 +374,26 @@ def _compute_pred_slices(
     sp_gt_nu  = gt_nu_mask[valid_sp_mask]
     sp_cid    = np.array([q_to_cid[int(q)] for q in sp_pred_q], dtype=np.int64)
     sp_charge = flash_predict.select_charge_y_with_uv_fallback_np(sp_px)
+    # Optional post-slicer deghost cut on the FLASH charge only (see
+    # docstring). fsel marks SPs whose charge participates in the light
+    # prediction; slice membership arrays are untouched.
+    fsel = np.ones(sp_charge.shape[0], dtype=bool)
+    if flash_preal_min is not None and inf.get("post_p_real") is not None:
+        fsel = inf["post_p_real"][valid_sp_mask] >= float(flash_preal_min)
     # Per-slice pixel-share normalization: divide each SP's charge by the
     # number of SPs in the SAME slice sharing its source wire pixel, so the
-    # slice's total charge equals its 2D pixel-footprint integral.
+    # slice's total charge equals its 2D pixel-footprint integral. Computed
+    # over flash-participating SPs only, so cut SPs don't inflate the
+    # divisor of surviving SPs.
     if share_norm == "per-slice" and have_raw:
         share = _pixel_share_counts(
-            sp_px, inf["post_tick"][valid_sp_mask],
-            inf["post_uwire"][valid_sp_mask], inf["post_ywire"][valid_sp_mask],
-            sp_cid,
+            sp_px[fsel], inf["post_tick"][valid_sp_mask][fsel],
+            inf["post_uwire"][valid_sp_mask][fsel],
+            inf["post_ywire"][valid_sp_mask][fsel],
+            sp_cid[fsel],
         )
-        sp_charge = sp_charge / share.astype(np.float32)
+        sp_charge[fsel] = sp_charge[fsel] / share.astype(np.float32)
+    sp_charge[~fsel] = 0.0
 
     # Batched PE prediction.
     pe_pred_all = flash_predict.predict_many_slices_pe(
@@ -402,8 +427,14 @@ def _compute_pred_slices(
         union = gt_nu_total + pred_total - pred_in_gt
         iou_arr[ci] = float(pred_in_gt / union) if union > 0 else 0.0
         # OOB + chi-2 sweep (computes drift correction internally).
+        member_f = member & fsel
+        if not member_f.any():
+            # All of this slice's charge was cut — no light prediction
+            # possible; leave chi2 NaN (excluded from min-chi2 ranking,
+            # same treatment as empty slices).
+            continue
         sub = flash_chi2.chi2_with_oob(
-            pos_cm=sp_pos[member],
+            pos_cm=sp_pos[member_f],
             pe_pred=pe_pred_all[ci],
             pe_obs=in_time["pe_obs"],
             flash_t0_us=in_time["t0_us"],
@@ -746,6 +777,8 @@ def _write_perevent_h5(out_path, run, subrun, event, model_tag,
         f.attrs["subrun"] = int(subrun)
         f.attrs["event"]  = int(event)
         f.attrs["model_tag"] = str(model_tag)
+        if FLASH_PREAL_MIN_ATTR is not None:
+            f.attrs["flash_charge_preal_min"] = float(FLASH_PREAL_MIN_ATTR)
         f.attrs["has_nu_prediction"] = bool(metrics["has_nu_prediction"])
         f.attrs["oob_thresholds"] = oob_thresholds.astype(np.float32)
         f.attrs["default_oob_idx"] = int(default_idx)
@@ -873,6 +906,11 @@ def main():
                     default=flash_predict.DEFAULT_V_DRIFT_CM_PER_US)
 
     # Charge source + pixel-share normalization.
+    ap.add_argument("--flash-charge-preal-min", type=float, default=None,
+                    help="post-slicer deghost cut applied to the FLASH "
+                         "charge only: SPs with p_real below this are "
+                         "excluded from pe_pred/oob (slice membership "
+                         "unchanged). Default None = no cut.")
     ap.add_argument("--charge-source", choices=["raw_adc", "pre_pixval"],
                     default="raw_adc",
                     help="Per-SP charge for the flash prediction. 'raw_adc' "
@@ -1019,11 +1057,14 @@ def main():
     )
 
     # Per-pred-slice.
+    global FLASH_PREAL_MIN_ATTR
+    FLASH_PREAL_MIN_ATTR = args.flash_charge_preal_min
     pred = _compute_pred_slices(
         inf, in_time, gt_nu_mask,
         gamma_by_producer, readout_factor_by_producer,
         args.photonlib_cache, oob_thresholds, args.f_sys, args.eps,
         args.v_drift_cm_per_us, charge_source, share_norm,
+        flash_preal_min=args.flash_charge_preal_min,
     )
     if args.verbose:
         print(f"n_pred_slices={pred['query_id'].shape[0]}  "
