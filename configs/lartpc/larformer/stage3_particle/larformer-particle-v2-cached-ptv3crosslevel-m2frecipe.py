@@ -47,7 +47,7 @@ no_object_weight=0.1, 32 queries, 2/5/5 class/mask/dice weights = matcher
 costs, mask denoising, mixed query selection, importance+hard-neg sampling.
 
 *** CACHE DEPENDENCY — READ BEFORE LAUNCHING ***
-CACHE_ROOT below is a PLACEHOLDER. The v1 cache was built with the OLD
+CACHE_ROOT now points at the built+verified v2 cache (2026-08-09). Original note: The v1 cache was built with the OLD
 slicer (iter_75750); training stage 3 against the NEW m2frecipe-v2 slicer
 requires rebuilding the stage-1+2 cache with the chosen v2 slicer
 checkpoint first:
@@ -69,9 +69,10 @@ del _larformer_particle_evaluator_module
 # =============================================================================
 # Paths
 # =============================================================================
-# PLACEHOLDER — rebuild the cache with the chosen m2frecipe-v2 slicer
-# checkpoint and update (see module docstring). Deliberately non-existent.
-CACHE_ROOT  = "/cluster/tufts/wongjiradlab/larbys/data/ub_on_tufts/hdf5/larformer_cache_stage12__m2frecipeV2slicer_TODO/"
+# v2 production cache (built 2026-08-09, VERIFIED: 392,131 files, 0 corrupt,
+# exact coverage, particle_class_id augmented): ft-deghoster @ tau=0.20 +
+# m2frecipe-v2 ep4 slicer; 382,768 train / 9,363 val events.
+CACHE_ROOT  = "/cluster/tufts/wongjiradlab/larbys/data/ub_on_tufts/hdf5/larformer_cache_stage12__m2fv2ep4_ftdeghost_tau020/"
 TRAIN_ROOT  = f"{CACHE_ROOT}/train"
 VAL_ROOT    = f"{CACHE_ROOT}/val"
 

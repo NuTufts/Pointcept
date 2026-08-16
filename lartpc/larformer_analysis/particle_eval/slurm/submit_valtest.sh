@@ -131,8 +131,10 @@ echo "OUTPUT_DIR=${OUTPUT_DIR}"
 echo "Started: $(date)"
 echo "======================================"
 
-#module load apptainer
-module load apptainer/1.2.4-suid
+# the -suid variant only exists on some nodes (wongjiradlab); gpu/preempt
+# nodes carry a different default -- tolerate whatever is available
+module load apptainer/1.2.4-suid 2>/dev/null \
+  || module load apptainer 2>/dev/null || true
 
 # In-container per-task command. The driver script handles both input
 # modes; only the knobs it needs are different.

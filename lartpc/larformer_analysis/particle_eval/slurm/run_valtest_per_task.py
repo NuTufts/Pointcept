@@ -104,12 +104,16 @@ def _analyze_one(stage3pred_path, analyze_dir, model_tag, log_prefix):
     if os.path.exists(perevent) or os.path.exists(skipped):
         print(f"{log_prefix}already done: {os.path.basename(stage3pred_path)}")
         return
-    analyze_script = os.path.join(
-        REPO_ROOT, "lartpc_data_prep", "larformer_particle_analysis",
-        "analyze_event.py",
-    )
-    if not os.path.exists(analyze_script):
-        sys.exit(f"missing analyzer: {analyze_script}")
+    # new repo layout first, pre-reorg location as fallback
+    candidates = [
+        os.path.join(REPO_ROOT, "lartpc", "larformer_analysis",
+                     "particle_eval", "analyze_event.py"),
+        os.path.join(REPO_ROOT, "lartpc_data_prep",
+                     "larformer_particle_analysis", "analyze_event.py"),
+    ]
+    analyze_script = next((p for p in candidates if os.path.exists(p)), None)
+    if analyze_script is None:
+        sys.exit(f"missing analyzer; tried: {candidates}")
     _run([
         sys.executable, analyze_script,
         "--stage3pred-h5", stage3pred_path,
@@ -170,11 +174,17 @@ def run_cached(args):
 
     # ---- Stage-3 inference -------------------------------------------
     if not args.skip_inference and n_pending > 0:
-        infer_script = os.path.join(
-            REPO_ROOT, "tools", "run_larformer_stage3_inference.py",
-        )
-        if not os.path.exists(infer_script):
-            sys.exit(f"missing inference script: {infer_script}")
+        # Reorganized layout first (tools/larformer/), legacy flat tools/
+        # as fallback (same fix as slicer_eval's driver, 2026-08-03).
+        _cands = [
+            os.path.join(REPO_ROOT, "tools", "larformer",
+                         "run_larformer_stage3_inference.py"),
+            os.path.join(REPO_ROOT, "tools",
+                         "run_larformer_stage3_inference.py"),
+        ]
+        infer_script = next((c for c in _cands if os.path.exists(c)), None)
+        if infer_script is None:
+            sys.exit(f"missing inference script; tried: {_cands}")
         _run([
             sys.executable, infer_script,
             "--config",               args.model_config,
@@ -286,11 +296,17 @@ def run_full_cascade(args):
 
     # ---- Stage-3 inference (end-to-end cascade) ----------------------
     if not args.skip_inference and n_pending > 0:
-        infer_script = os.path.join(
-            REPO_ROOT, "tools", "run_larformer_stage3_inference.py",
-        )
-        if not os.path.exists(infer_script):
-            sys.exit(f"missing inference script: {infer_script}")
+        # Reorganized layout first (tools/larformer/), legacy flat tools/
+        # as fallback (same fix as slicer_eval's driver, 2026-08-03).
+        _cands = [
+            os.path.join(REPO_ROOT, "tools", "larformer",
+                         "run_larformer_stage3_inference.py"),
+            os.path.join(REPO_ROOT, "tools",
+                         "run_larformer_stage3_inference.py"),
+        ]
+        infer_script = next((c for c in _cands if os.path.exists(c)), None)
+        if infer_script is None:
+            sys.exit(f"missing inference script; tried: {_cands}")
         _run([
             sys.executable, infer_script,
             "--config",               args.model_config,

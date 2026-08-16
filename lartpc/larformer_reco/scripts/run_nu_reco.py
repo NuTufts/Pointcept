@@ -39,9 +39,13 @@ _METHOD = {"range": 0, "calo": 1}
 
 
 def reco_args(a):
-    """Tuned reco parameters as a namespace for the nu_interaction functions."""
+    """Tuned reco parameters as a namespace for the nu_interaction functions.
+
+    --true-vertex implies no_snap: the truth seed must be used exactly as-is,
+    or the convergence snap would re-introduce reco-vertex dependence."""
     return SimpleNamespace(
-        no_snap=False, snap_radius=a.snap_radius, snap_support_radius=5.0,
+        no_snap=getattr(a, "true_vertex", False),
+        snap_radius=a.snap_radius, snap_support_radius=5.0,
         d_vertex=12.0, d_perp=4.0, front_tol=1.5, merge_radius=3.0,
         shower_mode=a.shower_mode, shower_d_impact=a.shower_d_impact,
         shower_cos_min=a.shower_cos_min, shower_d_gap=60.0,
@@ -67,9 +71,16 @@ def reco_one(kp_path, msp_path, rmom, calib, a):
     msp_dir = os.path.dirname(msp_path) if msp_path else None
     recs = tio.load_instances(kp_path, msp_dir, tracks_only=True,
                               min_points=a.min_points)
-    cands = vertex_candidates(kp_path)
+    if getattr(a, "true_vertex", False):
+        # Seed with the MC-truth (post-SCE) nu vertex as the SOLE candidate,
+        # decoupling downstream reco from the stage-4 keypoint model. Events
+        # without a finite truth vertex (e.g. cosmic/fm stream) are skipped.
+        _, gt_nu = read_nu_vertices(kp_path)
+        cands = [(gt_nu, 1.0)] if np.all(np.isfinite(gt_nu)) else []
+    else:
+        cands = vertex_candidates(kp_path)
     if not cands:                       # need a nu-vertex candidate to root on
-        return None, None
+        return None, None, None
     args = reco_args(a)
     # recs (tracks) may be EMPTY for shower-only (CC-nu_e) events; build_tracks
     # returns [] and reco_interactions then seeds a shower-only interaction.
@@ -313,6 +324,15 @@ def main():
                          "showers point back to an unused candidate")
     ap.add_argument("--snap-radius", type=float, default=30.0)
     ap.add_argument("--max-interactions", type=int, default=3)
+    ap.add_argument("--true-vertex", action="store_true",
+                    help="seed the reco with the MC-truth (post-SCE) nu vertex "
+                         "(gt_nu_vertex_cm from the keypoint2 file) as the sole "
+                         "candidate, instead of the stage-4 keypoint score-map "
+                         "peaks; implies no vertex snapping so the truth seed "
+                         "is used exactly. Events with a non-finite truth "
+                         "vertex (cosmic/fm stream) are skipped. For "
+                         "keypoint-decoupled efficiency studies -- NOT a "
+                         "deployable reco mode.")
     args = ap.parse_args()
 
     kp_list = read_list(args.keypoint2_list)
@@ -338,12 +358,14 @@ def main():
     os.makedirs(args.output_dir, exist_ok=True)
     out_path = os.path.join(args.output_dir, f"nu_reco_shard{args.start:07d}.h5")
     print(f">>> shard start={args.start} n={len(shard)} -> {out_path} | "
-          f"calib={calib} | {len(msp_map)} merged_sp in map", flush=True)
+          f"calib={calib} | {len(msp_map)} merged_sp in map | "
+          f"vertex_seed={'TRUE' if args.true_vertex else 'pred'}", flush=True)
 
     n_ok = n_skip = n_err = 0
     with h5py.File(out_path, "w") as fout:
         fout.attrs["shard_start"] = args.start
         fout.attrs["n_requested"] = len(shard)
+        fout.attrs["vertex_seed"] = "true" if args.true_vertex else "pred"
         for gidx in shard:
             kp = kp_list[gidx]
             try:

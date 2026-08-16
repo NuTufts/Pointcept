@@ -38,6 +38,10 @@ DATADIR=${DATADIR:?set DATADIR (the EXT dataset dir with merged_sp/)}
 MSP_DIR=${DATADIR}/merged_sp
 NINF=${NINF:-8}          # inference (GPU) shards
 NNR=${NNR:-8}            # nu_reco shards per stream
+# extra run_nu_reco.py flags for BOTH streams, e.g. "--true-vertex" (dedicated
+# knob -- a bare EXTRA_ARGS would leak into the other EXTRA_ARGS-consuming
+# stages through --export=ALL)
+NU_RECO_EXTRA_ARGS=${NU_RECO_EXTRA_ARGS:-}
 NEXP=${NEXP:-4}          # export shards
 DEP=${DEP:-}             # optional afterok stepA job id gating the chain
 # --- MC-vs-data knobs (defaults = data mode) --------------------------------
@@ -113,11 +117,13 @@ echo "regen     : ${REGEN}  -> ${KP2_NU} , ${KP2_FM}"
 
 # ---- 3) nu_reco : nu + fm streams (LLR attachment) -------------------------
 NRNU=$(KEYPOINT2_LIST=${KP2_NU} MERGED_SP_LIST=${MSP_LIST} OUTPUT_DIR=${NR_NU}/ \
+  EXTRA_ARGS="${NU_RECO_EXTRA_ARGS}" \
   NSHARDS=${NNR} sbatch --parsable ${EXCL} --export=ALL --dependency=afterok:${REGEN} \
   --array=0-$((NNR-1)) ${SLURMDIR}/submit_nu_reco_shard.sh)
 echo "nu_reco nu: ${NRNU}  (${NNR} shards) -> ${NR_NU}"
 
 NRFM=$(KEYPOINT2_LIST=${KP2_FM} MERGED_SP_LIST=${MSP_LIST} OUTPUT_DIR=${NR_FM}/ \
+  EXTRA_ARGS="${NU_RECO_EXTRA_ARGS}" \
   NSHARDS=${NNR} sbatch --parsable ${EXCL} --export=ALL --dependency=afterok:${REGEN} \
   --array=0-$((NNR-1)) ${SLURMDIR}/submit_nu_reco_shard.sh)
 echo "nu_reco fm: ${NRFM}  (${NNR} shards) -> ${NR_FM}"
