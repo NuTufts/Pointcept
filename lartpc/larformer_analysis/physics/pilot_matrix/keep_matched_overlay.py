@@ -21,7 +21,9 @@ MODELS = {"v7-lora": ("preal_v7-lora", f"{PRE}/sliceids_old"),
           "v7-ftdec": ("preal_v7-ftdec", f"{PRE}/sliceids_new"),
           "v7-cropdec": ("preal_v7-cropdec", f"{PRE}/preal_v7cropdec"),
           "p5b3-dec": ("preal_p5b3-dec", f"{PRE}/preal_p5b3dec"),
-          "p5b3-lora": ("preal_p5b3-lora", f"{PRE}/preal_p5b3lora")}
+          "p5b3-lora": ("preal_p5b3-lora", f"{PRE}/preal_p5b3lora"),
+          "v6-lantern": ("preal_v6-lantern",
+                         f"{PRE}/pilot174_lmscored/preal_v6-lantern")}
 TAUS = np.linspace(0.02, 0.9, 89)
 TARGETS = (0.10, 0.15, 0.20)
 

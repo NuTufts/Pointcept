@@ -1,6 +1,12 @@
 """CC1pi0 cutflow with the photon and muon steps DECOMPOSED into
 segmenter-found / correctly-classified / reco-attached sub-steps:
 
+  gamma-deghost : BOTH true photons have >--gslice-min of dedup charge
+                SURVIVING the deghoster (slice_id != -2 in the
+                --sliceids-dir sidecars; step skipped if not given)
+  gamma-slice : BOTH true photons have >--gslice-min (default 0.2, to
+                match the instance bar) of dedup charge in the predicted
+                nu slice (slicer delivery success)
   gamma-found : BOTH true photons have SOME kp2 instance holding >=20% of
                 the photon's dedup charge (segmenter clustering success)
   gamma-ID    : both photons' best instance is gamma-classed (>=20% + cls)
@@ -43,7 +49,7 @@ def in_fv(v):
 
 def instance_fracs(kp_path, tpos, q, tid_mask_by_t):
     """Per true particle t: (best instance charge frac, best gamma-classed
-    frac, best mu-classed frac)."""
+    frac, best mu-classed frac, frac of charge in the nu slice)."""
     with h5py.File(kp_path, "r") as f:
         sc = np.ascontiguousarray(f["slice/coord_cm"][()], np.float32)
         insts = []
@@ -53,17 +59,20 @@ def instance_fracs(kp_path, tpos, q, tid_mask_by_t):
                 insts.append((int(g.attrs["cls"]),
                               g["point_idx"][()].astype(np.int64)))
     skeys = _cell_keys(sc)
+    slice_cells = set(skeys)
     out = {}
     for t, m in tid_mask_by_t.items():
         qt = float(q[m].sum())
         if qt <= 0:
-            out[t] = (0.0, 0.0, 0.0)
+            out[t] = (0.0, 0.0, 0.0, 0.0)
             continue
         pkeys = _cell_keys(tpos[m])
         qs = q[m]
         cell_q = {}
         for k, qv in zip(pkeys, qs):
             cell_q[k] = cell_q.get(k, 0.0) + float(qv)
+        q_inslice = sum(qv for k, qv in cell_q.items()
+                        if k in slice_cells)
         best_any = best_g = best_mu = 0.0
         for cls, pidx in insts:
             cells = set(skeys[j] for j in pidx if j < len(skeys))
@@ -74,7 +83,7 @@ def instance_fracs(kp_path, tpos, q, tid_mask_by_t):
                 best_g = max(best_g, fr)
             if cls == 2:
                 best_mu = max(best_mu, fr)
-        out[t] = (best_any, best_g, best_mu)
+        out[t] = (best_any, best_g, best_mu, q_inslice / qt)
     return out
 
 
@@ -85,6 +94,11 @@ def main():
     ap.add_argument("--nu-reco-dir", required=True)
     ap.add_argument("--flow-dir", required=True)
     ap.add_argument("--msp-list", required=True)
+    ap.add_argument("--gslice-min", type=float, default=0.2)
+    ap.add_argument("--sliceids-dir", default=None,
+                    help="--slice-ids-only sidecar dir (files indexed by "
+                         "rank of event in the signal list); enables the "
+                         "gamma-deghost step")
     args = ap.parse_args()
 
     kp2 = [l.strip() for l in open(args.kp2_list) if l.strip()]
@@ -111,9 +125,17 @@ def main():
                         start=g["part_start_cm"][()],
                         pvtx=g["part_vtx"][()], depth=g["vtx_depth"][()])
 
-    steps = ["reco", "vtx", "gfound", "gID", "gcut", "mufound", "muID",
-             "mucut", "cpi", "mgg"]
+    steps = ["reco", "vtx", "gdeghost", "gslice", "gfound", "gID", "gcut",
+             "mufound", "muID", "mucut", "cpi", "mgg"]
     c = dict.fromkeys(steps, 0)
+    sid_by_rank = {}
+    if args.sliceids_dir:
+        for p in glob.glob(os.path.join(args.sliceids_dir,
+                                        "sliceid_event*.h5")):
+            m = re.search(r"sliceid_event0*(\d+)", os.path.basename(p))
+            if m:
+                sid_by_rank[int(m.group(1))] = p
+    rank_of_ev = {ev: i for i, ev in enumerate(sig)}
     for ev in sig:
         hit = kp2_by_ev.get(ev)
         if hit is None:
@@ -151,6 +173,34 @@ def main():
             masks[mu_tid] = trackid == mu_tid
         fr = instance_fracs(kp_path, tpos, q, masks)
         # ---- gamma sub-steps ----------------------------------------
+        if args.sliceids_dir:
+            sp = sid_by_rank.get(rank_of_ev[ev])
+            assert sp is not None, f"no sliceid sidecar for ev {ev}"
+            with h5py.File(sp, "r") as f:
+                fsc = f["full_slice/coord_cm"][()].astype(np.float32)
+                fsid = f["full_slice/slice_id"][()].astype(np.int64)
+            cell_sid = dict(zip(_cell_keys(np.ascontiguousarray(fsc)),
+                                fsid))
+            ok_deghost = True
+            for tt in ph_tids:
+                m = masks[tt]
+                qt = float(q[m].sum())
+                if qt <= 0:
+                    ok_deghost = False
+                    break
+                qsurv = sum(
+                    float(qv) for k, qv in
+                    zip(_cell_keys(np.ascontiguousarray(tpos[m])), q[m])
+                    if cell_sid.get(k, -2) != -2)
+                if qsurv / qt <= args.gslice_min:
+                    ok_deghost = False
+                    break
+            if not ok_deghost:
+                continue
+        c["gdeghost"] += 1
+        if not all(fr[tt][3] > args.gslice_min for tt in ph_tids):
+            continue
+        c["gslice"] += 1
         if not all(fr[tt][0] >= FRAC_MIN for tt in ph_tids):
             continue
         c["gfound"] += 1

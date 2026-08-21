@@ -807,6 +807,9 @@ class LArFormerLoss(nn.Module):
         num_classes: int,
         no_object_class_id: Optional[int] = None,
         no_object_weight: float = 0.1,
+        masked_no_object: bool = False,
+        masked_no_object_frac: float = 0.5,
+        masked_no_object_engage_frac: float = 0.10,
         weight_class: float = 2.0,
         weight_mask_primary: float = 5.0,
         weight_dice_primary: float = 5.0,
@@ -912,6 +915,15 @@ class LArFormerLoss(nn.Module):
                                    if no_object_class_id is not None
                                    else num_classes - 1)
         self.weight_class = float(weight_class)
+        # Partial-truth (overlay) events: exclude unmatched queries whose
+        # predicted mask mass sits mostly on UNLABELED points (outside all
+        # GT masks) from the no-object CE — they may be correctly-formed
+        # cosmic masks with no GT to match (SLICER_RETRAIN_PLAN A1-loss).
+        # Engages only when the primary level's unlabeled fraction exceeds
+        # masked_no_object_engage_frac (fully-labeled sim events skip).
+        self.masked_no_object = bool(masked_no_object)
+        self.masked_no_object_frac = float(masked_no_object_frac)
+        self.masked_no_object_engage_frac = float(masked_no_object_engage_frac)
         self.weight_mask_primary = float(weight_mask_primary)
         self.weight_dice_primary = float(weight_dice_primary)
         self.weight_aux_mask = float(weight_aux_mask)
@@ -1043,7 +1055,44 @@ class LArFormerLoss(nn.Module):
             q_t = torch.as_tensor(q_idx, dtype=torch.long, device=device)
             k_t = torch.as_tensor(k_idx, dtype=torch.long, device=device)
             cls_target[q_t] = gt_classes[k_t]
-        cls_loss = F.cross_entropy(cls_logits, cls_target, weight=self.ce_weights)
+        cls_keep = None
+        if (self.masked_no_object and self.primary_level is not None
+                and Q > len(q_idx)
+                and self.primary_level in per_level_gt_mask):
+            gt = per_level_gt_mask[self.primary_level]
+            if gt.numel() > 0:
+                unlab = ~(gt.to(torch.bool).any(dim=0))
+                base_rate = float(unlab.float().mean())
+                if base_rate > self.masked_no_object_engage_frac:
+                    with torch.no_grad():
+                        p = torch.sigmoid(
+                            layer_pred["mask_logits"]
+                            [self.primary_level].float())
+                        frac_unlab = ((p * unlab.unsqueeze(0)).sum(1)
+                                      / p.sum(1).clamp_min(1e-6))
+                    # exclude only masks CONCENTRATED on unlabeled
+                    # structure beyond the event's base rate — a diffuse
+                    # mask sits at ~base_rate and must still receive the
+                    # no-object push (midpoint of base_rate..1 as the
+                    # enrichment bar, floored by the config threshold)
+                    thresh = max(self.masked_no_object_frac,
+                                 0.5 * (1.0 + base_rate))
+                    excl = frac_unlab > thresh
+                    if len(q_idx) > 0:
+                        excl[torch.as_tensor(q_idx, dtype=torch.long,
+                                             device=device)] = False
+                    if bool(excl.any()):
+                        cls_keep = torch.ones(Q, device=device)
+                        cls_keep[excl] = 0.0
+        if cls_keep is None:
+            cls_loss = F.cross_entropy(cls_logits, cls_target,
+                                       weight=self.ce_weights)
+        else:
+            ce = F.cross_entropy(cls_logits, cls_target,
+                                 weight=self.ce_weights, reduction="none")
+            denom = (self.ce_weights[cls_target]
+                     * cls_keep).sum().clamp_min(1e-6)
+            cls_loss = (ce * cls_keep).sum() / denom
 
         zero = cls_logits.new_zeros(())
         out: Dict[str, torch.Tensor] = {

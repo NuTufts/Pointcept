@@ -87,6 +87,7 @@ class MaskDenoiser(nn.Module):
         max_dn_per_event: int = 96,
         anchor_jitter_std: float = 0.05,
         no_object_class_id: Optional[int] = None,
+        min_gt_instances: int = 1,
     ):
         super().__init__()
         if dn_groups < 1:
@@ -106,6 +107,10 @@ class MaskDenoiser(nn.Module):
         self.no_object_class_id = (no_object_class_id
                                    if no_object_class_id is not None
                                    else num_classes - 1)
+        # Partial-truth guard (SLICER_RETRAIN_PLAN A1-loss): DN groups
+        # degenerate on events with very few GT instances (e.g. overlay
+        # events with a single nu instance) — skip DN entirely there.
+        self.min_gt_instances = int(min_gt_instances)
 
         # Per-class learnable content vector. no_object row is allocated
         # but never indexed (DN queries only exist for object-class GT
@@ -126,7 +131,7 @@ class MaskDenoiser(nn.Module):
     ) -> DNInit:
         """Build (gt_target_idx, group_id) then expand to (init_q, init_anchor)."""
         K = len(gt_instances)
-        if K == 0:
+        if K < max(1, self.min_gt_instances):
             return DNInit(
                 init_q=torch.zeros(0, self.token_dim, device=device, dtype=dtype),
                 init_anchor=torch.zeros(0, 3, device=device, dtype=dtype),
