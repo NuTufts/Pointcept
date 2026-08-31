@@ -23,3 +23,7 @@ Dockerfile
 *.err
 output/
 plots/
+# exception: bundled SCE offset map (keeps lartpc/flashmatch self-contained)
+!lartpc/flashmatch/data/
+!lartpc/flashmatch/data/sce_offsets_mcc9_bkwd.npz
+!lartpc/flashmatch/data/sce_offsets_mcc9_fwd.npz
