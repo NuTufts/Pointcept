@@ -42,7 +42,8 @@ SCALARS = [
 _TRUE_MATCH = [("TruePID", I), ("TrueTID", I), ("TrueE", F),
                ("TruePurity", F), ("TrueComp", F),
                ("TrueElPurity", F), ("TruePhPurity", F), ("TrueMuPurity", F),
-               ("TruePiPurity", F), ("TruePrPurity", F)]
+               ("TruePiPurity", F), ("TruePrPurity", F),
+               ("TrueUnlabeledPurity", F)]
 _LARFORMER = [("LArFormerPID", I),
               ("LArFormerElScore", F), ("LArFormerPhScore", F),
               ("LArFormerMuScore", F), ("LArFormerPiScore", F),
@@ -101,7 +102,11 @@ GROUPS = {
                # AttScore = union-rule LLR (-9 when absent, pre-llr files);
                # AttConfident = 0 for forced no-shower-left-behind
                # attachments, 1 otherwise. Analyzer purity dials.
-               + [("showerAttScore", F), ("showerAttConfident", I)]
+               + [("showerAttScore", F), ("showerAttConfident", I),
+                  # per-shower cosmic-vs-nu photon BDT (flash-blind; model via
+                  # LARFORMER_SHOWER_BDT env): photons = score in [0,1],
+                  # electrons = 1.0 autopass, other classes / no model = -9
+                  ("showerCosmicScore", F)]
                + [("shower" + n, t) for n, t in _LARFORMER]
                + [("shower" + n, t) for n, t in _LARPID]
                + [("showerRecoE", F)]

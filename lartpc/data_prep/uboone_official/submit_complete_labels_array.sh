@@ -19,10 +19,16 @@ FIRST=$(( (I-1)*PER + 1 ))
 LAST=$(( I*PER < N ? I*PER : N ))
 [ $FIRST -le $N ] || { echo "chunk $I empty"; exit 0; }
 module load apptainer 2>/dev/null || true
-sed -n "${FIRST},${LAST}p" "$FILELIST" > /tmp/chunk_$$.txt
-apptainer exec --bind /cluster:/cluster,/tmp:/tmp \
+# chunk list on SHARED storage: node-local /tmp filled up on some nodes in
+# the 3089802 campaign and 39 chunks silently no-op'd (empty xargs input)
+CHUNKDIR=$KPV2/logs/overlay_train/chunks; mkdir -p "$CHUNKDIR"
+CHUNKF=$CHUNKDIR/chunk_${SLURM_JOB_ID:-x}_${I}.txt
+sed -n "${FIRST},${LAST}p" "$FILELIST" > "$CHUNKF"
+NW=$(wc -l < "$CHUNKF")
+[ "$NW" -eq $((LAST-FIRST+1)) ] || { echo "CHUNK FILE SHORT ($NW != $((LAST-FIRST+1))) — aborting"; exit 1; }
+apptainer exec --bind /cluster:/cluster \
   /cluster/tufts/wongjiradlabnu/larbys/containers/pointcept_cuml.sif bash -c "
   cd $KPV2 && export PYTHONPATH=$KPV2 && \
-  xargs -a /tmp/chunk_$$.txt python3 lartpc/data_prep/uboone_official/complete_labels.py --h5"
-rm -f /tmp/chunk_$$.txt
+  xargs -a $CHUNKF python3 lartpc/data_prep/uboone_official/complete_labels.py --h5"
+rm -f "$CHUNKF"
 echo "chunk $I ($FIRST-$LAST) done"

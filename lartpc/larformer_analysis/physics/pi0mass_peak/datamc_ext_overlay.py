@@ -36,6 +36,10 @@ def main():
     ap.add_argument("--ext-npz", required=True)
     ap.add_argument("--ext-scale", type=float, default=FULL_EXT_SCALE,
                     help="per-EXT-event weight (0.17682554549 / fraction)")
+    ap.add_argument("--combined-chi2-cut", type=float, default=None,
+                    help="also make combined CC+NC m_gg panels (eq2 and ge2, "
+                         "no stream split) with this SINGLE flash-chi2 cut "
+                         "(e.g. 3162.3 = log10<3.5); signal = true CC+NC pi0")
     ap.add_argument("--plots", required=True)
     ap.add_argument("--pot", type=float, default=4.4e19)
     ap.add_argument("--flashchi2-cut-nc", type=float, default=None,
@@ -122,6 +126,51 @@ def main():
           r"$m_{\gamma\gamma}$ [MeV]", "mgg_ext", 499)
     panel("p_reco", np.linspace(0, 1200, 49),
           r"reco $p_{\pi^0}$ [MeV/c]", "ppi0_ext", 1199)
+
+    # ---- combined CC+NC panels: one common flash-chi2 cut, no stream split -
+    if args.combined_chi2_cut is not None:
+        cv = args.combined_chi2_cut
+        bins = np.linspace(0, 500, 51)
+        ctr = 0.5 * (bins[:-1] + bins[1:])
+        for eq2, vabb, vlab in ((False, "ge2", ">=2"), (True, "eq2", "exactly 2")):
+            def cmask(t):
+                sel = (t["sel_eq2"] if eq2 else t["sel_ge2"]).astype(bool)
+                fc = t["flash_chi2"]
+                return sel & np.isfinite(fc) & (fc < cv)
+            mm = cmask(mc) & np.isfinite(mc["m_vtx2start"])
+            dm = cmask(da) & np.isfinite(da["m_vtx2start"])
+            em = cmask(ex) & np.isfinite(ex["m_vtx2start"])
+            stack = [np.clip(mc["m_vtx2start"][mm & (mc["cat"] == c)], 0, 499)
+                     for c in range(6)]
+            ws = [mc["w"][mm & (mc["cat"] == c)] for c in range(6)]
+            stack.append(np.clip(ex["m_vtx2start"][em], 0, 499))
+            ws.append(np.full(int(em.sum()), args.ext_scale))
+            labels = [f"{CATS[c]} ({ws[c].sum():.0f})" for c in range(6)]
+            labels.append(f"EXT cosmic ({ws[6].sum():.0f})")
+            fig, ax = plt.subplots(figsize=(6.8, 4.6))
+            ax.hist(stack, bins=bins, weights=ws, stacked=True,
+                    color=CAT_COLORS + [EXT_COLOR], label=labels)
+            dh, _ = np.histogram(np.clip(da["m_vtx2start"][dm], 0, 499), bins)
+            ax.errorbar(ctr, dh, yerr=np.sqrt(np.clip(dh, 1, None)), fmt="ko",
+                        ms=3.5, lw=1, label=f"beam data ({int(dh.sum())})")
+            ax.axvline(PI0_MASS, color="0.4", ls=":", lw=1.1)
+            pred = sum(w.sum() for w in ws)
+            ax.set(xlabel=r"$m_{\gamma\gamma}$ [MeV]",
+                   ylabel=f"events / {args.pot:.1e} POT",
+                   title=f"CC+NC combined: mgg_ext ({vlab} photons), "
+                         f"chi2<{cv:g}\ndata {int(dh.sum())} vs pred {pred:.0f}")
+            ax.legend(fontsize=7)
+            ax.grid(alpha=0.3)
+            fig.tight_layout()
+            fig.savefig(f"{args.plots}/mgg_ext_all_{vabb}.png", dpi=110)
+            plt.close(fig)
+            pk = lambda v: (v >= 100) & (v < 170)
+            sg = sum(w[pk(x)].sum() for x, w in zip(stack[:2], ws[:2]))
+            ot = sum(w[pk(x)].sum() for x, w in zip(stack[2:], ws[2:]))
+            dp = int(pk(np.clip(da["m_vtx2start"][dm], 0, 499)).sum())
+            print(f"== combined CC+NC ({vlab}) chi2<{cv:g} near-peak: "
+                  f"signal {sg:.1f} | other {ot:.1f} | purity {sg/(sg+ot):.3f} "
+                  f"| data {dp} / pred {sg+ot:.1f} = {dp/(sg+ot):.2f}")
 
     # ---- purity vs reco observable: true pi0 signal / (all MC + EXT cosmic) -
     # with (solid) and without (dashed) the flash-chi2 cut, showing its gain.

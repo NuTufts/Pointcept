@@ -56,6 +56,11 @@ CPI_KE_MIN = 25.0          # charged-pion veto KE [MeV]
 GAMMA_RECO_MIN = 20.0      # reco photon energy [MeV]
 MGG_MAX = 400.0            # reco diphoton mass cut [MeV]
 A_GAMMA = 0.0253017        # MeV/ADC (visible-energy photon detectability)
+# deployed calib the ntuple's showerRecoE was produced with (for --recal-*):
+NTUP_E_A = 0.019743114709854126
+NTUP_G_A = 0.020100999623537064
+NTUP_G_B = -15.489999771118164
+RECAL = {"gamma_a": None, "e_a": None}     # set from --recal-* in main
 EVIS_MIN = 20.0
 M_MU = 0.105658            # GeV
 M_CPI = 0.139570           # GeV
@@ -134,6 +139,15 @@ def load(ntuple, table, is_data):
     t = uproot.open(ntuple)["EventTree"]
     br = list(_BR) + ([] if is_data else _BR_MC)
     a = t.arrays([b for b in br if b in set(t.keys())])
+    if RECAL["gamma_a"] is not None or RECAL["e_a"] is not None:
+        E, spid = a["showerRecoE"], a["showerLArFormerPID"]
+        if RECAL["gamma_a"] is not None:
+            E = ak.where(spid == 22,
+                         (E - NTUP_G_B) / NTUP_G_A * RECAL["gamma_a"]
+                         + RECAL.get("gamma_b", 0.0), E)
+        if RECAL["e_a"] is not None:
+            E = ak.where(spid == 11, E / NTUP_E_A * RECAL["e_a"] + RECAL.get("e_b", 0.0), E)
+        a["showerRecoE"] = E
     n = len(a["run"])
     tab = np.load(table)
     assert len(tab["w"]) == n, "table/ntuple row mismatch"
@@ -147,6 +161,9 @@ def load(ntuple, table, is_data):
                        np.asarray(a["vtxZ"])))
     conf = a["showerAttConfident"] != 0
     is_g = (a["showerLArFormerPID"] == 22) & (a["showerRecoE"] > GAMMA_RECO_MIN) & conf
+    if RECAL.get("shower_bdt_min") is not None:
+        sb = t.arrays(["showerCosmicScore"])["showerCosmicScore"]
+        is_g = is_g & (sb >= RECAL["shower_bdt_min"])
     n_g = ak.to_numpy(ak.sum(is_g, axis=1))
     is_mu = ((a["trackLArFormerPID"] == 13) & (a["trackIsSecondary"] == 0)
              & (a["trackRecoE"] > MU_KE_MIN))
@@ -201,8 +218,29 @@ def main():
     ap.add_argument("--ext-scale", type=float, default=0.17682554549)
     ap.add_argument("--flashchi2-cut", type=float, default=1e4)
     ap.add_argument("--pot", type=float, default=4.4e19)
+    ap.add_argument("--recal-gamma-a", type=float, default=None,
+                    help="analysis-level shower recal: E=(E-b)/a_old*a_new "
+                         "for PID==22 (clustering unchanged -> exact)")
+    ap.add_argument("--recal-e-a", type=float, default=None)
+    ap.add_argument("--recal-gamma-b", type=float, default=0.0)
+    ap.add_argument("--recal-e-b", type=float, default=0.0)
+    ap.add_argument("--a-gamma", type=float, default=None,
+                    help="override truth-side A_GAMMA (signal definition)")
+    ap.add_argument("--shower-bdt-min", type=float, default=None,
+                    help="opt-in per-shower cosmic-BDT cut (showerCosmicScore)")
     ap.add_argument("--plots", default="plots_sbnd_cc1pi0")
     args = ap.parse_args()
+    if args.a_gamma is not None:
+        globals()["A_GAMMA"] = args.a_gamma
+        print(f">>> A_GAMMA (signal-def) -> {args.a_gamma:.6f}")
+    RECAL["gamma_a"], RECAL["e_a"] = args.recal_gamma_a, args.recal_e_a
+    RECAL["shower_bdt_min"] = args.shower_bdt_min
+    if args.shower_bdt_min is not None:
+        print(f">>> per-shower cosmic-BDT cut: score >= {args.shower_bdt_min}")
+    RECAL["gamma_b"], RECAL["e_b"] = args.recal_gamma_b, args.recal_e_b
+    if args.recal_gamma_a or args.recal_e_a:
+        print(f">>> showerRecoE recal: gamma_a={args.recal_gamma_a} "
+              f"e_a={args.recal_e_a}")
     os.makedirs(args.plots, exist_ok=True)
 
     print(">>> loading MC ...");   mc = load(args.mc_ntuple, args.mc_table, False)

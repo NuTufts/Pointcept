@@ -13,9 +13,18 @@ interactions land in the recoVtx* table and every prong carries
 trackVtxIdx/showerVtxIdx into it.
 
 Documented redefinitions vs the legacy maker (user-approved):
-- prong True{Purity,Comp} are 3D-spacepoint based (pred vs GT point sets from
-  the keypoint2 instance), TrueXxPurity = species fractions of the predicted
-  points' true pids; not wire-pixel-intensity based.
+- prong True{Purity,Comp} are DE-DOUBLE-COUNTED-CHARGE based (2026-08-31,
+  user-approved; previously point counts): purity = dedup charge of pred∩GT
+  over dedup charge of the predicted cluster (dedup within the predicted set,
+  i.e. the currency the energy reco sums); comp = the same intersection charge
+  in the GT-set dedup frame over the GT cluster's charge. TrueXxPurity =
+  charge fractions of the predicted cluster by true species;
+  TrueUnlabeledPurity = charge fraction with no truth owner (trackid<=0 /
+  unmatched — real-cosmic + unlabeled periphery in overlay originals).
+  Purity/comp are TID-based (cluster charge with merged_sp trackid ==
+  matched TID; comp vs the TID's total event dedup charge, capped 1.5) —
+  they live entirely off merged_sp labels, so re-export alone tracks
+  label completion; kp2 gt_point_idx (frozen at inference) is not used.
 - trackRecoE = part_energy - m(pred class) (our range/calo pipeline), not the
   LArPID-hypothesis switch; showerRecoE = part_energy.
 - HitFrac/ChargeFrac denominators = sums over ALL exported prongs of the
@@ -177,24 +186,131 @@ def msp_qvis(msp_path, tids):
 
 
 class MspTruthPoints:
-    """Per-point true pid lookup for slice coords (species purities)."""
+    """Per-point truth + de-double-counted charge lookup for slice coords
+    (charge-based purity/completeness/species fractions)."""
 
     def __init__(self, msp_path):
         with h5py.File(msp_path, "r") as f:
             td = f["entry_0/triplet_data"]
             pos = td["pos"][()].astype(np.float32)
             self.pid = td["pid"][()].astype(np.int64)
+            self.tid = td["trackid"][()].astype(np.int64)
+            self.pix = td["pixval"][()].astype(np.float64)
+            self.tick = td["tick"][()].astype(np.int64)
+            self.uw = td["uwire"][()].astype(np.int64)
+            self.vw = td["vwire"][()].astype(np.int64)
+            self.yw = td["ywire"][()].astype(np.int64)
             self._row = {pos[i].tobytes(): i for i in range(len(pos))}
 
-    def pids_for(self, coords):
+    def rows_for(self, coords):
         c = np.asarray(coords, np.float32)
-        rows = [self._row.get(c[i].tobytes(), -1) for i in range(len(c))]
-        rows = np.asarray(rows, np.int64)
-        out = np.full(len(c), 0, np.int64)
+        return np.asarray([self._row.get(c[i].tobytes(), -1)
+                           for i in range(len(c))], np.int64)
+
+    def pids_for(self, coords):
+        rows = self.rows_for(coords)
+        out = np.full(len(rows), 0, np.int64)
         ok = rows >= 0
         out[ok] = self.pid[rows[ok]]
         return out
 
+    def dedup_comb(self, rows):
+        """Per-row de-double-counted comb charge, dedup defined WITHIN the
+        given row set (rows<0 -> 0)."""
+        q = np.zeros(len(rows), np.float64)
+        ok = rows >= 0
+        if ok.any():
+            r = rows[ok]
+            _, qc = dedup_charge(self.pix[r], self.tick[r], self.uw[r],
+                                 self.vw[r], self.yw[r])
+            q[ok] = qc
+        return q
+
+    def unlabeled_mask(self, rows):
+        """True where a point has no truth owner (unmatched row, trackid<=0,
+        or a sentinel pid)."""
+        out = np.ones(len(rows), bool)
+        ok = rows >= 0
+        r = rows[ok]
+        out[ok] = (self.tid[r] <= 0) | (self.pid[r] == 0) | (self.pid[r] == -1)
+        return out
+
+
+
+# ---- per-shower cosmic BDT (optional; env LARFORMER_SHOWER_BDT -> joblib) --
+_SHOWER_BDT = None
+def _load_shower_bdt():
+    global _SHOWER_BDT
+    if _SHOWER_BDT is not None:
+        return _SHOWER_BDT
+    path = os.environ.get("LARFORMER_SHOWER_BDT", "").strip()
+    if not path or not os.path.exists(path):
+        _SHOWER_BDT = False
+        return False
+    import joblib
+    _SHOWER_BDT = joblib.load(path)
+    print(f">>> shower cosmic BDT loaded: {path} feats={len(_SHOWER_BDT['feats'])}",
+          flush=True)
+    return _SHOWER_BDT
+
+
+def _dwall(p):
+    lo = np.array([0.0, -116.5, 0.0]); hi = np.array([256.35, 116.5, 1036.8])
+    return float(min((p - lo).min(), (hi - p).min()))
+
+
+def score_showers(prongs, vtx_by_idx, vtx_score_by_idx):
+    """Fill p['CosmicScore'] for every shower prong: electrons 1.0 (autopass),
+    photons = BDT score, others -9. Features mirror
+    shower_cosmic_bdt.py (recal applied from the model's stored constants)."""
+    M = _load_shower_bdt()
+    for key, p in prongs:
+        if key == "shower":
+            p["CosmicScore"] = -9.0
+    if not M:
+        return
+    ga, gb = M["recal"]
+    OA, OB = 0.020101, -15.49
+    # interaction context per VtxIdx
+    ctx = {}
+    for key, p in prongs:
+        c = ctx.setdefault(p["VtxIdx"], {"nprim": 0, "nsh": 0, "nph": 0})
+        if key == "track" and p.get("IsSecondary", 0) == 0:
+            c["nprim"] += 1
+        if key == "shower":
+            E = p["RecoE"]
+            if p["LArFormerPID"] == 22 and E > 0:
+                E = (E - OB) / OA * ga + gb
+            if E > 20:
+                c["nsh"] += 1
+                if p["LArFormerPID"] == 22:
+                    c["nph"] += 1
+    rows, refs = [], []
+    for key, p in prongs:
+        if key != "shower":
+            continue
+        if p["LArFormerPID"] == 11:
+            p["CosmicScore"] = 1.0
+            continue
+        if p["LArFormerPID"] != 22 or p["RecoE"] <= 0:
+            continue
+        v = vtx_by_idx.get(p["VtxIdx"])
+        if v is None:
+            continue
+        E = (p["RecoE"] - OB) / OA * ga + gb
+        st = np.array([p["StartPosX"], p["StartPosY"], p["StartPosZ"]], float)
+        c = ctx[p["VtxIdx"]]
+        rows.append([E, p["CosTheta"], p["CosThetaY"], p["DistToVtx"], _dwall(st),
+                     p.get("AttScore", -9.0), p.get("AttConfident", 1),
+                     p["LArFormerPhScore"], p["LArFormerElScore"], p["LArFormerMuScore"],
+                     p["LArFormerPiScore"], p["LArFormerPrScore"], p["NHits"],
+                     p.get("ChargeFrac", -1.0), v[0], v[1], v[2], _dwall(np.asarray(v, float)),
+                     vtx_score_by_idx.get(p["VtxIdx"], -1.0), c["nprim"], c["nsh"], c["nph"]])
+        refs.append(p)
+    if rows:
+        sc = M["clf"].predict_proba(np.asarray(rows, float))[:, 1]
+        for p, s in zip(refs, sc):
+            p["CosmicScore"] = float(s)
 
 def prong_rows(gr):
     """nu_reco event group -> dict of part_* arrays."""
@@ -350,7 +466,10 @@ def main():
         prongs = []                    # (group key, per-branch dict)
         contained = True
         msp_pts = None
+        vtx_by_idx, vtx_score_by_idx = {}, {}
         for gv, (sc, s, pos, chi2, ii) in enumerate(vtx_rows):
+            vtx_by_idx[gv] = np.asarray(pos, float)
+            vtx_score_by_idx[gv] = float(sc)
             fr, gr, kp_path = stream_ev[s]
             d = prong_rows(gr)
             sel = np.nonzero(d["part_interaction"] == ii)[0]
@@ -437,19 +556,38 @@ def main():
                     p["TrueTID"] = tid
                     tp, te = tid_lookup.get(tid, (0, -1.0))
                     p["TruePID"], p["TrueE"] = tp, te
-                    inter = (np.intersect1d(pidx, gtpidx).size
-                             if pidx.size and gtpidx.size else 0)
-                    p["TruePurity"] = (inter / pidx.size if pidx.size else -1.)
-                    p["TrueComp"] = (inter / gtpidx.size if gtpidx.size
-                                     else -1.)
+                    # charge-based truth quality (dedup within each set)
+                    p["TruePurity"] = p["TrueComp"] = -1.0
+                    for nm in SPECIES_PIDS:
+                        p["True" + nm + "Purity"] = -1.0
+                    p["TrueUnlabeledPurity"] = -1.0
                     if pts is not None and pidx.size:
-                        pids = msp_pts.pids_for(pts)
-                        for nm, pdgs in SPECIES_PIDS.items():
-                            p["True" + nm + "Purity"] = float(
-                                np.isin(pids, pdgs).mean())
-                    else:
-                        for nm in SPECIES_PIDS:
-                            p["True" + nm + "Purity"] = -1.0
+                        rows_p = msp_pts.rows_for(pts)
+                        qp = msp_pts.dedup_comb(rows_p)
+                        Qp = float(qp.sum())
+                        if Qp > 0:
+                            # TID-based (2026-08-31): live off merged_sp
+                            # labels so a re-export alone tracks label
+                            # updates (kp2 gt_point_idx is frozen at
+                            # inference time and would go stale)
+                            row_tid = np.full(len(rows_p), -1, np.int64)
+                            okr0 = rows_p >= 0
+                            row_tid[okr0] = msp_pts.tid[rows_p[okr0]]
+                            in_gt = row_tid == tid
+                            p["TruePurity"] = float(qp[in_gt].sum() / Qp)
+                            qtot = qv.get(int(tid), 0.0)
+                            if qtot > 0:
+                                p["TrueComp"] = float(
+                                    min(qp[in_gt].sum() / qtot, 1.5))
+                            pids = np.full(len(rows_p), 0, np.int64)
+                            okr = rows_p >= 0
+                            pids[okr] = msp_pts.pid[rows_p[okr]]
+                            unl = msp_pts.unlabeled_mask(rows_p)
+                            for nm, pdgs in SPECIES_PIDS.items():
+                                p["True" + nm + "Purity"] = float(
+                                    qp[np.isin(pids, pdgs) & ~unl].sum() / Qp)
+                            p["TrueUnlabeledPurity"] = float(qp[unl].sum() / Qp)
+
                     p["VtxIdx"] = gv
                     prongs.append((key, p))
         for key, p in prongs:
@@ -457,6 +595,8 @@ def main():
             p["ChargeFrac"] = (p["Charge"] / tot_charge
                                if tot_charge > 0 and np.isfinite(p["Charge"])
                                else -1.0)
+        score_showers(prongs, vtx_by_idx, vtx_score_by_idx)
+        for key, p in prongs:
             pref = key
             for b, _ in schema.GROUPS[key][1]:
                 ev[key][b].append(p.get(b[len(pref):], -9.0))

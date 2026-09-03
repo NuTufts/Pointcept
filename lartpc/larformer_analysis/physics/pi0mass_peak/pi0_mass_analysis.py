@@ -36,6 +36,10 @@ import awkward as ak
 
 A_GAMMA = 0.0253017          # MeV/ADC (trajfit calo calib, gamma)
 EVIS_MIN = 20.0              # detectable-photon threshold [MeV]
+# deployed calib the ntuple's showerRecoE was produced with (for --recal-*):
+NTUP_E_A = 0.019743114709854126
+NTUP_G_A = 0.020100999623537064
+NTUP_G_B = -15.489999771118164
 RECO_G_MIN = 20.0            # reco photon energy cut [MeV]
 MU_KE_MIN = 100.0            # reco muon KE for the CC tag [MeV]
 PI0_MASS = 134.977
@@ -112,6 +116,30 @@ def main():
                     help="reco/true primary charged-pion KE threshold [MeV] for "
                          "the NC 0-charged-pi veto (stored as n_cpi_reco / "
                          "n_cpi_true in the --out table). Default 60.")
+    ap.add_argument("--recal-gamma-a", type=float, default=None,
+                    help="analysis-level shower-energy recalibration: invert "
+                         "the ntuple's deployed gamma calib (Q=(E-b)/a) and "
+                         "re-apply E=a_new*Q for PID==22 showers. Clustering "
+                         "unchanged, so this is exact.")
+    ap.add_argument("--recal-e-a", type=float, default=None,
+                    help="same for PID==11 showers (E was a_e*Q, no intercept)")
+    ap.add_argument("--recal-gamma-b", type=float, default=0.0,
+                    help="intercept for the gamma recal (E=a_new*Q+b_new)")
+    ap.add_argument("--recal-e-b", type=float, default=0.0)
+    ap.add_argument("--restrict-rows", default=None,
+                    help="npz with a 'rows' array of ntuple row indices; the "
+                         "2-photon selection keeps only these rows (e.g. an "
+                         "externally computed event-BDT pass list)")
+    ap.add_argument("--shower-bdt-min", type=float, default=None,
+                    help="opt-in per-shower cosmic-BDT cut: photon candidates "
+                         "must have showerCosmicScore >= this (branch filled "
+                         "by the exporter; electrons autopass at 1.0). "
+                         "Default None = no cut (July WP preserved).")
+    ap.add_argument("--a-gamma", type=float, default=None,
+                    help="override the truth-side visible-energy constant "
+                         "A_GAMMA (MeV/ADC) in the signal definition — pass "
+                         "the refit BASE gamma slope so the efficiency "
+                         "denominator tracks the recalibration")
     ap.add_argument("--data", action="store_true",
                     help="real-data mode: unit weights (no xsecWeight/POT "
                          "scaling), no truth categories (all events tagged "
@@ -148,6 +176,20 @@ def main():
                   "showerStartDirX", "showerStartDirY", "showerStartDirZ",
                   "showerTrueTID", "showerTruePID",
                   "trackLArFormerPID", "trackIsSecondary", "trackRecoE"])
+    if args.a_gamma is not None:
+        globals()["A_GAMMA"] = args.a_gamma
+        print(f">>> A_GAMMA (signal-def visible-energy) -> {args.a_gamma:.6f}")
+    if args.recal_gamma_a is not None or args.recal_e_a is not None:
+        E, spid = a["showerRecoE"], a["showerLArFormerPID"]
+        if args.recal_gamma_a is not None:
+            E = ak.where(spid == 22,
+                         (E - NTUP_G_B) / NTUP_G_A * args.recal_gamma_a
+                         + args.recal_gamma_b, E)
+        if args.recal_e_a is not None:
+            E = ak.where(spid == 11, E / NTUP_E_A * args.recal_e_a + args.recal_e_b, E)
+        a["showerRecoE"] = E
+        print(f">>> showerRecoE recalibrated in-place: "
+              f"gamma_a={args.recal_gamma_a} e_a={args.recal_e_a}")
     n = len(a["run"])
     if args.data:
         w = np.ones(n, np.float64)
@@ -164,6 +206,10 @@ def main():
               & (np.asarray(a["primaryVtxStream"]) == 0)
               & (np.asarray(a["vtxIsFiducial"]) == 1))
     is_g = (a["showerLArFormerPID"] == 22) & (a["showerRecoE"] > RECO_G_MIN)
+    if args.shower_bdt_min is not None:
+        sb = t.arrays(["showerCosmicScore"])["showerCosmicScore"]
+        is_g = is_g & (sb >= args.shower_bdt_min)
+        print(f">>> per-shower cosmic-BDT cut: score >= {args.shower_bdt_min}")
     n_g = ak.to_numpy(ak.sum(is_g, axis=1))
     is_mu = ((a["trackLArFormerPID"] == 13) & (a["trackIsSecondary"] == 0)
              & (a["trackRecoE"] > args.mu_ke_min))
@@ -256,6 +302,12 @@ def main():
 
     mA, mB = mgg(cosA), mgg(cosB)
     sel2p = vtx_ok & (n_g >= 2) & np.isfinite(mA)
+    if args.restrict_rows is not None:
+        keep = np.zeros(n, bool)
+        keep[np.load(args.restrict_rows)["rows"]] = True
+        sel2p = sel2p & keep
+        print(f">>> row restriction: {int(keep.sum())} allowed rows -> "
+              f"sel2p {int(sel2p.sum())}")
     sel2x = sel2p & (n_g == 2)
 
     # analysis-level flash-fix: dead-PMT-masked nu-slice flash chi2 (per event,

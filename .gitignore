@@ -27,3 +27,5 @@ plots/
 !lartpc/flashmatch/data/
 !lartpc/flashmatch/data/sce_offsets_mcc9_bkwd.npz
 !lartpc/flashmatch/data/sce_offsets_mcc9_fwd.npz
+!lartpc/larformer_reco/export/data/
+!lartpc/larformer_reco/export/data/shower_cosmic_bdt.joblib

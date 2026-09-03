@@ -30,6 +30,9 @@ def main():
     ap.add_argument("--ext-scale", type=float, default=4.125814)
     ap.add_argument("--chi2-cut", type=float, default=1e4)
     ap.add_argument("--chi2-cut-nc", type=float, default=None)
+    ap.add_argument("--chi2-cut-combined", type=float, default=None,
+                    help="also make combined CC+NC panels (flashchi2_all_*) "
+                         "with this single cut line (e.g. 3162.3)")
     ap.add_argument("--pot", type=float, default=4.4e19)
     ap.add_argument("--plots", required=True)
     args = ap.parse_args()
@@ -44,13 +47,19 @@ def main():
         return np.log10(np.clip(t["flash_chi2"], 1, None))
 
     def base(t, eq2, want_cc):
-        s = (t["sel_eq2"] if eq2 else t["sel_ge2"]) & (t["reco_cc"] == want_cc)
+        s = (t["sel_eq2"] if eq2 else t["sel_ge2"]).astype(bool)
+        if want_cc is not None:
+            s = s & (t["reco_cc"] == want_cc)
         return s & np.isfinite(t["flash_chi2"])
 
     lmc, lda, lex = lchi(mc), lchi(da), lchi(ex)
-    for want_cc, slab, sabb in ((True, "reco-CC (likely nu, in-time)", "cc"),
-                                (False, "reco-NC", "nc")):
-        cutv = (args.chi2_cut if want_cc or args.chi2_cut_nc is None
+    streams = [(True, "reco-CC (likely nu, in-time)", "cc"),
+               (False, "reco-NC", "nc")]
+    if args.chi2_cut_combined is not None:
+        streams.append((None, "CC+NC combined", "all"))
+    for want_cc, slab, sabb in streams:
+        cutv = (args.chi2_cut_combined if want_cc is None
+                else args.chi2_cut if want_cc or args.chi2_cut_nc is None
                 else args.chi2_cut_nc)
         lcut = np.log10(cutv)
         for eq2, vlab, vabb in ((True, "exactly 2", "eq2"),
