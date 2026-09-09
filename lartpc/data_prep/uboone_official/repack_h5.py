@@ -52,11 +52,25 @@ def repack(path):
             fin.visit(names_in.append)
             fout.visit(names_out.append)
             assert names_in == names_out, "tree mismatch"
-            td_i = fin["entry_0/triplet_data"]
-            td_o = fout["entry_0/triplet_data"]
-            assert td_i["trackid"].shape == td_o["trackid"].shape
-            assert int((td_i["trackid"][()]
-                        != td_o["trackid"][()]).sum()) == 0
+            # full verification (2026-09-05, campaign hardening): bitwise
+            # compare EVERY dataset and all attrs, not just trackid.
+            import numpy as np
+
+            def _cmp(gi, go, pre=""):
+                ai, ao = dict(gi.attrs), dict(go.attrs)
+                assert set(ai) == set(ao), f"attr keys {pre}"
+                for k in ai:
+                    assert np.array_equal(np.asarray(ai[k]),
+                                          np.asarray(ao[k])),                         f"attr {pre}{k}"
+                for k, oi in gi.items():
+                    oo = go[k]
+                    if isinstance(oi, h5py.Group):
+                        _cmp(oi, oo, pre + k + "/")
+                    else:
+                        assert oi.shape == oo.shape and                             oi.dtype == oo.dtype, f"ds meta {pre}{k}"
+                        assert np.array_equal(oi[()], oo[()],
+                                              equal_nan=True) if                             oi.dtype.kind == "f" else                             np.array_equal(oi[()], oo[()]),                             f"ds data {pre}{k}"
+            _cmp(fin, fout)
         old = os.path.getsize(path)
         new = os.path.getsize(tmp)
         os.replace(tmp, path)
