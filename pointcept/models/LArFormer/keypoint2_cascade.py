@@ -70,9 +70,10 @@ def predicted_masks_to_instances(
     unchanged."""
     if class_logits.shape[0] == 0 or sp_mask_logits.shape[1] == 0:
         return []
-    eff = dedup_query_effective_argmax(
+    eff, _dedup_rec = dedup_query_effective_argmax(
         class_logits, sp_mask_logits, no_object_class_id=int(no_object_class_id),
-        class_prob_floor=class_prob_floor, iou_threshold=dedup_iou_threshold)
+        class_prob_floor=class_prob_floor, iou_threshold=dedup_iou_threshold,
+        return_records=True)
     N = int(sp_mask_logits.shape[1])
     dev = sp_mask_logits.device
     pred_bool = sp_mask_logits > mask_thresh                    # (Q, N)
@@ -124,7 +125,11 @@ def predicted_masks_to_instances(
         inst = {"truth_indices": idx.long(),
                 "primary_trackid": -1,
                 "pred_class": int(eff[q]),
-                "class_probs": all_probs[q].detach().cpu()}
+                "class_probs": all_probs[q].detach().cpu(),
+                # dedup provenance: absorbed-hypothesis record for this query
+                "runnerup_class": int(_dedup_rec["runnerup_class"][q]),
+                "runnerup_prob": float(_dedup_rec["runnerup_prob"][q]),
+                "n_absorbed": int(_dedup_rec["n_absorbed"][q])}
         _attach_gt(inst, q)
         out.append(inst)
 

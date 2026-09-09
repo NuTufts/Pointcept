@@ -183,7 +183,8 @@ def decode_query_points(class_logits, origin_norm, coord_center, coord_scale,
 
 def dedup_query_effective_argmax(class_logits, sp_mask_logits,
                                  no_object_class_id=None, class_prob_floor=0.3,
-                                 iou_threshold=0.6):
+                                 iou_threshold=0.6,
+                                 return_records=False):
     """Per-query class after confidence-floor demotion + mask-IoU NMS dedup.
 
     Uses the SAME `inference.dedup_queries` as the particle-mask decode (single
@@ -209,7 +210,10 @@ def dedup_query_effective_argmax(class_logits, sp_mask_logits,
         sp_mask_logits=sp_mask_logits, effective_argmax=eff,
         cls_max_prob=maxp, no_object_class_id=int(no_object_class_id),
         iou_threshold=float(iou_threshold))
-    return eff_dedup.detach().cpu().numpy().astype(np.int64)
+    eff_np = eff_dedup.detach().cpu().numpy().astype(np.int64)
+    if return_records:
+        return eff_np, _records
+    return eff_np
 
 
 def query_points_to_typed(qpts, shower_class_ids=DEFAULT_SHOWER_CLASS_IDS,

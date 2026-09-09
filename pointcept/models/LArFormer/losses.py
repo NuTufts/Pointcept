@@ -807,6 +807,7 @@ class LArFormerLoss(nn.Module):
         num_classes: int,
         no_object_class_id: Optional[int] = None,
         no_object_weight: float = 0.1,
+        class_weights=None,
         masked_no_object: bool = False,
         masked_no_object_frac: float = 0.5,
         masked_no_object_engage_frac: float = 0.10,
@@ -958,6 +959,11 @@ class LArFormerLoss(nn.Module):
         )
 
         ce_weights = torch.ones(self.num_classes)
+        if class_weights is not None:
+            # per-species CE weights (e.g. inverse-sqrt-frequency from the
+            # training-corpus census); no_object still set below.
+            cw = torch.as_tensor(list(class_weights), dtype=torch.float32)
+            ce_weights[: cw.numel()] = cw
         ce_weights[self.no_object_class_id] = float(no_object_weight)
         self.register_buffer("ce_weights", ce_weights)
 

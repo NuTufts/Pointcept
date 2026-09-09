@@ -162,6 +162,9 @@ def _decode_event(ev, inst_list, gt, coord_cm, coord_norm, nu_thresh,
             # query (LArFormer's own PID scores; last entry = no_object)
             "class_scores": np.asarray(
                 inst.get("class_probs", np.zeros(0)), np.float32).reshape(-1),
+            "runnerup_class": int(inst.get("runnerup_class", -1)),
+            "runnerup_prob": float(inst.get("runnerup_prob", 0.0)),
+            "n_absorbed": int(inst.get("n_absorbed", 0)),
         }
         if trk is not None and pt_idx.size:
             t = _mode_trackid(trk[pt_idx])
@@ -262,6 +265,9 @@ def _write_event_h5(path, dec, attrs, flash_tbl=None):
             g.attrs["gt_trackid"] = p["gt_trackid"]
             g.attrs["loose_pass"] = bool(p.get("loose_pass", False))
             g.attrs["loose_conf"] = float(p.get("loose_conf", np.nan))
+            g.attrs["runnerup_class"] = int(p.get("runnerup_class", -1))
+            g.attrs["runnerup_prob"] = float(p.get("runnerup_prob", 0.0))
+            g.attrs["n_absorbed"] = int(p.get("n_absorbed", 0))
             g.create_dataset("point_idx", data=p["point_idx"],
                              compression="gzip")
             g.create_dataset("start_cm", data=p["start_cm"])
