@@ -1,15 +1,45 @@
 # Single Photon Selection
 
 The goal of this analysis is to look at the performance of the LArFormer Full
-Cascade model on single photon events.
+Cascade model on single photon events. Specifically, we want to estimate the selection performance
+of the MicroBooNE inclusive single photon event which is looking for an excess of single photon
+MicroBooNE events that would be consistent with the MiniBooNE single-shower excess.
+
+The signal definition considers the following:
+
+ - We want to isolate events with exactly 1 visible photon in the final state. Visibility is determined by the true amount of visible energy in MeV calculated by   scaling the true "deduplicated charge". This charge -- which is actually the sum of the pixel values -- is found in the ntuples as the branch 'trueSimPartPixelSumQ'. To convert to energy we are using the convention: E_vis = A_GAMMA × PixelSumQ with A_GAMMA = 0.0253017 MeV/ADC. Note, however, this is an old calibration before labels for what is a true energy deposit expanded. We use this for now but will do so for all analyses once the shower energy calibration is more mature. For now use the criteria for a visible shower as E_vis>=20 MeV (more like 9 MeV because of current A_GAMMA is miscalibrated). This visibility threshold is applied to both electron and photon showers.
+ - MiniBooNE was a Ring Imagine Ring Cherenkov detector and so it was blind for particles below Cherenkov threshold. 
+   To mimic selections in MicroBooNE, visibility for non-photon particles is based on the Cherenkov threshold KE. We follow the thresholds used in the MicroBooNE inclusive selection (https://arxiv.org/pdf/2502.06064). Muons are not visible is below its KE<100 MeV. Charged pions and protons are always considered as not visible by MiniBooNE. This is not a great assumption for pions -- but their momentum is hard to estimate accurately due to their propensity to reinteract or decay in flight.
+ - These visibility thresholds apply to both primary and secondary final state particles. (Primaries are those particles produced by the initial nu interaction+FSI. Because neutral pions produced by nu interactions decay effectively immediately, their daugher photons are also considered primary.)
+
+The signal nu interaction criteria becomes
+
+- 1 visible photon and no visible non-photon final state particles
+
+Our target is to isolate this somewhat inclusive definition. But we do want to split the result into truly single photons and the rest.
+This is because the MicroBooNE inclusive selection found a local 2-sigma excess in this sample. As a result, we are interested in
+how well the new reco chain, based on the LArFormer models can select such events.
+
+We also want to split out the single photon events where no other primary particles are visible from the point of view of MicroBooNE's detector. This means applying lower thresholds.
+ - muons+pions+other mesons: < 30 MeV
+ - protons and other baryons: < 60 MeV
+ - electrons+photons: the same 20 MeV visible threshold
+We then want plots for both the single photon inclusive sample, the single photon only (1g0X) sample, and the rest.
+
+The figure of merits for the selection is efficiency and purity for each of these individual samples.
+Benchmarks include:
+ - MicroBooNE's inclusive selection using WireCell: 7% efficiency and 40% purity
+ - SBND inclusive selection using SPINE: 37% efficienct and 56% purity
 
 The way we intend to find these events:
 
-1. First select events with a neutrino slice, using the stage 2 event slicer output.
-2. For events with a neutrino slice, use the stage 3 particle segmenter to look for photon showers.
-3. Remove candidate photon showers that are too small. Ideally we would be able to cut by ionization energy. But using a rough proxy initially is OK: the numebr of spacepoints.
+1. neutrino interactions with reco vertex position post-space charge correction that is further than 10 cm from the TPC boundary. The boundary is [0,256] for x, [-117,117] for y, and [0,1036] for z, all in cm.
+2. the neutrino interaction must have one photon passing the single photon BDT score, threshold score value to be determined. All other particles must pass the other threshold KE thresholds.
+3. The interaction must have a flashchi2 value below some threshold to be determined, which cuts on interactions that match the scintillation signal in time with the beam.
 
 We want to define a selection based on the LArFormer outputs and estimate the true positive, false positive, and false negative rates.
+
+
 
 ## References
 
@@ -18,6 +48,8 @@ We want to define a selection based on the LArFormer outputs and estimate the tr
 - Flat-ntuple parsing spec: [`docs/reference/Gen2_Flat_Ntuple_Spec.md`](../../../docs/reference/Gen2_Flat_Ntuple_Spec.md)
 - Cluster job submission: [`docs/reference/Tufts_SLURM_Job_Guide.md`](../../../docs/reference/Tufts_SLURM_Job_Guide.md)
 - LArFormer cascade data pipeline: [`larformer_scripts/LARFORMER_DATAPREP.md`](../../larformer_scripts/LARFORMER_DATAPREP.md)
+- Current version of model checkpoints and datasets: [`lartpc/larformer_analysis/model_and_output_file_versions.md`](../../model_and_output_file_versions.md)
+- Pass Results from a first pass attempt selection which helped develop the reco: [`past_results.md`](past_results.md)
 
 ## Steps
 
@@ -37,430 +69,219 @@ interactions) and become *single-photon* topologies when only one photon is
 cluster**. That quantity is not in the flat ntuples, so the study runs in two
 passes over two data tiers (see [`MicroBooNE_Datasets_on_Tufts.md`](../../../docs/reference/MicroBooNE_Datasets_on_Tufts.md)):
 
-- **Pass 1 (flat ntuples)** — a loose truth pre-selection to *count* candidate
-  signal and *isolate* the official files that contain it. The ntuple can't
-  measure single-cluster ionization, so the cut here is a necessary-but-not-
-  sufficient proxy.
-- **Pass 2 (official sim files)** — the real ≥20 MeV-in-a-cluster detectability
-  cut + the LArFormer cascade, on just the isolated files.
-
-This directory currently implements **Pass 1** on the **BNB ν overlay** sample
-(`mcc9_v29e_dl_run3b_bnb_nu_overlay`).
 
 ---
 
-## Pass 1 — ntuple signal definition (implemented)
+## Scripts (v2_s1ep2p8 chain, ntuple-only; 2026-09-05)
 
-For each `EventTree` MC entry, signal if **both**:
-
-1. **ν vertex inside the TPC box** (cm, SCE-corrected):
-   `0 < trueVtxX < 255`, `-116.5 < trueVtxY < 116.5`, `0 < trueVtxZ < 1036`.
-2. **≥1 neutrino-origin photon plausibly detectable:** a `trueSimPart` with
-   `PDG == 22`, `trueSimPartE > 20 MeV` (initial energy — below this it cannot
-   make a 20 MeV cluster), and first-deposit point `trueSimPartEDep{X,Y,Z}`
-   inside the TPC box.
-
-In an overlay sample every `trueSimPart` is neutrino-induced, so any PDG-22 entry
-is nu-origin (verified — see the spec doc). The 20 MeV cut is a *proxy*; the real
-single-cluster ionization cut happens in Pass 2.
-
-> Note: the ntuple is pre-filtered to the Wire-Cell fiducial volume (a subset of
-> the TPC box), so the vertex cut passes ~100% and these counts are a lower bound
-> for the full TPC.
-
-### Results (full run-3b BNB ν overlay ntuple, ΣgoodPOT = 8.98×10²⁰)
-
-| Quantity | Value |
-|---|---|
-| EventTree entries scanned | 290,538 |
-| LOOSE (vtx + ≥1 photon, any E) | 50,792 *(context only)* |
-| **SIGNAL (vtx + 20 MeV + EDep-in-TPC)** | **47,503** (CC 30,805 / NC 16,698) |
-| **POT-scaled @ 6.67×10²⁰** | **≈ 35,365 events** |
-| unique source files with signal | 13,920 / 15,513 |
-
-The loose photon cut barely isolates files (≈90% contain a candidate) because of
-abundant neutron-capture γ's — real signal-richness only appears after the Pass-2
-ionization cut.
-
----
-
-## Scripts & workdir
-
-All outputs land in `workdir/` (git-ignored intermediate area).
-
-| Script | Purpose | Output |
-|--------|---------|--------|
-| `verify_ntuple.py` | Step-0 sanity checks (branches, POT, nu-origin of photons) | stdout |
-| `select_single_photon_signal.py` | apply the Pass-1 signal definition | `signal_events.csv`, `signal_fileids.txt` |
-| `map_signal_to_files.py` | map selected events → official `merged_dlreco` files via `(run,subrun,event)` / `larlite_id_tree` | `signal_files_subsample.txt`, `signal_file_map.csv` |
-
-`signal_events.csv` columns:
-`run, subrun, event, fileid, trueNuPDG, trueNuCCNC, trueVtxX/Y/Z, nPhotonsLoose,
-nPhotonsSig, maxPhotonE, xsecWeight`.
-
-### Run recipe (pointcept container)
-
-```bash
-cd Pointcept/lartpc/larformer_analysis/physics/single_photon
-SIF=/cluster/tufts/wongjiradlabnu/larbys/larbys-container/pointcept_cuml.sif
-ENV=/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/ubdl/setenv_pointcept_container.sh
-
-apptainer exec --bind /cluster:/cluster $SIF bash -c "source $ENV >/dev/null 2>&1; \
-    python3 verify_ntuple.py -n 3000"                          # Step 0
-apptainer exec --bind /cluster:/cluster $SIF bash -c "source $ENV >/dev/null 2>&1; \
-    python3 select_single_photon_signal.py --outdir workdir"   # Pass-1 counts + lists
-apptainer exec --bind /cluster:/cluster $SIF bash -c "source $ENV >/dev/null 2>&1; \
-    python3 map_signal_to_files.py --nfiles 20 --spread --outdir workdir"  # capped file map
-```
-
-> `source setenv_pointcept_container.sh` only puts ROOT on the path; the flat
-> ntuple itself needs no serialized-class libraries. `--nfiles` caps how many
-> unique `(run,subrun)` files are resolved. **`--spread`** spreads that cap evenly
-> across the whole sample (auto-picks `--stride`) instead of clustering in the
-> first ntuple region — use it for a representative first pass (e.g. 20 files →
-> 20 distinct runs). Omit it (or `--stride 1`) to take the consecutive head.
-
----
-
-## Pass 2 — convert + capped cascade (implemented)
-
-The truth pre-selection does NOT meaningfully reduce the file count (~90% of files
-contain a candidate), so Pass 2 is split so the expensive GPU step stays small:
-
-1. **Stage A — convert (cheap, CPU, fan out wide).** Convert every event of each
-   subsample file → per-event `merged_*.h5`, on the `batch` partition, one array
-   task per file. Scales to the full sample by widening the array / `stride`.
-2. **Select capped events (CPU, quick).** Stage A converts *all* events in a file,
-   but we only want the signal events — and the GPU cascade is limited. Filter the
-   Stage-A H5 to the signal `(run,subrun,event)` set and cap the count.
-3. **Stage B — cascade (expensive, GPU, capped).** Run the LArFormer full cascade
-   only on the capped event list, on a single GPU (wongjiradlab P100 / old cluster,
-   or new-cluster A100).
-
-| Piece | File |
-|-------|------|
-| Stage-A config (older sim: `--adc wire -tb --mcc9`, `RUN_CASCADE=0`) | `larformer_scripts/larformer_configs/single_photon_subsample.conf` |
-| Stage-A SLURM array (CPU batch) | `slurm/submit_stageA_convert.sh` |
-| event capping (signal `(run,subrun,event)` → cascade input list) | `select_cascade_events.py` |
-| Stage-B runner (in-container) | `run_stageB_capped.sh` |
-| Stage-B SLURM (GPU, new-cluster A100) | `slurm/submit_stageB_cascade.sh` |
-| Stage-B SLURM (GPU, old-cluster P100) | `slurm/submit_stageB_cascade_p100_oldcluster.sh` |
-| cascade-output sanity check (per-event predicted classes, photon flag) | `verify_stage3pred.py` |
-
-> **Attention backend (GPU-dependent).** The cascade config's `flash_backend` is
-> env-driven: default `flash_attn` (Ampere+: A100/H100/H200), but **P100 (Pascal)
-> has no flash-attn kernel** — the P100 submit script sets
-> `LARFORMER_FLASH_BACKEND=xformers`. `run_stageB_capped.sh` exports it.
-
-```bash
-# 1. Stage A (CPU array; --array sized to the subsample list)
-sbatch slurm/submit_stageA_convert.sh
-# ... wait for it to finish; outputs land in workdir/larformer_h5/<hash>/
-
-# 2. cap signal events for the GPU step (in the pointcept container)
-apptainer exec --bind /cluster:/cluster $SIF bash -c "source $ENV >/dev/null 2>&1; \
-    python3 select_cascade_events.py --h5-dir workdir/larformer_h5 \
-        --signal-csv workdir/signal_events.csv --nevents 200 --out workdir/cascade_inputs.txt"
-
-# 3. Stage B (GPU; one job over the capped list)
-sbatch slurm/submit_stageB_cascade.sh              # new-cluster A100, OR:
-sbatch slurm/submit_stageB_cascade_p100_oldcluster.sh   # old-cluster P100 (xformers)
-#    -> stage3pred_<input>.h5 (slicer half: pre/post/levels/gt ; particle half: stage3*/)
-
-# 4. sanity-check the cascade output
-apptainer exec --bind /cluster:/cluster $SIF bash -c "source $ENV >/dev/null 2>&1; \
-    python3 verify_stage3pred.py --dir workdir/larformer_h5"
-```
-
-**First subsample run (36 capped events, checkpoint `model_iter_182304.pth`):**
-29/36 events had ≥1 predicted photon (class-1) query; active-query class tally
-`{gamma:65, p:78, e:21, mu:21, pi:15}`. Sanity-consistent — every input event has
-a true ≥20 MeV nu-origin photon, and the cascade recovers a photon shower in most.
-
-> Checkpoint note: the trained Stage-3 weights `model_iter_98652.pth` live in the
-> `..._bugfixed_resume2/` exp dir (the `run_stepB` default points at the stale
-> `_bugfixed/` dir); the config sets the correct path explicitly.
-
-## Truth detectability (implemented)
-
-`compute_photon_detectability.py` defines the *detectable* true-photon set from the
-Stage-A H5, which is the denominator for the efficiency. Key facts established:
-
-- Stage A **does** write GT shower fragments (`entry_0/shower_fragments`: per-fragment
-  `pid`, `trackid`, `istrunk`, `pointindices_counts/_flat`). Fragments group by
-  `trackid` = per photon; `istrunk==1` is the trunk ("single cluster").
-- The older mcc9 sim has **no true per-spacepoint energy** — the H5 `edep` field just
-  mirrors the wire-plane ADC `pixval` (`edep≈pixval`, ADC-scale not MeV). So the
-  ≥20 MeV detectability cut uses **proxies**: `nSP` (spacepoint count) and
-  `pixval_sum` (wire-plane ADC sum). `mc_particle_tree/energy_mev` gives true energy
-  for calibration.
-- Calibration (36-event subsample, 71 nu-origin photons): `corr(nSP,E)=0.82`,
-  `corr(pixval,E)=0.79`; a ~20 MeV photon → **nSP_trunk ≈ 80, pixval_sum ≈ 25k**.
-- Caveat: the ntuple pre-cut (`trueSimPartE>20 MeV` + EDep-in-TPC) already
-  preselects, and GT fragments only exist for depositing photons, so on this set
-  nearly **all** true photons are detectable (min nSP 36, median 1202). The cut
-  mostly defines the denominator precisely; it bites harder if the ntuple pre-cut is
-  loosened.
-
-Output `workdir/photon_detectability.csv`:
-`run,subrun,event,trackid,n_frag,nSP_total,nSP_trunk,pixval_sum,trueE_mev,origin`.
-
-## Efficiency / matching (implemented)
-
-`match_predictions_to_truth.py` matches cascade-predicted photon queries to true
-nu-origin photons and computes efficiency + purity. Truth denominator = ALL
-nu-origin photons in `mc_particle_tree` (each annotated with GT-fragment `nSP_trunk`;
-detectable if `nSP_trunk >= --nsp-threshold`). Predicted photons = active post-dedup
-queries with `class_argmax==1`. Match = occupied-voxel IoU (`--voxel` cm, greedy,
-`>= --iou-min`) between the true photon's `triplet_data/pos` and the query's
-`stage3/coord` (both detector cm).
-
-```bash
-python3 match_predictions_to_truth.py --nsp-threshold 80 --voxel 3 --iou-min 0.1 \
-    --pred-dir workdir/larformer_h5 --merged-dir workdir/larformer_h5 \
-    --out workdir/photon_match.csv
-```
-
-**Tight subsample (36 events, 80 nu photons, ckpt 182304):** detectable=69 →
-TP 57 / FN 12 / FP 8 → **efficiency 0.83, purity 0.88**. Turn-on (efficiency over
-*all* true photons): 0.33 (20–40 MeV) → ~0.78 (80–400 MeV), driven by the
-detectability fraction (0.33 → 0.95). Per-photon detail in `workdir/photon_match.csv`.
-
-## Loose pass — efficiency turn-on (results)
-
-The **loose pass** reruns the pipeline with the 20 MeV cut removed
-(`select_single_photon_signal.py --photon-emin 0`) over a 100-file spread subsample,
-to get low-energy photon statistics for the turn-on. Everything lives under
-`workdir_loose/` with TAG `sp_bnb_nu_overlay_loose`. Stage A converted 2207 events
-(46/100 files; the rest hit the converter `out_of_range` crash); 204 capped → P100
-cascade → 173 stage3pred.
-
-**Result (204 events, 447 nu-origin photons):** detectable=387 → TP 298 / FN 89 /
-FP 54 → **efficiency 0.77, purity 0.85**. Clear turn-on (efficiency over *all* true
-photons):
-
-| E (MeV) | N | detect-frac | eff‖all | eff‖detectable |
-|---|---|---|---|---|
-| 0–20    |  19 | 0.63 | **0.32** | 0.50 |
-| 20–40   |  37 | 0.81 | 0.57 | 0.67 |
-| 40–80   |  93 | 0.84 | 0.62 | 0.72 |
-| 80–150  | 123 | 0.89 | 0.71 | 0.80 |
-| 150–400 | 144 | 0.90 | 0.74 | 0.81 |
-| 400+    |  31 | 0.94 | **0.77** | 0.83 |
-
-Sensitivity scan over voxel{2,3,5}×iou{0.05–0.30}×nSP{50–200}: efficiency
-**0.70–0.83**, purity **0.78–0.87** — stable. Per-photon detail in
-`workdir_loose/photon_match.csv`. (The OOM-fix rerun recovered all 204/204 events,
-`OOM-skipped 0`; numbers were unchanged from the 173-event partial → no size bias.)
-
-Reproduce:
-
-```bash
-# (selection + 100-file map already done -> workdir_loose/signal_files_subsample.txt)
-sbatch slurm/submit_stageA_convert_loose.sh                 # CPU array (running)
-# after Stage A:
-python3 select_cascade_events.py --tag sp_bnb_nu_overlay_loose \
-    --h5-dir workdir_loose/larformer_h5 --signal-csv workdir_loose/signal_events.csv \
-    --nevents 400 --out workdir_loose/cascade_inputs.txt
-sbatch slurm/submit_stageB_cascade_loose_p100_oldcluster.sh # P100 (old cluster), or
-sbatch slurm/submit_stageB_cascade_loose.sh                 # A100 (gpu partition)
-python3 match_predictions_to_truth.py --pred-dir workdir_loose/larformer_h5 \
-    --merged-dir workdir_loose/larformer_h5 --out workdir_loose/photon_match.csv
-```
-
-## Analysis scripts
+The analysis now runs entirely on the LArFormer gen2ntuple ROOT files listed in
+[`model_and_output_file_versions.md`](../../model_and_output_file_versions.md)
+(MC overlay 67k + EXT-BNB 200k; the flash chi2 is the `recoVtxFlashChi2` of the
+nu-stream vertex, which equals the masked chi2 used by the pi0 study). The earlier
+stage3pred/merged_sp workflow and its scripts are archived under
+[`archive/v1_stage3pred_workflow/`](archive/v1_stage3pred_workflow/) — they do not
+run on the current chain; their findings are summarised in
+[`past_results.md`](past_results.md).
 
 | Script | Purpose |
-|--------|---------|
-| `compute_photon_detectability.py` | per-photon nSP/pixval/trueE truth table |
-| `match_predictions_to_truth.py` | predicted-photon ↔ true-photon match → efficiency, purity, turn-on |
-| `scan_match_params.py` | sweep voxel / iou_min / nSP_threshold → efficiency & purity grids |
+|---|---|
+| `single_photon_selection.py` | truth signal definition (inclusive 1g+X and strict 1g0X), cumulative reco cut steps S1-S5, stacked candidate-energy plots, N-1 flash chi2, efficiency vs true photon energy and purity vs reco photon energy per step, BDT / chi2 threshold scans, `cutflow.txt`, row-aligned tables in `workdir/` |
+| `photon_bdt_study.py` | per-shower cosmic-BDT (`showerCosmicScore`) performance vs threshold, split by the event's number of true detectable photons (signal 1g / all 1g / 2g / >=3g), EXT and overlay-cosmic rejection, per-event effect, ROC, pass fraction vs reco E and vs distance to vertex; `bdt_table.txt` |
+| `shower_novtx_bdt.py` | vertex-FREE per-shower cosmic BDT (features that exist for `showerVtxIdx=-1` prongs: E, angles, start dwall, objectness, class scores, nHits, charge, hasVtx, slice multiplicity); trained on EVEN MC nu photons vs EXT rows<100k; saves the joblib the exporter applies via `LARFORMER_SHOWER_BDT_NOVTX` (`showerNoVtxScore`) |
+| `single_photon_diagnostics.py` | stacked MC/EXT + data distributions for selected events (final step and pre-chi2): flash PE, candidate start x/y/z, cos theta_beam, n reco protons, PE-centroid vs shower-line distance at x=0, distance to wall along +/- direction, flash PE vs E; needs the cascade dirs (flash PE) and reuses the pi0 study's cached RSE maps; `slurm/submit_single_photon_diagnostics.sh` |
+| `single_photon_truth.py` | truth characterization of SIGNAL events stacked by signal category with the selected subset overlaid: true vertex x/y/z, detectable-photon true E / E_vis / cos theta_beam / conversion point + dwall, non-detectable photon true E / E_vis, summed KE of non-photon primaries, primary p / pi+- / mu counts; `slurm/submit_single_photon_truth.sh` |
+| `single_photon_path_tables.py` | efficiency / purity tables with the VERTEX sample (candidate on the primary in-FV vertex) and the NO-VERTEX sample (vertex-less / non-FV-vertex candidate) kept separate, per step from S2 on, with per-category efficiencies, in-FV vs entering purity and the two final energy stacks; `slurm/submit_single_photon_path_tables.sh` |
+| `slurm/submit_single_photon_selection.sh`, `slurm/submit_photon_bdt_study.sh` | batch-partition wrappers (`sbatch ... [extra args]`; env `MC`, `EXT`, `DATA`, `PLOTS`, `OUTDIR`) |
 
-**Robustness (tight subsample):** sweeping voxel∈{2,3,5}cm × iou_min∈{0.05–0.30} ×
-nSP∈{50–200} keeps efficiency in **0.76–0.84** and purity **0.82–0.88** — the
-headline numbers are stable, not artifacts of the chosen thresholds. `iou_min=0.30`
-is slightly strict; voxel size barely matters in this range.
+Decisions folded into the code (2026-09-05): the X-visibility thresholds apply to
+all nu-origin sim particles (primary + secondary; both reco secondaries and
+non-primary muon tracks count too); photons entering from nu interactions outside
+the FV/TPC are signal (own stack category "sig entering g"); the per-shower BDT
+DEFINES the photon-candidate set before the multiplicity cut
+(`--bdt-after-multiplicity` restores the first-pass ordering); beam data
+(bnb5e19, 4.4e19 POT) is overlaid as points. Defaults: shower BDT >= 0.192 (the
+pi0 staged working point; scan plot provided), flash chi2 < 316 (log10 2.5; chosen
+from the N-1 plot, 2026-09-05), muon veto KE > 100 MeV with the union muon finder,
+photon energy recalibrated with `--recal-gamma-a 0.01553 --recal-gamma-b -12.80`.
+Plots land in `plots_v2_s1ep2p8/` (BDT study in `plots_v2_s1ep2p8/bdt_study/`).
 
-## Robustness fixes (done)
+### Vertex-less candidates (2026-09-06)
 
-- **Stage-A converter** (`convert_dlmerged_to_larformer_h5.py`): per-event try/except —
-  a single `SimChTripletLabelMaker` `out_of_range` event is logged + skipped (partial
-  output removed) instead of crashing the whole file. Verified on a known-bad file:
-  13/14 events kept (was 0). This recovers the ~50% of files previously lost.
-- **Stage-B cascade** (`run_larformer_stage3_inference.py`): per-event OOM guard around
-  both forward passes (skip + `empty_cache` + continue) + proactive per-event
-  `empty_cache`; `run_stageB_capped.sh` exports
-  `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`. One OOM event no longer kills the
-  run. Rerun with `--overwrite` off to fill gaps.
+The exporter now writes segmenter particles that belong to no nu_reco
+interaction (`showerVtxIdx = -1`, see `model_and_output_file_versions.md` §4b),
+which is where 26% of the entering-photon signal was lost (another 30% sat on a
+vertex outside the FV). `single_photon_selection.py --novtx` adds path B: any
+nu-stream photon shower not attached to the primary in-FV vertex is a candidate
+if `showerNoVtxScore >= --novtx-bdt-min` (`--novtx-model` scores from the ntuple
+branches when the branch is unfilled). Use it on the `*_novtx.root` ntuples with
+`--mc-odd-only` (the vertex-free BDT trained on even MC events) and WITHOUT the
+`--recal-gamma-*` flags (calibration baked in at export).
 
-## Scale-up run (1500 files, ~10% sample)
+First results (2026-09-06, novtx ntuples, odd-event MC x2, EXT analysis half,
+cosmic BDT >= 0.192 for vertex-attached candidates, flash chi2 < 316):
 
-Data on the larbys area:
-`/cluster/tufts/wongjiradlab/larbys/data/larformer/mcc9_v29e_dl_run3b_bnb_nu_overlay/{merged_sp,stage3pred}`.
+| selection | eff combined | eff in-FV | eff entering | eff 1g0X | purity | EXT | data/pred |
+|---|---|---|---|---|---|---|---|
+| vertex path only (baseline) | 0.099 | 0.324 | 0.065 | 0.400 | 0.323 | 50.8 | 1.35 |
+| + vertex-less path, NoVtx BDT >= 0.3 | 0.207 | 0.351 | 0.185 | 0.475 | 0.338 | 128.8 | 1.23 |
+| + vertex-less path, NoVtx BDT >= 0.5 | 0.196 | 0.351 | 0.173 | 0.475 | 0.357 | 87.5 | 1.20 |
+| + vertex-less path, NoVtx BDT >= 0.7 | 0.181 | 0.342 | 0.157 | 0.450 | 0.362 | 66.2 | 1.16 |
 
-- Stage A ×1500 (`single_photon_scale1500.conf`, `submit_stageA_convert_scale1500.sh`):
-  **67,211 events**, 334 GB, 97.8% file coverage (C++ fix held; the ~5k loss was
-  cgroup-OOM — now `--mem-per-cpu=16000`).
-- `select_visible_photon_events.py` → **6,743 visible-photon events, 829 (12.3%) 1γ+0X**;
-  capped spread **3,000** → Stage B array (`submit_stageB_cascade_array.sh`, A100, 30×100).
+About half of the final signal comes through the vertex-less path. Vertex-free
+BDT (held-out AUC 0.957; top features objectness, piS, sdwall, muS):
+`plots_v2_s1ep2p8/novtx_bdt/`. Run dirs: `plots_v2_s1ep2p8_novtx_base/`,
+`plots_v2_s1ep2p8_novtx_t{0.3,0.5,0.7}/`.
 
-### Results (3000-event sample)
+Out-of-FV backgrounds are split (2026-09-06) into "entering >=2 g" (a second
+visible photon entered; same pi0 origin as most entering signal), "entering CC
+(vis mu/e)" (a visible lepton entered; takes priority over the photon count) and
+"entering other" (no visible photon, no lepton). At the vertex-less working
+point these are 55.6 / 37.2 / 16.1 weighted events against 134.4 entering signal.
 
-**Photon finding** (re-baselined on the fixed reproducible base, `sp_compare_3k_fixed/base`,
-5441 detectable photons): **efficiency 0.724, purity 0.825** (was 0.71/0.83 — essentially
-unchanged; photon-finding is a coarse per-photon IoU match, robust to the per-SP perturbations
-that flipped the finer 1γ+0X selection). Detail in `workdir_scale/photon_match_fixed.csv`.
-- Energy turn-on: eff(all) 0.16 (0–20 MeV) → 0.65 (150–400 MeV).
-- Vertex-distance falloff: 0.82 (0–5 cm) → 0.44 (120+ cm).
+### TODO
 
-**1γ+0X scale-up confirmation** (base vs rescue on the full **829 truth-1γ+0X**, both fixes,
-nominal τ=0.5): base eff **0.151** / pur 0.424; **rescue eff 0.169 / pur 0.406 (+15 TP, +12%)** —
-confirms the small-sample rescue win (378: 0.156→0.167) at 2× statistics (~1.3σ). Outputs:
-`sp_scale829_{base,rescue}`.
+- (DONE 2026-09-07, see "Vertex-less start finder v2" below; kept for the record)
+  **Vertex-less shower start / direction (exporter).** For `showerVtxIdx=-1`
+  prongs the start is the stage-4 keypoint model's predicted start (trained
+  toward the photon ORIGIN, i.e. the nu vertex, not the conversion point:
+  median 27 cm from the true conversion point, 16% outside the TPC) and the
+  direction is the PCA axis signed away from that start (median 17 deg to the
+  true photon direction, 19% flipped, vs 8 deg / 7% for vertex-attached
+  showers). Fix: take the PCA axis, choose the trunk end as the extreme shower
+  point closer to the keypoint start (fallback: narrower transverse profile),
+  snap the start to that point, orient trunk -> tail. Needs a re-export and a
+  retrain of the vertex-free BDT (which uses start dwall + direction cosines).
 
-**1γ+0X selection — REPRODUCIBLE deghost/rescue sweep** (`analyze_1g0X.py`, full 3000-event
-mixed sample, pinned to one node, `--deterministic` **+ both membership fixes**;
-`base`≡`base_dup` bit-identical across all 2999 events confirms the A/B is exact). Outputs:
-`sp_compare_3k_fixed/`. **These supersede the earlier buggy sweep — see the OLD column.**
+Diagnostics (2026-09-06, `plots_v2_s1ep2p8_novtx/diagnostics/{preChi2,final}/`):
+signal peaks at low flash PE (median ~400-500 vs ~900-1000 for in-FV
+backgrounds) and at 0 reco protons; entering signal starts within ~25 cm of a
+wall along -dir (median 26 cm) and is forward (cos theta median 0.3); the
+PE-centroid vs shower-line distance is not discriminating (many near-parallel
+lines land in overflow). Data exceeds prediction at low flash PE, at 0
+protons, at forward cos theta and for starts 100-350 cm from the wall.
 
-| Arm | deghost τ | flash rescue | efficiency | purity | (old, buggy) |
-|-----|-----------|--------------|------------|--------|--------------|
-| **base** | 0.5 (default) | no | 0.156 | 0.437 | (0.161 / 0.436) |
-| dg0p4 | 0.4 | no | 0.151 | 0.442 | (0.138 / 0.374) |
-| dg0p3 | 0.3 | no | 0.148 | 0.412 | (0.153 / 0.379) |
-| **rescue** | 0.5 | K=1 | **0.167** | **0.420** | (0.135 / 0.309) |
-| dg0p3+rescue | 0.3 | K=1 | 0.156 | 0.383 | (0.146 / 0.346) |
+Truth characterization (2026-09-06, `plots_v2_s1ep2p8_novtx/truth/`): entering
+signal vertices lie in the LAr just outside the field cage on ALL sides (each
+vertex is outside in at least one coordinate while the other two span the TPC;
+peaks just beyond x=0, x=256 and |y|=117 cm), i.e. photons enter through every
+face, with the cathode / anode sides and top / bottom most common; their
+E_vis/E_true is ~0.7 (vs ~2.2 in-FV) because they deposit only part of the
+shower; conversion points sit within ~10 cm of the wall; the non-detectable
+second photon is usually >200 MeV (it misses the TPC); the hadronic system
+carries ~440 MeV median KE but stays outside.
 
-- **Flash rescue HELPS — and the old "net-negative" was a reproducibility-bug artifact.** With
-  the fixes, rescue is eff **0.156 → 0.167 (+4 TP)** with purity essentially held (0.437 → 0.420).
-  The old buggy result (rescue eff 0.135 / purity 0.309) was inverted by the shuffle-RNG breaking
-  additivity (the "rescue loses TPs it never touched" effect). Rescue is the best arm.
-- **Lowering the deghoster threshold still does NOT help — even with the 8192 token cap removed.**
-  dg0p4 ~neutral, dg0p3 slightly worse. The `max_source_tokens_per_level=8192` cap *was* randomly
-  crowding out real points (now fixed: eval uses all tokens), but the extra low-confidence shower
-  points still don't improve segmentation — they're not the limiting factor. Keep τ=0.5.
-- **Significance:** deterministic now (no run-to-run noise), so +4 TP is a real effect on these 378
-  truth events, but ~0.5σ on ~60 TP — direction is solid, scale up to pin the magnitude (now safe:
-  small-sample predicts full-dataset).
-- (Superseded) earlier comparison caveat: the order-dependence below is only fully common-mode
-  for *identical* computations (base vs `base_dup` = bit-exact). Any arm that changes the
-  per-event computation — a different deghost τ, or rescue's extra flash work — also shifts the
-  history-dependent numerics of *unrelated* events, adding ±few-% noise. (Demonstrated: rescue,
-  which is rescue-only by design, still flipped 86 events it never touched and lost 47 TPs all on
-  not-rescued events.) So the sweep's **direction is robust** (the levers clearly don't help — the
-  perturbation is symmetric, not a systematic gain) but the precise deltas and the **absolute**
-  numbers are not citable until the order-dependence is fixed.
-- Prior analysis reference: ~0.10 eff / ~0.40 purity.
+Max-KE plots (`truth/maxKE_{p,mu,pi}[_dep].png`, any sim particle, primary or
+secondary; `_dep` = deposits charge in the TPC; lines at the MiniBooNE oil
+Cherenkov thresholds p 342 / mu 39 / pi 51 MeV and the 100 MeV muon
+convention). Fractions of ALL events in the category above threshold:
+p>342: 1g0X 0 / 1g+X 0.21 / entering 0.14 (depositing: 0 / 0.21 / 0.04);
+mu>39: 0.03 / 0.13 / 0.42 (depositing 0 / 0.13 / 0.01); mu>100 (any): 0.03 /
+0 / 0.38 -- i.e. 38% of entering-signal events are CC with a muon above the
+analysis threshold that never enters the TPC (the deposit requirement in the
+signal definition keeps them as signal); pi>51: 0 / 0.25 / 0.18 (depositing
+0 / 0.25 / 0.04). Overlay line = SIGNAL events passing the full selection.
 
-**Where 1γ+0X photons are lost** (`analyze_photon_slice.py`): of 378, the slicer puts
-only **49% in a ν-slice** (selected at 0.28), **34% in their OWN slice mislabeled
-cosmic**, 16% merged into cosmic slices, 2% lost. FN breakdown: 71% no photon query
-(slicer/ν-slice drop), 15% photon-split, 14% false-X.
+Entering-signal split (2026-09-06): "sig entering g (no mu>100)" vs "sig
+entering g, CC (mu>100 outside TPC)" -- the latter has a muon with KE >= 100
+MeV that never deposits in the TPC (MiniBooNE would have seen it; MicroBooNE
+cannot). Weighted: 485 no-mu + 293 CC-mu of the 778 entering signal; at the
+vertex-less working point 90.2 + 44.2 selected (eff 0.186 / 0.151). All three
+plot sets (selection, diagnostics, truth) carry the split; the efficiency
+figures have six panels (in-FV, entering no-mu, entering CC-mu, combined, all
+entering, strict 1g0X) and the cutflow has effOutNoMu / effOutMu columns.
+Whether the CC-mu class stays in the signal definition is an open decision.
 
-Analysis scripts: `select_visible_photon_events.py`, `match_predictions_to_truth.py`
-(energy + vertex-distance turn-on), `analyze_1g0X.py`, `analyze_photon_slice.py`,
-`run_stageB_capped.sh` env knobs `DETERMINISTIC=1` / `DEGHOST_THRESHOLD_VAL` / `FLASH_RECOVER_K`,
-sweep `slurm/submit_deghost_compare_3k_pin.sh`.
+Vertex vs no-vertex samples (2026-09-06, `plots_v2_s1ep2p8_novtx/paths/`; final
+step, weighted): VERTEX sample signal 84.9 (in-FV 37.8 + entering 47.2; eff
+1g0X 0.40 / 1g+X 0.28 / entering 0.06), bkg MC 117 + EXT 46, purity 0.34,
+in-FV purity 0.15, data/pred 1.34. NO-VERTEX sample signal 90.3 (in-FV 3.1 +
+entering 87.2; eff entering 0.12 / 0.09), bkg MC 111 + EXT 41, purity 0.37,
+entering purity 0.36, in-FV purity 0.01, data/pred 1.05. The no-vertex sample
+is >96% entering by signal content -> usable as the entering-photon
+sideband; the vertex sample is still 55% entering signal + entering bkg 20.
 
-### Reproducibility & determinism (`docs/reference/LArFormer_Reproducibility.md`)
+LATER: the EXT-BNB sample is Run 3 while the beam data is Run 1 (lower light
+yield and quieter electronics in Run 3) -- a likely driver of the data/EXT
+mismatch in the flash-chi2 and flash-PE shapes. Resolution = process a Run 1
+EXT-BNB sample; deferred until the in-FV / entering separation is settled.
+Diagnostics can be run per sample with `--path 0` (vertex) / `--path 1`
+(no-vertex): `plots_v2_s1ep2p8_novtx/diagnostics_{vertex,novertex}/`.
 
-Inference is non-deterministic by default; `run_larformer_stage3_inference.py --deterministic`
-(env `DETERMINISTIC=1`) fixes it. Established facts:
+Per-path diagnostics (2026-09-06): in the VERTEX sample the backward wall
+distance separates entering from in-FV signal (entering median 57-71 cm but
+peaked < 50; in-FV 1g0X 168, 1g+X 76). MC-only scan at the final step
+(inFV 37.7 / entering 47.2 / MC bkg 116.7): distFromWall > 50 cm keeps
+30.4 / 18.9 / 85.3, > 100 cm keeps 19.9 / 9.4 / 61.8 -- the in-FV purity
+among MC rises only 0.15 -> 0.22 because in-FV nu backgrounds (>=2 g, CC numu)
+also sit deep inside. EXT in the vertex sample also peaks at < 50 cm. In the
+NO-VERTEX sample everything (signal and entering bkg) is at < 30 cm, so the
+cut is not useful there. Data/pred in the vertex sample at 100-350 cm stays
+above 1 after the split.
 
-- **Full-run reproducibility is bit-exact** with `--deterministic` (same input list, same node):
-  validated 0 / 1.08M spacepoints differ across two runs.
-- **Cross-hardware:** A100 (80 & 40 GB) and L40S are **mutually bit-identical** — determinism is
-  a property of the **driver + library stack**, not the GPU model. Hopper (H100/H200) is a
-  **separate conformance family** that diverges ~1.9% at the event level (source = architecture-
-  specialized cuBLAS GEMMs, *not* attention — tested by swapping flash↔xformers). Deploy with a
-  **driver allowlist + per-node conformance test** (`tools/capture_cascade_tensors.py` +
-  `tools/cross_gpu_diff.py`); pin Hopper jobs separately.
-- **✅ Membership/list dependence — ROOT CAUSE FOUND + FIXED.** A given event's output depended on
-  which *other* events were in the run (→ ~6.6% of 1γ+0X labels flipped between a 378- and a
-  3000-event list, same node). **Cause: `shuffle_orders=True` on the deghoster's PTv3** (config
-  `...ptv3crosslevel.py:160`; slicer/segmenter were already `False`). `shuffle_orders` randomizes the
-  serialization order via `torch.randperm` and is a **train-time augmentation not gated by eval** —
-  at inference it consumed the global RNG per event (so an event's output depended on its
-  predecessors) and randomized the attention patch order. That's why it was *precision-independent*
-  and FP64 / dead-band / allocator-toggle all failed (those were investigated and ruled out).
-  **Fix:** config → `False`, plus `run_full_cascade_mode` defensively disables `shuffle_orders`
-  model-wide at inference (logs "disabled serialization order-shuffle on N modules"). **Result:**
-  Stage-1 keep-flips 1.47% → **0.0000%**; end-to-end coord-mismatch 25/30 → 0/30, **1γ+0X label
-  flips → 0/30**. The selection is now membership-independent, so **small-sample A/B predicts
-  full-dataset behavior**. **There were TWO bugs of the same class** (train-time RNG augmentations not
-  gated by eval, each consuming the global RNG per event): (1) `shuffle_orders=True` on the deghoster,
-  and (2) `CrossLevelAttn.max_source_tokens_per_level` random token subsample
-  ([`refiners/cross_level.py` `_maybe_subsample`](../../../pointcept/models/LArFormer/refiners/cross_level.py),
-  now gated by `not self.training`). The slicer Tier-B (`tools/capture_deghost_layers.py --target
-  slicer`) localized the 2nd: slicer backbone + all tokenizer builders bit-clean, divergence enters at
-  the `token_refiner` (3e-5) and the `query_selector` amplifies it 100× (a tiny score shift flips which
-  tokens topk/FPS picks). **With BOTH fixed: 0/1,457,270 spacepoints differ across membership — truly
-  per-event reproducible.** Re-baseline once (prior absolute results had both augmentations ON). Note:
-  `--deterministic` is still required for *same-run* reproducibility; these fixes are for
-  *cross-membership* (subsample/list/batch) reproducibility. (FP64/dead-band/allocator/argsort-ties
-  were investigated and ruled out.)
+### Vertex-less start finder v2 (2026-09-07)
 
-### Flash recovery (prototype)
+Exporter `shower_start_dir()`: DBSCAN (eps 2 cm, min 5 points) on the shower's
+points; clusters with >= 5 MeV of calibrated comb charge (slope only) are kept
+(all points if none); the two extreme kept points along the 1st principal axis
+are the candidate ends; the end closer to the segmenter/keypoint origin point
+is the start; direction = principal axis oriented start -> other end. Flags
+`--orphan-dbscan-eps`, `--orphan-min-cluster-mev`. Re-exported as
+`*_novtx_v2.root`, validated against truth (`validate_novtx_start.py`), then
+promoted; vertex-free BDT retrained (v1 model kept as
+`export/data/shower_novtx_bdt_v1_kpstart.joblib`).
 
-`flash_recovery_prototype.py` tests the lever: for own-cosmic-slice photons, predict
-each slice's PMT pattern via PhotonLib (`larformer_analysis/lib/flash_predict`,
-γ_beam=5.25 from the slicer `gamma_tune/summary.txt`) and Neyman-χ²-match to the
-in-time beam flash. Result (117 of 127 1γ+0X own-cosmic photons): the photon's slice
-is the **best** flash match in **31.6%** (rank-1) and top-3 in 55.6%. So flash matching
-recovers ~1/3 of the mislabeled single photons → 1γ+0X efficiency 0.14 → ~0.17 (seg at
-0.28) to ~0.24 (clean). Headroom via `chi2_with_oob` (TPC-OOB rejection) + per-point
-charge + a χ² threshold instead of strict global rank-1.
+LOCKED IN (2026-09-07): start finder v2 validated on the full MC (494
+vertex-less true photons): |start - true conversion| median 27 -> 5.8 cm,
+90% 80 -> 58 cm, start inside the TPC 85% -> 99%; direction unchanged (median
+16.4 deg, 18% sign-flipped -- the sign is still chosen by keypoint proximity;
+a transverse-width rule is the next candidate if needed). Vertex-free BDT v2
+(held-out AUC 0.958; vertex-less pass 0.64 at 0.5, EXT vertex-less rejection
+0.97; sdwall now the top feature). All three `*_novtx.root` ntuples carry the
+v2 start + baked v2 score; the v1 files are kept as `*_novtx_v1kpstart.root`.
+Final selection (vertex-less path, BDT 0.5, chi2 < 316): combined eff 0.198 /
+purity 0.350 (vertex sample 84.9 sig / 163 bkg, no-vertex sample 92.4 sig /
+167 bkg). This is the reco state for the upcoming larger BNB-nu overlay and
+EXT (incl. Run 1) campaigns.
 
-### Visualization (`view_1g0X_flash.py`)
+### v2_s1ep2p8cew6 (new segmenter, 2026-09-09) -- `plots_cew6_novtx*/`
 
-Multi-event Dash viewer that reads `stage3pred`+`merged_sp` directly and predicts each
-slice's flash on the fly (PhotonLib, γ=5.25). Per event: observed in-time beam flash vs
-predicted PE per PMT (photon slice in gold, min-χ² slice in orange), a 3D slice view
-(gold=photon slice, blue=selected, red=true photon points), and a χ²-sorted slice table.
-Scan the event list with prev/next or the dropdown (`inspect_1g0X.csv`, sorted with the
-flash-recoverable own-cosmic cases first).
+Verified the cew6 ntuples carry everything (vertex-less prongs, objectness,
+slice chi2, baked showerNoVtxScore, v2 start finder: vertex-less start median
+5.4 cm from the true conversion point, 98% in TPC). Same selection, same cuts
+(cosmic BDT 0.192, NoVtx BDT 0.5, chi2 < 316), odd-event MC x2; both BDTs
+are still the ep8-trained models unless noted.
 
-```bash
-SIF=/cluster/tufts/wongjiradlabnu/larbys/larbys-container/pointcept_cuml.sif
-ENV=/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/ubdl/setenv_pointcept_container.sh
-P=/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept
-DATADIR=/cluster/tufts/wongjiradlab/larbys/data/larformer/mcc9_v29e_dl_run3b_bnb_nu_overlay
-apptainer exec --nv --bind /cluster:/cluster $SIF bash -c \
-  "source $ENV >/dev/null 2>&1; export PYTHONPATH=$P:\$PYTHONPATH; \
-   python3 view_1g0X_flash.py --event-list workdir_scale/inspect_1g0X.csv \
-       --merged-dir $DATADIR/merged_sp --gamma 5.25 --port 8053"
-# open http://<node>:8053   (GPU node recommended for fast on-the-fly prediction)
-```
+| final step | ep8 | cew6 | cew6 + NoVtx BDT retrained on cew6 |
+|---|---|---|---|
+| combined eff / purity | 0.198 / 0.350 | 0.219 / 0.307 | 0.218 / 0.334 |
+| in-FV eff (1g0X eff) | 0.351 (0.475) | 0.414 (0.525) | 0.405 (0.525) |
+| entering eff no-mu / CC-mu | 0.190 / 0.151 | 0.210 / 0.158 | 0.212 / 0.155 |
+| MC bkg / EXT | 233 / 97 | 301 / 142 | 296 / 93 |
+| data / pred | 1.16 | 1.14 | 1.10 |
 
-`inspect_1g0X.csv` columns: run,subrun,event,lead_photon_E,slice_category,reco_1g0X,
-flash_rank,flash_recovered,stage3pred_path (378 events; 127 own-cosmic of which 37
-flash-rank-1).
+cew6 finds more signal at every step (S1 in-FV 0.72 -> 0.78, S2 0.56 -> 0.63)
+but the ep8-trained per-shower cosmic BDT is looser on cew6 showers (EXT
+photon rejection at 0.2: 0.83 -> 0.72; per-event EXT >=1 passing 0.10 ->
+0.15), so EXT and in-FV backgrounds rise (>=2 g 66 -> 86, CC numu 39 -> 54).
+Retraining the vertex-free BDT on cew6 (`export/data/shower_novtx_bdt_cew6.joblib`,
+AUC 0.961) restores the EXT level (93) at unchanged efficiency; the cosmic
+(vertex) BDT still needs its cew6 retrain (pi0 folder trainer). Per path:
+vertex sample 96.5 sig / 165 MC bkg / 59 EXT (purity 0.30), no-vertex 99.8 /
+136 / 83 (0.31). Runs: `plots_cew6_novtx{,_base,_ts0075,_bdtcew6}`,
+`plots_cew6_novtx/{paths,diagnostics_vertex,diagnostics_novertex,truth,
+bdt_study,novtx_bdt}`. The ep8 plots (`plots_v2_s1ep2p8_novtx*`) are kept.
 
-### Flash recovery end-to-end (implemented + validated)
+### cew6 fresh-pair BDTs (2026-09-10) -- `plots_cew6bdt_novtx*/`
 
-`run_larformer_stage3_inference.py --flash-recover-k K [--flash-recover-chi2-max ... -oob-max ...
--gamma 5.25] [--flash-recover-augment-all]` adds the top-K flash-matched slices to the particle-
-segmenter keep mask (helper `flash_recovery_keep`). Default = **rescue-only** (apply only when the
-ν-keep is empty, so already-segmented events aren't contaminated). `run_stageB_capped.sh` honors
-`FLASH_RECOVER_K`/`_CHI2_MAX`/`_OOB_MAX`/`_AUGMENT_ALL`. Cut calibration: `calibrate_flash_path.py`.
-
-Result, **now re-confirmed deterministically** (full 3000, pinned single node, vs `base` eff
-0.161 / purity 0.436):
-- **K=1 rescue-only is net-negative: efficiency 0.135, purity 0.309** (loses TP *and* adds fakes).
-  It un-drops events, but they are mostly fakes, not clean single photons.
-- The earlier 378-only run *looked* like a gain — that was the run-to-run / order noise (now
-  understood, see Reproducibility), not a real effect.
-
-## Still to do
-
-- **Fix the absolute-number order-dependence** (Reproducibility): try removing per-event
-  `empty_cache` / `expandable_segments`, or a dead-band/hysteresis at the deghoster keep-cut
-  (also mitigates the cross-GPU Hopper divergence). Then re-quote absolute 1γ+0X eff/purity.
-- **Re-measure photon-finding** (0.71 / 0.83) on the deterministic `sp_compare_3k_pin/base`
-  outputs for a clean citable number.
-- The deghost-threshold and flash-rescue levers are **net-negative** — drop them; the gains were
-  artifacts of non-determinism. Photon-finding losses to attack instead: photon-split (15%) and
-  false-X (14%) on correctly-sliced ν events.
-- POT-normalize for absolute yields (fold in `xsecWeight`); side-band / fake-rate study.
-- Recover the ~18 OOM Stage-A tasks (16 GB) for the full 72k; scale Stage B beyond 3000.
-- (If deploying on Hopper) add it to the conformance allowlist or quote a measured systematic.
+Re-ran everything on the re-exported cew6 ntuples. Verified score provenance:
+`showerCosmicScore` IS the cew6-retrained model (81% of scores changed vs the
+`*_ep8score.root` archives; its eff-0.97 WP is 0.164, used here), but
+`showerNoVtxScore` was still the ep8 vertex-free model (reproduces it to
+3e-8) because the export defaulted to `export/data/shower_novtx_bdt.joblib`,
+which held the ep8 model while the cew6 retrain sat under a `_cew6` name.
+The cew6 vertex-free model is now the deployed default (ep8 archived as
+`shower_novtx_bdt_ep8.joblib`), and these runs applied it analysis-side with
+`--novtx-model`. Numbers, cutflow and the vertex/no-vertex tables:
+[`CEW6_SINGLE_PHOTON_TABLES.md`](CEW6_SINGLE_PHOTON_TABLES.md). Headline:
+eff 0.218 / purity 0.342 (ep8 chain 0.198 / 0.350; cew6 with stale BDTs
+0.219 / 0.307), EXT 85 (was 142), data/pred 1.08.

@@ -288,6 +288,17 @@ underlying events, same row conventions).
 - Confusion A/B subset: `larformer_reco/inputlists/merged_sp_confusion_test2000.txt`;
   kp2 outputs `larformer_reco/output/kp2_conf_test2000_{old,new,cew6}/`.
 
+### 7c. Single-photon study, FRESH-PAIR ntuples (2026-09-10)
+Verified on the promoted ntuples: `showerCosmicScore` = cew6 model (WP 0.164),
+but `showerNoVtxScore` was still the EP8 vertex-free model — the exporter
+default `export/data/shower_novtx_bdt.joblib` held ep8 while the cew6 retrain
+sat as `shower_novtx_bdt_cew6.joblib`. FIXED: the default is now the cew6
+model (ep8 archived `shower_novtx_bdt_ep8.joblib`); the next re-export bakes
+it, until then pass `--novtx-model`. Single-photon result with both cew6
+BDTs: eff 0.218 / purity 0.342, EXT 85, data/pred 1.08 (ep8 chain 0.198 /
+0.350; cew6 + stale BDTs 0.219 / 0.307). Tables:
+`physics/single_photon/CEW6_SINGLE_PHOTON_TABLES.md`.
+
 ### 7b. Single-photon study on cew6 (2026-09-09)
 cew6 ntuples verified to carry the vertex-less prongs, objectness, slice chi2
 and baked showerNoVtxScore (v2 start finder). Same cuts as ep8: combined eff
