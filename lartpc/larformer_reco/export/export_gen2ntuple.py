@@ -32,6 +32,27 @@ Documented redefinitions vs the legacy maker (user-approved):
 - vtxFracHitsOnCosmic = -1 (no thrumu in this chain).
 - MC events are NOT dropped: out-of-WC-FV true vertices are flagged
   (trueVtxInWCFV), missing/inf xsecWeight -> -1 (counted in the log).
+- VERTEX-LESS PRONGS (2026-09-06): every segmenter particle of each stream's
+  kp2 slice that is NOT part of a nu_reco interaction (incl. all particles
+  of events with no interaction) is exported with VtxIdx=-1 straight from
+  the kp2 particle groups: start / direction from shower_start_dir()
+  (2026-09-07): the shower's points are clustered with DBSCAN
+  (--orphan-dbscan-eps) and only clusters carrying >= --orphan-min-cluster-mev
+  of calibrated charge are kept (noise-deposit rejection; all points if none
+  qualifies); the two extreme kept points along the 1st principal axis are the
+  candidate ends; the end closer to the kp2 keypoint start (the model's
+  origin-point prediction) is the START, the direction is the principal axis
+  oriented start -> other end. Charge = de-double-counted comb
+  charge of its own points, showerRecoE from the deployed calo calib,
+  LArPID block at defaults, truth match from the kp2 gt_trackid attr
+  (--orphan-min-points, --no-orphans). Objectness (1-P(no_object)) and
+  Stream are filled for ALL prongs; nuSliceFlashChi2/fmSliceFlashChi2 carry
+  the slice chi2 so vertex-less candidates can be flash-cut.
+- SHOWER ENERGY (2026-09-06): showerRecoE is recomputed at export from the
+  prong's comb Charge with the DEPLOYED trajfit calo_calib (gamma affine,
+  e linear) so attached and vertex-less showers share one calibration
+  (--no-recalib-showers keeps nu_reco's part_energy). Analyses must then NOT
+  apply the old invert-and-reapply recal flags to these ntuples.
 
     PYTHONPATH=./ python3 lartpc/larformer_reco/export/export_gen2ntuple.py \
       --merged-sp-list ... --truth-dir ... \
@@ -57,6 +78,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(
 from lartpc.larformer_reco.export import schema  # noqa: E402
 from lartpc.larformer_reco.utils import read_list  # noqa: E402
 from lartpc.larformer_reco.trajfit.calo import dedup_charge  # noqa: E402
+from lartpc.larformer_reco.trajfit.particle_momentum import load_shower_calib  # noqa: E402
 
 MASS = {0: 0.511, 1: 0.0, 2: 105.6584, 3: 139.5704, 4: 938.2721, 5: 0.0}
 LARFORMER_PDG = {0: 11, 1: 22, 2: 13, 3: 211, 4: 2212, 5: 0}
@@ -237,14 +259,27 @@ class MspTruthPoints:
 
 
 
-# ---- per-shower cosmic BDT (optional; env LARFORMER_SHOWER_BDT -> joblib) --
+def _model_path(env, default_name):
+    """Deployed joblib under export/data/ by default (2026-09-07); the env var
+    overrides the path, and env == 'none' disables the model."""
+    v = os.environ.get(env, "").strip()
+    if v.lower() == "none":
+        return None
+    if v:
+        return v if os.path.exists(v) else None
+    p = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", default_name)
+    return p if os.path.exists(p) else None
+
+
+# ---- per-shower cosmic BDT (default export/data/shower_cosmic_bdt.joblib;
+# env LARFORMER_SHOWER_BDT overrides, 'none' disables) --------------------
 _SHOWER_BDT = None
 def _load_shower_bdt():
     global _SHOWER_BDT
     if _SHOWER_BDT is not None:
         return _SHOWER_BDT
-    path = os.environ.get("LARFORMER_SHOWER_BDT", "").strip()
-    if not path or not os.path.exists(path):
+    path = _model_path("LARFORMER_SHOWER_BDT", "shower_cosmic_bdt.joblib")
+    if not path:
         _SHOWER_BDT = False
         return False
     import joblib
@@ -259,6 +294,202 @@ def _dwall(p):
     return float(min((p - lo).min(), (hi - p).min()))
 
 
+def _pca_dir(pts, start):
+    """Unit principal axis of pts, oriented from `start` toward the centroid.
+    Falls back to start->centroid, then +z."""
+    pts = np.asarray(pts, np.float64)
+    if len(pts) < 2:
+        return np.array([0.0, 0.0, 1.0], np.float32)
+    c = pts.mean(0)
+    v = c - np.asarray(start, np.float64)
+    if len(pts) >= 3:
+        try:
+            _, _, vt = np.linalg.svd(pts - c, full_matrices=False)
+            ax = vt[0]
+            if np.dot(ax, v) < 0:
+                ax = -ax
+            v = ax
+        except np.linalg.LinAlgError:
+            pass
+    n = np.linalg.norm(v)
+    return (v / n if n > 1e-6 else np.array([0.0, 0.0, 1.0])).astype(np.float32)
+
+
+def shower_start_dir(pts, qpt, kp_start, slope, min_mev=5.0, eps=2.0,
+                     min_samples=5):
+    """Vertex-less shower start point + direction (2026-09-07 recipe).
+
+    pts (n,3) cm, qpt (n,) per-point de-double-counted comb charge, kp_start
+    the kp2 keypoint-model start (origin prediction; may be NaN), slope the
+    calo MeV/charge factor of the shower's class.
+      1. principal axis via SVD of the points;
+      2. DBSCAN(eps, min_samples) on the points; clusters with
+         slope * sum(charge) >= min_mev are 'real'; if any, the extrema are
+         searched among their points only (else among all points);
+      3. the extreme point (along the axis) closer to kp_start is the start
+         (kp_start absent -> the lower-projection extremum);
+      4. direction = principal axis, sign start -> other extremum.
+    Returns (start[3], dir[3], n_good_clusters)."""
+    pts = np.asarray(pts, np.float64)
+    n = len(pts)
+    if n == 0:
+        return (np.asarray(kp_start, np.float32), np.array([0, 0, 1], np.float32), 0)
+    if n < 3:
+        st = pts[0]
+        return (st.astype(np.float32), _pca_dir(pts, st), 0)
+    c = pts.mean(0)
+    try:
+        _, _, vt = np.linalg.svd(pts - c, full_matrices=False)
+        ax = vt[0]
+    except np.linalg.LinAlgError:
+        ax = np.array([0.0, 0.0, 1.0])
+    proj = (pts - c) @ ax
+    sel = np.ones(n, bool)
+    ngood = 0
+    if qpt is not None and len(qpt) == n:
+        try:
+            from sklearn.cluster import DBSCAN
+            lab = DBSCAN(eps=eps, min_samples=min_samples).fit_predict(pts)
+            good = [l for l in np.unique(lab)
+                    if l >= 0 and slope * float(np.sum(qpt[lab == l])) >= min_mev]
+            ngood = len(good)
+            if good:
+                sel = np.isin(lab, good)
+        except Exception:
+            pass
+    i_lo = int(np.argmin(np.where(sel, proj, np.inf)))
+    i_hi = int(np.argmax(np.where(sel, proj, -np.inf)))
+    lo, hi = pts[i_lo], pts[i_hi]
+    ks = np.asarray(kp_start, np.float64)
+    if np.all(np.isfinite(ks)) and np.linalg.norm(hi - ks) < np.linalg.norm(lo - ks):
+        start, other = hi, lo
+    else:
+        start, other = lo, hi
+    d = ax if np.dot(ax, other - start) >= 0 else -ax
+    return start.astype(np.float32), d.astype(np.float32), ngood
+
+
+def shower_energy(cls_id, charge, calib):
+    """Deployed calo calib: E = a*Q (+ b for types with an affine offset)."""
+    if calib is None or not np.isfinite(charge) or charge < 0:
+        return None
+    key = {0: "e", 1: "gamma"}.get(int(cls_id), "gamma")
+    if key not in calib:
+        return None
+    return max(calib[key] * float(charge) + calib.get(key + "_b", 0.0), 0.0)
+
+
+def fill_truth_match(p, pts, npts, tid, tid_lookup, msp_pts, qv,
+                     dominant_fallback=False, rows_qp=None):
+    """Truth-match block shared by attached and vertex-less prongs. Returns
+    the prong's own de-double-counted comb charge (or None).
+    dominant_fallback: when tid<=0 (no kp2 IoU match, the vertex-less case)
+    take the labeled trackid owning the most comb charge in the prong."""
+    p["TruePurity"] = p["TrueComp"] = -1.0
+    for nm in SPECIES_PIDS:
+        p["True" + nm + "Purity"] = -1.0
+    p["TrueUnlabeledPurity"] = -1.0
+    Qp, rows_p, qp = None, None, None
+    if rows_qp is not None:
+        rows_p, qp = rows_qp
+        Qp = float(qp.sum())
+    elif pts is not None and npts and msp_pts is not None:
+        rows_p = msp_pts.rows_for(pts)
+        qp = msp_pts.dedup_comb(rows_p)
+        Qp = float(qp.sum())
+    if dominant_fallback and tid <= 0 and Qp and Qp > 0:
+        okr = rows_p >= 0
+        rt = msp_pts.tid[rows_p[okr]]
+        qq = qp[okr]
+        lab = rt > 0
+        if lab.any():
+            u, inv = np.unique(rt[lab], return_inverse=True)
+            tid = int(u[np.argmax(np.bincount(inv, weights=qq[lab]))])
+    p["TrueTID"] = tid
+    tp, te = tid_lookup.get(tid, (0, -1.0))
+    p["TruePID"], p["TrueE"] = tp, te
+    if Qp is None:
+        return None
+    if Qp <= 0:
+        return Qp
+    row_tid = np.full(len(rows_p), -1, np.int64)
+    okr0 = rows_p >= 0
+    row_tid[okr0] = msp_pts.tid[rows_p[okr0]]
+    in_gt = row_tid == tid
+    p["TruePurity"] = float(qp[in_gt].sum() / Qp)
+    qtot = qv.get(int(tid), 0.0)
+    if qtot > 0:
+        p["TrueComp"] = float(min(qp[in_gt].sum() / qtot, 1.5))
+    pids = np.full(len(rows_p), 0, np.int64)
+    pids[okr0] = msp_pts.pid[rows_p[okr0]]
+    unl = msp_pts.unlabeled_mask(rows_p)
+    for nm, pdgs in SPECIES_PIDS.items():
+        p["True" + nm + "Purity"] = float(qp[np.isin(pids, pdgs) & ~unl].sum() / Qp)
+    p["TrueUnlabeledPurity"] = float(qp[unl].sum() / Qp)
+    return Qp
+
+
+# ---- vertex-FREE per-shower BDT (env LARFORMER_SHOWER_BDT_NOVTX -> joblib) --
+# model dict: {"clf", "feats": [names]}; feature names resolved by NOVTX_FEATS.
+_NOVTX_BDT = None
+def _load_novtx_bdt():
+    global _NOVTX_BDT
+    if _NOVTX_BDT is not None:
+        return _NOVTX_BDT
+    path = _model_path("LARFORMER_SHOWER_BDT_NOVTX", "shower_novtx_bdt.joblib")
+    if not path:
+        _NOVTX_BDT = False
+        return False
+    import joblib
+    _NOVTX_BDT = joblib.load(path)
+    print(f">>> vertex-free shower BDT loaded: {path} feats={_NOVTX_BDT['feats']}",
+          flush=True)
+    return _NOVTX_BDT
+
+
+def novtx_features(p, ev):
+    """Per-shower feature map for the vertex-free BDT (all vertex-independent;
+    the trainer picks a subset by name and stores it in the model)."""
+    st = np.array([p["StartPosX"], p["StartPosY"], p["StartPosZ"]], float)
+    chi2 = ev["nuSliceFlashChi2"] if p["Stream"] == 0 else ev["fmSliceFlashChi2"]
+    return {"E": p["RecoE"], "cosZ": p["CosTheta"], "cosY": p["CosThetaY"],
+            "sdwall": _dwall(st), "startX": st[0], "startY": st[1],
+            "startZ": st[2], "objectness": p["Objectness"],
+            "phS": p["LArFormerPhScore"], "elS": p["LArFormerElScore"],
+            "muS": p["LArFormerMuScore"], "piS": p["LArFormerPiScore"],
+            "prS": p["LArFormerPrScore"], "nhits": p["NHits"],
+            "charge": p["Charge"], "chargefrac": p.get("ChargeFrac", -1.0),
+            "hasVtx": int(p["VtxIdx"] >= 0), "stream": p["Stream"],
+            "nSlicePart": (ev["nuSliceNParticles"] if p["Stream"] == 0
+                           else ev["fmSliceNParticles"]),
+            "logchi2": (float(np.log10(chi2)) if chi2 > 0 else -1.0)}
+
+
+def score_showers_novtx(prongs, ev):
+    for key, p in prongs:
+        if key == "shower":
+            p["NoVtxScore"] = -9.0
+    M = _load_novtx_bdt()
+    if not M:
+        return
+    rows, refs = [], []
+    for key, p in prongs:
+        if key != "shower":
+            continue
+        if p["LArFormerPID"] == 11:
+            p["NoVtxScore"] = 1.0
+            continue
+        if p["LArFormerPID"] != 22 or p["RecoE"] <= 0:
+            continue
+        f = novtx_features(p, ev)
+        rows.append([f[k] for k in M["feats"]])
+        refs.append(p)
+    if rows:
+        sc = M["clf"].predict_proba(np.asarray(rows, float))[:, 1]
+        for p, s in zip(refs, sc):
+            p["NoVtxScore"] = float(s)
+
+
 def score_showers(prongs, vtx_by_idx, vtx_score_by_idx):
     """Fill p['CosmicScore'] for every shower prong: electrons 1.0 (autopass),
     photons = BDT score, others -9. Features mirror
@@ -271,6 +502,17 @@ def score_showers(prongs, vtx_by_idx, vtx_score_by_idx):
         return
     ga, gb = M["recal"]
     OA, OB = 0.020101, -15.49
+
+    def bdt_E(p):
+        """Photon energy in the BDT's recal convention. Prefer the comb
+        Charge (exact, calibration-independent); fall back to inverting
+        the OLD deployed calib from RecoE (pre-2026-09-06 ntuples)."""
+        if p["LArFormerPID"] != 22:
+            return p["RecoE"]
+        q = p.get("Charge", np.nan)
+        if np.isfinite(q) and q >= 0:
+            return ga * q + gb
+        return (p["RecoE"] - OB) / OA * ga + gb if p["RecoE"] > 0 else p["RecoE"]
     # interaction context per VtxIdx
     ctx = {}
     for key, p in prongs:
@@ -278,9 +520,7 @@ def score_showers(prongs, vtx_by_idx, vtx_score_by_idx):
         if key == "track" and p.get("IsSecondary", 0) == 0:
             c["nprim"] += 1
         if key == "shower":
-            E = p["RecoE"]
-            if p["LArFormerPID"] == 22 and E > 0:
-                E = (E - OB) / OA * ga + gb
+            E = bdt_E(p)
             if E > 20:
                 c["nsh"] += 1
                 if p["LArFormerPID"] == 22:
@@ -297,7 +537,7 @@ def score_showers(prongs, vtx_by_idx, vtx_score_by_idx):
         v = vtx_by_idx.get(p["VtxIdx"])
         if v is None:
             continue
-        E = (p["RecoE"] - OB) / OA * ga + gb
+        E = bdt_E(p)
         st = np.array([p["StartPosX"], p["StartPosY"], p["StartPosZ"]], float)
         c = ctx[p["VtxIdx"]]
         rows.append([E, p["CosTheta"], p["CosThetaY"], p["DistToVtx"], _dwall(st),
@@ -343,6 +583,19 @@ def main():
     ap.add_argument("--out", required=True)
     ap.add_argument("--start", type=int, default=0)
     ap.add_argument("--n", type=int, default=-1)
+    ap.add_argument("--no-recalib-showers", action="store_true",
+                    help="keep nu_reco's part_energy for attached showers "
+                         "instead of recomputing E from the comb Charge with "
+                         "the deployed calo_calib (default: recompute)")
+    ap.add_argument("--no-orphans", action="store_true",
+                    help="do not export vertex-less segmenter particles")
+    ap.add_argument("--orphan-min-points", type=int, default=10,
+                    help="min slice points for a vertex-less prong")
+    ap.add_argument("--orphan-dbscan-eps", type=float, default=2.0,
+                    help="DBSCAN eps [cm] for the vertex-less shower start finder")
+    ap.add_argument("--orphan-min-cluster-mev", type=float, default=5.0,
+                    help="min calibrated charge [MeV] of a DBSCAN cluster to host "
+                         "the vertex-less shower start")
     ap.add_argument("--wcfv-lib",
                     default=os.path.join(os.path.dirname(os.path.abspath(
                         __file__)), "lib_wirecell_fiducial_volume.so"))
@@ -366,6 +619,11 @@ def main():
     in_wcfv = load_wcfv(args.wcfv_lib)
     truth = TruthIndex(args.truth_dir)
     weights = pickle.load(open(args.weights_pkl, "rb"))
+    calib = load_shower_calib() or None
+    if args.no_recalib_showers:
+        print(">>> showerRecoE = nu_reco part_energy (no export-time recalib)")
+    else:
+        print(f">>> showerRecoE recomputed from comb Charge with calo_calib {calib}")
     streams = {}
     for s, klist, rdir in (("nu", args.kp2_nu_list, args.nu_reco_nu_dir),
                            ("flashmatch", args.kp2_fm_list,
@@ -379,7 +637,7 @@ def main():
     fout = uproot.recreate(args.out)
     tree = schema.mktree(fout)
     FLUSH = 4000                # events per extend() batch (bounds RAM)
-    stats = dict(noweight=0, notruth=0, found=0)
+    stats = dict(noweight=0, notruth=0, found=0, orphans=0, orphan_events=0)
     for msp_path in msp:
         base = os.path.basename(msp_path)
         ev = schema.new_event()
@@ -419,11 +677,13 @@ def main():
         # ---- collect interactions from both streams -------------------------
         vtx_rows = []                      # (score, stream, x, y, z, chi2, ref)
         stream_ev = {}
+        kp_paths = {}                      # stream -> kp2 path (reco or not)
         for s in ("nu", "flashmatch"):
             hit = streams[s]["kp"].get(base)
             if hit is None:
                 continue
             gidx, kp_path = hit
+            kp_paths[s] = kp_path
             rr = streams[s]["reco"].get(gidx)
             if rr is None:
                 continue
@@ -467,6 +727,7 @@ def main():
         contained = True
         msp_pts = None
         vtx_by_idx, vtx_score_by_idx = {}, {}
+        attached = {"nu": set(), "flashmatch": set()}
         for gv, (sc, s, pos, chi2, ii) in enumerate(vtx_rows):
             vtx_by_idx[gv] = np.asarray(pos, float)
             vtx_score_by_idx[gv] = float(sc)
@@ -482,6 +743,9 @@ def main():
                     key = "track" if kind == 0 else "shower"
                     p = {}
                     inst = int(d["part_inst_idx"][i])
+                    if inst >= 0:
+                        attached[s].add(inst)
+                    p["Stream"] = STREAM_CODE[s]
                     pidx = (fkp[f"particle/{inst}/point_idx"][()]
                             if inst >= 0 else np.zeros(0, np.int64))
                     gtpidx = (fkp[f"particle/{inst}/gt_point_idx"][()]
@@ -531,6 +795,9 @@ def main():
                         p["LArFormer" + nm + "Score"] = (
                             float(lfs[j]) if lfs is not None and j < len(lfs)
                             else -9.0)
+                    p["Objectness"] = (float(1.0 - lfs[-1])
+                                       if lfs is not None and len(lfs) >= 8
+                                       else -1.0)
                     # LArPID block
                     p["Classified"] = int(d["larpid_classified"][i])
                     p["PID"] = int(d["larpid_pid"][i])
@@ -548,54 +815,119 @@ def main():
                     e = float(d["part_energy"][i])
                     ke = (e - MASS.get(int(d["part_pred_class"][i]), 0.0)
                           if kind == 0 else e)
+                    if (key == "shower" and not args.no_recalib_showers):
+                        e2 = shower_energy(int(d["part_pred_class"][i]),
+                                           p["Charge"], calib)
+                        if e2 is not None:
+                            ke = e2
                     p["RecoE"] = ke if np.isfinite(ke) else -1.0
                     if np.isfinite(ke):
                         reco_e += ke
-                    # truth match (3D point sets)
-                    tid = int(d["part_gt_trackid"][i])
-                    p["TrueTID"] = tid
-                    tp, te = tid_lookup.get(tid, (0, -1.0))
-                    p["TruePID"], p["TrueE"] = tp, te
-                    # charge-based truth quality (dedup within each set)
-                    p["TruePurity"] = p["TrueComp"] = -1.0
-                    for nm in SPECIES_PIDS:
-                        p["True" + nm + "Purity"] = -1.0
-                    p["TrueUnlabeledPurity"] = -1.0
-                    if pts is not None and pidx.size:
-                        rows_p = msp_pts.rows_for(pts)
-                        qp = msp_pts.dedup_comb(rows_p)
-                        Qp = float(qp.sum())
-                        if Qp > 0:
-                            # TID-based (2026-08-31): live off merged_sp
-                            # labels so a re-export alone tracks label
-                            # updates (kp2 gt_point_idx is frozen at
-                            # inference time and would go stale)
-                            row_tid = np.full(len(rows_p), -1, np.int64)
-                            okr0 = rows_p >= 0
-                            row_tid[okr0] = msp_pts.tid[rows_p[okr0]]
-                            in_gt = row_tid == tid
-                            p["TruePurity"] = float(qp[in_gt].sum() / Qp)
-                            qtot = qv.get(int(tid), 0.0)
-                            if qtot > 0:
-                                p["TrueComp"] = float(
-                                    min(qp[in_gt].sum() / qtot, 1.5))
-                            pids = np.full(len(rows_p), 0, np.int64)
-                            okr = rows_p >= 0
-                            pids[okr] = msp_pts.pid[rows_p[okr]]
-                            unl = msp_pts.unlabeled_mask(rows_p)
-                            for nm, pdgs in SPECIES_PIDS.items():
-                                p["True" + nm + "Purity"] = float(
-                                    qp[np.isin(pids, pdgs) & ~unl].sum() / Qp)
-                            p["TrueUnlabeledPurity"] = float(qp[unl].sum() / Qp)
-
+                    # truth match (3D point sets; TID-based off merged_sp
+                    # labels, 2026-08-31)
+                    fill_truth_match(p, pts, pidx.size,
+                                     int(d["part_gt_trackid"][i]),
+                                     tid_lookup, msp_pts, qv)
                     p["VtxIdx"] = gv
                     prongs.append((key, p))
+        # ---- slice-level scalars + VERTEX-LESS prongs (per stream) ----------
+        # HitFrac/ChargeFrac denominators stay = attached prongs only, so the
+        # existing per-shower BDT sees unchanged inputs; orphans use the same
+        # denominator (-1 when there are no attached prongs).
+        n_orph = 0
+        for s, kp_path in kp_paths.items():
+            with h5py.File(kp_path, "r") as fkp:
+                sattr = _attr_str(fkp.attrs, "stream")
+                chi2s = float(fkp.attrs.get("flash_chi2", np.nan))
+                npart = int(fkp.attrs.get("n_particles", 0))
+                targets = [s]
+                if s == "nu" and "flashmatch" in sattr and "flashmatch" not in kp_paths:
+                    targets.append("flashmatch")   # one slice serves both
+                for tg in targets:
+                    pre = "nu" if tg == "nu" else "fm"
+                    ev[pre + "SliceFlashChi2"] = (chi2s if np.isfinite(chi2s)
+                                                  else -1.0)
+                    ev[pre + "SliceNParticles"] = npart
+                if args.no_orphans or npart == 0:
+                    continue
+                slice_coords = None
+                for inst in range(npart):
+                    if inst in attached[s] or f"particle/{inst}" not in fkp:
+                        continue
+                    g = fkp[f"particle/{inst}"]
+                    pidx = g["point_idx"][()]
+                    if pidx.size < args.orphan_min_points:
+                        continue
+                    if slice_coords is None:
+                        slice_coords = fkp["slice/coord_cm"][()]
+                    if msp_pts is None:
+                        msp_pts = MspTruthPoints(msp_path)
+                    pts = slice_coords[pidx]
+                    cls = int(g.attrs.get("cls", 5))
+                    key = "shower" if cls in (0, 1) else "track"
+                    kp_st = np.asarray(g["start_cm"][()], np.float64)
+                    rows_p = msp_pts.rows_for(pts)
+                    qp = msp_pts.dedup_comb(rows_p)
+                    if key == "shower":
+                        ckey = {0: "e", 1: "gamma"}.get(cls, "gamma")
+                        slope = (calib or {}).get(ckey, 0.01553)
+                        st, dirv, _ = shower_start_dir(
+                            pts, qp, kp_st, slope, args.orphan_min_cluster_mev,
+                            args.orphan_dbscan_eps)
+                        st = np.asarray(st, np.float64)
+                    else:
+                        st = kp_st
+                        dirv = _pca_dir(pts, st)
+                    p = {"Stream": STREAM_CODE[s], "VtxIdx": -1,
+                         "IsSecondary": -1, "NHits": int(pidx.size),
+                         "DistToVtx": -9.0,
+                         "CosTheta": float(dirv[2]), "CosThetaY": float(-dirv[1]),
+                         "StartPosX": float(st[0]), "StartPosY": float(st[1]),
+                         "StartPosZ": float(st[2]),
+                         "StartDirX": float(dirv[0]), "StartDirY": float(dirv[1]),
+                         "StartDirZ": float(dirv[2]),
+                         "LArFormerPID": LARFORMER_PDG.get(cls, 0)}
+                    if key == "track":
+                        end = np.asarray(g["end_cm"][()], np.float64)
+                        p["EndPosX"], p["EndPosY"], p["EndPosZ"] = map(float, end)
+                    else:
+                        p["AttScore"], p["AttConfident"] = -9.0, 0
+                    lfs = (g["class_scores"][()] if "class_scores" in g
+                           else None)
+                    for j, nm in enumerate(("El", "Ph", "Mu", "Pi", "Pr")):
+                        p["LArFormer" + nm + "Score"] = (
+                            float(lfs[j]) if lfs is not None and j < len(lfs)
+                            else -9.0)
+                    p["Objectness"] = (float(1.0 - lfs[-1])
+                                       if lfs is not None and len(lfs) >= 8
+                                       else -1.0)
+                    p["Classified"], p["PID"], p["Process"] = 0, 0, -1
+                    for nm in ("El", "Ph", "Mu", "Pi", "Pr"):
+                        p[nm + "Score"] = -9.0
+                    p["Comp"] = p["Purity"] = -9.0
+                    p["PrimaryScore"] = p["FromNeutralScore"] = -9.0
+                    p["FromChargedScore"] = -9.0
+                    Qp = fill_truth_match(p, pts, pidx.size,
+                                          int(g.attrs.get("gt_trackid", -1)),
+                                          tid_lookup, msp_pts, qv,
+                                          dominant_fallback=True,
+                                          rows_qp=(rows_p, qp))
+                    p["Charge"] = float(Qp) if Qp is not None else -1.0
+                    e2 = (shower_energy(cls, p["Charge"], calib)
+                          if key == "shower" else None)
+                    p["RecoE"] = float(e2) if e2 is not None else -1.0
+                    prongs.append((key, p))
+                    n_orph += 1
+        if n_orph:
+            stats["orphans"] += n_orph
+            stats["orphan_events"] += 1
         for key, p in prongs:
             p["HitFrac"] = p["NHits"] / tot_hits if tot_hits else -1.0
             p["ChargeFrac"] = (p["Charge"] / tot_charge
                                if tot_charge > 0 and np.isfinite(p["Charge"])
                                else -1.0)
         score_showers(prongs, vtx_by_idx, vtx_score_by_idx)
+        score_showers_novtx(prongs, ev)
         for key, p in prongs:
             pref = key
             for b, _ in schema.GROUPS[key][1]:
@@ -628,7 +960,9 @@ def main():
                 "totGoodPOT": np.asarray([truth.pot[k][1] for k in fn],
                                          np.float32)})
     fout.close()
-    print(f">>> {len(events)} events ({stats['found']} with a vertex), "
+    print(f">>> {len(events)} events ({stats['found']} with a vertex; "
+          f"{stats['orphans']} vertex-less prongs in "
+          f"{stats['orphan_events']} events), "
           f"{stats['noweight']} missing/inf weight, "
           f"{stats['notruth']} missing truth; {len(fn)} potTree entries "
           f"-> {args.out}")

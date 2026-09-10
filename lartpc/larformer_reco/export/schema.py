@@ -15,6 +15,16 @@ Deviations from the legacy v7 tree (all user-approved):
 - NEW: `trueSimPartPixelSumQ` — uncalibrated visible-charge sum per true
   particle (see inline comment in the trueSimPart group), primarily for
   photon E_vis denominators.
+- NEW (2026-09-06, vertex-less prongs): segmenter particles NOT attached to
+  any nu_reco interaction (incl. events with no interaction at all) are
+  exported as prongs with `{track,shower}VtxIdx = -1` (IsSecondary = -1,
+  DistToVtx = -9, LArPID block at defaults). Every prong carries
+  `Objectness` (1 - P(no_object) of the segmenter query) and `Stream`
+  (0 nu-slice, 1 flashmatch-slice). Per-event `nuSliceFlashChi2` /
+  `fmSliceFlashChi2` (+ `*NParticles`) expose the slice-level flash chi2 so
+  vertex-less candidates can still be flash-cut. `showerNoVtxScore` = the
+  vertex-free per-shower cosmic BDT (env LARFORMER_SHOWER_BDT_NOVTX), -9
+  when no model.
 """
 import numpy as np
 import awkward as ak
@@ -36,6 +46,10 @@ SCALARS = [
     ("vtxDistToTrue", F, -99.0), ("vtxScore", F, -1.0),
     ("vtxFracHitsOnCosmic", F, -1.0),
     ("primaryVtxStream", I, -1),
+    # slice-level (per stream) flash chi2 + segmenter particle count, from
+    # the kp2 file attrs; -1 when the stream has no file for the event
+    ("nuSliceFlashChi2", F, -1.0), ("fmSliceFlashChi2", F, -1.0),
+    ("nuSliceNParticles", I, -1), ("fmSliceNParticles", I, -1),
 ]
 
 # ---- jagged groups: group -> (counter branch, [(branch, type), ...]) -------------
@@ -57,7 +71,9 @@ _PRONG_COMMON = [("IsSecondary", I), ("NHits", I), ("HitFrac", F),
                  ("Charge", F), ("ChargeFrac", F),
                  ("CosTheta", F), ("CosThetaY", F), ("DistToVtx", F),
                  ("StartPosX", F), ("StartPosY", F), ("StartPosZ", F),
-                 ("StartDirX", F), ("StartDirY", F), ("StartDirZ", F)]
+                 ("StartDirX", F), ("StartDirY", F), ("StartDirZ", F),
+                 # segmenter query objectness = 1 - P(no_object); slice stream
+                 ("Objectness", F), ("Stream", I)]
 
 GROUPS = {
     "recoVtx": ("nRecoVtx", [
@@ -106,7 +122,11 @@ GROUPS = {
                   # per-shower cosmic-vs-nu photon BDT (flash-blind; model via
                   # LARFORMER_SHOWER_BDT env): photons = score in [0,1],
                   # electrons = 1.0 autopass, other classes / no model = -9
-                  ("showerCosmicScore", F)]
+                  ("showerCosmicScore", F),
+                  # vertex-FREE per-shower cosmic BDT (env
+                  # LARFORMER_SHOWER_BDT_NOVTX): photons = score, electrons
+                  # 1.0, else / no model = -9. Defined for VtxIdx=-1 too.
+                  ("showerNoVtxScore", F)]
                + [("shower" + n, t) for n, t in _LARFORMER]
                + [("shower" + n, t) for n, t in _LARPID]
                + [("showerRecoE", F)]

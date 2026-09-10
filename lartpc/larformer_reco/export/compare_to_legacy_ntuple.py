@@ -11,6 +11,10 @@ _ap.add_argument("--new", required=True)
 _ap.add_argument("--old", required=True)
 _ap.add_argument("--plots", default=None,
                  help="directory for eff-vs-trueKE PNGs (LANTERN vs LArFormer)")
+_ap.add_argument("--a-gamma", type=float, default=None,
+                 help="pin the E_vis calibration [MeV/ADC] instead of the "
+                      "deployed calo_calib gamma (e.g. 0.0253017 to keep the "
+                      "July E_vis axis after the recal3 redeployment)")
 _args = _ap.parse_args()
 NEW = _args.new
 OLD = _args.old
@@ -39,6 +43,8 @@ try:
     A_GAMMA = float(load_shower_calib().get("gamma", A_GAMMA))
 except Exception:
     pass
+if _args.a_gamma is not None:
+    A_GAMMA = _args.a_gamma
 if "trueSimPartPixelSumQ" in new:
     for _i in range(len(new["run"])):
         _k = (new["run"][_i], new["subrun"][_i], new["event"][_i])
