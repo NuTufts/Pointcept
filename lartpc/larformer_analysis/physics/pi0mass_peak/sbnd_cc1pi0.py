@@ -75,7 +75,8 @@ _BR = ["run", "subrun", "event", "foundVertex", "primaryVtxStream",
        "vtxX", "vtxY", "vtxZ",
        "showerLArFormerPID", "showerRecoE", "showerAttConfident",
        "showerStartPosX", "showerStartPosY", "showerStartPosZ",
-       "trackLArFormerPID", "trackIsSecondary", "trackRecoE"]
+       "trackLArFormerPID", "trackIsSecondary", "trackRecoE",
+       "trackClassified", "trackMuScore", "trackElScore", "trackPhScore", "trackPiScore", "trackPrScore"]
 _BR_MC = ["trueVtxX", "trueVtxY", "trueVtxZ", "trueNuCCNC",
           "truePrimPartPDG", "truePrimPartE",
           "trueSimPartPDG", "trueSimPartTID", "trueSimPartMID",
@@ -167,6 +168,22 @@ def load(ntuple, table, is_data):
     n_g = ak.to_numpy(ak.sum(is_g, axis=1))
     is_mu = ((a["trackLArFormerPID"] == 13) & (a["trackIsSecondary"] == 0)
              & (a["trackRecoE"] > MU_KE_MIN))
+    if RECAL.get("muon_finder") == "larpid":
+        mu_best = ((a["trackClassified"] == 1)
+                   & (a["trackMuScore"] > a["trackElScore"])
+                   & (a["trackMuScore"] > a["trackPhScore"])
+                   & (a["trackMuScore"] > a["trackPiScore"])
+                   & (a["trackMuScore"] > a["trackPrScore"]))
+        is_mu = (mu_best & (a["trackIsSecondary"] == 0)
+                 & (a["trackRecoE"] > MU_KE_MIN))
+    if RECAL.get("muon_finder") == "union":
+        mu_best = ((a["trackClassified"] == 1)
+                   & (a["trackMuScore"] > a["trackElScore"])
+                   & (a["trackMuScore"] > a["trackPhScore"])
+                   & (a["trackMuScore"] > a["trackPiScore"])
+                   & (a["trackMuScore"] > a["trackPrScore"]))
+        is_mu = (((a["trackLArFormerPID"] == 13) | mu_best)
+                 & (a["trackIsSecondary"] == 0) & (a["trackRecoE"] > MU_KE_MIN))
     has_mu = ak.to_numpy(ak.any(is_mu, axis=1))
     is_cpi = ((a["trackLArFormerPID"] == 211) & (a["trackIsSecondary"] == 0)
               & (a["trackRecoE"] > CPI_KE_MIN))
@@ -226,6 +243,8 @@ def main():
     ap.add_argument("--recal-e-b", type=float, default=0.0)
     ap.add_argument("--a-gamma", type=float, default=None,
                     help="override truth-side A_GAMMA (signal definition)")
+    ap.add_argument("--muon-finder", default="segmenter",
+                    choices=["segmenter", "larpid", "union"])
     ap.add_argument("--shower-bdt-min", type=float, default=None,
                     help="opt-in per-shower cosmic-BDT cut (showerCosmicScore)")
     ap.add_argument("--plots", default="plots_sbnd_cc1pi0")
@@ -235,6 +254,9 @@ def main():
         print(f">>> A_GAMMA (signal-def) -> {args.a_gamma:.6f}")
     RECAL["gamma_a"], RECAL["e_a"] = args.recal_gamma_a, args.recal_e_a
     RECAL["shower_bdt_min"] = args.shower_bdt_min
+    RECAL["muon_finder"] = args.muon_finder
+    if args.muon_finder != "segmenter":
+        print(f">>> muon finder: {args.muon_finder}")
     if args.shower_bdt_min is not None:
         print(f">>> per-shower cosmic-BDT cut: score >= {args.shower_bdt_min}")
     RECAL["gamma_b"], RECAL["e_b"] = args.recal_gamma_b, args.recal_e_b

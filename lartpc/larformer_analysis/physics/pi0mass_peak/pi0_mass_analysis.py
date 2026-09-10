@@ -126,6 +126,11 @@ def main():
     ap.add_argument("--recal-gamma-b", type=float, default=0.0,
                     help="intercept for the gamma recal (E=a_new*Q+b_new)")
     ap.add_argument("--recal-e-b", type=float, default=0.0)
+    ap.add_argument("--muon-finder", default="segmenter",
+                    choices=["segmenter", "larpid", "union"],
+                    help="CC tag muon: 'segmenter' (trackLArFormerPID==13) or "
+                         "'larpid' (primary track, classified, LArPID muon "
+                         "score greater than all other class scores)")
     ap.add_argument("--restrict-rows", default=None,
                     help="npz with a 'rows' array of ntuple row indices; the "
                          "2-photon selection keeps only these rows (e.g. an "
@@ -175,7 +180,8 @@ def main():
                   "showerStartPosX", "showerStartPosY", "showerStartPosZ",
                   "showerStartDirX", "showerStartDirY", "showerStartDirZ",
                   "showerTrueTID", "showerTruePID",
-                  "trackLArFormerPID", "trackIsSecondary", "trackRecoE"])
+                  "trackLArFormerPID", "trackIsSecondary", "trackRecoE",
+                  "trackClassified", "trackMuScore", "trackElScore", "trackPhScore", "trackPiScore", "trackPrScore"])
     if args.a_gamma is not None:
         globals()["A_GAMMA"] = args.a_gamma
         print(f">>> A_GAMMA (signal-def visible-energy) -> {args.a_gamma:.6f}")
@@ -213,6 +219,24 @@ def main():
     n_g = ak.to_numpy(ak.sum(is_g, axis=1))
     is_mu = ((a["trackLArFormerPID"] == 13) & (a["trackIsSecondary"] == 0)
              & (a["trackRecoE"] > args.mu_ke_min))
+    if args.muon_finder == "larpid":
+        mu_best = ((a["trackClassified"] == 1)
+                   & (a["trackMuScore"] > a["trackElScore"])
+                   & (a["trackMuScore"] > a["trackPhScore"])
+                   & (a["trackMuScore"] > a["trackPiScore"])
+                   & (a["trackMuScore"] > a["trackPrScore"]))
+        is_mu = (mu_best & (a["trackIsSecondary"] == 0)
+                 & (a["trackRecoE"] > args.mu_ke_min))
+        print(">>> muon finder: larpid (mu score argmax on primary tracks)")
+    if args.muon_finder == "union":
+        mu_best = ((a["trackClassified"] == 1)
+                   & (a["trackMuScore"] > a["trackElScore"])
+                   & (a["trackMuScore"] > a["trackPhScore"])
+                   & (a["trackMuScore"] > a["trackPiScore"])
+                   & (a["trackMuScore"] > a["trackPrScore"]))
+        is_mu = (((a["trackLArFormerPID"] == 13) | mu_best)
+                 & (a["trackIsSecondary"] == 0) & (a["trackRecoE"] > args.mu_ke_min))
+        print(">>> muon finder: union (segmenter mu OR larpid mu-argmax)")
     reco_cc = ak.to_numpy(ak.any(is_mu, axis=1))
 
     # reco primary charged-pion count (PID 211) above KE threshold -- the veto

@@ -91,8 +91,12 @@ def main():
                       getattr(args, f"{s}_table"),
                       args.recal_gamma_a, args.recal_gamma_b,
                       args.mu_ke_min, args.chi2_cut, args.chi2_cut_nc)
-        smp[s] = add_flash_pe(smp[s], getattr(args, f"{s}_cascade"),
-                              cache_for(getattr(args, f"{s}_cascade")))
+        if "flashPE" in drop:
+            # flash-blind training: skip the cascade RSE-map build entirely
+            smp[s]["flashPE"] = np.full(len(smp[s]["run"]), np.nan)
+        else:
+            smp[s] = add_flash_pe(smp[s], getattr(args, f"{s}_cascade"),
+                                  cache_for(getattr(args, f"{s}_cascade")))
     smp["ext"]["w"] = np.full(len(smp["ext"]["run"]), args.ext_scale)
     cat = np.load(args.mc_table)["cat"][smp["mc"]["row"]]
     sig_m = cat < 2

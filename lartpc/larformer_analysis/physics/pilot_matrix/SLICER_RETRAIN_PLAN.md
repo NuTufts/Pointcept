@@ -1696,3 +1696,530 @@ showerCosmicScore -> plots on the EXT analysis half.
   plots_s1ep2p8_mc_staged097/ (same 15-plot set as plots_s1ep2p8_mc_exp).
   Signal median mass 137 MeV (target 135). Any-sel eff CC 0.786 /
   NC 0.684; CC-stream signal fraction 0.71, out-of-FV 0.04.
+
+### 2026-09-03 — reco performance plots remade for the retrained chain
+
+- ntuple_compare (job 3232686, compare_to_legacy_ntuple.py --a-gamma
+  0.0253017 pin; new = canonical s1ep2p8 analysis ntuple, old = LANTERN
+  v0; 28,580 shared WC-FV events) -> plots/ntuple_compare_mc_overlay_s1ep2p8/.
+  Vertex found 0.956 vs 0.729 (median dist 0.67 vs 0.63 cm). Truth-side
+  eff (found): gamma 0.754 vs 0.502, mu 0.854 vs 0.759, pi 0.694 vs
+  0.511, p 0.562 vs 0.447, e 0.938 vs 0.869. Track |dE/E| 0.083 vs
+  0.197, TruePurity 0.979 vs 0.919. CAVEAT: shower |dE/E| 0.562 vs
+  0.394 reflects the STALE deployed gamma calib in the ntuple
+  (0.020101/-15.49; recal3 is applied analysis-side) — not a resolution
+  regression; median TruePurity 0.980 vs 0.908.
+- eval_reco (jobs 3232687/88, 20 shards, stream=nu, --true-vtx-in-tpc,
+  new kp2 nu list + nu_reco_larpid_nu) ->
+  plots/eval_reco_mc_overlay_s1ep2p8_streams_nu_intpc/ +
+  results_eval_reco_mc_overlay_s1ep2p8.npz. GT = expanded labels
+  (stricter denominators than the July run).
+- USER FINDING (2026-09-03, from the remade reco eval): segmenter muon
+  PID has regressed a bit (stage_mu.png) even though muon instance
+  completeness/slice coverage look good (slicecov_mu.png) — needs
+  addressing (candidate: stage-3 retrain). LArPID muon performance is
+  OK (eff_vs_eviske_mu.png). MITIGATION being tested: new
+  --muon-finder larpid option in pi0_mass_analysis / sbnd_cc1pi0 /
+  datamc_diagnostics.load — CC tag = primary track, trackClassified,
+  LArPID mu score > all other class scores, KE>thr (segmenter class not
+  used). Campaign submitted at the staged 97% WP (stagedlp tables,
+  plots_s1ep2p8_ext_staged097_larpidmu, plots_s1ep2p8_sbnd_staged097_larpidmu)
+  to check: CC eff up? NC purity up? SBND selection improved?
+- larpid muon-finder RESULT (job 3234415): does NOT beat the segmenter
+  tag at the staged WP. CC sel+right-tag eff 0.590 vs 0.607; true-CC
+  leakage into reco-NC UP (near-peak sigCC 86.3 vs 75.8) -> NC purity
+  0.554 vs 0.571; SBND eff 0.539 vs 0.551 at equal purity 0.792/0.793.
+  Interpretation: event-level "any primary mu track" via the segmenter
+  is more forgiving than larpid argmax (classified gate + pixel
+  threshold skips short/low-pixel muons). The per-instance segmenter
+  PID regression does not translate to an event-tag deficit larpid can
+  fix; candidate follow-ups: union tag (segmenter OR larpid), and the
+  stage-3 particle retrain as the real fix. Plots kept:
+  plots_s1ep2p8_ext_staged097_larpidmu, plots_s1ep2p8_sbnd_staged097_larpidmu.
+- UNION muon tag RESULT (job 3234713): wins on all three axes. CC
+  sel+right-tag eff 0.648 (seg 0.607, larpid 0.590); true-CC leakage
+  into reco-NC near-peak 60.1 (75.8/86.3) -> NC purity 0.613
+  (0.571/0.554); NC right-tag eff 0.669 (0.682) — small NC->CC
+  migration cost. SBND: eff 0.561 @ purity 0.788 (seg 0.551 @ 0.793).
+  NC data/pred eq2 0.92 (seg 0.96). Union = segmenter-mu OR
+  larpid-mu-argmax, primary track, KE>thr; available as
+  --muon-finder union in all three scripts. ADOPTION = open user
+  decision. Plots: plots_s1ep2p8_ext_staged097_unionmu,
+  plots_s1ep2p8_sbnd_staged097_unionmu, tables *_stagedun_*.
+- SBND-comparable ordered cutflow (sbnd_cutflow.py, job 3241351; user
+  cut order: FV -> exactly-1 mu>143 -> 0 cpi>25 -> exactly-2 photons
+  (staged def) -> mgg [30,300) -> chi2<1e4). Union finder: eff 0.515 @
+  purity 0.875 final (segmenter 0.505 @ 0.882); step effs (union)
+  0.980 / 0.773 / 0.750 / 0.562 / 0.551 / 0.515. Muon step is where
+  union gains (+2.6 pts). Photon step is the big loss (0.750->0.562),
+  consistent with the known photon-loss diagnosis. d/p 1.11 at cosmic-
+  dominated early steps, 0.86-0.90 after photon cuts. (SBND-SPINE ref
+  0.65 eff / 0.86 purity.)
+- sbnd_mgg_sbndflow.py (on top of sbnd_cutflow.build): stacked m_gg by
+  SBND truth category following the ordered flow; panels after the
+  exactly-2-photon step and after flash chi2, [30,300) window drawn.
+  In-window ties out with the cutflow table: 309.2/0.804 pre-chi2,
+  289.1/0.875 final (union finder). plots_s1ep2p8_sbnd_sbndflow/.
+
+### 2026-09-03 — muon PID confusion diagnosis (primaries, true KE>50, TruePurity>0.5)
+
+Segmenter confusion (row-norm): mu -> mu 0.783 | e 0.105 | pi 0.078 | p 0.030.
+LArPID (classified): mu -> mu 0.931 | pi 0.047 | e 0.011 (3.8% unclassified).
+KEY FINDINGS:
+- mu->pi is the physical short-track confusion: 0.32 at KE 50-150 falling
+  to 0.02 above 600. Retrain target.
+- mu->e is 10.5% and FLAT in KE (0.09-0.11 in every bin incl 600-1200!)
+  -> artifact-like, not discrimination. These prongs are ALL exported in
+  the SHOWER collection (median RecoE 61 in gamma-calib units, TrueComp
+  10th pct 0.022 = fragment tail), so they are INVISIBLE to any
+  track-branch muon finder — including our union tag, which only
+  scanned track prongs. LArPID, run on those same shower prongs, says
+  MUON 79.7% of the time.
+- IMPLICATION: the user's original larpid-finder idea (scan shower
+  prongs for larpid-mu argmax) targets exactly this population; our
+  first implementation scanned track prongs only. A shower-prong-aware
+  union tag could recover ~8 of the 10.5 points, toward the 0.866
+  attachment ceiling. NOT yet implemented — awaiting user direction.
+- mu->e deep dive (2,455 prongs): NOT ghosts (unlabeled charge median
+  0.000, p90 0.012 = same as good mu tracks); NOT fragments (only 11.4%
+  have a coexisting track prong of the same muon; those ARE tail frags,
+  shower comp 0.010 vs track 0.847); CONFIDENTLY wrong (El-Mu margin
+  median 0.87, 83% > 0.5, marginal <2%; runner-up mu only 52%). The
+  segmenter genuinely e-labels ~10% of clean, well-captured muons at
+  all KE. Kinematics NOT recoverable by relabeling alone: shower prongs
+  are calorimetric (e-calib x cluster charge) -> RecoE/trueKE median
+  0.131 (IQR 0.05-0.29); a larpid relabel needs a track-style re-fit
+  (range/MCS) for momentum. OPEN ODDITY: TrueComp median 0.796 yet
+  RecoE ~13% of KE — the shower cluster charge and the truth-matched
+  charge frames disagree by ~6x; needs one dedicated look.
+- Dedup-overwrite hypothesis TESTED and RULED OUT (job 3243909,
+  400-event instrumented probe; runnerup records now threaded through
+  dedup -> instance -> kp2 writer permanently): true-mu instances
+  classed e absorbed a duplicate query only 2.6% of the time (1/39;
+  runner-up not mu), mu-classed 0%. The e label comes straight from the
+  query's own class logits — intrinsic segmenter confusion, not the
+  class-agnostic NMS. Fix remains the stage-3 retrain (+ check the
+  training cache for e-labeled charge inside muon instances); the
+  near-term chain mitigation is larpid relabel + track re-fit. The
+  runnerup_class/prob/n_absorbed attrs now persist in all future kp2
+  productions (useful for the documented mu/pi hedge).
+- TRAINING-CACHE CHECK (480-file stratified scan of
+  larformer_cache_stage12__s1ep2_v6lantern_tau020/train): NO label
+  pathology — per-SP pid inside muon instance masks is clean (foreign
+  fraction median 0.000, only 3.6% of mu instances >5%); no mislabeled
+  charge. THE REAL FINDING is class-prior/topology imbalance from the
+  mix enrichment: instances by class e 437 / gamma 363 / mu 110 / pi
+  248 / p 650 — electrons outnumber muons 4:1 because the cache is
+  ~55% intrinsic-nue events. And the nue CC electrons are LONG and
+  QUASI-LINEAR (e-class: median length 73 cm, linearity 0.96; 66%
+  pass a track-like cut vs muons' 0.80 at lin 1.00) — the training set
+  teaches "long straight object = quite possibly electron". Consistent
+  with the KE-flat, high-confidence mu->e mode appearing after the
+  mix-enriched retrain. RETRAIN RECIPE IMPLICATION for stage-3: rebalance
+  the sample mix (restore numu/muon share) and/or class-weight the
+  particle CE, rather than any label fix.
+
+### 2026-09-03 — generic-numu conversion launched (stage-3 rebalance)
+
+User decisions: rebalance via class-balanced training set; keep changes
+minimal (NO sim-only files for now — revisit later to grow the set AND
+for the dedicated charged-pion-enriched sim samples); mix run3b + run1
+generic numu together against run-period overfitting. NOTE user
+recollection: segmenter training was ~50/50 sim/overlay (matches the
+ledger's MIX v1 48/52) — differs from my overlay-only read of the
+cache scan; recheck cache sample tags before composing the new list.
+LAUNCHED tranche 1 (handler b0zggpqss): 500 run3b bnb_nu + 350 run1
+v28 bnboverlay TRAINPOOL files (~36k events, ~0.75 TB) through the
+established stage->stepA(--mcc9,wire,-tb)->label-completion pipeline
+(submit_overlay_train_convert.sh; tier2 staged login-side, batches of
+250, %60 throttle). SIZING CONSTRAINT: ~20 MB/event, volume 90% full
+(2.9T free) -> full 300k-event pool needs ~6 TB, NOT converted; more
+tranches after disk review (h5repack of overlay_train outputs is a
+candidate reclaim). Balance plan: ~36k mu events + nue DOWN-sampling
+in the training list, target instance-level mu ~ e.
+- Tranche-1 sequencer preserved at
+  lartpc/data_prep/uboone_official/run_generic_mu_tranche1.sh (was
+  session-scratch). RESUME after any disconnect: just rerun it (bash,
+  login node) — every step is idempotent (staged files reused,
+  converted filenos skipped, label completion guarded). In-flight
+  slurm arrays survive disconnects on their own; the sequencer only
+  stages the next batch + submits the next array. Tranche 1 = run3b
+  1-500 + run1 1-350; first array 3244139 (run3b 1-250) running.
+- TRANCHE 1 COMPLETE (2026-09-04): generic-numu overlay converted +
+  label-completed for the stage-3 rebalance. FINAL: run3b bnb_nu
+  20,772 events (496/500 filenos) + run1 v28 bnboverlay 12,807 events
+  (324/350) = ~33.6k muon-rich events, both run periods. 30 filenos
+  recorded in training_data_ledger/generic_mu_tranche1_dud_filenos.txt:
+  24 truncated 2020-era run1 sources (0 entries) + 6 deterministic
+  converter segfaults (partials deleted twice — do NOT blind-retry).
+  Disk: 2.8T free (91%). NEXT: recheck cache sim/overlay provenance,
+  then stage1/2 inference + cache build over the new events, compose
+  rebalanced training list (nue down-sampled, mu ~ e instances),
+  stage-3 retrain.
+- CACHE PROVENANCE SETTLED (full census): train cache = 54% LANTERN sim
+  (nue_corsika 96,777 / chargedpiplus 68,059 / pi0filter 54,708) + 46%
+  overlay — user's 50/50 recollection CORRECT. Electron-source events
+  ~243k (60%); cpi-enriched already present (68k). => minimal-change
+  rebalance KEEPS the sim side (also satisfies the cpi request),
+  down-samples e-sources, adds the new generic numu.
+- DIRT FILTER per user (2026-09-04): KEEP entering-particle events
+  (want to slice those); drop only events with ~zero nu-deposited
+  charge in TPC — implemented as origin==1 point count >= 20 (NOT the
+  old minlab200). Chain launched (handler b59kpth2q): nudep scan
+  3249591 -> cache build (4 a100 shards, same s1ep2-tau020 config +
+  knobs, into the SAME cache root, new list
+  h5list_generic_mu_tranche1_nudep.txt) -> particle_class_id
+  augmentation (idempotent over whole root) -> verify.
+- CACHE CHAIN DONE (handler b59kpth2q): 20,988 filtered generic-numu
+  events cached (build 3249676, 4 shards) + class-id augmented
+  (3251471), verification PASSED. Measured per-sample instance yields
+  (40 files/sample): corpus mu ~108k (mostly cpi+/pi0filter sim!) vs
+  e ~404k -> 3.7:1. REBALANCED LIST v2:
+  cachelist_rebalanced_train_v2.txt = 281,452 cache events (nue-group
+  40% by md5; everything else full + new numu 20,988) -> projected
+  e:mu 1.96, gamma 269k held. Retrain config:
+  larformer-particle-s1cache-m2frecipe-rebal-v2.py (data_list_file
+  child of the epoch_8 recipe; save_path ..._rebal_v2). GPU smoke
+  submitted; full retrain launch awaits user sign-off. NOTE: original
+  m2frecipe config docstring already flagged "overlay mu-ID 83% ->
+  toward old stage-3's 99%" as the success criterion — this rebalance
+  addresses exactly that.
+- WARM-START option added per user: rebal-v2-warmstart config = fine-tune
+  from s1cache_m2frecipe epoch_8 (true fine-tune — original had
+  weight=None/Sonata init), 4 epochs, max_lr 2.5e-5 (cool OneCycle so
+  the restart peak preserves calibration). Rationale: mu->e is a
+  class-prior/boundary fix; photon lanes live in mask machinery -> low
+  risk warm. Risk: confident mode may plateau -> epoch-1/2 confusion
+  matrix decides; fallback = from-scratch rebal-v2. ~half the compute.
+- WARM RETRAIN LAUNCHED: job 3256703 (4xA100, self-chaining submit
+  script submit_larformer_particle_rebal_v2_warm_a100.sh — first
+  submission 3256699 cancelled: sed doubled the SAVE path, fixed).
+  Config rebal-v2-warmstart (epoch_8 init, 4 epochs, max_lr 2.5e-5,
+  rebalanced 281,452-event list). Shepherd waits for warm-load
+  confirmation + epoch_1.pth, then the plan is the confusion-matrix
+  gate (mu->e vs 0.105 baseline) before letting it run out.
+  STOP: touch exp/..._rebal_v2_warm/STOP_AUTORESUBMIT.
+- CHAIN-RACE incident on launch: cancelled 3256699 ran 12 s — enough
+  for chain_next to queue buggy-script successors (3256700 -> 3256707
+  -> 3256754), which trained into the SAME save_path as the fixed job.
+  Resolved: STOP file in the buggy lineage's SAVE dir + scancel; clean
+  state = 3256703 RUNNING (fixed script) + legit successor 3256704
+  (afterany). ~2 min of double-writing in the exp dir (logs only, no
+  checkpoints). LESSON: this chain design queues its successor BEFORE
+  training — cancelling a chained job frees its successor; always
+  touch STOP_AUTORESUBMIT first, then scancel.
+- WARM RETRAIN FINISHED: all 4 epochs complete (epoch_4.pth 09-04
+  23:39, ~14.8h on 4xA100, job 3256703). The FAILED job state is
+  COSMETIC: the post-training PreciseEvaluator invokes the generic
+  SemSegTester which crashes on the cache dataset (KeyError
+  'fragment_list') AFTER training saved everything; successor 3256704
+  hit the same and chain stopped correctly on epoch_4.pth. (Fix for
+  the future: test_last=False + a compatible tester, or drop the
+  PreciseEvaluator hook in cache-trained configs.)
+- CONFUSION A/B launched (job via handler boaw1lad5): NEW dedicated
+  test subset inputlists/merged_sp_confusion_test2000.txt (first 2000
+  analysis-MC events; no prior subset existed — earlier tables used
+  all 67,211 ntuple prongs / ad-hoc 400 files). kp2 cascade inference
+  old (ep8) vs new (rebal-warm ep4) on the same 2000 events ->
+  instance-level 5-class confusion (nu-origin primaries, KE>50).
+- CACHE CLEANUP (user-directed 2026-09-05): deleting the two superseded
+  stage1+2 caches — m2fv2ep4_ftdeghost_tau020 (189G, the pre-label-
+  expansion training cache with the domain-shift issue) and
+  highermaxsp_ptv3crosslevelslicer_iter_75750 (152G, v1-era old
+  slicer). Both regenerable: build_stage12_cache_shard.py with their
+  respective configs + input lists (see submit_build_stage12_cache_*
+  scripts); training checkpoints from those runs are retained. Frees
+  ~341G toward the next generic-numu conversion tranche.
+- CONTINUATION TRAINING: warm2-cew config (epoch_4 init, 6 epochs,
+  max_lr 2.5e-5, census-derived inverse-sqrt CE weights
+  [e .95, g .89, mu 1.30, pi 1.13, p .73] via new loss class_weights
+  hook in losses.py) — smoke gate then auto-launch (handler b0isep7m0).
+- H5REPACK CAMPAIGN LAUNCHED (user go, 2026-09-05): 205,341 files, the
+  six enriched overlay_train samples (measured 68% reclaim on
+  CCpi0/nueintrinsics test repacks; generic-numu tranche already
+  compact, excluded; _lantern_val_completed untouched). repack_h5.py
+  verification HARDENED first: bitwise compare of EVERY dataset + all
+  attrs (was trackid-only), atomic replace unchanged. Array %60
+  (NCHUNK=250). Zero interaction with the running training (reads the
+  cache, not overlay_train). Projected reclaim ~2.1 TB; with the 341G
+  cache deletion, frees the budget for the remaining ~275k generic-numu
+  events.
+
+### 2026-09-05 — SESSION SUMMARY: warm-retrain verdict, rebalance stock-take, weekend campaign
+
+WORK COMPLETED THIS SESSION
+1. Warm-retrain crash diagnosed: NOT a training failure — all 4 epochs
+   saved; the post-training PreciseEvaluator/SemSegTester hook is
+   incompatible with the cache dataset (KeyError 'fragment_list').
+2. Checkpoint A/B on the NEW dedicated 2000-event test subset
+   (inputlists/merged_sp_confusion_test2000.txt, kp2-instance level,
+   nu primaries KE>50; inference job 3292754):
+     mu->mu 0.723 -> 0.815 | mu->e 0.164 -> 0.107 | mu->pi 0.061 -> 0.030
+     gamma held (0.927 -> 0.921); p 0.950 -> 0.969; COST: pi->mu
+     0.095 -> 0.190. Warm restart works; mode partially engraved.
+3. FULL-corpus class census (job 3296385, all 281,452 events, 2.2%
+   read-fails): instances e 214.6k / gamma 248.1k / mu 114.7k /
+   pi 153.6k / p 360.7k; e:mu 1.87, pi:mu 1.34. Exact
+   inverse-sqrt-frequency CE weights derived: [.95,.89,1.30,1.13,.73].
+4. Logit-adjustment measured offline (no retrain, saved class_scores):
+   tau=1 gives mu->mu .815->.842, mu->e ->.102, pi->mu ->.225 — free
+   chain-level knob, but confirms remaining errors are high-margin.
+5. Data inventory for further balance: (a) remaining generic-numu
+   trainpools ~275k usable events (blocked on ~5.5 TB disk);
+   (b) LANTERN generic sim 190,204 events ALREADY CONVERTED (needs
+   label completion + cache build only) — cheapest big muon source.
+6. Loss code: class_weights hook added to losses.py ce_weights buffer
+   (query CE incl. masked-no-object path).
+7. repack_h5.py verification hardened: bitwise compare of EVERY
+   dataset + attrs (was trackid-only). Test repacks measured 68%
+   reclaim on enriched-sample files (new tranche already compact).
+
+FULL CENSUS BREAKDOWN
+
+| sample	            | events	|   e	   |   γ	  |  μ	   |  π	    |     p   |
+| ------------------- | ------- | ------ | ------ | ------ | ------ | ------- | 
+cπ+ sim	              | 68,059	| 64.6k	 | 28.9k	| 55.4k	 | 86.5k  | 	99.5k  |
+| π0-filter sim	      | 54,708	| 23.9k	 | 111.2k	| 34.0k	 | 16.7k  |  75.1k  |
+| νe corsika sim      | 38,742	| 43.5k	 | 17.8k	| 0.4k	 | 17.2k  |  56.8k  |
+| νe intrinsics (v28) | 32,341	| 37.1k	 | 15.0k	| 0.3k   | 14.6k  |  47.8k  |
+| NCπ0                |	27,520	| 1.6k   | 42.7k	| 0.2k	 |  4.0k  |  20.9k  |
+| intrinsic νe (v29e)	| 26,027	| 28.5k	 | 7.5k	  | 0.2k	 |  7.3k  |  28.5k  | 
+| CCπ0	              | 13,067	| 6.3k	 | 18.2k	| 9.9k	 |  2.7k  |  12.7k  |
+| generic νμ NEW	    | 20,988	| 9.1k	 | 6.6k	  | 14.4k	 |  4.5k  |  19.4k  |
+| TOTAL	              | 281,452	| 214.6k | 248.1k | 114.7k | 153.6k | 360.7k  |
+
+JOBS / CAMPAIGNS IN FLIGHT (weekend)
+- CONTINUATION TRAINING: config rebal-v2-warm2-cew (epoch_4 init,
+  6 epochs OneCycle max_lr 2.5e-5, census CE weights). Smoke 3296799
+  PASSED (16 min, clean); auto-launch of the self-chaining 4xA100 job
+  (submit_larformer_particle_rebal_v2_warm2_cew_a100.sh, name
+  lf-particle-rebalw2) is in progress via the smoke handler — job ID
+  to be recorded on its report. STOP: touch
+  exp/..._rebal_v2_warm2_cew/STOP_AUTORESUBMIT.
+  Acceptance: confusion table on the 2000-event subset vs the 0.815 /
+  0.107 epoch-4 numbers; gamma row must hold.
+- H5REPACK CAMPAIGN: array 3297651 (250 chunks %60) over 205,341
+  enriched overlay_train files; ~2.1 TB projected reclaim; per-file
+  atomic replace, originals kept on any failure. No readers of
+  overlay_train are running; training reads only the cache.
+- CACHE DELETIONS: m2fv2ep4_ftdeghost_tau020 (189G) +
+  highermaxsp_ptv3crosslevelslicer (152G) rm in progress (background).
+- Disk at session start of campaign: 2.8T free (91%); target after
+  repack + deletions: ~5.3T free.
+
+NEXT DECISIONS AFTER THE WEEKEND
+- Rerun the 2000-event confusion A/B with warm2-cew epoch_6.
+- If mu->e still >> larpid's 0.011: options ranked = LANTERN generic
+  sim injection (cheap) > next numu tranche (disk now available) >
+  decoupled head retrain (cRT, larpid-style instance balance) >
+  logit adjustment at inference (last resort, costs pi->mu).
+- Then: promote checkpoint into the chain (LARFORMER_KP_PARTICLE_CKPT),
+  rerun eval_reco + SBND cutflow + pi0 suite at the staged WP.
+- CORRECTION: smoke 3296799 actually PASSED (trainer logs to stderr;
+  the handler's stdout grep gave a false FAIL and skipped the launch).
+  Continuation training submitted manually: job 3297938
+  (lf-particle-rebalw2, self-chaining).
+- VERSION DOC created per user (2026-09-06):
+  lartpc/larformer_analysis/model_and_output_file_versions.md — v2_s1ep2p8
+  checkpoints/calibrations/classifiers, sample locations + hygiene, what
+  needs reprocessing (nue overlay is JULY OLD-CHAIN), training/eval assets.
+  Also: repack campaign 3297651 COMPLETE (250/250; disk 2.8T->5.3T free);
+  m2fv2ep4 cache deleted; highermaxsp deletion re-running; warm2-cew
+  training healthy (successor 3297939 queued).
+- CEW CONTINUATION VERDICT (job 3331697, 3-way confusion on the
+  2000-event subset, nu primaries KE>50):
+              old-ep8   warm-ep4   cew-ep6
+    mu->mu     0.723     0.815      0.814
+    mu->e      0.164     0.107      0.087   (-47% vs old)
+    mu->pi     0.061     0.030      0.042
+    mu->other  0.010     0.016      0.033   (watch)
+    pi->pi     0.686     0.670      0.700   (best)
+    pi->mu     0.095     0.190      0.143   (CE weights repaired half
+                                             the warm trade-off)
+    g->g       0.927     0.921      0.912   (monotone -1.5pt slide;
+                                             ~1sigma per step, watch)
+    p->p       0.950     0.969      0.955
+  cew-ep6 = best muon checkpoint so far; earlier cew epochs (1-5) on
+  disk if the gamma slide or mu->other growth looks like overshoot.
+  NOTE: analysis had to run login-side (compute nodes cannot see the
+  session scratchpad /tmp — same class of lesson as tier2 staging).
+  NEXT DECISION: promote cew ep6 to the chain + full battery
+  (eval_reco, SBND cutflow, pi0 suite), vs epoch-scan 1-5 first,
+  vs more data (LANTERN generic sim now affordable).
+- SEGMENTER IMPROVEMENT OPTIONS parked in
+  docs/reference/Segmenter_Improvement_Options.md (cRT head retrain /
+  LoRA / capacity / cosmic supervision / full-event encoder context
+  [user insight: cache is nu-slice-only, encoder loses cosmic context]
+  / data levers / post-hoc status). CAMPAIGN PIVOT (user, 2026-09-07):
+  promote cew ep6 into the chain and rerun inference + benchmark
+  analyses for a collaboration talk in TWO WEEKS; segmenter work
+  resumes after.
+
+### 2026-09-07 — cew-ep6 PRODUCTION for the collaboration talk (2 weeks)
+
+Full chain relaunched with segmenter = rebal_v2_warm2_cew/epoch_6 into
+FRESH dataset dirs (canonical v2_s1ep2p8 untouched until promotion):
+  MC : TAG mc_overlay_s1ep2p8cew6_run3, jobs 3345634-42 (hadd 3345642)
+  data: TAG bnb5e19_s1ep2p8cew6,        jobs 3345643-51 (hadd 3345651)
+  EXT : TAG extbnb200k_s1ep2p8cew6,     jobs 3345652-60 (hadd 3345660)
+Env: slicer s1 ep2 + cew ep6 + envslicer config + s1ep2p8 LLR thr4 +
+LARFORMER_SHOWER_BDT (NOTE: shower BDT + event BDT were trained on ep8
+outputs — scores remain valid features but WPs should be revalidated on
+cew6 before quoting talk numbers). After ntuples: rebuild selection
+tables, rerun benchmark suite (pi0 CC/NC + SBND cutflow + eval_reco +
+confusion), compare to v2_s1ep2p8, then promote + update
+model_and_output_file_versions.md (tag candidate: v2_s1ep2p8cew6).
+- CEW6 MC NTUPLE DONE (hadd 3345642, 09-07 20:27; 67,211 entries,
+  showerCosmicScore present). FULL-STATS chain-level confusion
+  (ntuple prongs, primaries KE>50 purity>0.5) vs v2_s1ep2p8:
+    mu->mu .783->.868 | mu->e .105->.054 (HALVED) | mu->pi .078->.054
+    gamma->gamma .912->.919 (IMPROVED — the 2000-event gamma slide was
+    noise) | e->e .741->.767 | p->p .976 flat
+    cost: pi->mu .082->.128 (pi row net -1.0pt)
+  Muon prong count also up (23,796 vs 23,329). Data/EXT chains still
+  in inference. Next: tables + BDT WP revalidation + benchmark suite.
+- TIMEOUT RECOVERY (2026-09-08): data/EXT inference shards hit the 8h
+  wall (9/12 data, 12/12 EXT; ~14.7k/16.7k events per shard was too
+  many) -> downstream DependencyNeverSatisfied. Zombies cancelled.
+  Gap-fill: per-shard contiguous tail runs recomputed index-based
+  (data 9,747 missing / 9 runs; EXT 50,698 / 12 runs), 21 GPU jobs
+  3362463-83 with explicit --start-event/--n-events on the SAME input
+  lists (index-stable; --deterministic makes boundary redo safe).
+  Downstream rewired manually with count-guarded regen:
+  data regen2 3362491 -> ... -> hadd 3362497
+  EXT  regen2 3362498 -> ... -> hadd 3362504
+  LESSON for future productions: size inference shards to <=10k
+  events per 8h A100 shard (or raise --time).
+- LARPID PARTITION FIX (user catch, 2026-09-08): submit_larpid_shard.sh
+  hardcoded gpu,preempt + a100 despite DEVICE=cpu — larpid has been
+  burning GPU slots in every chain production. New
+  submit_larpid_shard_cpu.sh (batch,preempt, no gres); the 4 pending
+  cew6 larpid arrays swapped to it (3362591-94), export deps rewired
+  via scontrol (3362496/3362503 verified afterok on both streams);
+  orchestrator submit_extbnb_chain.sh now uses the CPU variant.
+- EXT GAP ROUND 2 (2026-09-08): the two ~10k-event gap jobs themselves
+  timed out at 5h (EXT rate ~0.47 ev/s, not the ~0.9 assumed). Only
+  3,767 events remained; two chunks resubmitted (3373602, 3373604, 6h
+  each) and the dead regen2 3362498 REVIVED in place via scontrol
+  Dependency update — downstream chain (nu_reco 3362499/500 -> larpid
+  3362593/94 -> export 3362503 -> hadd 3362504) untouched. Data chain
+  unaffected (all gaps done, regen2 COMPLETED, downstream running).
+- CEW6 PRODUCTION COMPLETE (2026-09-09): all three ntuples verified —
+  MC 67,211 / data 176,302 / EXT 200,000 entries, showerCosmicScore in
+  all. Every recovery stage COMPLETED (gap round 2, revived regen2,
+  nu_reco, CPU larpid, export, hadd for both data+EXT). NEXT: BDT WP
+  revalidation on cew6 MC, selection-table rebuild, benchmark suite
+  vs v2_s1ep2p8 for the talk.
+- LARPID ENV BUG (2026-09-09): my manual data/EXT larpid resubmission
+  passed INPUT_DIR but the script's var is NU_RECO_DIR (+KP2_LIST,
+  MERGED_SP_LIST) -> it defaulted to the OLD MC PILOT dir and exported
+  garbage (foundVertex==0, photons unscored). nu_reco streams verified
+  clean; larpid dirs + ntuples purged and stages resubmitted with the
+  orchestrator's exact env ( 3406064 3406068 = new hadds). A0 calib check says
+  cew6 ntuples have recal3 BAKED IN (RecoE/TrueE 0.945 vs old 1.218)
+  — mode threshold fixed; MC table must be rebuilt WITHOUT recal flags.
+  Shower-BDT cew6 curve (MC side): thr 0.192 -> eff 0.938; eff-0.97
+  thr moves to ~0.075 (EXT side pending the fixed ntuple).
+- EXT EXPORT TIMEOUT (2026-09-09): with CORRECT larpid inputs the 50k-
+  event export shards outgrew the 4h header limit (3/4 TIMEOUT; the
+  earlier garbage-input pass was fast only because events were empty).
+  Partial shard files deleted; shards 0,1,3 rerun @8h (3430675); hadd
+  3406068 revived via scontrol. Data-side fixed ntuple COMPLETED
+  (hadd 3406064). Reval2 will run after EXT hadd.
+- CEW6 REVALIDATION (job 3449357): calib BAKED (no recal flags for
+  cew6). Shower BDT: cew6 segmenter emits 35% FEWER EXT photon
+  candidates pre-cut (75,645 vs 116,400 — segmenter itself rejects
+  cosmic showers); thr 0.192 -> eff .938/rej .820; eff-0.97 thr moves
+  to 0.075 (rej .683); matched-eff cosmic throughput still net better.
+  Base tables: CC sel+tag eff .619 (vs .607 ep8, segmenter finder),
+  NC .696; >=2g acceptance slightly tighter (.782 vs .803). Event BDT
+  post-shower-gate EXT collapses to 505 (chi2-open holdout quarter);
+  te 0.21 -> sig .991/rej .333. Both BDTs to be RETRAINED on cew6
+  after the talk; for the talk, thresholds re-picked on existing
+  models. Benchmark A/B launched: shower 0.075 vs 0.192 (te 0.21).
+- TALK WP A/B RESULT (job 3449695): the two cew6 shower thresholds give
+  IDENTICAL near-peak performance (combined eq2 purity 0.868 vs 0.869,
+  signal 581 vs 585, NC NCpi0pur 0.610 both, EXT 8.3 both) — the extra
+  photons at 0.075 buy efficiency outside near-peak: CC sel+tag 0.648
+  vs 0.643, NC 0.683 vs 0.669. => ADOPT ts=0.075 + te=0.21 (+union) as
+  the cew6 talk WP. vs ep8 staged baseline: CC eff equal (0.648), NC
+  +1.4pt, near-peak purity ~1.4pt lower (0.868 vs 0.882) with the
+  stale-BDT caveat (both BDTs trained on ep8 features; retrain on cew6
+  post-talk expected to pull ahead). WATCH: data/pred slipped to
+  0.85-0.91 (was 0.92-0.97) — flag on talk plots, investigate with the
+  BDT retrain. Segmenter-level wins for the talk: mu->e halved, 35%
+  fewer cosmic photon candidates, NC eff up.
+- CEW6 SBND SUITE (job 3451610, ts=0.075/union/identity-recal):
+  ordered cutflow final 0.500 eff @ 0.874 purity (ep8-union: 0.515 @
+  0.875); standing format 0.534 @ 0.778 (ep8: 0.561 @ 0.788). The
+  ~1.5-2.7pt eff dip is at the exactly-2-photon step (0.540 vs 0.562)
+  — tighter photon PID + shifted shower-BDT scores; muon step slightly
+  BETTER (0.779 vs 0.773). EXT after chi2: 1.2 (same). Talk story:
+  pi0 parity, SBND slightly down, mu-PID/cosmic-photon/NC-eff up;
+  stale-BDT caveat on all selection-level numbers.
+- CEW6 STEP TABLES + FLASHCHI2 (job 3451878, talk WP ts0.075/te0.21/
+  union, identity recal): COMBINED ge2 final 0.690 eff @ 0.675 purity
+  (ep8: 0.690 @ 0.700; EXT 108.7 vs 73.3 — stale shower BDT at 0.075
+  passes more EXT); CC eq2 0.553 @ 0.754 (ep8-seg 0.514 @ 0.798 —
+  union+mu-PID buys +3.9 eff at -4.4 pur); NC eq2 0.547 @ 0.572
+  (ep8 0.547 @ 0.557 — +1.5 pur). VERIFIED: identical final signal
+  sums across chains are GENUINE event-set convergence (independent
+  recount: 1,088 vs 1,087 raw events, same weights) — same slicer +
+  flash => same passing signal core; differences live in backgrounds/
+  marginal events. Flash-chi2 spectra (6 panels, staged cuts, chi2
+  uncut): plots_cew6_flashchi2_ts0075/.
+- Talk tables written to durable file:
+  pi0mass_peak/CEW6_TALK_TABLES.md (pi0 step tables, SBND ordered
+  cutflow, WP + hygiene conventions, ep8 comparators, plot-dir index).
+- model_and_output_file_versions.md: v2_s1ep2p8cew6 section expanded to
+  full reference (chain deltas, BAKED-calib rules, ntuples/intermediates,
+  talk WP + stale-BDT caveat, tables/plots/docs index, benchmark summary
+  vs ep8). v2_s1ep2p8 section retained as comparator per user.
+- SHOWER-BDT RETRAIN ON CEW6 launched (user request 2026-09-10):
+  corpus (40,589 pi0 overlay-train events, ledger trainpools) reprocessed
+  through the cew6 chain (orchestrator jobs 3457634-43; orchestrator
+  first patched to the 24h-limit + wongjiradlab-CPU rules — 6 stage
+  calls updated). Training job 3457657 queued afterok the corpus hadd:
+  signal = corpus (charge-based truth fallback), background = cew6 EXT
+  rows<100k, identity recal (baked calib), model ->
+  export/data/shower_cosmic_bdt_cew6.joblib (NOT clobbering the ep8
+  model that generated existing branches; promotion = set
+  LARFORMER_SHOWER_BDT at the next re-export + re-pick thresholds).
+- SHOWER-BDT CEW6 RETRAIN DONE (jobs 3457634-43 corpus + 3457657
+  train): signal 41,579 / EXT-half 23,688 (bkg pool -23% at source);
+  AUC 0.968; eff 0.97 -> rej 0.773 @ thr 0.164 (stale ep8 model on
+  cew6: 0.683) — net cosmic-photon throughput now better than ep8
+  chain (17.2k vs 19.8k at matched eff). Top feature now phS (0.166).
+  Model: export/data/shower_cosmic_bdt_cew6.joblib. Promotion: env at
+  next re-export, OR analysis-side rescoring (features are ntuple
+  branches) with thr 0.164 for talk numbers if desired. Remaining BDT
+  item: EVENT-level BDT retrain on cew6 (still stale).
+- EVENT-BDT CEW6 RETRAIN DONE (job 3485528, ep8 recipe, flash-blind,
+  identity recal; ext_bdt.py now skips cascade RSE build when
+  flash-blind): AUC 0.957; standalone eff 0.97 -> rej 0.801 @ 0.289;
+  near-peak sig-frac 0.764 -> 0.816 at eff 0.97. STAGED (shower 0.075
+  + union): te 0.21 -> sig 0.985 / EXT rej 0.487 (stale model: 0.333 —
+  +15pts free). Model: pi0mass_peak/ext_bdt_model_flashblind_cew6.joblib.
+  BOTH classifiers now cew6-native (shower thr 0.164 @ eff0.97, event
+  0.21). OPEN: rerun talk suite with the fresh pair (user decision).
+- FRESH-PAIR TALK SUITE launched (2026-09-10): (1) re-export x3 with
+  LARFORMER_SHOWER_BDT=shower_cosmic_bdt_cew6 (exports 3485597/99/601,
+  8 shards 24h contrib; hadds 3485598/600/602) -> *_sbdt2.root,
+  verify row-alignment + promote (ep8-score ntuples archived as
+  *_ep8score.root); (2) suite job afterok: WP tables at shower 0.164 +
+  union, event-BDT filters with the NEW model (te 0.21; bdt/nochi2bdt/
+  sbnd-ext variants), overlay + combined panels
+  (plots_cew6_overlay_cew6_ts0164), step tables (parametrized
+  STEP_TS/STEP_PREFIX), flashchi2 spectra, SBND cutflow/mgg-flow/
+  standing. On completion: regenerate CEW6_TALK_TABLES.md and compare
+  vs stale-pair numbers (near-peak EXT + d/p the watch items).
+- FRESH-PAIR SUITE DONE (job 3485634): ntuples PROMOTED with cew6
+  shower scores (row-aligned verified; ep8 archived). At the final WP
+  (0.164/0.21/union): intermediate stages much cleaner (combined
+  purity at score step 0.283->0.365; pre-chi2 EXT -38%; CC eq2 final
+  0.557 @ 0.758, EXT 33->28) but post-chi2 finals statistically
+  unchanged — chi2 was already removing what the stale BDTs missed.
+  IMPORTANT NEGATIVE RESULT: d/p dip (0.85-0.90) unchanged by fresh
+  classifiers — chain-level cause, open. Fresh pair's real value =
+  chi2-loose/absent selections (single-photon, no-vertex). Talk
+  package FINAL: CEW6_TALK_TABLES.md regenerated (fresh numbers).

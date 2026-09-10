@@ -46,11 +46,12 @@ BR = ["run", "subrun", "event", "foundVertex", "primaryVtxStream",
       "showerCosThetaY", "showerDistToVtx",
       "showerStartPosX", "showerStartPosY", "showerStartPosZ",
       "trackLArFormerPID", "trackIsSecondary", "trackRecoE",
+      "trackClassified", "trackMuScore", "trackElScore", "trackPhScore", "trackPiScore", "trackPrScore",
       "showerCosmicScore"]
 
 
 def load(ntuple, table, ga, gb, mu_ke, chi2_cc, chi2_nc,
-         shower_bdt_min=None):
+         shower_bdt_min=None, muon_finder="segmenter"):
     t = uproot.open(ntuple)["EventTree"]
     a = t.arrays([b for b in BR if b in set(t.keys())])
     tab = np.load(table)
@@ -74,6 +75,22 @@ def load(ntuple, table, ga, gb, mu_ke, chi2_cc, chi2_nc,
     n_g = ak.to_numpy(ak.sum(is_g, axis=1))
     is_mu = ((a["trackLArFormerPID"] == 13) & (a["trackIsSecondary"] == 0)
              & (a["trackRecoE"] > mu_ke))
+    if muon_finder == "larpid":
+        mu_best = ((a["trackClassified"] == 1)
+                   & (a["trackMuScore"] > a["trackElScore"])
+                   & (a["trackMuScore"] > a["trackPhScore"])
+                   & (a["trackMuScore"] > a["trackPiScore"])
+                   & (a["trackMuScore"] > a["trackPrScore"]))
+        is_mu = (mu_best & (a["trackIsSecondary"] == 0)
+                 & (a["trackRecoE"] > mu_ke))
+    if muon_finder == "union":
+        mu_best = ((a["trackClassified"] == 1)
+                   & (a["trackMuScore"] > a["trackElScore"])
+                   & (a["trackMuScore"] > a["trackPhScore"])
+                   & (a["trackMuScore"] > a["trackPiScore"])
+                   & (a["trackMuScore"] > a["trackPrScore"]))
+        is_mu = (((a["trackLArFormerPID"] == 13) | mu_best)
+                 & (a["trackIsSecondary"] == 0) & (a["trackRecoE"] > mu_ke))
     reco_cc = ak.to_numpy(ak.any(is_mu, axis=1))
     chi_ok = np.where(reco_cc, fchi2 < chi2_cc, fchi2 < chi2_nc)
     sel = vtx_ok & (n_g >= 2) & np.isfinite(fchi2) & chi_ok
