@@ -67,6 +67,6 @@ apptainer exec --bind /cluster:/cluster "${container}" bash -c "
     --nu-reco-fm-dir ${NU_RECO_FM_DIR} \
     --weights-pkl ${WEIGHTS_PKL} \
     --start ${START} --n ${PER_SHARD} \
-    --out ${SHARD_OUT}
+    --out ${SHARD_OUT} ${EXPORT_EXTRA_ARGS:-}
 "
 echo "DONE shard ${SLURM_ARRAY_TASK_ID} -> ${SHARD_OUT}"

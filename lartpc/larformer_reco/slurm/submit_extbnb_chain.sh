@@ -101,7 +101,7 @@ echo "prep      : ${PREP}  -> ${MSP_LIST}"
 INF=$(INPUT_LIST=${MSP_LIST} OUTPUT_DIR=${KP2_STREAMS}/ NSHARDS=${NINF} \
   EXTRA_INF_ARGS="--output-tree" \
   sbatch --parsable ${EXCL} --export=ALL --dependency=afterok:${PREP} \
-  --array=0-$((NINF-1)) --time=8:00:00 \
+  --array=0-$((NINF-1)) --time=24:00:00 \
   ${SLURMDIR}/submit_inference_shard.sh)
 echo "inference : ${INF}  (${NINF} GPU shards) -> ${KP2_STREAMS}"
 
@@ -118,29 +118,29 @@ echo "regen     : ${REGEN}  -> ${KP2_NU} , ${KP2_FM}"
 # ---- 3) nu_reco : nu + fm streams (LLR attachment) -------------------------
 NRNU=$(KEYPOINT2_LIST=${KP2_NU} MERGED_SP_LIST=${MSP_LIST} OUTPUT_DIR=${NR_NU}/ \
   EXTRA_ARGS="${NU_RECO_EXTRA_ARGS}" \
-  NSHARDS=${NNR} sbatch --parsable ${EXCL} --export=ALL --dependency=afterok:${REGEN} \
+  NSHARDS=${NNR} sbatch --parsable ${EXCL} --export=ALL --time=24:00:00 --dependency=afterok:${REGEN} \
   --array=0-$((NNR-1)) ${SLURMDIR}/submit_nu_reco_shard.sh)
 echo "nu_reco nu: ${NRNU}  (${NNR} shards) -> ${NR_NU}"
 
 NRFM=$(KEYPOINT2_LIST=${KP2_FM} MERGED_SP_LIST=${MSP_LIST} OUTPUT_DIR=${NR_FM}/ \
   EXTRA_ARGS="${NU_RECO_EXTRA_ARGS}" \
-  NSHARDS=${NNR} sbatch --parsable ${EXCL} --export=ALL --dependency=afterok:${REGEN} \
+  NSHARDS=${NNR} sbatch --parsable ${EXCL} --export=ALL --time=24:00:00 --dependency=afterok:${REGEN} \
   --array=0-$((NNR-1)) ${SLURMDIR}/submit_nu_reco_shard.sh)
 echo "nu_reco fm: ${NRFM}  (${NNR} shards) -> ${NR_FM}"
 
 # ---- 4) larpid : nu + fm (CPU) ---------------------------------------------
 LPNU=$(NU_RECO_DIR=${NR_NU} KP2_LIST=${KP2_NU} MERGED_SP_LIST=${MSP_LIST} \
   OUTPUT_DIR=${LP_NU} SAMPLE_TAG=${LARPID_TAG} DEVICE=cpu TAG=${TAG} \
-  sbatch --parsable ${EXCL} --export=ALL --partition=batch --gres=gpu:0 \
+  sbatch --parsable ${EXCL} --export=ALL --partition=batch,preempt,wongjiradlab --time=24:00:00 --gres=gpu:0 \
   --dependency=afterok:${NRNU} --array=0-$((NNR-1)) \
-  ${SLURMDIR}/submit_larpid_shard.sh)
+  ${SLURMDIR}/submit_larpid_shard_cpu.sh)
 echo "larpid  nu: ${LPNU}  -> ${LP_NU}"
 
 LPFM=$(NU_RECO_DIR=${NR_FM} KP2_LIST=${KP2_FM} MERGED_SP_LIST=${MSP_LIST} \
   OUTPUT_DIR=${LP_FM} SAMPLE_TAG=${LARPID_TAG} DEVICE=cpu TAG=${TAG} \
-  sbatch --parsable ${EXCL} --export=ALL --partition=batch --gres=gpu:0 \
+  sbatch --parsable ${EXCL} --export=ALL --partition=batch,preempt,wongjiradlab --time=24:00:00 --gres=gpu:0 \
   --dependency=afterok:${NRFM} --array=0-$((NNR-1)) \
-  ${SLURMDIR}/submit_larpid_shard.sh)
+  ${SLURMDIR}/submit_larpid_shard_cpu.sh)
 echo "larpid  fm: ${LPFM}  -> ${LP_FM}"
 
 # ---- 5) export (TRUTH_DIR set -> MC truth mode; else data mode) -------------
@@ -149,7 +149,7 @@ EXP=$(TAG=${TAG} MERGED_SP_LIST=${MSP_LIST} NSHARDS=${NEXP} \
   KP2_NU_LIST=${KP2_NU} KP2_FM_LIST=${KP2_FM} \
   NU_RECO_NU_DIR=${LP_NU} NU_RECO_FM_DIR=${LP_FM} \
   OUT=${OUT_NTUPLE} \
-  sbatch --parsable ${EXCL} --export=ALL --dependency=afterok:${LPNU}:${LPFM} \
+  sbatch --parsable ${EXCL} --export=ALL --time=24:00:00 --dependency=afterok:${LPNU}:${LPFM} \
   --array=0-$((NEXP-1)) ${SLURMDIR}/submit_export_shard.sh)
 echo "export    : ${EXP}  (${NEXP} shards) -> ${OUT_NTUPLE%.root}_shard*.root"
 
