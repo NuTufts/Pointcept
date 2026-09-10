@@ -2223,3 +2223,22 @@ model_and_output_file_versions.md (tag candidate: v2_s1ep2p8cew6).
   classifiers — chain-level cause, open. Fresh pair's real value =
   chi2-loose/absent selections (single-photon, no-vertex). Talk
   package FINAL: CEW6_TALK_TABLES.md regenerated (fresh numbers).
+- NOVTX-BRANCH FIX (user, 2026-09-11): the cew6 ntuples' showerNoVtxScore
+  was filled with the ep8 novtx model (env LARFORMER_SHOWER_BDT_NOVTX
+  was unset at the fresh-pair re-export; default file has since been
+  made = cew6 model, ep8 archived _ep8.joblib, commit a0e6711).
+  Re-export x3 launched with BOTH env models explicit (cosmic cew6 +
+  novtx cew6): exports 3498647/49/51 (20 shards each per the new
+  sizing rules), hadds 3498648/50/52 -> *_novtx2.root. Shepherd
+  verifies row alignment + that novtx scores actually CHANGED vs the
+  old branch + cosmicScore preserved, then promotes (previous files
+  archived *_novtxep8.root). pi0 talk products unaffected (don't use
+  showerNoVtxScore); single-photon session consumes the fix.
+- NOVTX RE-EXPORT DONE + PROMOTED (hadds 3498648/50/52): row-aligned,
+  cosmicScore preserved, novtx scores changed on 45-51% of showers
+  (mc .448 / data .493 / ext .506) confirming the model actually
+  swapped; previous files archived *_novtxep8.root. All three cew6
+  classifiers (cosmic, novtx, event) now cew6-native in the promoted
+  ntuples. First campaign run at the new sizing rules (20 shards/
+  sample, 24h, contrib partition) — export+hadd x3 in well under an
+  hour vs ~4.5h/shard before.

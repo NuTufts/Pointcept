@@ -243,16 +243,21 @@ underlying events, same row conventions).
 (`larformer_reco/output/mcc9_bnbnu_overlay_1500_full_satfix/truth_sidecar`).
 
 ### 5. Talk working point + classifier status
-- WP: shower cosmicScore >= 0.075 (eff-0.97 on cew6; old 0.192 -> eff
-  0.938), event BDT >= 0.21, UNION muon finder, chi2 1e4/1778
-  (combined-stream 3162).
-- Shower BDT RETRAINED on cew6 (2026-09-10): model
-  `export/data/shower_cosmic_bdt_cew6.joblib` (AUC 0.968; eff 0.97 ->
-  rej 0.773 @ thr 0.164; corpus reprocessed at
-  $D/larformer_overlaytrain_pi0bdt_cew6/). NOT yet promoted — the
-  ntuple showerCosmicScore branches still carry the ep8 model; promote
-  via LARFORMER_SHOWER_BDT at the next re-export, or re-score
-  analysis-side (features are ntuple branches).
+- FINAL WP: shower cosmicScore >= 0.164 (eff-0.97 of the cew6 shower
+  BDT), event BDT >= 0.21, UNION muon finder, chi2 1e4/1778
+  (combined-stream 3162). (The 0.075 WP in earlier logs belongs to the
+  interim stale-classifier pass; superseded.)
+- ALL THREE classifiers are cew6-native and PROMOTED into the ntuple
+  branches. Env vars at export time:
+    LARFORMER_SHOWER_BDT       = export/data/shower_cosmic_bdt_cew6.joblib
+    LARFORMER_SHOWER_BDT_NOVTX = export/data/shower_novtx_bdt_cew6.joblib
+                                 (== the default shower_novtx_bdt.joblib
+                                  since 2026-09-11; ep8 kept as
+                                  shower_novtx_bdt_ep8.joblib)
+  event BDT is analysis-side: pi0mass_peak/ext_bdt_model_flashblind_cew6.joblib
+- Shower BDT RETRAINED on cew6 (2026-09-10): AUC 0.968; eff 0.97 ->
+  EXT-photon rej 0.773 @ thr 0.164; corpus reprocessed at
+  $D/larformer_overlaytrain_pi0bdt_cew6/.
 - Event BDT RETRAINED on cew6 (2026-09-10): model
   `pi0mass_peak/ext_bdt_model_flashblind_cew6.joblib` (AUC 0.957;
   staged te 0.21 -> sig 0.985 / EXT rej 0.487 vs stale 0.333).
@@ -264,6 +269,16 @@ underlying events, same row conventions).
   purity way up (pre-chi2 EXT -38%), post-chi2 selections unchanged;
   data/pred 0.85-0.90 dip persists (NOT a classifier-staleness effect
   — chain-level, still open).
+- NOVTX BRANCH FIXED + PROMOTED (2026-09-11): the fresh-pair re-export
+  had left `showerNoVtxScore` filled by the ep8 vertex-free model
+  (LARFORMER_SHOWER_BDT_NOVTX was unset). Re-exported all three with
+  both env models explicit (exports 3498647/49/51, hadds
+  3498648/50/52, 20 shards each); verified row-aligned, cosmicScore
+  preserved, and 45-51% of novtx scores changed; promoted (previous
+  files archived as `*_novtxep8.root`). Vertex-free per-shower photon
+  selection (single-photon search, out-of-TPC nu photons) should use
+  THESE ntuples. pi0 products unaffected (they do not read this
+  branch).
 
 ### 6. Selection tables + results docs (pi0mass_peak/)
 - Base tables (WP, no BDT cuts): `{mc,data,ext}_s1ep2p8cew6_table.npz`
