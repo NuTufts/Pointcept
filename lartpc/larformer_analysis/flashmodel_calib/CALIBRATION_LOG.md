@@ -344,3 +344,55 @@ other 2 differ upstream in the slicer partition).
 4. The shape-quality dependence (cos98 lower by ~8%) points at a residual
    PMT-pattern mismatch (per-PMT Neyman-weighted gamma is 10-15% below the
    median ratio everywhere): a flash-model SHAPE issue, separate from the scale.
+
+---
+
+## 2026-09-12 — Dedicated flash-calibration inference mode (first EXT test)
+
+`run_larformer_keypoint2_cascade_inference.py --flash-calib-mode`: after the
+slicer forward, the deghosted cloud is clustered into connected components
+(4 cm linkage; model-independent, since the deployed slicer emits no cosmic
+slices), light is predicted for every cluster, the in-time flash SOURCE is the
+cluster with the best pattern cosine (>= 0.9), Stage-3 runs on that cluster
+only (new explicit-mask forced slice) and the event is written as
+stream='calib' with the full per-cluster table (`slices/shape_cos`). Driver:
+`slurm/run_calib_inference.sh`; list: `scripts/make_calib_list.py`; records
+work without nu_reco (`nu_reco_dir=None` samples).
+
+300 EXT events (gidx 30000-30299): 167 flash-matched clusters (50 events had
+no in-window flash, 83 no cluster with cosine >= 0.9), against 7 usable muons
+from the production nu stream on the same events.
+
+Object definition matters (same events, track-like clusters, >= 1 boundary):
+
+| instance coverage of the cluster | N | r (whole cluster) | r (largest segmenter instance) |
+|---|---|---|---|
+| < 0.5 | 18 | 0.43 | 5.4 |
+| 0.5-0.8 | 16 | 0.55 | 0.86 |
+| 0.8-0.9 | 16 | 0.52 | 0.64 |
+| > 0.9 | 9 | 0.47 | 0.49 |
+
+The segmenter instance holds 78% of the cluster points on the median event
+(the user saw half-muon masks in the viz); its ratio is biased HIGH by the
+missing charge and converges to the cluster value as coverage -> 1, while the
+cluster ratio is coverage-independent. So the whole flash-matched cluster is
+the calibration object (`fit_gamma --calib-object cluster`), and the
+production-stream muon arm above (instances) carries an incompleteness bias
+that must be quantified on the same events (jobs below).
+
+Cluster object, EXT run-3, protocol cuts (track-like rms_perp < 4 cm, lin >
+0.95, every boundary end at x > 125 cm):
+
+| selection | N | s |
+|---|---|---|
+| >= 1 boundary | 37 | 0.529 +- 0.043 (gates OK) |
+| 1 boundary | 20 | 0.507 +- 0.062 |
+| 2 boundaries (through-going) | 17 | 0.529 +- 0.040 |
+
+Open: the cluster ratio falls with track length (80-120 cm 0.70, 120-180
+0.55, 180-300 0.39) and with containment (contained 0.75, 1 boundary 0.52,
+through-going 0.44, N = 10/51/71 without the x cut), with no brightness or
+flash-time-in-window trend. Running the calibration mode on the first 3000
+events of EXT, bnb5e19 and the numu overlay (2 GPU shards each) to see whether
+the length trend and the cluster-vs-instance offset are EXT-specific.
+Example pages: `results/s1ep2p8cew6/viz/extbnb200k_calib_test300_cluster/`.
