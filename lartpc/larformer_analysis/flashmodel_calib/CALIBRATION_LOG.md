@@ -396,3 +396,54 @@ flash-time-in-window trend. Running the calibration mode on the first 3000
 events of EXT, bnb5e19 and the numu overlay (2 GPU shards each) to see whether
 the length trend and the cluster-vs-instance offset are EXT-specific.
 Example pages: `results/s1ep2p8cew6/viz/extbnb200k_calib_test300_cluster/`.
+
+---
+
+## 2026-09-12 — Calibration mode on 3,000 events of EXT, bnb5e19 and numu overlay: run-1 vs run-3 direction resolved
+
+`slurm/run_calib_inference.sh`, first 3,000 events of each merged_sp list, 2
+GPU shards each (~2 h/shard). Flash-matched clusters written: EXT 1,771,
+bnb5e19 1,644, numu overlay 1,571. Samples `*_calib3k` in `gammacal/samples.py`;
+records `results/s1ep2p8cew6/records/<tag>.shard0000000.npz`; results
+`<tag>__muon_<variant>.json`.
+
+Object = the WHOLE flash-matched cluster (`--calib-object cluster`), track-like
+(rms_perp < 4 cm, linearity > 0.95), every boundary end at x > 125 cm, cosine
+>= 0.9, centroid match; `--no-require-mu-class`, isolation cuts off (the
+cluster is one object by construction). The short-cluster fragment bias (a
+connected component broken at a gap looks like a stopping muon with too little
+charge -> ratio high; visible as the falling length trend in every sample) is
+removed by requiring **through-going (2 boundaries) and length > 120 cm**:
+complete by construction. On that selection the ratio is flat vs length,
+boundary x, run number and flash position in the window, and the gates pass.
+
+| cell | sample | through-going, L > 120 cm | any boundary, L > 120 cm | instance object (any boundary, L > 50) |
+|---|---|---|---|---|
+| (data, 1) | bnb5e19 calib3k | **0.533 +- 0.010 (107)** core 0.87 OK | 0.545 +- 0.006 (255) OK | 0.727 +- 0.027 (84) FAIL |
+| (data, 3) | EXT calib3k | **0.414 +- 0.008 (110)** core 0.92 OK | 0.428 +- 0.006 (275) OK | 0.558 +- 0.033 (71) OK |
+| (data, 3) | EXT 300-event test | 0.475 +- 0.045 (15) | 0.457 +- 0.031 (30) | 0.44 (3) |
+| (mc, 3) | numu overlay calib3k | 0.94 +- 0.13 (13) FAIL | 0.827 +- 0.026 (87) OK | 1.025 +- 0.040 (65) OK |
+
+**Run-1 data / run-3 data = 1.29 +- 0.03** on the identical object: run 1 IS
+brighter, as the scintillation-yield history says. The earlier reversal
+("run 1 dimmer", sections above) was an artefact of the instance objects and
+the nu-union slicing; the instance object is biased high by 30-35% in data
+(incomplete masks) and ~20% in MC.
+
+Caveats that remain:
+* MC: an overlay's in-time light is the neutrino's, so the through-going
+  (cosmic) selection has no statistics (13) and the any-boundary selection is
+  a mix of exiting CC muons (right object) and cosmics spatially aligned with
+  a bright nu flash (ratio outliers of 2-12 at > 1000 PE). The (mc, 3) value
+  0.83 therefore carries an association systematic; the production-stream
+  arms (instance 0.99, cosine >= 0.98: 0.91, truth-nu union 0.86) bracket it.
+  A purity condition (no other cluster predicting a comparable share of the
+  observed light) is the next refinement for overlays.
+* The 4 cm linkage merges delta rays and Michels (real in-time charge, fine)
+  and, rarely, a crossing track (rejected by the track-likeness cut).
+* MC run 1 has no calibration-mode run yet (pilot, instance object: 0.95).
+
+Implied data/MC light ratios: run 3 = 0.41 / 0.83 ~ 0.50; run 1 ~ 0.53 / 0.85
+~ 0.6. Deployed table (run 1: 0.80, else 1.0) is far from all of these; any
+promotion needs the closure step (PROTOCOL section 7) and a decision on
+re-inference. Pages: `results/s1ep2p8cew6/viz/{bnb5e19,extbnb200k}_calib3k_cluster_2b/`.

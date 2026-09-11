@@ -1,0 +1,392 @@
+{
+ "sample": "extbnb200k_calib3k",
+ "kind": "data",
+ "period": 3,
+ "chain": "s1ep2p8cew6",
+ "description": "run-3 EXT, flash-calib-mode, first 3000 events of the 200k list",
+ "calib_only": false,
+ "arm": "muon",
+ "window_us": [
+  3.2,
+  5.4
+ ],
+ "window_source": "= extbnb200k_cew6",
+ "gamma_beam_ref": 5.25,
+ "production": {
+  "gamma_eff": [
+   5.25
+  ],
+  "gamma_scale": [
+   1.0
+  ]
+ },
+ "cuts": {
+  "arm": "muon",
+  "window": null,
+  "window_margin": 0.2,
+  "flash_min_pe": 20.0,
+  "min_len": 50.0,
+  "require_mu_class": false,
+  "rms_perp_max": 4.0,
+  "lin_min": 0.95,
+  "n_boundary": -1,
+  "calib_object": "cluster",
+  "x_boundary_min": 125.0,
+  "allow_secondary": false,
+  "iso_track_ke": 1000000000.0,
+  "iso_shower_e": 1000000000.0,
+  "proton_veto_ke": 50.0,
+  "q_frac_min": 0.8,
+  "min_pred": 50.0,
+  "cos_min": 0.9,
+  "match_dy": 60.0,
+  "match_dz": 100.0,
+  "qfrac_min": 0.9,
+  "nboot": 500
+ },
+ "drops": [
+  [
+   "in-window single flash",
+   2296,
+   2082
+  ],
+  [
+   "track-like: rms_perp < 4 cm & lin > 0.95",
+   2082,
+   2015
+  ],
+  [
+   "length > 50 cm",
+   2015,
+   1787
+  ],
+  [
+   "calib object = cluster",
+   1787,
+   1243
+  ],
+  [
+   "n_boundary >= 1",
+   1243,
+   1151
+  ],
+  [
+   "every boundary end x > 125 cm",
+   1151,
+   379
+  ],
+  [
+   "primary (not secondary)",
+   379,
+   379
+  ],
+  [
+   "other tracks KE < 1e+09",
+   379,
+   379
+  ],
+  [
+   "showers E < 1e+09",
+   379,
+   379
+  ],
+  [
+   "proton veto KE < 50",
+   379,
+   379
+  ],
+  [
+   "muon charge >= 0.8 of union",
+   379,
+   379
+  ],
+  [
+   "sum pred_ref >= 50 PE & obs > 0",
+   379,
+   379
+  ],
+  [
+   "shape cos >= 0.9",
+   379,
+   379
+  ],
+  [
+   "centroid |dy| < 60, |dz| < 100",
+   379,
+   370
+  ],
+  [
+   "one muon per event",
+   370,
+   370
+  ]
+ ],
+ "N": 370,
+ "stats": {
+  "N": 370,
+  "median": 0.4495284042503691,
+  "err_boot": 0.007435601249399698,
+  "p16": 0.37069362458198235,
+  "p84": 0.7167740140943665,
+  "peak": 0.4216965034285832,
+  "core_frac": 0.7324324324324324,
+  "core_median": 0.4208164450438182,
+  "mean_log": 0.517211681786326,
+  "gate_ok": false
+ },
+ "scale_abs": 0.4495284042503691,
+ "scale_err": 0.007435601249399698,
+ "gamma_eff_fit": 2.360024122314438,
+ "g_neyman_median": 0.36419224621909274,
+ "g_pooled": 0.3425015451560023,
+ "scans": {
+  "run_groups": [
+   [
+    14124,
+    14428,
+    50,
+    0.4342496845961322
+   ],
+   [
+    14428,
+    14717,
+    47,
+    0.443026413151783
+   ],
+   [
+    14717,
+    14976,
+    46,
+    0.48341281916112644
+   ],
+   [
+    14976,
+    15406,
+    46,
+    0.41687691452444775
+   ],
+   [
+    15406,
+    15820,
+    46,
+    0.4651667811204707
+   ],
+   [
+    15820,
+    16387,
+    47,
+    0.469914449335947
+   ],
+   [
+    16387,
+    17205,
+    49,
+    0.4477262393590789
+   ],
+   [
+    17205,
+    17556,
+    51,
+    0.44047660480798817
+   ]
+  ],
+  "brightness": [
+   [
+    0.0,
+    100.0,
+    1,
+    0.4046269058684819
+   ],
+   [
+    100.0,
+    300.0,
+    102,
+    0.4722473182149848
+   ],
+   [
+    300.0,
+    1000.0,
+    238,
+    0.4349853545505763
+   ],
+   [
+    1000.0,
+    3000.0,
+    27,
+    0.5205051200615948
+   ],
+   [
+    3000.0,
+    1000000000.0,
+    2,
+    8.312915682352605
+   ]
+  ],
+  "t_in_window": [
+   [
+    0.0,
+    0.2,
+    50,
+    0.47351382037902534
+   ],
+   [
+    0.2,
+    0.4,
+    91,
+    0.4512773093345975
+   ],
+   [
+    0.4,
+    0.6000000000000001,
+    98,
+    0.446764762568054
+   ],
+   [
+    0.6000000000000001,
+    0.8,
+    88,
+    0.419935972022858
+   ],
+   [
+    0.8,
+    1.0,
+    43,
+    0.45815820926408385
+   ]
+  ],
+  "boundary_x": [
+   [
+    125.0,
+    150.0,
+    98,
+    0.4163964044164661
+   ],
+   [
+    150.0,
+    180.0,
+    110,
+    0.4440263621442152
+   ],
+   [
+    180.0,
+    210.0,
+    68,
+    0.4880602054742668
+   ],
+   [
+    210.0,
+    240.0,
+    32,
+    0.48185137952522183
+   ],
+   [
+    240.0,
+    300.0,
+    62,
+    0.46481479377979895
+   ]
+  ],
+  "length": [
+   [
+    50.0,
+    80.0,
+    38,
+    0.6669690976002558
+   ],
+   [
+    80.0,
+    120.0,
+    57,
+    0.6534451384651745
+   ],
+   [
+    120.0,
+    180.0,
+    95,
+    0.489715110408822
+   ],
+   [
+    180.0,
+    300.0,
+    172,
+    0.4014372175872349
+   ],
+   [
+    300.0,
+    10000.0,
+    8,
+    0.4303627864295677
+   ]
+  ],
+  "cos_sim": [
+   [
+    0.9,
+    0.95,
+    146,
+    0.4571315349068349
+   ],
+   [
+    0.95,
+    0.98,
+    200,
+    0.4504073194565321
+   ],
+   [
+    0.98,
+    1.01,
+    24,
+    0.40786696578203874
+   ]
+  ],
+  "subset_vertexed": null,
+  "subset_vertexless": {
+   "N": 370,
+   "median": 0.4495284042503691,
+   "err_boot": 0.007661351219445716,
+   "p16": 0.37069362458198235,
+   "p84": 0.7167740140943665,
+   "peak": 0.4216965034285832,
+   "core_frac": 0.7324324324324324,
+   "core_median": 0.4208164450438182,
+   "mean_log": 0.517211681786326,
+   "gate_ok": false
+  },
+  "subset_orphan": null,
+  "mip_q_per_cm_median": 250.1960695435318
+ },
+ "records": [
+  "/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/kpv2_pointcept/lartpc/larformer_analysis/flashmodel_calib/results/s1ep2p8cew6/records/extbnb200k_calib3k.shard0000000.npz"
+ ],
+ "n_events": 1771,
+ "n_candidates": 2296,
+ "date": "2026-09-11T16:37:40",
+ "git_sha": "7ed152c",
+ "gammacal_version": "gammacal-1",
+ "argv": [
+  "lartpc/larformer_analysis/flashmodel_calib/scripts/fit_gamma.py",
+  "--sample",
+  "extbnb200k_calib3k",
+  "--calib-object",
+  "cluster",
+  "--n-boundary",
+  "-1",
+  "--min-len",
+  "50",
+  "--no-require-mu-class",
+  "--rms-perp-max",
+  "4",
+  "--lin-min",
+  "0.95",
+  "--iso-track-ke",
+  "1e9",
+  "--iso-shower-e",
+  "1e9",
+  "--nboot",
+  "500",
+  "--tag",
+  "clu_anyb",
+  "--plots",
+  "lartpc/larformer_analysis/flashmodel_calib/results/s1ep2p8cew6/plots"
+ ],
+ "hostname": "login-p03.pax.tufts.edu"
+}

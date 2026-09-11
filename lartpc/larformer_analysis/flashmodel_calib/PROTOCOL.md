@@ -49,6 +49,23 @@ a 0.2 us edge margin is applied and the ratio is scanned vs position in window.
 
 ## 2. The calibration event
 
+**Calibration stream (preferred, 2026-09-12).** Run the cascade with
+`--flash-calib-mode` (`slurm/run_calib_inference.sh`): the deghosted cloud is
+clustered into connected components, light is predicted for every cluster, the
+cluster whose PMT pattern matches the in-time flash (cosine >= 0.9) is the
+flash source and is written as stream='calib'. The calibration object is the
+WHOLE flash-matched cluster (`fit_gamma.py --calib-object cluster
+--no-require-mu-class --rms-perp-max 4 --lin-min 0.95 --n-boundary 2
+--min-len 120 --iso-track-ke 1e9 --iso-shower-e 1e9`): track-like,
+through-going and long, so it is complete by construction. Segmenter
+instances hold only ~78% of a cosmic muon's points and bias the ratio high
+(30-35% in data); short clusters are fragments and bias it high too.
+
+**Production stream (cross-check).** The selection below on the nu-stream
+kp2 + nu_reco output. Kept because it needs no extra inference and because
+on overlays the nu slice is the natural object (the in-time light is the
+neutrino's; see the MC caveat in CALIBRATION_LOG 2026-09-12).
+
 An isolated, one-boundary, minimum-ionising muon track that is the source of
 the in-time flash. Defined identically in every sample; all cuts are
 `scripts/fit_gamma.py` knobs (defaults in brackets) applied to the record file.
