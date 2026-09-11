@@ -37,7 +37,7 @@ FLASH_WINDOW_US = {
     ("data", 1): (2.8, 5.0),
     ("data", 3): (3.2, 5.4),
     ("mc", 3): (3.6, 5.2),
-    ("mc", 1): (3.6, 5.2),      # assumed = run-3 MC; verify on the run-1 overlay
+    ("mc", 1): (3.6, 5.2),      # measured on the run-1 overlay pilot (2026-09-12)
 }
 
 KINDS = ("data", "mc")

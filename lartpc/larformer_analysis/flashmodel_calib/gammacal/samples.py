@@ -74,7 +74,7 @@ SAMPLES = {
         merged_sp_list=os.path.join(_IN, "merged_sp_gammapilot_run1ovl_g100.txt"),
         ntuple=f"{_L}/gammapilot_run1ovl_g100/dlgen2_larformer_ntuple_gammapilot_run1ovl_g100.root",
         truth_sidecar=None,
-        flash_window_us=(3.6, 5.2), window_source="assumed = run-3 MC overlay; CHECK",
+        flash_window_us=(3.6, 5.2), window_source="measured 2026-09-12 (1500 ev)",
         calib_only=True),
     # ---- flash-calibration stream outputs (cascade --flash-calib-mode) ----
     # kp2 list = every keypoint2_event*_calib_0.h5 under the output dir (build
@@ -116,6 +116,17 @@ SAMPLES = {
         merged_sp_list=os.path.join(_IN, "merged_sp_mc_overlay_s1ep2p8cew6_run3.txt"),
         ntuple=None, truth_sidecar=_TRUTH_RUN3,
         flash_window_us=(3.6, 5.2), window_source="= mcoverlay67k_cew6", calib_only=False),
+    "run1ovl_calib6k": dict(
+        kind="mc", period=1, chain="s1ep2p8cew6",
+        description="run-1 BNB nu overlay pilot (mcc9_v28, TRAINPOOL), flash-calib-mode, "
+                    "first 6000 events; CALIBRATION USE ONLY",
+        kp2_nu_list=os.path.join(CALIB_DIR, "results", "s1ep2p8cew6", "records", "calib_kp2",
+                                 "kp2_run1ovl_calib.txt"),
+        nu_reco_dir=None,
+        merged_sp_list=os.path.join(_IN, "merged_sp_gammapilot_run1ovl_g100.txt"),
+        ntuple=None, truth_sidecar=None,
+        flash_window_us=(3.6, 5.2), window_source="measured 2026-09-12 (1500 ev of the pilot production)",
+        calib_only=True),
     # placeholders: fill in when the productions exist
     # "extbnb_run1_cew6":   dict(kind="data", period=1, ...),
     # "bnboverlay_run1_cew6": dict(kind="mc", period=1, ...),
