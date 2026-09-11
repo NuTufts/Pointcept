@@ -305,6 +305,9 @@ def main():
                     help="include candidates that fail the cuts (reason shown)")
     ap.add_argument("--serve", action="store_true", help="Dash browser instead of HTML files")
     ap.add_argument("--port", type=int, default=8050)
+    ap.add_argument("--s-fit", type=float, default=None,
+                    help="scale to draw 'pred x s' with (default: the sample's "
+                         "<tag>__muon.json result, else 1.0)")
     args = ap.parse_args()
     s = samples.get(args.sample)
     paths = sorted(glob.glob(args.records or os.path.join(
@@ -312,7 +315,7 @@ def main():
     ev, mu, meta = load_records(paths)
     window = (tuple(float(x) for x in args.window.split(",")) if args.window
               else tuple(s["flash_window_us"]))
-    s_fit = sample_scale(s)
+    s_fit = args.s_fit if args.s_fit is not None else sample_scale(s)
     passing, aux, drops = select(ev, mu, args, window)
     if args.all_candidates:
         cand = np.arange(len(mu["ev"]))
