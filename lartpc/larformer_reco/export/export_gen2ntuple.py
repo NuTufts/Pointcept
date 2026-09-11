@@ -848,6 +848,19 @@ def main():
                     ev[pre + "SliceFlashChi2"] = (chi2s if np.isfinite(chi2s)
                                                   else -1.0)
                     ev[pre + "SliceNParticles"] = npart
+                if s == "nu" and "flash" in fkp:
+                    fa = fkp["flash"].attrs
+                    ev["flashGammaEff"] = float(fa.get("gamma_eff", -1.0))
+                    ev["flashGammaScale"] = float(fa.get("gamma_scale", -1.0))
+                    ev["flashObsPE"] = float(fa.get("total_pe", -1.0))
+                    ev["flashTimeUs"] = float(fa.get("time_us", -999.0))
+                    if "slices" in fkp:
+                        labs = [_attr_str({"l": x}, "l") for x in fkp["slices/label"][()]]
+                        if "nu" in labs:
+                            pp = np.asarray(fkp["slices/pred_pe"][()][labs.index("nu")],
+                                            np.float64)
+                            ev["nuSlicePredPE"] = (float(np.nansum(pp))
+                                                   if np.isfinite(pp).any() else -1.0)
                 if args.no_orphans or npart == 0:
                     continue
                 slice_coords = None

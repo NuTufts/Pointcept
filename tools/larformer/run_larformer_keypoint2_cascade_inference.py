@@ -546,7 +546,7 @@ def _dedup_row_charge(pos_cm, ctx):
 
 
 def _flash_slice_table(coord_cm, sid, p_nu_per_query, nu_qs, flashes,
-                       charge_ctx, args, run=None):
+                       charge_ctx, args, run=None, kind=None):
     """Per-slice flash-match table over the full-event slicer partition.
 
     Rows: the nu union (query == _NU_SID) if present, plus every cosmic-class
@@ -562,18 +562,48 @@ def _flash_slice_table(coord_cm, sid, p_nu_per_query, nu_qs, flashes,
     # run-aware flash config (see lartpc/flashmatch/dead_channels.py):
     #   dead PMTs excluded from the chi2 (--dead-opdets auto|none|"15,..")
     #   per-run gamma scale on gamma_beam    (--gamma-run-scale auto|<float>)
-    from lartpc.flashmatch.dead_channels import (resolve_dead_opdets,
-                                                 resolve_gamma_scale)
-    _run = run if run is not None else 0
+    from lartpc.flashmatch.dead_channels import resolve_dead_opdets
+    from lartpc.flashmatch import flash_calib
+    spec = str(getattr(args, "gamma_run_scale", "auto"))
+    run_missing = run is None
+    if run_missing:
+        if getattr(args, "run_override", None) is not None:
+            run = int(args.run_override)
+        elif spec in ("auto:data", "auto:mc", "table"):
+            raise RuntimeError(
+                "event has no run attr, and --gamma-run-scale %s needs the run "
+                "period; pass --run-override <run>" % spec)
+        else:
+            # legacy behaviour: run 0 -> period 1 (dead: none, scale 0.80).
+            print("  [warn] flash table: no run attr; using run=0 (period 1) "
+                  "for the dead list and gamma scale (pass --run-override)")
+            run = 0
+    _run = int(run)
     dead_opdets = resolve_dead_opdets(getattr(args, "dead_opdets", "auto"), _run)
-    gamma_scale = resolve_gamma_scale(getattr(args, "gamma_run_scale", "auto"),
-                                      _run)
+    flash_calib.check_spec_vs_kind(
+        spec, kind, allow_mismatch=getattr(args, "allow_kind_mismatch", False))
+    gamma_scale = flash_calib.resolve(spec, _run, kind=kind)
     gamma_eff = float(args.gamma_beam) * float(gamma_scale)
+    # observed-flash time window: 'off' (legacy: brightest producer-0 flash at
+    # any time), 'auto' (per kind/period table), or 'lo,hi' in us
+    fw_spec = str(getattr(args, "flash_window", "off"))
+    if fw_spec == "off":
+        window = None
+    elif fw_spec == "auto":
+        window = flash_calib.flash_window(kind, _run) if kind else None
+        if window is None:
+            print("  [warn] --flash-window auto: no window for kind=%s run=%d; "
+                  "using all producer-0 flashes" % (kind, _run))
+    else:
+        window = tuple(float(x) for x in fw_spec.split(","))
 
     # ---- observed in-time beam flash (producer 0, max total PE) -------------
     obs = None
     if flashes is not None and flashes["pe"].size:
         beam = np.where(flashes["producer_id"] == 0)[0]
+        if beam.size and window is not None:
+            t = flashes["time_us"][beam]
+            beam = beam[(t >= window[0]) & (t <= window[1])]
         if beam.size:
             bi = int(beam[int(np.argmax(flashes["total_pe"][beam]))])
             obs = {
@@ -616,7 +646,12 @@ def _flash_slice_table(coord_cm, sid, p_nu_per_query, nu_qs, flashes,
                    "eps": args.flash_eps, "oob_max": args.flash_oob_max,
                    "charge_convention": "dedup_comb_per_row",
                    "dead_opdets": ",".join(str(d) for d in dead_opdets),
-                   "gamma_scale": gamma_scale, "gamma_eff": gamma_eff},
+                   "gamma_scale": gamma_scale, "gamma_eff": gamma_eff,
+                   "gamma_spec": spec, "sample_kind": kind or "",
+                   "calib_chain": flash_calib.GAMMA_SCALE_TABLE["chain"],
+                   "flash_window": ("" if window is None
+                                    else "%g,%g" % tuple(window)),
+                   "run_missing": bool(run_missing)},
     }
     if obs is None or charge_ctx is None or S == 0:
         return tbl
@@ -805,10 +840,31 @@ def main():
                          "an explicit list e.g. '15' or '15,7'. See "
                          "lartpc/flashmatch/dead_channels.py.")
     ap.add_argument("--gamma-run-scale", default="auto",
-                    help="per-run multiplier on --gamma-beam: 'auto' "
-                         "(run-period based: run1 -> 0.80, run3 -> 1.0) or an "
-                         "explicit float. Absorbs the run1<->run3 pred/obs PE "
-                         "offset. See lartpc/flashmatch/dead_channels.py.")
+                    help="multiplier on --gamma-beam: 'auto' (legacy run-period "
+                         "table, dead_channels.GAMMA_SCALE_BY_PERIOD: run1 -> "
+                         "0.80, else 1.0), 'auto:data' / 'auto:mc' / 'table' "
+                         "(calibrated (kind, period) cell in "
+                         "lartpc/flashmatch/flash_calib.py; an unmeasured cell "
+                         "is an error), or an explicit float.")
+    ap.add_argument("--sample-kind", default="auto", choices=["auto", "data", "mc"],
+                    help="what produced the in-time light: 'data' (beam-on or "
+                         "EXT), 'mc' (overlay: simulated nu light), or 'auto' "
+                         "(from the merged_sp truth content). Recorded in the "
+                         "flash attrs; selects the 'table' gamma cell and the "
+                         "'auto' flash window.")
+    ap.add_argument("--allow-kind-mismatch", action="store_true",
+                    help="do not refuse --gamma-run-scale auto:mc on a data "
+                         "sample (or auto:data on MC).")
+    ap.add_argument("--run-override", type=int, default=None,
+                    help="run number to use for the dead list / gamma scale "
+                         "when the input has no run attr (default: warn and "
+                         "use run 0 = period 1 with 'auto'; error with the "
+                         "calibrated specs).")
+    ap.add_argument("--flash-window", default="off",
+                    help="restrict the observed in-time flash to producer-0 "
+                         "flashes inside a time window [us]: 'off' (legacy: "
+                         "brightest at any time), 'auto' (flash_calib."
+                         "FLASH_WINDOW_US by kind/period), or 'lo,hi'.")
     ap.add_argument("--mask-saturated", default="auto",
                     choices=["auto", "off"],
                     help="also exclude SATURATED PMTs from the flash chi2: a "
@@ -1122,10 +1178,17 @@ def main():
                         am = cls.argmax(dim=-1).detach().cpu().numpy()
                         nu_qs = [q for q in range(len(am)) if am[q] == nu_id]
                 flashes, charge_ctx = _load_msp_flash_charge(real_files[i])
+                _kind = getattr(args, "sample_kind", "auto")
+                if _kind == "auto":
+                    from lartpc.flashmatch.flash_calib import detect_kind
+                    try:
+                        _kind = detect_kind(real_files[i])
+                    except Exception:
+                        _kind = None
                 flash_tbl = _flash_slice_table(
                     sids[0], sids[1], p_nu_per_query, nu_qs,
                     flashes, charge_ctx, args,
-                    run=_entry_rse(real_files[i]).get("run"))
+                    run=_entry_rse(real_files[i]).get("run"), kind=_kind)
             except Exception as ex:
                 print(f"  [warn] flash table failed for event {i}: {ex}")
 

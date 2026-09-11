@@ -117,7 +117,7 @@ def select_union(ev, args, window, qfrac_min=None):
     return keep, drops, dict(pred_l=pred_l, obs_l=obs_l)
 
 
-def main():
+def build_parser():
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--sample", required=True, choices=sorted(samples.SAMPLES))
     ap.add_argument("--records", default=None, help="glob of record npz shards")
@@ -144,7 +144,11 @@ def main():
     ap.add_argument("--match-dz", type=float, default=100.0)
     ap.add_argument("--qfrac-min", type=float, default=0.9, help="truth_nu arm")
     ap.add_argument("--nboot", type=int, default=2000)
-    args = ap.parse_args()
+    return ap
+
+
+def main():
+    args = build_parser().parse_args()
 
     s = samples.get(args.sample)
     rec_glob = args.records or os.path.join(
@@ -197,8 +201,9 @@ def main():
     g_ev = np.array([neyman_gamma(o, p, l) for o, p, l in zip(obs_rows, pred_rows, live_rows)])
     g_pool = pooled_gamma(obs_rows, pred_rows, live_rows)
     print(f"== {args.arm} arm: N={st['N']} | s = median(obs/pred_ref) = {st['median']:.4f} "
-          f"+- {st['err_boot']:.4f} | p16-84 {st['p16']:.3f}-{st['p84']:.3f} | peak {st['peak']:.3f} "
-          f"core {st['core_frac']:.2f} | gates {'OK' if st['gate_ok'] else 'FAIL'}")
+          f"+- {st['err_boot']:.4f} | p16-84 {st['p16']:.3f}-{st['p84']:.3f} | core median "
+          f"{st['core_median']:.3f} (peak {st['peak']:.3f}) core frac {st['core_frac']:.2f} | "
+          f"gates {'OK' if st['gate_ok'] else 'FAIL'}")
     print(f"   neyman g: median {np.nanmedian(g_ev) if len(g_ev) else np.nan:.4f} | pooled {g_pool:.4f} "
           f"| geometric mean {st['mean_log']:.4f} | gamma_eff_fit = {GAMMA_BEAM_REF * st['median']:.3f}")
 

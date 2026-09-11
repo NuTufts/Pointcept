@@ -224,3 +224,123 @@ print(dict(h5py.File(f)['flash'].attrs))   # gamma_beam, gamma_scale, gamma_eff,
   checkpoints/samples define the current analysis version (v2_s1ep2p8cew6).
 * Run-1 campaign plan (staging/conversion already running, inference gated on
   this work): `~/.claude/plans/zany-whistling-pine.md`.
+
+---
+
+## 2026-09-11 (later) — New procedure (gammacal), first cross-sample measurement
+
+Everything above this line was measured with the NU-UNION prediction stored in
+the cascade files. That approach is now understood to be invalid for the
+question being asked, and a new procedure replaces it (`PROTOCOL.md`, code in
+`gammacal/` + `scripts/`). Section numbering restarts here.
+
+### 1. Why the old numbers contradicted each other
+
+* The cew6 productions' `slices/` tables contain ONLY the nu-union row: no
+  cosmic rows at all (300 files/sample checked; the deployed slicer assigns no
+  cosmic-class queries, which is also why the flashmatch stream is empty,
+  ~5/100k). Every stored-table estimator therefore scored the slicer's nu
+  union, which in EXT is a bag of several cosmics (median ~2,200 points), mostly
+  out of time. Their charge inflates the prediction while producing no in-time
+  light, so obs/pred is dominated by mis-association: EXT's log10(obs/pred) is
+  flat over two decades with no core, and the "bulk median" tracked sample
+  composition (MC clean, beam data mixed, EXT junk). The 77% spatial-match drop
+  and the 0.40 EXT clean-muon value were this effect, not light yield.
+* An overlay's in-time flash is the SIMULATED nu light (unbiased-trigger
+  beam-off cosmics rarely coincide), so in-time muons in an overlay measure the
+  MC light scale. The earlier "0.91 = mixture of 0.80 data and 1.0 MC" reading
+  of the run-1 pilot was wrong.
+* In-time flash windows differ per sample (bnb5e19 run-1 ~[2.8,5.0] us, EXT
+  run-3 ~[3.2,5.4], MC run-3 ~[3.6,5.2]); the cascade picks the brightest
+  producer-0 flash with NO time cut (~10% of its choices are out of window).
+
+### 2. New procedure in one paragraph
+
+Calibration event = isolated one-boundary MIP muon that is the in-time flash
+source, defined identically in EXT, beam data and overlays (candidates from
+nu_reco tracks AND vertex-less kp2 instances, no vertex requirement). The light
+is predicted from the muon's OWN spacepoints at the frozen reference
+gamma_beam = 5.25 (CPU PhotonLib, slice-wide dedup comb charge; the full-union
+rebuild reproduces the stored `slices/pred_pe` exactly on every event, so the
+pipeline is validated), so the scale is `s = median(obs/pred_ref)` with no
+production-gamma arithmetic. Flash-source test = scale-free cosine similarity of
+the observed and predicted PMT patterns (>= 0.9) + light-centroid match. Live
+PMTs = run-period dead list + saturation holes. Gates: trimmed core median
+within 5% of the median and holding >= 50% of the events.
+
+### 3. Results on the cew6 chain (multiplier `s` on gamma_beam = 5.25)
+
+Primary = protocol defaults (`<tag>__muon.json`). Variants: `cos98` = cosine
+>= 0.98 (purest source match), `loose_cos95` = no track/shower isolation, no
+charge-fraction cut, cosine >= 0.95 (max statistics; the only selection that
+gives EXT a usable sample). Full table: `scripts/summarize_results.py`.
+
+| cell | sample | primary s (N) | gates | cos98 (N) | loose_cos95 (N) | truth-nu union (N) |
+|---|---|---|---|---|---|---|
+| (data, 1) | bnb5e19 | **0.670 +- 0.013** (292) | OK | 0.612 +- 0.053 (25) | 0.734 +- 0.010 (788) | — |
+| (data, 3) | EXT 200k | 0.79 +- 0.85 (7) — unusable | FAIL | — (0) | **0.843 +- 0.058** (93) | — |
+| (mc, 3) | numu overlay 67k | **0.989 +- 0.013** (486) | OK | 0.914 +- 0.016 (220) | 1.056 +- 0.011 (1023) | 0.858 +- 0.003 (23,688) |
+| (mc, 1) | run-1 overlay pilot (TRAINPOOL) | **0.947 +- 0.028** (76) | FAIL (core med 0.898, 5.2%) | 0.853 +- 0.031 (31) | 1.021 +- 0.027 (178) | 0.863 +- 0.007 (4,320) |
+| (mc, 3) shower | nue overlay 79k | no muons (as expected) | — | — | — | 0.772 +- 0.001 (44,540) |
+
+Systematics visible in the variants (same direction in every sample):
+dropping isolation/charge-fraction raises s by ~7-10% (extra in-time light
+from other particles in the slice); tightening the shape match to >= 0.98
+lowers it by ~8% (the best-matched muons sit lower). The truth-nu union arm is
+biased low by cosmic charge mixed into the nu union (`nu_qfrac` is
+completeness, not purity), which is why the muon-only prediction is primary.
+The shower-dominated nue sample reads ~10% lower than numu on the same arm: a
+particle-type dependence to keep in mind for shower-heavy selections.
+
+Robustness (primary, bnb5e19 and numu MC): flat vs run number within the
+period (+-0.03), vs brightness, vs flash position in the window, vs muon
+length; the boundary-end-x scan shows muons ending near the anode (x < 125)
+read ~10% lower, so the cathode-side cut stays.
+
+### 4. Decomposition: it is the light, not the charge
+
+Same muons (loose_cos95 selection, N = 788 / 93 / 1023 / 178):
+
+| sample | MIP comb charge per cm | observed PE per cm | s |
+|---|---|---|---|
+| bnb5e19 run-1 data | 187 | 3.59 | 0.734 |
+| EXT run-3 data | 187 | 3.87 | 0.843 |
+| numu overlay run-3 MC | 195 | 4.89 | 1.056 |
+| run-1 overlay MC | 199 | 4.43 | 1.021 |
+
+The charge side is the same within 5% across all four; the observed light per
+cm is ~25% lower in data than in MC, and ~7% lower in run-1 data than run-3
+data. So: (a) the dominant split is DATA vs MC, not run period; (b) run-1 data
+is NOT brighter than run-3 data in reconstructed PE per cm — the expected
+scintillation-yield direction does not show up in the PE the flash model is
+compared to (whatever compensates it sits in the optical reconstruction /
+PE calibration); (c) `gamma_beam = 5.25` is right for run-3 MC muons
+(s = 0.99): the earlier 0.865 "reference offset" was union impurity.
+
+### 5. What the deployed table gets wrong today
+
+`GAMMA_SCALE_BY_PERIOD = {1: 0.80, else 1.0}` applies 0.80 to run-1 overlays
+(measured ~0.95) and 1.0 to run-3 data (measured ~0.8), and 0.80 to run-1
+data (measured 0.67). Nothing is promoted yet (PROTOCOL section 7: closure
+first, and re-inference invalidates the current working points), but the
+additive resolver `lartpc/flashmatch/flash_calib.py` (specs `auto:data`,
+`auto:mc`, `table`) and the cascade/stage-3/chain/exporter plumbing are in
+place so a per-(kind, period) table can be deployed without touching the
+legacy `auto` path (verified bit-identical on 18/20 regression events; the
+other 2 differ upstream in the slicer partition).
+
+### 6. Open items
+
+1. **EXT needs a calibration inference mode.** With the production slicing the
+   in-time cosmic muon is almost never the slice that carries the flash; only
+   93 loose muons survive in 200k events. Either tabulate every slice
+   (`--all-slices` is too expensive; a flash-only per-slice table would do) or
+   run a dedicated pass that predicts per segmenter instance over the full
+   event. Same limitation will hit the Run-1 EXT sample.
+2. Closure re-inference per cell (>= 5k events) and the decision whether to
+   re-infer bnb5e19 (0.80 -> ~0.67) and the run-3 data (1.0 -> ~0.8).
+3. Run-1 overlay full sample -> (mc, 1) with real statistics (the pilot is
+   TRAINPOOL and marginal on the gate); Run-1 EXT once converted.
+4. The shape-quality dependence (cos98 lower by ~8%) points at a residual
+   PMT-pattern mismatch (per-PMT Neyman-weighted gamma is 10-15% below the
+   median ratio everywhere): a flash-model SHAPE issue, separate from the scale.

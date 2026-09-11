@@ -50,6 +50,12 @@ SCALARS = [
     # the kp2 file attrs; -1 when the stream has no file for the event
     ("nuSliceFlashChi2", F, -1.0), ("fmSliceFlashChi2", F, -1.0),
     ("nuSliceNParticles", I, -1), ("fmSliceNParticles", I, -1),
+    # flash-model provenance from the nu-stream kp2 file: the effective
+    # charge->PE scale the production ran at (gamma_beam * gamma_scale), the
+    # chosen in-time flash, and the nu-union's predicted PE (live+dead PMTs)
+    ("flashGammaEff", F, -1.0), ("flashGammaScale", F, -1.0),
+    ("flashObsPE", F, -1.0), ("flashTimeUs", F, -999.0),
+    ("nuSlicePredPE", F, -1.0),
 ]
 
 # ---- jagged groups: group -> (counter branch, [(branch, type), ...]) -------------

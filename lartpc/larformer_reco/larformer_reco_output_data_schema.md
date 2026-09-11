@@ -87,7 +87,7 @@ standard instances).
 | path | shape, dtype | description |
 |---|---|---|
 | `flash/observed_pe` | (32,) f32 | the in-time beam flash (producer 0, max total PE), PE per PMT |
-| `flash/` attrs | | `time_us`, `total_pe`, `producer_id`, `flash_index` of that flash; `has_beam_flash`; the prediction/χ² parameters `gamma_beam`, `f_sys`, `eps`, `oob_max` |
+| `flash/` attrs | | `time_us`, `total_pe`, `producer_id`, `flash_index` of that flash; `has_beam_flash`; the prediction/χ² parameters `gamma_beam`, `gamma_scale`, `gamma_eff` (= beam × scale, the value actually applied), `gamma_spec`, `sample_kind`, `calib_chain`, `flash_window`, `run_missing`, `f_sys`, `eps`, `oob_max`, `charge_convention`; the χ² mask `dead_opdets`, `saturated_opdets`, `chi2_masked_opdets` |
 | `flash/all/{pe,producer_id,total_pe,time_us}` | (Nf,32)/(Nf,) | every flash from the input (`producer_id`: 0=simpleFlashBeam, 1=simpleFlashCosmic) |
 | `slices/label` | (S,) bytes | `"nu"` or `"cosmicQQ"` per slice row |
 | `slices/query` | (S,) i32 | slicer query index; **−5 = the nu union** |

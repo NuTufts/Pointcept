@@ -116,8 +116,14 @@ slices/{label,query,n_points,pred_pe (S,32),chi2,oob_frac,chi2_rank,p_nu}
 slices/nu_queries/{query,p_nu}                       individual nu queries
 ```
 
-Knobs: `--gamma-beam` (5.25), `--flash-f-sys` (0.10), `--flash-eps` (1.0),
-`--flash-oob-max` (0.05), `--photonlib`, `--no-flash`, `--no-flashmatch-stream`.
+Knobs: `--gamma-beam` (5.25), `--gamma-run-scale` (`auto` = legacy run-period
+table; `auto:data` / `auto:mc` / `table` = calibrated (kind, period) cell in
+`lartpc/flashmatch/flash_calib.py`; or a float), `--sample-kind`
+(`auto`/`data`/`mc`), `--flash-window` (`off`/`auto`/`lo,hi` µs),
+`--dead-opdets`, `--mask-saturated`, `--max-saturated-pmts`, `--flash-f-sys`
+(0.10), `--flash-eps` (1.0), `--flash-oob-max` (0.05), `--photonlib`,
+`--no-flash`, `--no-flashmatch-stream`. The calibration procedure that fills
+the table is `lartpc/larformer_analysis/flashmodel_calib/PROTOCOL.md`.
 
 Downstream: `slurm/regen_kp2_list.sh` writes a per-stream list
 (`..._flashmatch.txt`); run `scripts/run_nu_reco.py` and

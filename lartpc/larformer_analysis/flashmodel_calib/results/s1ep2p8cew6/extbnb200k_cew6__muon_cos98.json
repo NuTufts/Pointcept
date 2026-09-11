@@ -1,0 +1,166 @@
+{
+ "sample": "extbnb200k_cew6",
+ "kind": "data",
+ "period": 3,
+ "chain": "s1ep2p8cew6",
+ "description": "run-3 EXT-BNB (beam-off) 200k subset (mcc9_v29e)",
+ "calib_only": false,
+ "arm": "muon",
+ "window_us": [
+  3.2,
+  5.4
+ ],
+ "window_source": "measured 2026-09-11 (600 ev)",
+ "gamma_beam_ref": 5.25,
+ "production": {
+  "gamma_eff": [
+   5.25
+  ],
+  "gamma_scale": [
+   1.0
+  ]
+ },
+ "cuts": {
+  "arm": "muon",
+  "window": null,
+  "window_margin": 0.2,
+  "flash_min_pe": 20.0,
+  "min_len": 50.0,
+  "n_boundary": 1,
+  "x_boundary_min": 125.0,
+  "allow_secondary": false,
+  "iso_track_ke": 50.0,
+  "iso_shower_e": 30.0,
+  "proton_veto_ke": 50.0,
+  "q_frac_min": 0.8,
+  "min_pred": 50.0,
+  "cos_min": 0.98,
+  "match_dy": 60.0,
+  "match_dz": 100.0,
+  "qfrac_min": 0.9,
+  "nboot": 2000
+ },
+ "drops": [
+  [
+   "in-window single flash",
+   26974,
+   24179
+  ],
+  [
+   "length > 50 cm",
+   24179,
+   15286
+  ],
+  [
+   "n_boundary == 1",
+   15286,
+   7634
+  ],
+  [
+   "boundary end x > 125 cm",
+   7634,
+   3522
+  ],
+  [
+   "primary (not secondary)",
+   3522,
+   3502
+  ],
+  [
+   "other tracks KE < 50",
+   3502,
+   2239
+  ],
+  [
+   "showers E < 30",
+   2239,
+   994
+  ],
+  [
+   "proton veto KE < 50",
+   994,
+   994
+  ],
+  [
+   "muon charge >= 0.8 of union",
+   994,
+   56
+  ],
+  [
+   "sum pred_ref >= 50 PE & obs > 0",
+   56,
+   54
+  ],
+  [
+   "shape cos >= 0.98",
+   54,
+   0
+  ],
+  [
+   "centroid |dy| < 60, |dz| < 100",
+   0,
+   0
+  ],
+  [
+   "one muon per event",
+   0,
+   0
+  ]
+ ],
+ "N": 0,
+ "stats": {
+  "N": 0,
+  "median": null,
+  "err_boot": null,
+  "p16": null,
+  "p84": null,
+  "peak": null,
+  "core_frac": null,
+  "core_median": null,
+  "mean_log": null,
+  "gate_ok": false
+ },
+ "scale_abs": null,
+ "scale_err": null,
+ "gamma_eff_fit": null,
+ "g_neyman_median": null,
+ "g_pooled": null,
+ "scans": {},
+ "records": [
+  "/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/kpv2_pointcept/lartpc/larformer_analysis/flashmodel_calib/results/s1ep2p8cew6/records/extbnb200k_cew6.shard0000000.npz",
+  "/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/kpv2_pointcept/lartpc/larformer_analysis/flashmodel_calib/results/s1ep2p8cew6/records/extbnb200k_cew6.shard0012500.npz",
+  "/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/kpv2_pointcept/lartpc/larformer_analysis/flashmodel_calib/results/s1ep2p8cew6/records/extbnb200k_cew6.shard0025000.npz",
+  "/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/kpv2_pointcept/lartpc/larformer_analysis/flashmodel_calib/results/s1ep2p8cew6/records/extbnb200k_cew6.shard0037500.npz",
+  "/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/kpv2_pointcept/lartpc/larformer_analysis/flashmodel_calib/results/s1ep2p8cew6/records/extbnb200k_cew6.shard0050000.npz",
+  "/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/kpv2_pointcept/lartpc/larformer_analysis/flashmodel_calib/results/s1ep2p8cew6/records/extbnb200k_cew6.shard0062500.npz",
+  "/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/kpv2_pointcept/lartpc/larformer_analysis/flashmodel_calib/results/s1ep2p8cew6/records/extbnb200k_cew6.shard0075000.npz",
+  "/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/kpv2_pointcept/lartpc/larformer_analysis/flashmodel_calib/results/s1ep2p8cew6/records/extbnb200k_cew6.shard0087500.npz",
+  "/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/kpv2_pointcept/lartpc/larformer_analysis/flashmodel_calib/results/s1ep2p8cew6/records/extbnb200k_cew6.shard0100000.npz",
+  "/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/kpv2_pointcept/lartpc/larformer_analysis/flashmodel_calib/results/s1ep2p8cew6/records/extbnb200k_cew6.shard0112500.npz",
+  "/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/kpv2_pointcept/lartpc/larformer_analysis/flashmodel_calib/results/s1ep2p8cew6/records/extbnb200k_cew6.shard0125000.npz",
+  "/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/kpv2_pointcept/lartpc/larformer_analysis/flashmodel_calib/results/s1ep2p8cew6/records/extbnb200k_cew6.shard0137500.npz",
+  "/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/kpv2_pointcept/lartpc/larformer_analysis/flashmodel_calib/results/s1ep2p8cew6/records/extbnb200k_cew6.shard0150000.npz",
+  "/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/kpv2_pointcept/lartpc/larformer_analysis/flashmodel_calib/results/s1ep2p8cew6/records/extbnb200k_cew6.shard0162500.npz",
+  "/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/kpv2_pointcept/lartpc/larformer_analysis/flashmodel_calib/results/s1ep2p8cew6/records/extbnb200k_cew6.shard0175000.npz",
+  "/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/kpv2_pointcept/lartpc/larformer_analysis/flashmodel_calib/results/s1ep2p8cew6/records/extbnb200k_cew6.shard0187500.npz"
+ ],
+ "n_events": 200000,
+ "n_candidates": 26974,
+ "date": "2026-09-11T13:44:01",
+ "git_sha": "a65d1f3",
+ "gammacal_version": "gammacal-1",
+ "argv": [
+  "lartpc/larformer_analysis/flashmodel_calib/scripts/fit_gamma.py",
+  "--sample",
+  "extbnb200k_cew6",
+  "--arm",
+  "muon",
+  "--tag",
+  "cos98",
+  "--cos-min",
+  "0.98",
+  "--plots",
+  "lartpc/larformer_analysis/flashmodel_calib/results/s1ep2p8cew6/plots"
+ ],
+ "hostname": "login-p03.pax.tufts.edu"
+}

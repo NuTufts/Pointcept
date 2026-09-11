@@ -98,8 +98,29 @@ echo "prep      : ${PREP}  -> ${MSP_LIST}"
 
 # ---- 1) inference (GPU) : merged_sp -> keypoint2_streams (nu + fm) ----------
 # --output-tree: write cascade files into an index tree (avoid a 1M-file dir)
+# GAMMA_SPEC (REQUIRED): the flash light-yield scale spec for this sample --
+#   "auto"       legacy run-period table (dead_channels.GAMMA_SCALE_BY_PERIOD:
+#                run1 -> 0.80, else 1.0; keyed on run number only, so run-1 MC
+#                would inherit the value measured on run-1 DATA)
+#   "auto:data" / "auto:mc" / "table"  calibrated (kind, period) cell in
+#                lartpc/flashmatch/flash_calib.py (error if unmeasured)
+#   "<float>"    explicit multiplier on gamma_beam (5.25)
+# SAMPLE_KIND: data | mc | auto (default auto = from the merged_sp truth content)
+# FLASH_WINDOW: off (default, legacy) | auto | lo,hi [us]
+# INF_EXTRA_ARGS: any further inference flags. The chain refuses to launch
+# without an explicit GAMMA_SPEC (or a --gamma-run-scale inside INF_EXTRA_ARGS)
+# because the scale is baked into the GPU pass and decides the nu/fm streams.
+# See lartpc/larformer_analysis/flashmodel_calib/PROTOCOL.md.
+if [ -z "${GAMMA_SPEC:-}" ] && [[ "${INF_EXTRA_ARGS:-}" != *"--gamma-run-scale"* ]]; then
+  echo "ERROR: set GAMMA_SPEC=auto|auto:data|auto:mc|table|<float> (flash gamma scale for this sample)" >&2
+  exit 2
+fi
+GAMMA_ARGS=""
+[ -n "${GAMMA_SPEC:-}" ] && GAMMA_ARGS="--gamma-run-scale ${GAMMA_SPEC}"
+GAMMA_ARGS="${GAMMA_ARGS} --sample-kind ${SAMPLE_KIND:-auto} --flash-window ${FLASH_WINDOW:-off}"
+echo "flash gamma: ${GAMMA_ARGS} ${INF_EXTRA_ARGS:-}"
 INF=$(INPUT_LIST=${MSP_LIST} OUTPUT_DIR=${KP2_STREAMS}/ NSHARDS=${NINF} \
-  EXTRA_INF_ARGS="--output-tree" \
+  EXTRA_INF_ARGS="--output-tree ${GAMMA_ARGS} ${INF_EXTRA_ARGS:-}" \
   sbatch --parsable ${EXCL} --export=ALL --dependency=afterok:${PREP} \
   --array=0-$((NINF-1)) --time=24:00:00 \
   ${SLURMDIR}/submit_inference_shard.sh)
@@ -118,13 +139,13 @@ echo "regen     : ${REGEN}  -> ${KP2_NU} , ${KP2_FM}"
 # ---- 3) nu_reco : nu + fm streams (LLR attachment) -------------------------
 NRNU=$(KEYPOINT2_LIST=${KP2_NU} MERGED_SP_LIST=${MSP_LIST} OUTPUT_DIR=${NR_NU}/ \
   EXTRA_ARGS="${NU_RECO_EXTRA_ARGS}" \
-  NSHARDS=${NNR} sbatch --parsable ${EXCL} --export=ALL --time=24:00:00 --dependency=afterok:${REGEN} \
+  NSHARDS=${NNR} sbatch --parsable ${EXCL} --export=ALL --partition=batch,preempt,wongjiradlab --time=24:00:00 --dependency=afterok:${REGEN} \
   --array=0-$((NNR-1)) ${SLURMDIR}/submit_nu_reco_shard.sh)
 echo "nu_reco nu: ${NRNU}  (${NNR} shards) -> ${NR_NU}"
 
 NRFM=$(KEYPOINT2_LIST=${KP2_FM} MERGED_SP_LIST=${MSP_LIST} OUTPUT_DIR=${NR_FM}/ \
   EXTRA_ARGS="${NU_RECO_EXTRA_ARGS}" \
-  NSHARDS=${NNR} sbatch --parsable ${EXCL} --export=ALL --time=24:00:00 --dependency=afterok:${REGEN} \
+  NSHARDS=${NNR} sbatch --parsable ${EXCL} --export=ALL --partition=batch,preempt,wongjiradlab --time=24:00:00 --dependency=afterok:${REGEN} \
   --array=0-$((NNR-1)) ${SLURMDIR}/submit_nu_reco_shard.sh)
 echo "nu_reco fm: ${NRFM}  (${NNR} shards) -> ${NR_FM}"
 
@@ -149,7 +170,7 @@ EXP=$(TAG=${TAG} MERGED_SP_LIST=${MSP_LIST} NSHARDS=${NEXP} \
   KP2_NU_LIST=${KP2_NU} KP2_FM_LIST=${KP2_FM} \
   NU_RECO_NU_DIR=${LP_NU} NU_RECO_FM_DIR=${LP_FM} \
   OUT=${OUT_NTUPLE} \
-  sbatch --parsable ${EXCL} --export=ALL --time=24:00:00 --dependency=afterok:${LPNU}:${LPFM} \
+  sbatch --parsable ${EXCL} --export=ALL --partition=batch,preempt,wongjiradlab --time=24:00:00 --dependency=afterok:${LPNU}:${LPFM} \
   --array=0-$((NEXP-1)) ${SLURMDIR}/submit_export_shard.sh)
 echo "export    : ${EXP}  (${NEXP} shards) -> ${OUT_NTUPLE%.root}_shard*.root"
 

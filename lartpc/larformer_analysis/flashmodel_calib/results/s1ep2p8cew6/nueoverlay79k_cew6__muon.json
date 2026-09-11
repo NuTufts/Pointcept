@@ -1,0 +1,154 @@
+{
+ "sample": "nueoverlay79k_cew6",
+ "kind": "mc",
+ "period": 3,
+ "chain": "s1ep2p8cew6",
+ "description": "run-3b intrinsic-nue overlay (shower-dominated cross-check)",
+ "calib_only": false,
+ "arm": "muon",
+ "window_us": [
+  3.6,
+  5.2
+ ],
+ "window_source": "assumed = run-3 MC overlay",
+ "gamma_beam_ref": 5.25,
+ "production": {
+  "gamma_eff": [
+   5.25
+  ],
+  "gamma_scale": [
+   1.0
+  ]
+ },
+ "cuts": {
+  "arm": "muon",
+  "window": null,
+  "window_margin": 0.2,
+  "flash_min_pe": 20.0,
+  "min_len": 50.0,
+  "n_boundary": 1,
+  "x_boundary_min": 125.0,
+  "allow_secondary": false,
+  "iso_track_ke": 50.0,
+  "iso_shower_e": 30.0,
+  "proton_veto_ke": 50.0,
+  "q_frac_min": 0.8,
+  "min_pred": 50.0,
+  "cos_min": 0.9,
+  "match_dy": 60.0,
+  "match_dz": 100.0,
+  "qfrac_min": 0.9,
+  "nboot": 10
+ },
+ "drops": [
+  [
+   "in-window single flash",
+   1445,
+   1068
+  ],
+  [
+   "length > 50 cm",
+   1068,
+   711
+  ],
+  [
+   "n_boundary == 1",
+   711,
+   300
+  ],
+  [
+   "boundary end x > 125 cm",
+   300,
+   136
+  ],
+  [
+   "primary (not secondary)",
+   136,
+   123
+  ],
+  [
+   "other tracks KE < 50",
+   123,
+   21
+  ],
+  [
+   "showers E < 30",
+   21,
+   2
+  ],
+  [
+   "proton veto KE < 50",
+   2,
+   2
+  ],
+  [
+   "muon charge >= 0.8 of union",
+   2,
+   0
+  ],
+  [
+   "sum pred_ref >= 50 PE & obs > 0",
+   0,
+   0
+  ],
+  [
+   "shape cos >= 0.9",
+   0,
+   0
+  ],
+  [
+   "centroid |dy| < 60, |dz| < 100",
+   0,
+   0
+  ],
+  [
+   "one muon per event",
+   0,
+   0
+  ]
+ ],
+ "N": 0,
+ "stats": {
+  "N": 0,
+  "median": null,
+  "err_boot": null,
+  "p16": null,
+  "p84": null,
+  "peak": null,
+  "core_frac": null,
+  "core_median": null,
+  "mean_log": null,
+  "gate_ok": false
+ },
+ "scale_abs": null,
+ "scale_err": null,
+ "gamma_eff_fit": null,
+ "g_neyman_median": null,
+ "g_pooled": null,
+ "scans": {},
+ "records": [
+  "/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/kpv2_pointcept/lartpc/larformer_analysis/flashmodel_calib/results/s1ep2p8cew6/records/nueoverlay79k_cew6.shard0000000.npz",
+  "/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/kpv2_pointcept/lartpc/larformer_analysis/flashmodel_calib/results/s1ep2p8cew6/records/nueoverlay79k_cew6.shard0009920.npz",
+  "/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/kpv2_pointcept/lartpc/larformer_analysis/flashmodel_calib/results/s1ep2p8cew6/records/nueoverlay79k_cew6.shard0019840.npz",
+  "/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/kpv2_pointcept/lartpc/larformer_analysis/flashmodel_calib/results/s1ep2p8cew6/records/nueoverlay79k_cew6.shard0029760.npz",
+  "/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/kpv2_pointcept/lartpc/larformer_analysis/flashmodel_calib/results/s1ep2p8cew6/records/nueoverlay79k_cew6.shard0039680.npz",
+  "/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/kpv2_pointcept/lartpc/larformer_analysis/flashmodel_calib/results/s1ep2p8cew6/records/nueoverlay79k_cew6.shard0049600.npz",
+  "/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/kpv2_pointcept/lartpc/larformer_analysis/flashmodel_calib/results/s1ep2p8cew6/records/nueoverlay79k_cew6.shard0059520.npz",
+  "/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/kpv2_pointcept/lartpc/larformer_analysis/flashmodel_calib/results/s1ep2p8cew6/records/nueoverlay79k_cew6.shard0069440.npz"
+ ],
+ "n_events": 79356,
+ "n_candidates": 1445,
+ "date": "2026-09-11T13:41:39",
+ "git_sha": "a65d1f3",
+ "gammacal_version": "gammacal-1",
+ "argv": [
+  "lartpc/larformer_analysis/flashmodel_calib/scripts/fit_gamma.py",
+  "--sample",
+  "nueoverlay79k_cew6",
+  "--arm",
+  "muon",
+  "--nboot",
+  "10"
+ ],
+ "hostname": "login-p03.pax.tufts.edu"
+}

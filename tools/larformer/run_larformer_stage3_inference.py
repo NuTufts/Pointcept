@@ -104,7 +104,8 @@ def _oob_frac_np(pts):
 
 
 def flash_recovery_keep(ev_pred, filtered_batch, input_h5_path, no_object_class_id,
-                        mask_prob_threshold, gamma_beam, K, chi2_max, oob_max):
+                        mask_prob_threshold, gamma_beam, K, chi2_max, oob_max,
+                        gamma_scale_spec="auto"):
     """Expanded keep-mask term: union of the top-K slice queries whose PhotonLib-
     predicted PMT pattern best matches the in-time beam flash (Neyman chi2), cut by
     chi2 <= chi2_max and OOB <= oob_max. Returns an (n_sp,) bool tensor (or None if
@@ -113,8 +114,8 @@ def flash_recovery_keep(ev_pred, filtered_batch, input_h5_path, no_object_class_
     from lartpc.flashmatch.flash_predict import (
         predict_slice_pe, select_charge_y_with_uv_fallback_np)
     from lartpc.flashmatch.flash_chi2 import neyman_chi2
-    from lartpc.flashmatch.dead_channels import (dead_opdets_for_run,
-                                                 gamma_scale_for_run)
+    from lartpc.flashmatch.dead_channels import dead_opdets_for_run
+    from lartpc.flashmatch import flash_calib
 
     sp_mask = ev_pred["mask_logits"]["spacepoint"]          # (Q, n_sp) logits
     Q, n_sp = sp_mask.shape
@@ -136,7 +137,11 @@ def flash_recovery_keep(ev_pred, filtered_batch, input_h5_path, no_object_class_
         f_tpe = fl["total_pe"][:]; f_t = fl["time_us"][:]
     # run-aware flash config (see lartpc/flashmatch/dead_channels.py)
     dead_opdets = dead_opdets_for_run(_run)
-    gamma_eff = float(gamma_beam) * float(gamma_scale_for_run(_run))
+    # NOTE this path uses voxel-mean Y/UV charge, not the cascade's comb
+    # charge, so its gamma is only approximately comparable (see flash_calib).
+    _kind = flash_calib.detect_kind(input_h5_path) if gamma_scale_spec == "table" else None
+    gamma_eff = float(gamma_beam) * float(
+        flash_calib.resolve(gamma_scale_spec, _run, kind=_kind))
     beam = np.where(f_pid == 0)[0]
     if len(beam) == 0:
         return None
@@ -610,6 +615,7 @@ def run_full_cascade_mode(args):
                     no_object_class_id=slicer_no_object,
                     mask_prob_threshold=mask_prob_threshold,
                     gamma_beam=args.flash_recover_gamma,
+                    gamma_scale_spec=args.flash_recover_gamma_scale,
                     K=args.flash_recover_k,
                     chi2_max=args.flash_recover_chi2_max,
                     oob_max=args.flash_recover_oob_max,
@@ -803,6 +809,11 @@ def main():
     ap.add_argument("--flash-recover-chi2-max", type=float, default=500.0)
     ap.add_argument("--flash-recover-oob-max", type=float, default=0.05)
     ap.add_argument("--flash-recover-gamma", type=float, default=5.25)
+    ap.add_argument("--flash-recover-gamma-scale", default="auto",
+                    help="multiplier on --flash-recover-gamma: 'auto' (legacy "
+                         "run-period table), 'auto:data'/'auto:mc'/'table' "
+                         "(flash_calib cell) or a float. Same semantics as the "
+                         "cascade's --gamma-run-scale.")
     ap.add_argument("--flash-recover-augment-all", action="store_true",
                     help="Apply flash recovery to EVERY event (default: only rescue "
                          "events whose nu-keep is empty, to avoid contaminating "

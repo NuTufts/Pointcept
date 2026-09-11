@@ -8,7 +8,8 @@ def ratio_stats(r, nboot=2000, seed=7, core_halfwidth_dex=0.15):
     out = dict(N=int(len(r)))
     if len(r) == 0:
         out.update(median=np.nan, err_boot=np.nan, p16=np.nan, p84=np.nan,
-                   peak=np.nan, core_frac=np.nan, mean_log=np.nan, gate_ok=False)
+                   peak=np.nan, core_frac=np.nan, core_median=np.nan,
+                   mean_log=np.nan, gate_ok=False)
         return out
     med = float(np.median(r))
     rng = np.random.default_rng(seed)
@@ -23,10 +24,22 @@ def ratio_stats(r, nboot=2000, seed=7, core_halfwidth_dex=0.15):
     pk = 0.5 * (edges[np.argmax(hs)] + edges[np.argmax(hs) + 1])
     core = float(np.mean(np.abs(lr - pk) < core_halfwidth_dex))
     peak = float(10 ** pk)
+    # trimmed core median: iterate median -> keep |log r - log m| < halfwidth
+    # -> median of the kept. Stable at small N where the histogram peak is not;
+    # the gate compares it to the plain median (background pulls them apart).
+    m = np.log10(med)
+    for _ in range(3):
+        keep = np.abs(lr - m) < core_halfwidth_dex
+        if keep.sum() < 3:
+            break
+        m = float(np.median(lr[keep]))
+    core_med = float(10 ** m)
+    core_frac_med = float(np.mean(np.abs(lr - m) < core_halfwidth_dex))
     out.update(median=med, err_boot=float(boot.std()), p16=float(lo),
-               p84=float(hi), peak=peak, core_frac=core,
-               mean_log=float(10 ** lr.mean()),
-               gate_ok=bool(core >= 0.5 and abs(peak - med) / med < 0.05))
+               p84=float(hi), peak=peak, core_frac=core_frac_med,
+               core_median=core_med, mean_log=float(10 ** lr.mean()),
+               gate_ok=bool(core_frac_med >= 0.5
+                            and abs(core_med - med) / med < 0.05))
     return out
 
 

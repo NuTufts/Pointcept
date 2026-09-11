@@ -1,0 +1,224 @@
+{
+ "sample": "mcoverlay67k_cew6",
+ "kind": "mc",
+ "period": 3,
+ "chain": "s1ep2p8cew6",
+ "description": "run-3b BNB nu overlay, 67,211 events (mcc9_v29e)",
+ "calib_only": false,
+ "arm": "truth_nu",
+ "window_us": [
+  3.6,
+  5.2
+ ],
+ "window_source": "measured 2026-09-11 (600 ev)",
+ "gamma_beam_ref": 5.25,
+ "production": {
+  "gamma_eff": [
+   5.25
+  ],
+  "gamma_scale": [
+   1.0
+  ]
+ },
+ "cuts": {
+  "arm": "truth_nu",
+  "window": null,
+  "window_margin": 0.2,
+  "flash_min_pe": 20.0,
+  "min_len": 50.0,
+  "n_boundary": 1,
+  "x_boundary_min": 125.0,
+  "allow_secondary": false,
+  "iso_track_ke": 50.0,
+  "iso_shower_e": 30.0,
+  "proton_veto_ke": 50.0,
+  "q_frac_min": 0.8,
+  "min_pred": 50.0,
+  "cos_min": 0.9,
+  "match_dy": 60.0,
+  "match_dz": 100.0,
+  "qfrac_min": 0.9,
+  "nboot": 2000
+ },
+ "drops": [
+  [
+   "union prediction available",
+   67210,
+   55107
+  ],
+  [
+   "in-window single flash",
+   55107,
+   40530
+  ],
+  [
+   "sum pred_ref >= 50 PE & obs > 0",
+   40530,
+   40203
+  ],
+  [
+   "nu_qfrac >= 0.9",
+   40203,
+   23688
+  ]
+ ],
+ "N": 23688,
+ "stats": {
+  "N": 23688,
+  "median": 0.858384384980657,
+  "err_boot": 0.002690384381418757,
+  "p16": 0.5433734280168661,
+  "p84": 1.3427332847632705,
+  "peak": 0.8413951416451976,
+  "core_frac": 0.5995018574805809,
+  "core_median": 0.8483564069168787,
+  "mean_log": 0.7936277193690021,
+  "gate_ok": true
+ },
+ "scale_abs": 0.858384384980657,
+ "scale_err": 0.002690384381418757,
+ "gamma_eff_fit": 4.506518021148449,
+ "g_neyman_median": 0.7102958235464409,
+ "g_pooled": 0.001775124376186482,
+ "scans": {
+  "run_groups": [
+   [
+    14121,
+    14802,
+    2964,
+    0.8588808837437292
+   ],
+   [
+    14802,
+    15350,
+    3001,
+    0.8657982946100258
+   ],
+   [
+    15350,
+    16125,
+    2998,
+    0.8565009879816066
+   ],
+   [
+    16125,
+    16842,
+    2966,
+    0.8610530265903775
+   ],
+   [
+    16842,
+    17255,
+    2980,
+    0.8586390392093342
+   ],
+   [
+    17255,
+    17655,
+    3040,
+    0.8638148272246275
+   ],
+   [
+    17655,
+    18219,
+    2990,
+    0.8552225196745105
+   ],
+   [
+    18219,
+    18794,
+    2977,
+    0.8470919800941079
+   ]
+  ],
+  "brightness": [
+   [
+    0.0,
+    100.0,
+    515,
+    0.21257624251304819
+   ],
+   [
+    100.0,
+    300.0,
+    3120,
+    0.7730085307049264
+   ],
+   [
+    300.0,
+    1000.0,
+    7040,
+    0.897267724443519
+   ],
+   [
+    1000.0,
+    3000.0,
+    8165,
+    0.8611803991330725
+   ],
+   [
+    3000.0,
+    1000000000.0,
+    4848,
+    0.8480232112633894
+   ]
+  ],
+  "t_in_window": [
+   [
+    0.0,
+    0.2,
+    2359,
+    0.8548487841848742
+   ],
+   [
+    0.2,
+    0.4,
+    6182,
+    0.8562055721642325
+   ],
+   [
+    0.4,
+    0.6000000000000001,
+    6369,
+    0.8563927883669954
+   ],
+   [
+    0.6000000000000001,
+    0.8,
+    6459,
+    0.8634065651406997
+   ],
+   [
+    0.8,
+    1.0,
+    2319,
+    0.8601820951912975
+   ]
+  ]
+ },
+ "records": [
+  "/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/kpv2_pointcept/lartpc/larformer_analysis/flashmodel_calib/results/s1ep2p8cew6/records/mcoverlay67k_cew6.shard0000000.npz",
+  "/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/kpv2_pointcept/lartpc/larformer_analysis/flashmodel_calib/results/s1ep2p8cew6/records/mcoverlay67k_cew6.shard0008402.npz",
+  "/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/kpv2_pointcept/lartpc/larformer_analysis/flashmodel_calib/results/s1ep2p8cew6/records/mcoverlay67k_cew6.shard0016804.npz",
+  "/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/kpv2_pointcept/lartpc/larformer_analysis/flashmodel_calib/results/s1ep2p8cew6/records/mcoverlay67k_cew6.shard0025206.npz",
+  "/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/kpv2_pointcept/lartpc/larformer_analysis/flashmodel_calib/results/s1ep2p8cew6/records/mcoverlay67k_cew6.shard0033608.npz",
+  "/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/kpv2_pointcept/lartpc/larformer_analysis/flashmodel_calib/results/s1ep2p8cew6/records/mcoverlay67k_cew6.shard0042010.npz",
+  "/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/kpv2_pointcept/lartpc/larformer_analysis/flashmodel_calib/results/s1ep2p8cew6/records/mcoverlay67k_cew6.shard0050412.npz",
+  "/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/kpv2_pointcept/lartpc/larformer_analysis/flashmodel_calib/results/s1ep2p8cew6/records/mcoverlay67k_cew6.shard0058814.npz"
+ ],
+ "n_events": 67210,
+ "n_candidates": 24055,
+ "date": "2026-09-11T13:27:20",
+ "git_sha": "a65d1f3",
+ "gammacal_version": "gammacal-1",
+ "argv": [
+  "lartpc/larformer_analysis/flashmodel_calib/scripts/fit_gamma.py",
+  "--sample",
+  "mcoverlay67k_cew6",
+  "--arm",
+  "truth_nu",
+  "--plots",
+  "lartpc/larformer_analysis/flashmodel_calib/results/s1ep2p8cew6/plots"
+ ],
+ "hostname": "login-p03.pax.tufts.edu"
+}

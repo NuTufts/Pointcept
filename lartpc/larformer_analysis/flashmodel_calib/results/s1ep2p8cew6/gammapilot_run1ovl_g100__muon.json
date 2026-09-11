@@ -1,0 +1,397 @@
+{
+ "sample": "gammapilot_run1ovl_g100",
+ "kind": "mc",
+ "period": 1,
+ "chain": "s1ep2p8cew6",
+ "description": "run-1 BNB nu overlay pilot (mcc9_v28), 12,812 TRAINPOOL events; produced at --gamma-run-scale 1.0; CALIBRATION USE ONLY",
+ "calib_only": true,
+ "arm": "muon",
+ "window_us": [
+  3.6,
+  5.2
+ ],
+ "window_source": "assumed = run-3 MC overlay; CHECK",
+ "gamma_beam_ref": 5.25,
+ "production": {
+  "gamma_eff": [
+   5.25
+  ],
+  "gamma_scale": [
+   1.0
+  ]
+ },
+ "cuts": {
+  "arm": "muon",
+  "window": null,
+  "window_margin": 0.2,
+  "flash_min_pe": 20.0,
+  "min_len": 50.0,
+  "n_boundary": 1,
+  "x_boundary_min": 125.0,
+  "allow_secondary": false,
+  "iso_track_ke": 50.0,
+  "iso_shower_e": 30.0,
+  "proton_veto_ke": 50.0,
+  "q_frac_min": 0.8,
+  "min_pred": 50.0,
+  "cos_min": 0.9,
+  "match_dy": 60.0,
+  "match_dz": 100.0,
+  "qfrac_min": 0.9,
+  "nboot": 2000
+ },
+ "drops": [
+  [
+   "in-window single flash",
+   4482,
+   3261
+  ],
+  [
+   "length > 50 cm",
+   3261,
+   2715
+  ],
+  [
+   "n_boundary == 1",
+   2715,
+   1511
+  ],
+  [
+   "boundary end x > 125 cm",
+   1511,
+   688
+  ],
+  [
+   "primary (not secondary)",
+   688,
+   684
+  ],
+  [
+   "other tracks KE < 50",
+   684,
+   264
+  ],
+  [
+   "showers E < 30",
+   264,
+   161
+  ],
+  [
+   "proton veto KE < 50",
+   161,
+   161
+  ],
+  [
+   "muon charge >= 0.8 of union",
+   161,
+   88
+  ],
+  [
+   "sum pred_ref >= 50 PE & obs > 0",
+   88,
+   87
+  ],
+  [
+   "shape cos >= 0.9",
+   87,
+   76
+  ],
+  [
+   "centroid |dy| < 60, |dz| < 100",
+   76,
+   76
+  ],
+  [
+   "one muon per event",
+   76,
+   76
+  ]
+ ],
+ "N": 76,
+ "stats": {
+  "N": 76,
+  "median": 0.9467727907929359,
+  "err_boot": 0.02750032511340848,
+  "p16": 0.7905301626463289,
+  "p84": 1.2362221707849494,
+  "peak": 0.8413951416451976,
+  "core_frac": 0.8421052631578947,
+  "core_median": 0.8978707107983468,
+  "mean_log": 0.9824723682492653,
+  "gate_ok": false
+ },
+ "scale_abs": 0.9467727907929359,
+ "scale_err": 0.02750032511340848,
+ "gamma_eff_fit": 4.970557151662914,
+ "g_neyman_median": 0.8561378494188105,
+ "g_pooled": 0.8267064054117766,
+ "scans": {
+  "run_groups": [
+   [
+    4999,
+    6474,
+    10,
+    1.0724953789363592
+   ],
+   [
+    6474,
+    6955,
+    9,
+    0.8986962122939202
+   ],
+   [
+    6955,
+    7003,
+    11,
+    0.9042239305143098
+   ],
+   [
+    7003,
+    7013,
+    11,
+    0.9129001132752249
+   ],
+   [
+    7013,
+    7019,
+    9,
+    0.9666888541465941
+   ],
+   [
+    7019,
+    7023,
+    13,
+    0.8839027079015187
+   ],
+   [
+    7023,
+    7054,
+    14,
+    0.9248822290478962
+   ],
+   [
+    7054,
+    7461,
+    12,
+    0.9449115025016253
+   ]
+  ],
+  "brightness": [
+   [
+    0.0,
+    100.0,
+    0,
+    null
+   ],
+   [
+    100.0,
+    300.0,
+    11,
+    0.902030941243898
+   ],
+   [
+    300.0,
+    1000.0,
+    36,
+    0.9439507764426669
+   ],
+   [
+    1000.0,
+    3000.0,
+    25,
+    0.9521792213550183
+   ],
+   [
+    3000.0,
+    1000000000.0,
+    4,
+    0.8951636967406956
+   ]
+  ],
+  "t_in_window": [
+   [
+    0.0,
+    0.2,
+    10,
+    0.9297341022720929
+   ],
+   [
+    0.2,
+    0.4,
+    26,
+    0.9293560890046012
+   ],
+   [
+    0.4,
+    0.6000000000000001,
+    19,
+    0.902030941243898
+   ],
+   [
+    0.6000000000000001,
+    0.8,
+    16,
+    1.0149834365054131
+   ],
+   [
+    0.8,
+    1.0,
+    5,
+    0.8629626687862965
+   ]
+  ],
+  "boundary_x": [
+   [
+    125.0,
+    150.0,
+    6,
+    0.8404138646047379
+   ],
+   [
+    150.0,
+    180.0,
+    14,
+    0.8764021788823958
+   ],
+   [
+    180.0,
+    210.0,
+    3,
+    0.9516325067927963
+   ],
+   [
+    210.0,
+    240.0,
+    6,
+    1.0016334845078703
+   ],
+   [
+    240.0,
+    300.0,
+    47,
+    0.955244274029876
+   ]
+  ],
+  "length": [
+   [
+    50.0,
+    80.0,
+    11,
+    1.0541528017346973
+   ],
+   [
+    80.0,
+    120.0,
+    12,
+    0.9248822290478962
+   ],
+   [
+    120.0,
+    180.0,
+    24,
+    0.9601319653103969
+   ],
+   [
+    180.0,
+    300.0,
+    16,
+    0.9274948007132906
+   ],
+   [
+    300.0,
+    10000.0,
+    13,
+    0.8287982636322172
+   ]
+  ],
+  "cos_sim": [
+   [
+    0.9,
+    0.95,
+    17,
+    1.1668600722585338
+   ],
+   [
+    0.95,
+    0.98,
+    28,
+    0.9898542757042286
+   ],
+   [
+    0.98,
+    1.01,
+    31,
+    0.8525547828042473
+   ]
+  ],
+  "subset_vertexed": {
+   "N": 72,
+   "median": 0.9519058640739073,
+   "err_boot": 0.023814189302780852,
+   "p16": 0.8048535227352356,
+   "p84": 1.2911852899474616,
+   "peak": 0.8413951416451976,
+   "core_frac": 0.8333333333333334,
+   "core_median": 0.9031267702471675,
+   "mean_log": 0.9951671760394976,
+   "gate_ok": false
+  },
+  "subset_vertexless": {
+   "N": 4,
+   "median": 0.7704896855891792,
+   "err_boot": 0.017197300622350857,
+   "p16": 0.7608388826606087,
+   "p84": 0.8002920231451599,
+   "peak": 0.749894209332458,
+   "core_frac": 1.0,
+   "core_median": 0.7704764843838603,
+   "mean_log": 0.7797542954015605,
+   "gate_ok": true
+  },
+  "subset_orphan": {
+   "N": 4,
+   "median": 0.7704896855891792,
+   "err_boot": 0.017197300622350857,
+   "p16": 0.7608388826606087,
+   "p84": 0.8002920231451599,
+   "peak": 0.749894209332458,
+   "core_frac": 1.0,
+   "core_median": 0.7704764843838603,
+   "mean_log": 0.7797542954015605,
+   "gate_ok": true
+  },
+  "subset_gt_nu": {
+   "N": 76,
+   "median": 0.9467727907929359,
+   "err_boot": 0.02476896866881363,
+   "p16": 0.7905301626463289,
+   "p84": 1.2362221707849494,
+   "peak": 0.8413951416451976,
+   "core_frac": 0.8421052631578947,
+   "core_median": 0.8978707107983468,
+   "mean_log": 0.9824723682492653,
+   "gate_ok": false
+  },
+  "subset_gt_cosmic": null,
+  "mip_q_per_cm_median": 211.75089044303894
+ },
+ "records": [
+  "/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/kpv2_pointcept/lartpc/larformer_analysis/flashmodel_calib/results/s1ep2p8cew6/records/gammapilot_run1ovl_g100.shard0000000.npz",
+  "/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/kpv2_pointcept/lartpc/larformer_analysis/flashmodel_calib/results/s1ep2p8cew6/records/gammapilot_run1ovl_g100.shard0006406.npz"
+ ],
+ "n_events": 12812,
+ "n_candidates": 4482,
+ "date": "2026-09-11T13:43:45",
+ "git_sha": "a65d1f3",
+ "gammacal_version": "gammacal-1",
+ "argv": [
+  "lartpc/larformer_analysis/flashmodel_calib/scripts/fit_gamma.py",
+  "--sample",
+  "gammapilot_run1ovl_g100",
+  "--arm",
+  "muon",
+  "--plots",
+  "lartpc/larformer_analysis/flashmodel_calib/results/s1ep2p8cew6/plots"
+ ],
+ "hostname": "login-p03.pax.tufts.edu"
+}

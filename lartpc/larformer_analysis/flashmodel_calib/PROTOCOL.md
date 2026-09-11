@@ -72,8 +72,11 @@ the in-time flash. Defined identically in every sample; all cuts are
 ## 3. Statistic and validity gates
 
 Primary: `s = median(r)` with a 2000-resample bootstrap error and the 16-84%
-band. Gates (a cell failing them is reported, not promoted): core fraction
-within +-0.15 dex of the log10(r) peak >= 0.5, and |peak - median| < 5%.
+band. Gates (a cell failing them is reported, not promoted): the trimmed core
+median (iterated median of the events within +-0.15 dex of the running centre)
+must hold >= 50% of the events and lie within 5% of the plain median. A
+background of mis-associated flashes pulls the two apart, which is exactly what
+the gate is for.
 Secondary, reported alongside: the per-event Neyman-weighted closed-form
 multiplier (the gamma that minimises the production chi2) and its pooled value,
 and the geometric mean.
