@@ -713,6 +713,62 @@ def _flash_slice_table(coord_cm, sid, p_nu_per_query, nu_qs, flashes,
     return tbl
 
 
+def _calib_cluster_ids(coord_cm, sid, radius_cm=4.0, min_points=50,
+                       max_clusters=60):
+    """Flash-calibration slices: connected components (radius_cm linkage) of the
+    DEGHOSTED cloud, independent of the slicer's nu/cosmic partition (the
+    deployed slicer assigns no cosmic-class queries, so the production slice
+    table has no cosmic rows -- see flashmodel_calib/CALIBRATION_LOG.md).
+    Returns a synthetic slice_id array over the full cloud: cluster index q >= 0
+    for the largest `max_clusters` components with >= min_points points,
+    -1 otherwise, -2 for ghosts (unchanged)."""
+    from scipy.spatial import cKDTree
+    from scipy.sparse import coo_matrix
+    from scipy.sparse.csgraph import connected_components
+    out = np.where(sid == -2, -2, -1).astype(np.int64)
+    kept = np.nonzero(sid != -2)[0]
+    if kept.size < min_points:
+        return out
+    pts = coord_cm[kept].astype(np.float64)
+    tree = cKDTree(pts)
+    pairs = tree.query_pairs(float(radius_cm), output_type="ndarray")
+    n = kept.size
+    if pairs.size:
+        g = coo_matrix((np.ones(len(pairs), np.int8), (pairs[:, 0], pairs[:, 1])),
+                       shape=(n, n))
+        _, lab = connected_components(g, directed=False)
+    else:
+        lab = np.arange(n)
+    ids, cnt = np.unique(lab, return_counts=True)
+    keep = ids[cnt >= min_points]
+    keep = keep[np.argsort(-cnt[cnt >= min_points], kind="stable")][:max_clusters]
+    remap = {int(c): q for q, c in enumerate(keep)}
+    cl = np.array([remap.get(int(l), -1) for l in lab], np.int64)
+    out[kept] = cl
+    return out
+
+
+def _shape_cos_rows(tbl):
+    """Cosine similarity of each row's predicted pattern with the observed flash
+    over the chi2-masked (live) PMTs -- scale-free, so independent of gamma."""
+    obs = tbl.get("observed")
+    S = len(tbl["label"])
+    cos = np.full(S, np.nan, np.float32)
+    if obs is None or S == 0:
+        return cos
+    live = np.ones(32, bool)
+    m = tbl["params"].get("chi2_masked_opdets", "")
+    if m:
+        live[[int(x) for x in m.split(",") if x.strip()]] = False
+    o = np.clip(np.asarray(obs["pe"], np.float64), 0, None)[live]
+    no = np.linalg.norm(o)
+    for r in range(S):
+        p = np.clip(np.nan_to_num(np.asarray(tbl["pred_pe"][r], np.float64)), 0, None)[live]
+        d = no * np.linalg.norm(p)
+        cos[r] = float(o @ p / d) if d > 0 else np.nan
+    return cos
+
+
 def _write_flash_groups(f, tbl):
     """Write flash/ + slices/ groups (schema in lartpc/larformer_reco/README)."""
     import h5py
@@ -736,6 +792,8 @@ def _write_flash_groups(f, tbl):
     for k in ("query", "n_points", "pred_pe", "chi2", "oob_frac",
               "chi2_rank", "p_nu"):
         sg.create_dataset(k, data=tbl[k])
+    if "shape_cos" in tbl:            # flash-calibration mode
+        sg.create_dataset("shape_cos", data=np.asarray(tbl["shape_cos"], np.float32))
     nq = tbl["nu_queries"]
     g = f.create_group("slices/nu_queries")
     g.create_dataset("query", data=nq["query"])
@@ -860,6 +918,22 @@ def main():
                          "when the input has no run attr (default: warn and "
                          "use run 0 = period 1 with 'auto'; error with the "
                          "calibrated specs).")
+    ap.add_argument("--flash-calib-mode", action="store_true",
+                    help="flash-calibration inference: cluster the deghosted "
+                         "cloud (connected components), predict light for every "
+                         "cluster, choose the in-time flash SOURCE by pattern "
+                         "shape, run Stage-3 on that cluster only and write it as "
+                         "stream='calib' (keypoint2_event{i}_calib_0.h5). No "
+                         "nu/fm streams. Feeds flashmodel_calib/gammacal.")
+    ap.add_argument("--calib-cluster-radius", type=float, default=4.0,
+                    help="calib mode: linkage radius [cm] of the clusters")
+    ap.add_argument("--calib-min-points", type=int, default=50)
+    ap.add_argument("--calib-max-clusters", type=int, default=60,
+                    help="calib mode: predict at most this many (largest) clusters")
+    ap.add_argument("--calib-cos-min", type=float, default=0.9,
+                    help="calib mode: minimum obs/pred pattern cosine to accept "
+                         "a cluster as the flash source")
+    ap.add_argument("--calib-min-pred-pe", type=float, default=50.0)
     ap.add_argument("--flash-window", default="off",
                     help="restrict the observed in-time flash to producer-0 "
                          "flashes inside a time window [us]: 'off' (legacy: "
@@ -1006,6 +1080,17 @@ def main():
     real_files = list(getattr(ds, "data_list", []))
     print(f">>> {n} events (indices [{start}, {end}) of {len(ds)})")
 
+    flash_calib_disabled = bool(args.no_flash)
+    if args.flash_calib_mode:
+        if args.no_flash:
+            raise SystemExit("--flash-calib-mode needs the flash machinery (drop --no-flash)")
+        if str(args.flash_window) == "off":
+            args.flash_window = "auto"
+            print(">>> flash-calib mode: --flash-window auto")
+        print(f">>> FLASH-CALIBRATION MODE: connected-component clusters "
+              f"(r={args.calib_cluster_radius} cm, >= {args.calib_min_points} pts, "
+              f"<= {args.calib_max_clusters}), source = best shape cos >= "
+              f"{args.calib_cos_min}; only stream='calib' files are written")
     for i in range(start, end):
         # Per-event order invariance (shared helper; see its docstring).
         if args.deterministic:
@@ -1160,6 +1245,78 @@ def main():
                 os.path.join(sid_dir, f"sliceid_event{i:05d}.h5"), *sids,
                 {"src_file": (os.path.basename(real_files[i])
                               if i < len(real_files) else "")})
+
+        # ---- flash-calibration mode: cluster the deghosted cloud, predict light
+        # for EVERY cluster, pick the flash source by pattern shape, run Stage-3
+        # on that cluster only, write it as stream='calib'. No nu/fm streams.
+        if args.flash_calib_mode:
+            if sids is None or flash_calib_disabled:
+                print(f"  [{i}] calib: no slicer output -- skipped")
+                continue
+            csid = _calib_cluster_ids(sids[0], sids[1], args.calib_cluster_radius,
+                                      args.calib_min_points, args.calib_max_clusters)
+            n_cl = int(csid.max()) + 1 if (csid >= 0).any() else 0
+            if n_cl == 0:
+                print(f"  [{i}] calib: no cluster >= {args.calib_min_points} points -- skipped")
+                continue
+            try:
+                flashes, charge_ctx = _load_msp_flash_charge(real_files[i])
+                _kind = getattr(args, "sample_kind", "auto")
+                if _kind == "auto":
+                    from lartpc.flashmatch.flash_calib import detect_kind
+                    try:
+                        _kind = detect_kind(real_files[i])
+                    except Exception:
+                        _kind = None
+                tbl = _flash_slice_table(sids[0], csid, {}, [], flashes, charge_ctx,
+                                         args, run=_entry_rse(real_files[i]).get("run"),
+                                         kind=_kind)
+            except Exception as ex:
+                print(f"  [{i}] calib: flash table failed: {ex}")
+                continue
+            if tbl.get("observed") is None or not np.isfinite(tbl["pred_pe"]).any():
+                print(f"  [{i}] calib: no in-window beam flash -- skipped")
+                continue
+            tbl["shape_cos"] = _shape_cos_rows(tbl)
+            psum = np.nansum(np.clip(tbl["pred_pe"], 0, None), axis=1)
+            cand = np.where((tbl["shape_cos"] >= args.calib_cos_min)
+                            & (psum >= args.calib_min_pred_pe)
+                            & (tbl["oob_frac"] <= args.flash_oob_max),
+                            tbl["shape_cos"], -np.inf)
+            if not np.isfinite(cand).any():
+                print(f"  [{i}] calib: {n_cl} clusters, none matches the flash "
+                      f"(best cos {np.nanmax(tbl['shape_cos']):.2f}) -- skipped")
+                continue
+            r = int(np.argmax(cand))
+            q = int(tbl["query"][r])
+            runner = np.sort(cand)[-2] if np.isfinite(cand).sum() > 1 else -np.inf
+            keep_full = (csid == q)
+            keep_filt = keep_full[sids[1] != -2]
+            model.cascade._force_slicer_out = sl_out
+            model.cascade._force_slice = ("mask", keep_filt)
+            old_lf = getattr(model, "loose_fallback", False)
+            model.loose_fallback = True
+            try:
+                _rng_restore(rng_post_slicer)
+                with torch.no_grad():
+                    out = model(batch)
+                wrote = decode_and_write(
+                    out, tag_prefix="calib_",
+                    attrs_extra={"stream": "calib", "slice_label": f"cosmic{q:02d}",
+                                 "flash_chi2": float(tbl["chi2"][r]),
+                                 "shape_cos": float(tbl["shape_cos"][r]),
+                                 "shape_cos_runnerup": float(runner) if np.isfinite(runner) else -1.0,
+                                 "n_calib_clusters": n_cl,
+                                 "calib_cluster_radius_cm": float(args.calib_cluster_radius)},
+                    flash_tbl=tbl)
+            finally:
+                model.cascade._force_slice = None
+                model.cascade._force_slicer_out = None
+                model.loose_fallback = old_lf
+            print(f"  [{i}] calib: cluster {q} of {n_cl} (cos {tbl['shape_cos'][r]:.3f}, "
+                  f"{int(tbl['n_points'][r])} pts, chi2 {tbl['chi2'][r]:.0f}) -> "
+                  f"{'written' if wrote else 'EMPTY stage-3 output'}")
+            continue
 
         flash_tbl = None
         if not args.no_flash and sids is not None:

@@ -30,11 +30,43 @@ def on_boundary(pt, margin=BOUNDARY_MARGIN_CM):
                 or np.any(np.abs(pt - TPC_HI) < margin))
 
 
+def track_geometry(pts):
+    """Principal-axis geometry of an instance's points: (end_a, end_b, length,
+    linearity = 1 - lambda2/lambda1, rms transverse distance [cm]). Endpoints are
+    the extreme points along the principal axis."""
+    pts = np.asarray(pts, np.float64)
+    if len(pts) < 3:
+        return None
+    c = pts.mean(0)
+    u, sv, vt = np.linalg.svd(pts - c, full_matrices=False)
+    ax = vt[0]
+    proj = (pts - c) @ ax
+    ia, ib = int(np.argmin(proj)), int(np.argmax(proj))
+    perp = (pts - c) - np.outer(proj, ax)
+    rms_perp = float(np.sqrt((perp ** 2).sum(1).mean()))
+    lam = sv ** 2 / max(len(pts) - 1, 1)
+    lin = float(1.0 - lam[1] / lam[0]) if lam[0] > 0 else 0.0
+    return pts[ia], pts[ib], float(proj[ib] - proj[ia]), lin, rms_perp
+
+
 def event_particles(kp, reco_group):
-    """List of particle dicts for one event (reco + orphan kp2 instances)."""
+    """List of particle dicts for one event (reco + orphan kp2 instances).
+
+    Every particle with a kp2 instance also carries the principal-axis geometry
+    of its points (`lin`, `rms_perp`, `geo_len`); vertex-less instances whose
+    end keypoint is missing get their endpoints from that geometry (the start
+    keypoint is kept when it is finite and lies at one extreme)."""
     parts = []
     attached = set()
     npart = int(kp.attrs.get("n_particles", 0))
+    slice_coords = (kp["slice/coord_cm"][()].astype(np.float32)
+                    if "slice" in kp and "coord_cm" in kp["slice"] else None)
+
+    def geom(inst):
+        if slice_coords is None or inst < 0 or f"particle/{inst}" not in kp:
+            return None
+        pidx = kp[f"particle/{inst}/point_idx"][()].astype(np.int64)
+        return track_geometry(slice_coords[pidx]) if len(pidx) >= 3 else None
     if reco_group is not None:
         d = prong_rows(reco_group)
         # prong_rows does not load part_length / part_true_ke; read them here
@@ -62,7 +94,10 @@ def event_particles(kp, reco_group):
             else:
                 en = np.full(3, np.nan); length = np.nan
             lp = d.get("larpid_pid"); ls = d.get("larpid_scores")
+            gm = geom(inst)
             parts.append(dict(
+                lin=gm[3] if gm else np.nan, rms_perp=gm[4] if gm else np.nan,
+                geo_len=gm[2] if gm else np.nan,
                 inst=inst, orphan=False, kind=kind, cls=cls,
                 pdg=LARFORMER_PDG.get(cls, 0), start=st, end=en, length=length,
                 ke=ke, charge=float(d["part_charge"][i]),
@@ -80,8 +115,20 @@ def event_particles(kp, reco_group):
         kind = 1 if cls in (0, 1) else 0
         st = np.asarray(g["start_cm"][()], np.float64)
         en = np.asarray(g["end_cm"][()], np.float64) if kind == 0 else np.full(3, np.nan)
+        gm = geom(inst)
+        if gm is not None and not (np.isfinite(st).all() and np.isfinite(en).all()):
+            # endpoints from the principal axis; keep the kp start if it sits at
+            # one extreme (within 10 cm), else use the geometric extremes
+            a, b = gm[0], gm[1]
+            if np.isfinite(st).all() and np.linalg.norm(st - b) < np.linalg.norm(st - a):
+                a, b = b, a
+            if not np.isfinite(st).all() or np.linalg.norm(st - a) > 10.0:
+                st = a
+            en = b
         length = float(np.linalg.norm(en - st)) if np.isfinite(en).all() else np.nan
         parts.append(dict(
+            lin=gm[3] if gm else np.nan, rms_perp=gm[4] if gm else np.nan,
+            geo_len=gm[2] if gm else np.nan,
             inst=inst, orphan=True, kind=kind, cls=cls, pdg=LARFORMER_PDG.get(cls, 0),
             start=st, end=en, length=length, ke=np.nan, charge=np.nan,
             is_secondary=-1, vertexed=0, interaction=-1, larpid_pid=-1,
@@ -90,14 +137,40 @@ def event_particles(kp, reco_group):
     return parts
 
 
-def candidate_muons(parts, min_len=30.0):
-    """Loose candidates (muon class tracks above min_len) with the isolation
-    variables of the event attached. Every protocol cut is applied later."""
+def cluster_particle(coords):
+    """The whole flash-matched cluster as ONE candidate (flash-calib stream):
+    endpoints/length/linearity from its points. inst=-1, orphan=2 marks it."""
+    gm = track_geometry(coords)
+    if gm is None:
+        return None
+    a, b, length, lin, rms = gm
+    return dict(lin=lin, rms_perp=rms, geo_len=length, inst=-1, orphan=2, kind=0,
+                cls=-1, pdg=13, start=np.asarray(a, np.float64), end=np.asarray(b, np.float64),
+                length=float(length), ke=np.nan, charge=np.nan, is_secondary=-1,
+                vertexed=0, interaction=-1, larpid_pid=-1, larpid_mu=np.nan,
+                gt_trackid=-1, true_ke=np.nan)
+
+
+def candidate_muons(parts, min_len=30.0, require_mu_class=True):
+    """Loose candidates with the isolation variables of the event attached.
+    Every protocol cut is applied later.
+
+    require_mu_class=True  (production nu stream): segmenter muon-class tracks.
+    require_mu_class=False (flash-calib stream): EVERY instance with a finite
+        length above min_len, whatever its class -- the segmenter labels many
+        cosmic clusters electron/photon; the fit then selects track-like
+        geometry (`lin`, `rms_perp`) and/or the class."""
     out = []
-    tracks = [p for p in parts if p["kind"] == 0]
-    showers = [p for p in parts if p["kind"] == 1]
+    if require_mu_class:
+        tracks = [p for p in parts if p["kind"] == 0]
+        showers = [p for p in parts if p["kind"] == 1]
+    else:
+        tracks = list(parts)
+        showers = []
     for p in tracks:
-        if p["pdg"] != 13 or not np.isfinite(p["length"]) or p["length"] <= min_len:
+        if require_mu_class and p["pdg"] != 13:
+            continue
+        if not np.isfinite(p["length"]) or p["length"] <= min_len:
             continue
         others = [t for t in tracks if t is not p]
         other_ke = [t["ke"] for t in others if np.isfinite(t["ke"])]
@@ -106,8 +179,10 @@ def candidate_muons(parts, min_len=30.0):
         shower_e = [s["ke"] for s in showers if np.isfinite(s["ke"])]
         sb, eb = on_boundary(p["start"]), on_boundary(p["end"])
         bx = p["start"][0] if sb else (p["end"][0] if eb else np.nan)
+        bxs = [p["start"][0] if sb else np.nan, p["end"][0] if eb else np.nan]
         q = dict(p)
         q.update(n_boundary=int(sb) + int(eb), boundary_end_x=float(bx),
+                 boundary_x_min=float(np.nanmin(bxs)) if (sb or eb) else np.nan,
                  iso_track_ke_max=float(max(other_ke)) if other_ke else 0.0,
                  n_other_tracks=len(others),
                  n_other_tracks_orphan=sum(1 for t in others if t["orphan"]),

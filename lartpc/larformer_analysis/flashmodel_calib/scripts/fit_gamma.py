@@ -58,11 +58,23 @@ def select_muons(ev, mu, args, window):
         window, margin=args.window_margin, min_pe=args.flash_min_pe)
         for i in evi])
     cut("in-window single flash", ok_flash)
+    if args.require_mu_class:
+        cut("segmenter muon class", mu["pdg"] == 13)
+    if args.rms_perp_max < 1e8 and "rms_perp" in mu:
+        cut(f"track-like: rms_perp < {args.rms_perp_max:g} cm & lin > {args.lin_min:g}",
+            (mu["rms_perp"] < args.rms_perp_max) & (mu["lin"] > args.lin_min))
     cut(f"length > {args.min_len:g} cm", mu["length"] > args.min_len)
-    cut(f"n_boundary == {args.n_boundary}", mu["n_boundary"] == args.n_boundary)
-    if args.n_boundary >= 1:
-        cut(f"boundary end x > {args.x_boundary_min:g} cm",
-            mu["boundary_end_x"] > args.x_boundary_min)
+    if args.calib_object != "any" and "orphan" in mu:
+        want = 2 if args.calib_object == "cluster" else -1
+        cut(f"calib object = {args.calib_object}",
+            (mu["orphan"] == 2) if want == 2 else (mu["orphan"] != 2))
+    if args.n_boundary >= 0:
+        cut(f"n_boundary == {args.n_boundary}", mu["n_boundary"] == args.n_boundary)
+    else:
+        cut("n_boundary >= 1", mu["n_boundary"] >= 1)
+    if args.n_boundary != 0:
+        bx = mu["boundary_x_min"] if "boundary_x_min" in mu else mu["boundary_end_x"]
+        cut(f"every boundary end x > {args.x_boundary_min:g} cm", bx > args.x_boundary_min)
     if not args.allow_secondary:
         cut("primary (not secondary)", mu["is_secondary"] <= 0)
     cut(f"other tracks KE < {args.iso_track_ke:g}",
@@ -131,7 +143,22 @@ def build_parser():
     ap.add_argument("--flash-min-pe", type=float, default=20.0)
     # muon cuts (the protocol defaults)
     ap.add_argument("--min-len", type=float, default=50.0)
-    ap.add_argument("--n-boundary", type=int, default=1)
+    ap.add_argument("--require-mu-class", dest="require_mu_class", action="store_true",
+                    default=True, help="require the segmenter muon class (default)")
+    ap.add_argument("--no-require-mu-class", dest="require_mu_class", action="store_false",
+                    help="accept any instance (flash-calib stream); use the "
+                         "geometry cuts below instead")
+    ap.add_argument("--rms-perp-max", type=float, default=1e9,
+                    help="track-like geometry: max rms transverse spread [cm] "
+                         "(off by default; ~4 for the calib stream)")
+    ap.add_argument("--lin-min", type=float, default=0.0,
+                    help="track-like geometry: min linearity 1-l2/l1 (e.g. 0.95)")
+    ap.add_argument("--n-boundary", type=int, default=1,
+                    help="1 (default), 2 (through-going), 0 (contained), -1 (>= 1)")
+    ap.add_argument("--calib-object", default="any", choices=["any", "cluster", "instance"],
+                    help="flash-calib stream: use the whole flash-matched cluster "
+                         "as the muon ('cluster'), the segmenter instances "
+                         "('instance'), or both ('any', default)")
     ap.add_argument("--x-boundary-min", type=float, default=125.0)
     ap.add_argument("--allow-secondary", action="store_true")
     ap.add_argument("--iso-track-ke", type=float, default=50.0)

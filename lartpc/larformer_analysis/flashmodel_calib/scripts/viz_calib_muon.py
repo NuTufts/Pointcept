@@ -62,12 +62,24 @@ def failure_reason(ev, mu, j, args, window):
                                                 margin=args.window_margin,
                                                 min_pe=args.flash_min_pe)):
         return "in-window single flash"
+    if args.require_mu_class and mu["pdg"][j] != 13:
+        return f"class {mu['cls'][j]} (not muon)"
+    if args.rms_perp_max < 1e8 and "rms_perp" in mu and not (
+            mu["rms_perp"][j] < args.rms_perp_max and mu["lin"][j] > args.lin_min):
+        return f"not track-like (rms_perp {mu['rms_perp'][j]:.1f}, lin {mu['lin'][j]:.2f})"
     if mu["length"][j] <= args.min_len:
         return f"length <= {args.min_len:g}"
-    if mu["n_boundary"][j] != args.n_boundary:
+    if args.calib_object == "cluster" and mu["orphan"][j] != 2:
+        return "not the cluster object"
+    if args.calib_object == "instance" and mu["orphan"][j] == 2:
+        return "cluster object (instances requested)"
+    if args.n_boundary >= 0 and mu["n_boundary"][j] != args.n_boundary:
         return f"n_boundary = {mu['n_boundary'][j]}"
-    if args.n_boundary >= 1 and mu["boundary_end_x"][j] <= args.x_boundary_min:
-        return f"boundary end x = {mu['boundary_end_x'][j]:.0f}"
+    if args.n_boundary < 0 and mu["n_boundary"][j] < 1:
+        return "no boundary end"
+    bxm = mu["boundary_x_min"][j] if "boundary_x_min" in mu else mu["boundary_end_x"][j]
+    if args.n_boundary != 0 and not (bxm > args.x_boundary_min):
+        return f"boundary end x = {bxm:.0f}"
     if not args.allow_secondary and mu["is_secondary"][j] > 0:
         return "secondary"
     if mu["iso_track_ke_max"][j] >= args.iso_track_ke:
@@ -97,7 +109,9 @@ def load_muon_event(ev, mu, j):
     out = dict(i=i, j=j)
     with h5py.File(ev["kp2_path"][i], "r") as kp:
         out["slice"] = kp["slice/coord_cm"][()].astype(np.float32)
-        out["pidx"] = kp[f"particle/{int(mu['inst'][j])}/point_idx"][()].astype(np.int64)
+        inst = int(mu["inst"][j])
+        out["pidx"] = (kp[f"particle/{inst}/point_idx"][()].astype(np.int64) if inst >= 0
+                       else np.arange(out["slice"].shape[0], dtype=np.int64))
         out["stored_pred_nu"] = ev["pred_nu_file"][i]
     with h5py.File(ev["msp_path"][i], "r") as f:
         e = f["entry_0"]
@@ -172,7 +186,7 @@ def figure(sample, ev, mu, j, data, s_fit, reason="", cap=40000):
                [{"type": "xy", "colspan": 3}, None, None],
                [{"type": "xy"}, {"type": "xy"}, {"type": "xy"}]],
         row_heights=[0.46, 0.18, 0.36], column_widths=[0.4, 0.3, 0.3],
-        subplot_titles=("3D: muon points (colour = comb charge), nu union (blue), event (grey), "
+        subplot_titles=("3D: muon points (colour = comb charge), stage-3 slice (blue), event (grey), "
                         "PMTs coloured by observed PE",
                         "PMT layout: observed (filled) vs predicted x s (open)",
                         "per-opdet PE: observed vs predicted",
@@ -183,12 +197,14 @@ def figure(sample, ev, mu, j, data, s_fit, reason="", cap=40000):
     rng = np.random.default_rng(0)
     sel = rng.choice(len(allp), min(cap, len(allp)), replace=False)
     fig.add_trace(go.Scatter3d(x=allp[sel, 2], y=allp[sel, 0], z=allp[sel, 1], mode="markers",
-                               marker=dict(size=1.2, color="rgba(150,150,150,0.25)"),
+                               marker=dict(size=1.6, color="rgba(70,70,70,0.6)"),
                                name="event", hoverinfo="skip"), row=1, col=1)
     sl = data["slice"]
+    slice_name = ("calib cluster" if str(ev.get("stream", [""] * (i + 1))[i]) == "calib"
+                  else "nu union")
     fig.add_trace(go.Scatter3d(x=sl[:, 2], y=sl[:, 0], z=sl[:, 1], mode="markers",
                                marker=dict(size=1.6, color="rgba(60,110,220,0.45)"),
-                               name=f"nu union ({len(sl)} pts)", hoverinfo="skip"), row=1, col=1)
+                               name=f"{slice_name} ({len(sl)} pts)", hoverinfo="skip"), row=1, col=1)
     mp = sl[data["pidx"]]
     rows = data["slice_rows"][data["pidx"]]
     q = np.where(rows >= 0, data["all_pixval"][np.maximum(rows, 0), 2], 0.0)
@@ -256,7 +272,7 @@ def figure(sample, ev, mu, j, data, s_fit, reason="", cap=40000):
         w = data["all_wires"][p]; t = data["all_tick"]
         fig.add_trace(go.Scattergl(x=w[union_rows], y=t[union_rows], mode="markers",
                                    marker=dict(size=2.5, color="rgba(60,110,220,0.5)"),
-                                   name="nu union pixels", showlegend=(p == 0), hoverinfo="skip"),
+                                   name=f"{slice_name} pixels", showlegend=(p == 0), hoverinfo="skip"),
                       row=3, col=p + 1)
         mr = rows[rows >= 0]
         fig.add_trace(go.Scattergl(x=w[mr], y=t[mr], mode="markers",
@@ -269,9 +285,10 @@ def figure(sample, ev, mu, j, data, s_fit, reason="", cap=40000):
     win = sample["flash_window_us"]
     info = (f"<b>{sample['tag']}</b> ({sample['kind']}, period {sample['period']})  gidx {ev['gidx'][i]}  "
             f"RSE {ev['run'][i]}/{ev['subrun'][i]}/{ev['event'][i]}  inst {mu['inst'][j]}"
-            f"{' (vertex-less)' if mu['orphan'][j] else ''}<br>"
+            f"{' (whole cluster)' if mu['orphan'][j] == 2 else (' (vertex-less)' if mu['orphan'][j] else '')}<br>"
             f"muon: L={mu['length'][j]:.0f} cm, KE={mu['ke'][j]:.0f} MeV, n_boundary={mu['n_boundary'][j]}, "
-            f"boundary x={mu['boundary_end_x'][j]:.0f}, npts={mu['npts'][j]}, q_mu={mu['q_mu'][j]:.0f} "
+            f"boundary x={mu['boundary_end_x'][j]:.0f}, npts={mu['npts'][j]}, cls={mu['cls'][j]}, "
+            f"rms_perp={mu['rms_perp'][j]:.1f} cm, lin={mu['lin'][j]:.3f}, q_mu={mu['q_mu'][j]:.0f} "
             f"({mu['q_mu'][j] / max(q_union, 1e-9):.2f} of union {q_union:.0f}); "
             f"other track KE {mu['iso_track_ke_max'][j]:.0f}, shower E {mu['iso_shower_e_max'][j]:.0f}<br>"
             f"flash: t={ev['flash_time_us'][i]:.2f} us (window {win[0]}-{win[1]}), total {ev['flash_total_pe'][i]:.0f} PE, "

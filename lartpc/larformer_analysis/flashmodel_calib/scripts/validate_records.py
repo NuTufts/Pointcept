@@ -51,9 +51,12 @@ def main():
               f"where the chosen in-window flash differs from the cascade's max-PE flash")
     if mu:
         m = np.isfinite(mu["charge_reco"]) & (mu["charge_reco"] > 0)
-        rq = mu["q_mu"][m] / mu["charge_reco"][m]
-        print(f"   [2] q_mu / part_charge: N={m.sum()} median {np.median(rq):.3f} p16-84 "
-              f"{np.percentile(rq, 16):.3f}-{np.percentile(rq, 84):.3f} (slice-wide vs union dedup)")
+        if m.any():
+            rq = mu["q_mu"][m] / mu["charge_reco"][m]
+            print(f"   [2] q_mu / part_charge: N={m.sum()} median {np.median(rq):.3f} p16-84 "
+                  f"{np.percentile(rq, 16):.3f}-{np.percentile(rq, 84):.3f} (slice-wide vs union dedup)")
+        else:
+            print("   [2] no nu_reco charge to compare (calib stream: kp2 instances only)")
         print(f"   [2] orphan (vertex-less) candidates: {int(mu['orphan'].sum())}")
     print(f"   [3] events with in-window flash: {int(ev['has_flash'].sum())} | with candidates: "
           f"{int((ev['n_cand'] > 0).sum())} | unmatched slice coords total: {int(ev['n_unmatched'].sum())}")

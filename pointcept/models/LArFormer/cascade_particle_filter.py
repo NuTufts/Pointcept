@@ -30,6 +30,7 @@ add the (a) nu-keep-mask construction from slicer predictions and
 
 from typing import Sequence
 
+import numpy as np
 import torch
 
 from .cascade_filter import filter_batch_by_keep_mask
@@ -144,10 +145,22 @@ def build_forced_keep_mask(slicer_predictions, n_sp_per_event, spec, nu_class_id
       "nu"        -> union of nu-class queries (== build_nu_keep_mask), or
       ("q", qi)   -> just query index qi's mask (regardless of its class), i.e. one
                      cosmic slice selected by stable query slot.
+      ("mask", m) -> an explicit bool keep mask over the FILTERED (post-deghost)
+                     points of this single event, e.g. a connected-component
+                     cluster chosen by the flash-calibration mode. Its length
+                     must equal the filtered point count.
     """
     if spec == "nu":
         return build_nu_keep_mask(slicer_predictions, n_sp_per_event, nu_class_id,
                                   mask_prob_threshold, spacepoint_level, device)
+    if isinstance(spec, tuple) and spec[0] == "mask":
+        n_sp = [int(x) for x in n_sp_per_event.detach().cpu().tolist()]
+        n_filt = n_sp[0] if n_sp else 0
+        m = torch.as_tensor(np.asarray(spec[1], dtype=bool))
+        if m.numel() != n_filt:
+            dev = device or torch.device("cpu")
+            return torch.zeros(n_filt, dtype=torch.bool, device=dev)
+        return m.to(device) if device is not None else m
     _, qi = spec
     n_sp = [int(x) for x in n_sp_per_event.detach().cpu().tolist()]
     n_filt = n_sp[0] if n_sp else 0

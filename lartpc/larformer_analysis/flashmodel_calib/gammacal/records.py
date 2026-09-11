@@ -26,9 +26,10 @@ from .flash import read_flashes, choose_flash, MAX_FLASHES
 from .masks import live_mask
 from .points import MspCharge, slice_charge
 from .predict import predict_pe_ref, cos_sim, centroid_yz
-from .muon_select import event_particles, candidate_muons
+from .muon_select import event_particles, candidate_muons, cluster_particle
 
-_STR_KEYS = {"kp2_path", "msp_path", "dead_file", "chi2_masked_file", "sat_file"}
+_STR_KEYS = {"kp2_path", "msp_path", "dead_file", "chi2_masked_file", "sat_file",
+             "stream", "slice_label"}
 
 
 def _truth_ctx(msp_path):
@@ -77,7 +78,8 @@ def build_records(sample, start, n, out_path, min_len=30.0, device="cpu",
         print(f">>> {sample['tag']}: events [{start}:{stop}) of {len(kp_list)} "
               f"| kind={sample['kind']} period={sample['period']} "
               f"| union_every={union_every}", flush=True)
-    reco_map = build_reco_map(sample["nu_reco_dir"])
+    reco_map = (build_reco_map(sample["nu_reco_dir"])
+                if sample.get("nu_reco_dir") else {})   # calib stream: kp2 only
     shard_handles = {}
 
     def reco_group(gidx):
@@ -122,7 +124,10 @@ def build_records(sample, start, n, out_path, min_len=30.0, device="cpu",
                 flash_total_pe=np.nan, flash_times=np.full(MAX_FLASHES, np.nan, np.float32),
                 flash_pes=np.full(MAX_FLASHES, np.nan, np.float32),
                 obs_pe=np.full(32, np.nan, np.float32), live=np.zeros(32, bool),
-                sat_file="", n_cand=0)
+                sat_file="", n_cand=0,
+                stream=_attr_str(a, "stream"), slice_label=_attr_str(a, "slice_label"),
+                calib_shape_cos=float(a.get("shape_cos", np.nan)),
+                calib_n_clusters=int(a.get("n_calib_clusters", -1)))
             if "slices" in kp:
                 labs = [x.decode() if isinstance(x, bytes) else str(x)
                         for x in kp["slices/label"][()]]
@@ -149,7 +154,17 @@ def build_records(sample, start, n, out_path, min_len=30.0, device="cpu",
             if gr is None:
                 counters["no_reco"] += 1
             parts = event_particles(kp, gr)
-            cands = candidate_muons(parts, min_len=min_len)
+            calib_stream = not sample.get("nu_reco_dir")
+            cands = candidate_muons(parts, min_len=min_len,
+                                    require_mu_class=not calib_stream)
+            if calib_stream and ev["n_union_pts"] >= 3:
+                # the whole flash-matched cluster as one candidate (inst=-1);
+                # isolation = the instance list of the cluster
+                cp = cluster_particle(kp["slice/coord_cm"][()].astype(np.float32))
+                if cp is not None and np.isfinite(cp["length"]) and cp["length"] > min_len:
+                    cands += [c for c in candidate_muons(parts + [cp], min_len=min_len,
+                                                         require_mu_class=False)
+                              if c["inst"] == -1]
             ev["n_cand"] = len(cands)
             need_msp = bool(cands) or union_every
             if not cands:
@@ -178,7 +193,8 @@ def build_records(sample, start, n, out_path, min_len=30.0, device="cpu",
                 counters["with_cand"] += 1
             ev_index = len(ev_rows)
             for c in cands:
-                pidx = kp[f"particle/{c['inst']}/point_idx"][()].astype(np.int64)
+                pidx = (kp[f"particle/{c['inst']}/point_idx"][()].astype(np.int64)
+                        if c["inst"] >= 0 else np.arange(len(coords), dtype=np.int64))
                 pts = coords[pidx]; q = q_pts[pidx]
                 pred = predict_pe_ref(pts, q, t0, device=device)
                 pcy, pcz = centroid_yz(pred, live); ocy, ocz = centroid_yz(obs, live)
@@ -190,7 +206,8 @@ def build_records(sample, start, n, out_path, min_len=30.0, device="cpu",
                     start=np.asarray(c["start"], np.float32),
                     end=np.asarray(c["end"], np.float32),
                     length=float(c["length"]), n_boundary=int(c["n_boundary"]),
-                    boundary_end_x=float(c["boundary_end_x"]), ke=float(c["ke"]),
+                    boundary_end_x=float(c["boundary_end_x"]),
+                    boundary_x_min=float(c.get("boundary_x_min", np.nan)), ke=float(c["ke"]),
                     charge_reco=float(c["charge"]), q_mu=float(q.sum()),
                     npts=int(len(pidx)),
                     iso_track_ke_max=float(c["iso_track_ke_max"]),
@@ -200,6 +217,8 @@ def build_records(sample, start, n, out_path, min_len=30.0, device="cpu",
                     iso_shower_e_max=float(c["iso_shower_e_max"]),
                     n_showers=int(c["n_showers"]),
                     larpid_pid=int(c["larpid_pid"]), larpid_mu=float(c["larpid_mu"]),
+                    lin=float(c.get("lin", np.nan)), rms_perp=float(c.get("rms_perp", np.nan)),
+                    geo_len=float(c.get("geo_len", np.nan)),
                     gt_trackid=int(c["gt_trackid"]), gt_pdg=int(gpdg),
                     gt_origin=int(gorig), true_ke=float(c["true_ke"]),
                     pred_mu_ref=np.asarray(pred, np.float32),
