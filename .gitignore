@@ -32,3 +32,4 @@ plots/
 
 # gammacal record shards are large data artifacts (results/*/*.json are tracked)
 lartpc/larformer_analysis/flashmodel_calib/results/*/records/
+lartpc/larformer_analysis/flashmodel_calib/results/*/viz/
