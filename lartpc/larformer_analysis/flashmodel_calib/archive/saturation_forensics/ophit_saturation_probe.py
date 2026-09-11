@@ -27,7 +27,7 @@ import h5py
 import uproot
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                "..", "..", ".."))
+                                "..", "..", "..", "..", ".."))
 from lartpc.flashmatch.saturation import find_saturated        # noqa: E402
 
 # larlite larutil::Geometry::OpDetFromOpChannel, opch -> opdet. This is the

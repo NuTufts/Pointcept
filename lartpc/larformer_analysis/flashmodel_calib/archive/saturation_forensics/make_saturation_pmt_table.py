@@ -31,9 +31,9 @@ import numpy as np
 import h5py
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                "..", "..", ".."))
+                                "..", "..", "..", "..", ".."))
 from lartpc.flashmatch.saturation import find_saturated              # noqa: E402
-from lartpc.larformer_analysis.flashmodel_calib.ophit_saturation_probe import (
+from lartpc.larformer_analysis.flashmodel_calib.archive.saturation_forensics.ophit_saturation_probe import (
     OPCH2OPDET, OPHIT_PROD, BEAM_LO, BEAM_HI)                        # noqa: E402
 
 OD2CH = {v: k for k, v in OPCH2OPDET.items()}

@@ -27,7 +27,7 @@ import uproot
 import awkward as ak
 
 _PI0 = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                    "..", "physics", "pi0mass_peak")
+                    "..", "..", "..", "physics", "pi0mass_peak")
 sys.path.insert(0, _PI0)
 from flash_correction import rse_map, corrected_chi2_by_rse   # noqa: E402
 

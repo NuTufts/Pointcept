@@ -23,7 +23,7 @@ import numpy as np
 import h5py
 
 _PI0 = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                    "..", "physics", "pi0mass_peak")
+                    "..", "..", "..", "physics", "pi0mass_peak")
 sys.path.insert(0, _PI0)
 from flash_correction import rse_map                # noqa: E402
 

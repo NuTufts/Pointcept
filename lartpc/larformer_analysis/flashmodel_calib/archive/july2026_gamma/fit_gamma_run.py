@@ -42,14 +42,14 @@ import h5py
 
 # reuse the RSE->cascade-path cache built for the pi0 study
 _PI0 = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                    "..", "physics", "pi0mass_peak")
+                    "..", "..", "..", "physics", "pi0mass_peak")
 sys.path.insert(0, _PI0)
 from flash_correction import rse_map              # noqa: E402
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                "..", "..", ".."))
+                                "..", "..", "..", "..", ".."))
 from lartpc.flashmatch.dead_channels import dead_opdets_for_run  # noqa: E402
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                "..", "..", "larformer_reco", "viz"))
+                                "..", "..", "..", "..", "larformer_reco", "viz"))
 from pmtpos import getPMTPosByOpDet                # noqa: E402
 
 # PMT (opdet) y,z positions in TPC coords, opdet-indexed (matches the PE arrays)

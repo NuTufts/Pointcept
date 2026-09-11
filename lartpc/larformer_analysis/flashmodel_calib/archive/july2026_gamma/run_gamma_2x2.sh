@@ -5,7 +5,7 @@
 #SBATCH --output=logs/pilot_matrix/gamma2x2.%j.log --error=logs/pilot_matrix/gamma2x2.%j.err
 set -u
 K=/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/kpv2_pointcept
-F=$K/lartpc/larformer_analysis/flashmodel_calib
+F=$K/lartpc/larformer_analysis/flashmodel_calib/archive/july2026_gamma
 C=/cluster/tufts/wongjiradlabnu/larbys/containers/pointcept_cuml.sif
 D=/cluster/tufts/wongjiradlab/larbys/data/ub_on_tufts
 mkdir -p $F/plots

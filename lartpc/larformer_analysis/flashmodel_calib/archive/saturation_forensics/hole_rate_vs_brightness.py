@@ -25,7 +25,7 @@ import matplotlib.pyplot as plt
 import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                "..", "..", ".."))
+                                "..", "..", "..", "..", ".."))
 from lartpc.flashmatch.saturation import find_saturated        # noqa: E402
 
 # total observed PE bins; saturation should only switch on at the bright end

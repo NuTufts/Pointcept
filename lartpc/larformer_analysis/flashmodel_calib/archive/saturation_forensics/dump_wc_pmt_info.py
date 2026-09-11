@@ -29,8 +29,8 @@ import numpy as np
 import uproot
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                "..", "..", ".."))
-from lartpc.larformer_analysis.flashmodel_calib.ophit_saturation_probe import (
+                                "..", "..", "..", "..", ".."))
+from lartpc.larformer_analysis.flashmodel_calib.archive.saturation_forensics.ophit_saturation_probe import (
     OPCH2OPDET)                                                   # noqa: E402
 
 OD2CH = {v: k for k, v in OPCH2OPDET.items()}

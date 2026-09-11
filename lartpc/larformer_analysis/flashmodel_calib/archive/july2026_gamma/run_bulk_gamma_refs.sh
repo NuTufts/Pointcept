@@ -6,7 +6,7 @@
 set -u
 module load apptainer 2>/dev/null || true
 K=/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/kpv2_pointcept
-F=$K/lartpc/larformer_analysis/flashmodel_calib
+F=$K/lartpc/larformer_analysis/flashmodel_calib/archive/july2026_gamma
 C=/cluster/tufts/wongjiradlabnu/larbys/containers/pointcept_cuml.sif
 D=/cluster/tufts/wongjiradlab/larbys/data/ub_on_tufts
 # tag : ntuple : cascade dir : gamma the sample was PRODUCED at (auto table)

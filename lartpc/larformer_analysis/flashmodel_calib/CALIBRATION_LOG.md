@@ -1,0 +1,226 @@
+# Cross-sample flash light-yield (gamma) calibration — working log & handoff
+
+Owner: hand-off doc for a dedicated flashmatch-calibration session.
+Last updated: 2026-09-11.
+
+## 1. Why this matters right now
+
+Two live problems depend on the answer:
+
+1. **EXT data/prediction mismatch.** The pi0 and single-photon comparisons show a
+   data excess over prediction in the EXT (beam-off) component, concentrated at
+   low flash PE
+   (`physics/single_photon/plots_cew6bdt_novtx/diagnostics_{vertex,novertex}/preChi2/flashPE.png`).
+   If the EXT sample was reconstructed with the wrong light-yield scale, its
+   `pred_pe` — and therefore its flash-chi2 — is systematically biased, which
+   changes how many EXT events survive the chi2 cut. That makes this a
+   *reconstruction* problem, not only a normalization one.
+2. **The Run-1 alignment campaign is gated on it.** `gamma_scale` multiplies
+   `gamma_beam` at
+   `tools/larformer/run_larformer_keypoint2_cascade_inference.py:569`, i.e.
+   BEFORE the flash-chi2 and the `chi2_rank` that assigns the `nu` vs
+   `flashmatch` stream. It is baked into the GPU pass, so it must be right
+   before production inference; getting it wrong means redoing all of it.
+   (Staging + merged_sp conversion are unaffected and are already running —
+   the converter has no gamma/pred_pe/chi2 dependence at all.)
+
+## 2. What is deployed today
+
+`lartpc/flashmatch/dead_channels.py` — the single source of truth, keyed on
+**run number only**:
+
+```python
+GAMMA_SCALE_BY_PERIOD = {1: 0.80,  # bnb5e19 run1: measured (muon 0.79 / shower 0.85)
+                         2: 1.0, 3: 1.0, 4: 1.0, 5: 1.0}   # 3 = gamma_beam reference
+DEAD_OPDETS_BY_PERIOD = {1: (), 2: (), 3: (15,), 4: (15,), 5: (15,)}
+_PERIOD_BOUNDS = ((1,0), (2,7771), (3,13697), (4,18961), (5,22270))
+```
+
+`gamma_beam = 5.25` (inference default), tuned to **run-3 MC**. Resolution is
+per-event from the run number via `resolve_gamma_scale` / `resolve_dead_opdets`
+(specs `auto` by default). Two TODOs are recorded in that module's docstring and
+are exactly what this work is about:
+(a) replace the dead list with the official per-period bad-optical-channel list;
+(b) **measure the run3-DATA gamma from the full EXT sample; if run-3 data also
+offsets from run-3 MC, the effect is data/MC and not purely per-run, and the
+table must be split accordingly.**
+
+**Key structural point: the table cannot distinguish samples within a run
+period.** bnb5e19, a Run-1 EXT sample and a Run-1 overlay are all
+`run_period()==1`. So do NOT edit `GAMMA_SCALE_BY_PERIOD` in place to encode a
+per-sample finding — it would retroactively change every validated Run-1
+product. Pass `INF_EXTRA_ARGS="--gamma-run-scale <value>"` per sample instead
+(the hook exists at `larformer_reco/slurm/submit_extbnb_chain.sh:106`). If a
+data/MC split is genuinely required, add it **additively** (e.g. a separate
+`GAMMA_SCALE_BY_PERIOD_MC` plus an `"automc"` spec) so the data path stays
+bit-identical.
+
+## 3. Two estimators — know which one you are reading
+
+| | `fit_gamma_run.py` ("clean muon") | `measure_bulk_gamma.py` ("bulk") |
+|---|---|---|
+| population | in-time stopping/entering MIP muons, proton-vetoed, with a pred/obs centroid spatial match | every event with a nu-candidate slice and an in-time flash |
+| statistic | `gamma = gamma_beam * median(sum_live obs/sum_live pred)` | `r = median(sum_live obs / sum_live pred)` |
+| N per sample | 10^2 | 10^4–10^5 |
+| intended use | absolute-ish | **differential only** (see its docstring) |
+| selection knobs | `--min-muon-len 50 --x-entry-min 125 --proton-veto-e 50 --min-pred-pe 50 --match-dz 100 --match-dy 60` | `--min-pred-pe` |
+
+Both read `slices/pred_pe` and `flash/observed_pe` out of the **already-written**
+cascade tables, so neither needs re-inference. Both resolve dead PMTs per run
+(opdet 15 is dead in run 3 but LIVE in run 1 — hardcoding `(15,)` silently drops
+a live tube from both sums).
+
+### The arithmetic trap (applies to every number below)
+
+`pred_pe` stored in a cascade file was computed at that production's
+`gamma_eff = gamma_beam * gamma_scale`, which is recorded in the file:
+
+```python
+h5py.File(f)['flash'].attrs  # -> gamma_beam, gamma_scale, gamma_eff, dead_opdets
+```
+
+`fit_gamma_run.py:204` does `gamma_fit = args.gamma_beam * median(ratio)` —
+it multiplies blindly by whatever you pass. So:
+
+* pass `--gamma-beam <the production's gamma_eff>`, not the default 5.25;
+* the comparable quantity across samples is
+  **`absolute_scale = production_gamma_scale x r`**.
+
+Productions to date: bnb5e19 cew6 ran at **scale 0.80** (`gamma_eff` 4.20); the
+run-3 MC and run-3 EXT cew6 productions ran at **scale 1.0** (`gamma_eff` 5.25);
+the Run-1 overlay gamma pilot was deliberately forced to **scale 1.0**.
+`run_bulk_gamma_refs.sh` prints raw `r` ratios that are **not** corrected for
+this, so its printed "run1/run3" number is misleading as-is.
+
+## 4. Measurements (all on the cew6 chain)
+
+`production` = gamma_scale the sample was reconstructed at.
+`absolute` = production x median ratio = the scale that would make pred match obs.
+
+| sample | kind | production | bulk r (N) | bulk absolute | clean-muon absolute (N) |
+|---|---|---|---|---|---|
+| run-3 MC overlay 67k | overlay | 1.00 | 0.8653 ± 0.0023 (34,568) | **0.865** | 0.924 ± 0.014 (768) |
+| run-3 EXT 200k | pure data | 1.00 | 0.7047 ± 0.0051 (66,293) | **0.705** | 0.402 ± 0.058 (334) |
+| run-1 bnb5e19 beam | pure data | 0.80 | 0.7959 ± 0.0037 (67,387) | **0.637** | 0.605 ± 0.021 (660) |
+| run-1 overlay (pilot, TRAINPOOL) | overlay | 1.00 | *not yet measured* | — | 0.910 ± 0.038 (135) |
+
+Clean-muon errors are `1.253*sigma/sqrt(N)` from the quoted 16–84% band; bulk
+errors are the bootstrap value stored in the npz.
+
+### Where the estimators agree, and where they blow up
+
+* run-1 bnb5e19: 0.637 vs 0.605 — agree to ~5%.
+* run-3 MC: 0.865 vs 0.924 — agree to ~6%.
+* **run-3 EXT: 0.705 vs 0.402 — disagree by 75%.**
+
+The run-3 EXT clean-muon point is the outlier and is the one to distrust: its
+spatial match **dropped 77%** of candidates (1113 of 1447) versus 26–29% for the
+overlays, and its per-event spread is enormous (16–84%: 0.12–1.81). In beam-off
+data the in-time flash frequently belongs to a *different* cosmic than the
+reconstructed slice, so the muon↔flash association is ambiguous and the
+surviving sample is plausibly biased. **Prefer the bulk number for pure-cosmic
+data.** Drop rates per sample are worth recording every time you run the
+clean-muon fit; they are printed as `spatial in-time match: kept X, dropped Y`.
+
+### What the numbers do and do not say
+
+Taking the bulk column at face value:
+
+* data is dimmer than MC at the same run: run-3 data/MC = 0.705/0.865 = **0.815**
+  (consistent in direction with the earlier CC flash-chi2 study, which found
+  obs/pred 0.809 MC vs 0.736 data — `SLICER_RETRAIN_PLAN.md` 2026-08-31);
+* run-1 data vs run-3 data = 0.637/0.705 = **0.90** — i.e. run-1 data comes out
+  *dimmer*, which is **opposite** to the impurity/light-yield-vs-time
+  expectation and opposite to the clean-muon result (1.51). **This contradiction
+  is unresolved and is the single most important open question.**
+* the deployed run-1 value 0.80 is not reproduced by either estimator on the
+  cew6 chain (bulk 0.637, clean-muon 0.605). It was measured on an older chain;
+  the slicer/segmenter changed what charge lands in the nu slice, so `pred`
+  changed.
+
+Do **not** promote any absolute number from this table into `dead_channels.py`
+yet. `measure_bulk_gamma.py`'s docstring is explicit that the bulk population is
+not where `gamma_beam=5.25` was tuned (run-3 MC gives r≈0.81–0.87, not 1.0), so
+its absolute values carry an unknown common offset; only ratios between arms
+produced at the *same* scale are trustworthy, and two of our three arms were not.
+
+## 5. Open questions for the dedicated session
+
+1. **Resolve the run1-vs-run3 data direction.** Bulk says run-1 is dimmer, the
+   clean-muon estimator says brighter, and detector physics says run-3 should be
+   dimmer. Candidate causes: the 0.80-vs-1.0 production-scale correction (verify
+   it is being applied), a beam-on vs beam-off population difference (bnb5e19
+   has real neutrino light; EXT does not), different processing versions
+   (`mcc9_v28` vs `mcc9_v29e`), or dead-PMT handling (opdet 15 live in run 1 —
+   confirm both sums use the per-run list).
+2. **Re-measure both arms at a common scale.** The cleanest experiment: re-run
+   inference on a modest subset of bnb5e19 with `--gamma-run-scale 1.0` so it is
+   directly comparable to the run-3 arms with no correction arithmetic at all.
+   That removes the trap in §3 entirely.
+3. **Is the offset per-run, per-data/MC, or per-sample?** The Run-1 overlay
+   pilot (0.910 clean-muon) sits close to run-3 MC (0.924), hinting the split is
+   simulated-vs-real light rather than run period — but that arm has no bulk
+   measurement yet and an overlay mixes data cosmic light with simulated
+   neutrino light, so it is not a clean probe of either.
+4. **Does the bulk median have a selection bias?** The 16–84% bands are wide
+   (run-3 EXT 0.15–3.31), so the median may be sensitive to `--min-pred-pe` and
+   to slice quality. Scan the cut and check stability; consider a charge-weighted
+   or fitted estimator instead of a median.
+5. **Second, independent handle.** `test_gamma_scale_chi2.py` (pi0 shower slices)
+   was the cross-check that produced the original "muon 0.79 / shower 0.85"
+   pair. Re-run it on the cew6 productions.
+6. **Only then**: decide the table structure and whether a full re-inference is
+   justified. Re-inference changes flash-chi2 for every sample and would
+   invalidate the current working points and tables.
+
+## 6. Reproducing / extending
+
+Tools (all in this directory):
+* `fit_gamma_run.py` — clean-muon estimator. **Pass `--gamma-beam <gamma_eff>`.**
+* `measure_bulk_gamma.py` — bulk estimator (differential use).
+* `run_gamma_2x2.sh` — runs the clean-muon fit on the three existing cew6
+  productions with the correct per-production `gamma_eff` already wired in.
+* `run_bulk_gamma_refs.sh` — runs the bulk estimator on the same three.
+  **Caveat: its printed ratios are not production-scale corrected.**
+* `test_gamma_scale_chi2.py`, `rank1_gamma_check.py` — independent handles.
+* saturation tooling (`saturated_pmt_study.py`, `make_saturation_pmt_table.py`,
+  `ophit_saturation_probe.py`, `saturation_vs_badchannel.py`) — relevant because
+  saturated tubes report 0 PE and are masked; defaults were tuned on run-3b.
+
+Stored results:
+* clean-muon: `gamma_run1_data_bnb5e19.npz`, `gamma_run3_data_extbnb.npz`,
+  `gamma_run3_mc_overlay.npz`, `gamma_mc_run1ovl.npz` (+ older
+  `gamma_bnb5e19_run1.npz`, `gamma_extbnb_run3.npz`, `gamma_mc_run3.npz`)
+* bulk: `out/bulk_run3_mc_cew6.npz`, `out/bulk_run3_ext_cew6.npz`,
+  `out/bulk_run1_bnb5e19_cew6.npz` (fields: `ratio`, `median`, `boot_err`,
+  `runs`, `reco_cc`, plus `vtx/nofile/noslice/lowpred` counters)
+* plots: `plots/gamma_fit_<tag>.png`
+* RSE caches `rse_*_keypoint2_streams.npz` (large; regenerable)
+
+Input productions (cew6 chain), under
+`/cluster/tufts/wongjiradlab/larbys/data/ub_on_tufts/`:
+`larformer_mcoverlay67k_s1ep2p8cew6`, `larformer_extbnb200k_s1ep2p8cew6`,
+`larformer_bnb5e19_s1ep2p8cew6` — each with `dlgen2_larformer_ntuple_*.root`
+and `keypoint2_streams/`. Run-1 overlay pilot:
+`/cluster/tufts/wongjiradlab/larbys/data/larformer/gammapilot_run1ovl_g100/`
+(12,812 events; TRAINPOOL, so **calibration use only, never physics**).
+
+Always check what a production was made at before using it:
+
+```python
+import h5py, glob
+f = glob.glob('<cascade_dir>/**/*_0.h5', recursive=True)[0]
+print(dict(h5py.File(f)['flash'].attrs))   # gamma_beam, gamma_scale, gamma_eff, dead_opdets
+```
+
+## 7. Related context
+
+* `README.md` in this directory — flash model, `f_sys`, saturation masking.
+* `lartpc/larformer_analysis/physics/pilot_matrix/SLICER_RETRAIN_PLAN.md` —
+  rolling campaign log; see 2026-08-30/31 (CC flash-chi2 shape: data peak
+  shifted high and broadened; global pred-scale + resolution) and 2026-09-11
+  (the measurements above).
+* `lartpc/larformer_analysis/model_and_output_file_versions.md` — which
+  checkpoints/samples define the current analysis version (v2_s1ep2p8cew6).
+* Run-1 campaign plan (staging/conversion already running, inference gated on
+  this work): `~/.claude/plans/zany-whistling-pine.md`.

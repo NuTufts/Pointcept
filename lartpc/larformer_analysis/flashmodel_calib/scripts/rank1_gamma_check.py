@@ -33,7 +33,7 @@ import numpy as np
 import h5py
 
 sys.path.insert(0, os.path.abspath(os.path.join(
-    os.path.dirname(os.path.abspath(__file__)), "..", "..", "..")))
+    os.path.dirname(os.path.abspath(__file__)), "..", "..", "..", "..")))
 try:
     from lartpc.flashmatch.saturation import find_saturated
 except Exception:

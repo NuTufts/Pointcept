@@ -33,9 +33,9 @@ import awkward as ak
 import h5py
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, os.path.join(_HERE, "..", "physics", "pi0mass_peak"))
+sys.path.insert(0, os.path.join(_HERE, "..", "..", "..", "physics", "pi0mass_peak"))
 from flash_correction import rse_map                                # noqa: E402
-sys.path.insert(0, os.path.abspath(os.path.join(_HERE, "..", "..", "..")))
+sys.path.insert(0, os.path.abspath(os.path.join(_HERE, "..", "..", "..", "..", "..")))
 from lartpc.flashmatch.dead_channels import dead_opdets_for_run     # noqa: E402
 from lartpc.flashmatch.saturation import find_saturated             # noqa: E402
 
