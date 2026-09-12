@@ -588,3 +588,16 @@ flash), flash time p16-84 3.66-5.03 us. Chain version pinned in
 `submit_extbnb_chain.sh`. Remaining run-1 EXT tranches (filenos 1001-13801 of
 the stride-2 list) can be converted and chained the same way; the EXT
 normalisation for this tranche is a gate-count question outside this log.
+
+**Run-1 EXT half-stride-2 production launched (2026-09-12).** Tranche B
+(filenos 1001-6900) converted: 6,896 filenos (4 duds), total 104,517 merged_sp
+events, 997 GB. Conversion needed one fix on the way: slurm MaxArraySize is
+2000 and the stager used the fileno as the array index, so batches >= 1751
+failed to submit until the index became `fileno - FIRST` (commit 3fcc26e).
+Chain `extbnb_run1_half` (jobs 3621349-3621357): separate DATADIR
+`run1_C1_extbnb_half` with `MSP_LIST_SRC` (stable fileno,entry-sorted list of
+all 104,517 files, so tranche A's outputs stay untouched and are re-inferred
+inside this run), 16 GPU shards, 60 nu_reco / larpid / export shards on
+batch,wongjiradlab, 24 h per stage, gamma table (0.5449), window 3.2-5.4 us.
+Normalization: 6,900 / 27,602 files = 25% of the full C1 sample ->
+5,772,737 spills (subset rule, lartpc/data_prep/README.md).
