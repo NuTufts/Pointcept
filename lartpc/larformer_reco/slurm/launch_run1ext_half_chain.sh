@@ -20,6 +20,12 @@ NMARK=$(ls $SRC/markers/*.ok | wc -l)
 echo ">>> markers: $NMARK (expect ~$MAXFILENO minus duds)"
 [ "$NMARK" -ge $((MAXFILENO - 40)) ] || { echo "ERROR: conversion incomplete ($NMARK markers)"; exit 2; }
 if squeue -u twongj01 -h -o '%j' | grep -q "ovl_train_conv\|ext1_seqB"; then echo "ERROR: conversion jobs still running"; exit 2; fi
+# one submission only: a requeued/relaunched copy of this job must not submit a
+# second chain into the same DATADIR (two chains raced on 2026-09-12)
+LOCK=$DATADIR/.chain_submitted
+if [ -e "$LOCK" ]; then echo "ERROR: chain already submitted ($(cat $LOCK)); remove $LOCK to force"; exit 2; fi
+if squeue -u twongj01 -h -o '%j' | grep -q "^extbnb_run1_half_"; then echo "ERROR: extbnb_run1_half jobs already queued"; exit 2; fi
+mkdir -p $DATADIR && echo "$(date) job ${SLURM_JOB_ID:-login}" > "$LOCK"
 mkdir -p $DATADIR
 module load apptainer 2>/dev/null || true
 apptainer exec --bind /cluster:/cluster $C python3 lartpc/data_prep/uboone_official/list_merged_sp.py \
