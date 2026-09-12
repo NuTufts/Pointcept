@@ -37,12 +37,17 @@ TAG=${TAG:?set TAG (e.g. extbnb_val)}
 DATADIR=${DATADIR:?set DATADIR (the EXT dataset dir with merged_sp/)}
 MSP_DIR=${DATADIR}/merged_sp
 NINF=${NINF:-8}          # inference (GPU) shards
-NNR=${NNR:-8}            # nu_reco shards per stream
+# CPU stages (nu_reco, larpid, export): MANY shards on the non-preemptable CPU
+# partitions and >= 24 h per job, so a production never needs relaunch cycles
+# (user rule 2026-09-12; the per-user CPU job limit on batch is >= 60).
+NNR=${NNR:-60}           # nu_reco / larpid shards per stream
+CPU_PARTITION=${CPU_PARTITION:-batch,wongjiradlab}
+JOB_TIME=${JOB_TIME:-24:00:00}
 # extra run_nu_reco.py flags for BOTH streams, e.g. "--true-vertex" (dedicated
 # knob -- a bare EXTRA_ARGS would leak into the other EXTRA_ARGS-consuming
 # stages through --export=ALL)
 NU_RECO_EXTRA_ARGS=${NU_RECO_EXTRA_ARGS:-}
-NEXP=${NEXP:-4}          # export shards
+NEXP=${NEXP:-60}         # export shards
 DEP=${DEP:-}             # optional afterok stepA job id gating the chain
 # --- MC-vs-data knobs (defaults = data mode) --------------------------------
 # TRUTH_DIR: real truth-sidecar dir for MC (fills truth branches + potTree +
@@ -113,7 +118,7 @@ else
     --dir ${MSP_DIR} --out ${MSP_LIST}"
 fi
 PREP=$(sbatch --parsable ${EXCL} $(dep_arg "${DEP}") \
-  --partition=batch --time=1:00:00 --mem=4G --job-name=${TAG}_prep \
+  --partition=${CPU_PARTITION} --time=${JOB_TIME} --mem=4G --job-name=${TAG}_prep \
   --output=logs/data_prep/${TAG}_prep.%j.log \
   --error=logs/data_prep/${TAG}_prep.%j.err \
   --wrap="${BUILD_LIST}; \
@@ -151,13 +156,13 @@ echo "flash gamma: ${GAMMA_ARGS} ${INF_EXTRA_ARGS:-}"
 INF=$(INPUT_LIST=${MSP_LIST} OUTPUT_DIR=${KP2_STREAMS}/ NSHARDS=${NINF} \
   EXTRA_INF_ARGS="--output-tree ${GAMMA_ARGS} ${INF_EXTRA_ARGS:-}" \
   sbatch --parsable ${EXCL} --export=ALL --dependency=afterok:${PREP} \
-  --array=0-$((NINF-1)) --time=24:00:00 \
+  --array=0-$((NINF-1)) --time=${JOB_TIME} \
   ${SLURMDIR}/submit_inference_shard.sh)
 echo "inference : ${INF}  (${NINF} GPU shards) -> ${KP2_STREAMS}"
 
 # ---- 2) regen: split keypoint2_streams into nu / fm lists -------------------
 REGEN=$(sbatch --parsable ${EXCL} --dependency=afterok:${INF} \
-  --partition=batch --time=0:30:00 --mem=4G --job-name=${TAG}_regen \
+  --partition=${CPU_PARTITION} --time=${JOB_TIME} --mem=4G --job-name=${TAG}_regen \
   --output=logs/export/${TAG}_regen.%j.log \
   --error=logs/export/${TAG}_regen.%j.err \
   --wrap="find ${KP2_STREAMS} -name 'keypoint2_event*_0.h5' ! -name '*_fm_0.h5' | sort > ${KP2_NU}; \
@@ -168,27 +173,27 @@ echo "regen     : ${REGEN}  -> ${KP2_NU} , ${KP2_FM}"
 # ---- 3) nu_reco : nu + fm streams (LLR attachment) -------------------------
 NRNU=$(KEYPOINT2_LIST=${KP2_NU} MERGED_SP_LIST=${MSP_LIST} OUTPUT_DIR=${NR_NU}/ \
   EXTRA_ARGS="${NU_RECO_EXTRA_ARGS}" \
-  NSHARDS=${NNR} sbatch --parsable ${EXCL} --export=ALL --partition=batch,preempt,wongjiradlab --time=24:00:00 --dependency=afterok:${REGEN} \
+  NSHARDS=${NNR} sbatch --parsable ${EXCL} --export=ALL --partition=${CPU_PARTITION} --time=${JOB_TIME} --dependency=afterok:${REGEN} \
   --array=0-$((NNR-1)) ${SLURMDIR}/submit_nu_reco_shard.sh)
 echo "nu_reco nu: ${NRNU}  (${NNR} shards) -> ${NR_NU}"
 
 NRFM=$(KEYPOINT2_LIST=${KP2_FM} MERGED_SP_LIST=${MSP_LIST} OUTPUT_DIR=${NR_FM}/ \
   EXTRA_ARGS="${NU_RECO_EXTRA_ARGS}" \
-  NSHARDS=${NNR} sbatch --parsable ${EXCL} --export=ALL --partition=batch,preempt,wongjiradlab --time=24:00:00 --dependency=afterok:${REGEN} \
+  NSHARDS=${NNR} sbatch --parsable ${EXCL} --export=ALL --partition=${CPU_PARTITION} --time=${JOB_TIME} --dependency=afterok:${REGEN} \
   --array=0-$((NNR-1)) ${SLURMDIR}/submit_nu_reco_shard.sh)
 echo "nu_reco fm: ${NRFM}  (${NNR} shards) -> ${NR_FM}"
 
 # ---- 4) larpid : nu + fm (CPU) ---------------------------------------------
 LPNU=$(NU_RECO_DIR=${NR_NU} KP2_LIST=${KP2_NU} MERGED_SP_LIST=${MSP_LIST} \
   OUTPUT_DIR=${LP_NU} SAMPLE_TAG=${LARPID_TAG} DEVICE=cpu TAG=${TAG} \
-  sbatch --parsable ${EXCL} --export=ALL --partition=batch,preempt,wongjiradlab --time=24:00:00 --gres=gpu:0 \
+  sbatch --parsable ${EXCL} --export=ALL --partition=${CPU_PARTITION} --time=${JOB_TIME} --gres=gpu:0 \
   --dependency=afterok:${NRNU} --array=0-$((NNR-1)) \
   ${SLURMDIR}/submit_larpid_shard_cpu.sh)
 echo "larpid  nu: ${LPNU}  -> ${LP_NU}"
 
 LPFM=$(NU_RECO_DIR=${NR_FM} KP2_LIST=${KP2_FM} MERGED_SP_LIST=${MSP_LIST} \
   OUTPUT_DIR=${LP_FM} SAMPLE_TAG=${LARPID_TAG} DEVICE=cpu TAG=${TAG} \
-  sbatch --parsable ${EXCL} --export=ALL --partition=batch,preempt,wongjiradlab --time=24:00:00 --gres=gpu:0 \
+  sbatch --parsable ${EXCL} --export=ALL --partition=${CPU_PARTITION} --time=${JOB_TIME} --gres=gpu:0 \
   --dependency=afterok:${NRFM} --array=0-$((NNR-1)) \
   ${SLURMDIR}/submit_larpid_shard_cpu.sh)
 echo "larpid  fm: ${LPFM}  -> ${LP_FM}"
@@ -199,14 +204,14 @@ EXP=$(TAG=${TAG} MERGED_SP_LIST=${MSP_LIST} NSHARDS=${NEXP} \
   KP2_NU_LIST=${KP2_NU} KP2_FM_LIST=${KP2_FM} \
   NU_RECO_NU_DIR=${LP_NU} NU_RECO_FM_DIR=${LP_FM} \
   OUT=${OUT_NTUPLE} \
-  sbatch --parsable ${EXCL} --export=ALL --partition=batch,preempt,wongjiradlab --time=24:00:00 --dependency=afterok:${LPNU}:${LPFM} \
+  sbatch --parsable ${EXCL} --export=ALL --partition=${CPU_PARTITION} --time=${JOB_TIME} --dependency=afterok:${LPNU}:${LPFM} \
   --array=0-$((NEXP-1)) ${SLURMDIR}/submit_export_shard.sh)
 echo "export    : ${EXP}  (${NEXP} shards) -> ${OUT_NTUPLE%.root}_shard*.root"
 
 # ---- 6) hadd merge ---------------------------------------------------------
 HADD=$(TAG=${TAG} OUT=${OUT_NTUPLE} \
-  sbatch --parsable ${EXCL} --export=ALL --dependency=afterok:${EXP} \
-  ${SLURMDIR}/submit_export_merge.sh)
+  sbatch --parsable ${EXCL} --export=ALL --partition=${CPU_PARTITION} --time=${JOB_TIME} \
+  --dependency=afterok:${EXP} ${SLURMDIR}/submit_export_merge.sh)
 echo "hadd      : ${HADD}  -> ${OUT_NTUPLE}"
 
 echo
