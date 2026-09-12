@@ -127,6 +127,27 @@ SAMPLES = {
         ntuple=None, truth_sidecar=None,
         flash_window_us=(3.6, 5.2), window_source="measured 2026-09-12 (1500 ev of the pilot production)",
         calib_only=True),
+    "extbnb_run1A_calib3k": dict(
+        kind="data", period=1, chain="s1ep2p8cew6",
+        description="run-1 EXT tranche A (mcc9_v29e_dl_run1_C1_extbnb, filenos 1-1000), "
+                    "flash-calib-mode, first 3000 events; closure of the (data,1) cell",
+        kp2_nu_list=os.path.join(CALIB_DIR, "results", "s1ep2p8cew6", "records", "calib_kp2",
+                                 "kp2_extbnb_run1A_calib.txt"),
+        nu_reco_dir=None,
+        merged_sp_list=os.path.join(_IN, "merged_sp_extbnb_run1_A.txt"),
+        ntuple=None, truth_sidecar=None,
+        flash_window_us=(3.2, 5.4), window_source="measured 2026-09-12 (1500 merged_sp files)",
+        calib_only=False),
+    "extbnb_run1A_cew6": dict(
+        kind="data", period=1, chain="s1ep2p8cew6",
+        description="run-1 EXT tranche A production (gamma table: 0.5449, window 3.2-5.4)",
+        kp2_nu_list=os.path.join(_OUT, "keypoint2_out_extbnb_run1_A_nu.txt"),
+        nu_reco_dir=f"{_L}/run1_C1_extbnb/nu_reco_larpid_nu",
+        merged_sp_list=os.path.join(_IN, "merged_sp_extbnb_run1_A.txt"),
+        ntuple=f"{_L}/run1_C1_extbnb/dlgen2_larformer_ntuple_extbnb_run1_A.root",
+        truth_sidecar=None,
+        flash_window_us=(3.2, 5.4), window_source="measured 2026-09-12 (1500 merged_sp files)",
+        calib_only=False),
     # placeholders: fill in when the productions exist
     # "extbnb_run1_cew6":   dict(kind="data", period=1, ...),
     # "bnboverlay_run1_cew6": dict(kind="mc", period=1, ...),
