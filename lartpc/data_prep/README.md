@@ -43,3 +43,28 @@ Data QA: `validate_hdf5_files.py`, `audit_particle_labels.py`, `test_particle_la
   copies of the ones now living in `training_data/`.
 - `shower_origin/` — shower-origin dataset production (exploratory project; see
   `docs/reference/shower_origin_spec.md`).
+
+## Normalization
+
+POT and number of spills of the different datasets we have in use. 
+Used for normalization when making plots that combine simulation and EXTBNB to estimate the number of expected events
+which can then be compared with data.
+
+Beam data are events recorded in sync with the beam trigger.
+
+EXTBNB data are events recorded using a fixed rate trigger during windows where no beam trigger occurs.
+The events are further filtered such that an above threshold amount of light occured within a time window emulating a beam window.
+The EXTBNB is intended to provide an estimate of the non-neutrino background we reconstruct.
+
+Simulation should be scaled by POT to match the beam data. EXTBNB is scaled by the number of spills.
+
+Info for 'uboone official' samples
+
+* mcc9_v29e_dl_run1_C1_extbnb: Run 1 C1 EXTBNB. Full sample number of spills: 23090946
+  Subsets: the exact spill count for a subset of files is hard to recompute, so a
+  subset is normalized by its file fraction x the full-sample spills (user decision
+  2026-09-12). The stride-2 list (`mcc9_v29e_dl_run1_C1_extbnb_stride2.txt`, 13,801 of
+  27,602 files) is every other file; the run-1 EXT half-stride-2 production (tranches
+  A+B, filenos 1-6900 of that list) is 6,900 / 27,602 = 25% of the full sample ->
+  5,772,737 spills. Tranche A alone (filenos 1-1000, `extbnb_run1_A`) is 3.62% -> 836,629 spills.
+* mcc9_v28_wctagger_bnb5e19: Run 1 open beam data. POT: 4.4e19; number of spills: 94414115
