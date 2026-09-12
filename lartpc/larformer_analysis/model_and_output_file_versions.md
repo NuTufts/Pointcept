@@ -146,10 +146,12 @@ efficiency 0.099 -> 0.196 at purity 0.323 -> 0.357 (see single_photon/README).
 
 ### 5. Samples NOT yet at v2_s1ep2p8 (need reprocessing before use)
 
-- intrinsic-nue overlay (run3b, `mcc9_v29e_nue_overlay`): merged_sp +
-  truth_sidecar exist (`lartpc/larformer_reco/output/mcc9_v29e_nue_overlay/`,
-  79,356 events) but the ntuple + kp2/nu_reco there are JULY OLD-CHAIN
-  (no showerCosmicScore/TrueUnlabeledPurity; labels NOT expanded).
+- intrinsic-nue overlay (run3b): **DONE 2026-09-10 at cew6** -- see the cew6
+  section 3b below. The July old-chain files remain in
+  `lartpc/larformer_reco/output/mcc9_v29e_nue_overlay/` as comparators.
+  (Historical note: merged_sp + truth_sidecar existed, 79,356 events, but the
+  ntuple + kp2/nu_reco were JULY OLD-CHAIN -- no
+  showerCosmicScore/TrueUnlabeledPurity; labels NOT expanded.)
   To use for CC-nue at v2_s1ep2p8: complete labels
   (`lartpc/data_prep/uboone_official/complete_labels.py`, idempotent),
   then rerun kp2 (env ckpts above, no --no-flash) -> nu_reco (LLR s1ep2p8)
@@ -200,6 +202,26 @@ efficiency 0.099 -> 0.196 at purity 0.323 -> 0.357 (see single_photon/README).
 
 ## VERSION v2_s1ep2p8cew6  (CURRENT / OFFICIAL — promoted 2026-09-11)
 
+### 0. Flash light-yield gamma — CALIBRATED TABLE (2026-09-12)
+
+Productions launched from 2026-09-12 on use the calibrated (kind, period)
+table `lartpc/flashmatch/flash_calib.GAMMA_SCALE_TABLE` (chain default
+`GAMMA_SPEC=table`, kind auto-detected, in-window flash choice):
+data run 1 0.5449, data run 3 0.4281, mc run 1 0.8576, mc run 3 0.8325
+(multipliers on gamma_beam 5.25; procedure + provenance in
+`lartpc/larformer_analysis/flashmodel_calib/{PROTOCOL,CALIBRATION_LOG}.md`).
+The cew6 productions listed below were made with the LEGACY run-period table
+(run 1: 0.80 -> gamma_eff 4.20; run 3: 1.0 -> 5.25) and are therefore NOT
+flash-chi2-comparable to table-gamma productions until re-inferred.
+First table-gamma production: run-1 EXT tranche A
+(`/cluster/tufts/wongjiradlab/larbys/data/larformer/run1_C1_extbnb/
+dlgen2_larformer_ntuple_extbnb_run1_A.root`, 15,381 events, gamma_eff 2.861,
+window 3.2-5.4 us; closure 0.542 +- 0.015 vs 0.545). Every cascade file records
+`flash` attrs `gamma_spec/gamma_scale/gamma_eff/sample_kind/flash_window`, and
+the ntuple carries `flashGammaEff/flashGammaScale/flashObsPE/flashTimeUs/nuSlicePredPE`.
+`submit_extbnb_chain.sh` now pins the chain version (config, slicer, segmenter,
+shower BDTs, LLR tables) itself; do not rely on shell-exported env vars.
+
 Reprocessing COMPLETE 2026-09-09; benchmark suite + talk tables done
 2026-09-10. Same conventions as v2_s1ep2p8 except as noted. Base
 `$D=/cluster/tufts/wongjiradlab/larbys/data/ub_on_tufts`.
@@ -232,6 +254,32 @@ recal3 (gamma a=0.01553, b=-12.80) is BAKED INTO showerRecoE.
 | EXT-BNB beam-off | `$D/larformer_extbnb200k_s1ep2p8cew6/dlgen2_larformer_ntuple_extbnb200k_s1ep2p8cew6.root` | 200,000 |
 Normalizations, EXT/MC hygiene halves: identical to v2_s1ep2p8 (same
 underlying events, same row conventions).
+
+### 3b. Intrinsic-nue signal sample (added 2026-09-10)
+
+| sample | ntuple | events |
+|---|---|---|
+| intrinsic-nue overlay (run3b) | `$D/larformer_nueoverlay79k_s1ep2p8cew6/dlgen2_larformer_ntuple_nue_overlay_s1ep2p8cew6_run3.root` | 79,356 |
+
+POT **4.709e22** over 2,231 potTree entries (the 2,231 good filenos; the ~1,100
+reco-only production files remain unrecoverable and are correctly excluded).
+TAG `nue_overlay_s1ep2p8cew6_run3`; 100% nu_e, 100% CC, so it is a pure signal
+source. Both cew6 BDTs baked in (export logs confirm `shower_cosmic_bdt_cew6`
+and `shower_novtx_bdt_cew6`). Verified: 177 branches, photon RecoE/TrueE median
+0.924 (recal3 baked, not the 1.218 stale-calib value).
+
+**Label completion was required first** and had never been run on this sample
+(`lartpc/data_prep/uboone_official/submit_complete_labels_array.sh`, defaults
+r=0.5/drow=2/dwire=2; +1.55% on disk). It must precede inference because
+`part_gt_trackid` is frozen there, and without it `showerTrueUnlabeledPurity` is
+inflated by the unlabeled neutrino periphery. Post-completion photon median
+unlabeled purity is 0.009.
+
+Chain gotchas worth knowing for the next sample: `submit_extbnb_chain.sh` sent
+nu_reco + export to `batch` only (patched to `batch,preempt,wongjiradlab` at
+lines 121/127/152); `WEIGHTS_PKL` defaults to the **bnb_nu** pickle; `CONFIG`
+defaults to the NON-envslicer cascade config; a bad `LARFORMER_SHOWER_BDT` path
+silently DISABLES the BDT (score -9) rather than erroring.
 
 ### 4. Intermediates (per sample dir)
 `keypoint2_streams/` (flash-matched cascade h5, --output-tree layout),
