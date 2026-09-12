@@ -62,6 +62,8 @@ def failure_reason(ev, mu, j, args, window):
                                                 margin=args.window_margin,
                                                 min_pe=args.flash_min_pe)):
         return "in-window single flash"
+    if args.nu_qfrac_min >= 0 and not (ev["nu_qfrac"][i] >= args.nu_qfrac_min):
+        return f"nu_qfrac {ev['nu_qfrac'][i]:.2f}"
     if args.require_mu_class and mu["pdg"][j] != 13:
         return f"class {mu['cls'][j]} (not muon)"
     if args.rms_perp_max < 1e8 and "rms_perp" in mu and not (

@@ -1,0 +1,400 @@
+{
+ "sample": "run1ovl_calib6k",
+ "kind": "mc",
+ "period": 1,
+ "chain": "s1ep2p8cew6",
+ "description": "run-1 BNB nu overlay pilot (mcc9_v28, TRAINPOOL), flash-calib-mode, first 6000 events; CALIBRATION USE ONLY",
+ "calib_only": true,
+ "arm": "muon",
+ "window_us": [
+  3.6,
+  5.2
+ ],
+ "window_source": "measured 2026-09-12 (1500 ev of the pilot production)",
+ "gamma_beam_ref": 5.25,
+ "production": {
+  "gamma_eff": [
+   5.25
+  ],
+  "gamma_scale": [
+   1.0
+  ]
+ },
+ "cuts": {
+  "arm": "muon",
+  "window": null,
+  "window_margin": 0.2,
+  "flash_min_pe": 20.0,
+  "min_len": 120.0,
+  "require_mu_class": false,
+  "rms_perp_max": 4.0,
+  "lin_min": 0.95,
+  "n_boundary": -1,
+  "calib_object": "cluster",
+  "x_boundary_min": 125.0,
+  "allow_secondary": false,
+  "iso_track_ke": 1000000000.0,
+  "iso_shower_e": 1000000000.0,
+  "proton_veto_ke": 50.0,
+  "q_frac_min": 0.8,
+  "min_pred": 50.0,
+  "cos_min": 0.9,
+  "match_dy": 60.0,
+  "match_dz": 100.0,
+  "qfrac_min": 0.9,
+  "nu_qfrac_min": 0.3,
+  "nboot": 500
+ },
+ "drops": [
+  [
+   "in-window single flash",
+   4599,
+   3438
+  ],
+  [
+   "MC truth: cluster holds >= 0.3 of the true nu charge",
+   3438,
+   2735
+  ],
+  [
+   "track-like: rms_perp < 4 cm & lin > 0.95",
+   2735,
+   2312
+  ],
+  [
+   "length > 120 cm",
+   2312,
+   715
+  ],
+  [
+   "calib object = cluster",
+   715,
+   300
+  ],
+  [
+   "n_boundary >= 1",
+   300,
+   194
+  ],
+  [
+   "every boundary end x > 125 cm",
+   194,
+   75
+  ],
+  [
+   "primary (not secondary)",
+   75,
+   75
+  ],
+  [
+   "other tracks KE < 1e+09",
+   75,
+   75
+  ],
+  [
+   "showers E < 1e+09",
+   75,
+   75
+  ],
+  [
+   "proton veto KE < 50",
+   75,
+   75
+  ],
+  [
+   "muon charge >= 0.8 of union",
+   75,
+   75
+  ],
+  [
+   "sum pred_ref >= 50 PE & obs > 0",
+   75,
+   75
+  ],
+  [
+   "shape cos >= 0.9",
+   75,
+   75
+  ],
+  [
+   "centroid |dy| < 60, |dz| < 100",
+   75,
+   75
+  ],
+  [
+   "one muon per event",
+   75,
+   75
+  ]
+ ],
+ "N": 75,
+ "stats": {
+  "N": 75,
+  "median": 0.8576435103285047,
+  "err_boot": 0.021724386648645868,
+  "p16": 0.7449150954841348,
+  "p84": 1.107629542797243,
+  "peak": 0.8413951416451976,
+  "core_frac": 0.8666666666666667,
+  "core_median": 0.8307774529357677,
+  "mean_log": 0.9085596339531893,
+  "gate_ok": true
+ },
+ "scale_abs": 0.8576435103285047,
+ "scale_err": 0.021724386648645868,
+ "gamma_eff_fit": 4.50262842922465,
+ "g_neyman_median": 0.7832789693128904,
+ "g_pooled": 0.7496125011974415,
+ "scans": {
+  "run_groups": [
+   [
+    4992,
+    6380,
+    12,
+    0.9471038476027549
+   ],
+   [
+    6380,
+    6705,
+    10,
+    0.8619021046674491
+   ],
+   [
+    6705,
+    6945,
+    11,
+    0.859203180741782
+   ],
+   [
+    6945,
+    7004,
+    15,
+    0.8098382746378544
+   ],
+   [
+    7004,
+    7013,
+    11,
+    0.8801054913441912
+   ],
+   [
+    7013,
+    7019,
+    9,
+    0.7498120386489722
+   ],
+   [
+    7019,
+    7025,
+    10,
+    0.824816394617143
+   ],
+   [
+    7025,
+    7588,
+    12,
+    0.8825491921089792
+   ]
+  ],
+  "brightness": [
+   [
+    0.0,
+    100.0,
+    0,
+    null
+   ],
+   [
+    100.0,
+    300.0,
+    3,
+    0.6800028199665868
+   ],
+   [
+    300.0,
+    1000.0,
+    39,
+    0.8857836327732767
+   ],
+   [
+    1000.0,
+    3000.0,
+    30,
+    0.8008595216863281
+   ],
+   [
+    3000.0,
+    1000000000.0,
+    3,
+    0.7880288151798286
+   ]
+  ],
+  "t_in_window": [
+   [
+    0.0,
+    0.2,
+    10,
+    0.760204122439675
+   ],
+   [
+    0.2,
+    0.4,
+    18,
+    0.8094792238355182
+   ],
+   [
+    0.4,
+    0.6000000000000001,
+    21,
+    0.8601515842752115
+   ],
+   [
+    0.6000000000000001,
+    0.8,
+    19,
+    0.8857182719088575
+   ],
+   [
+    0.8,
+    1.0,
+    7,
+    0.9577491537951037
+   ]
+  ],
+  "boundary_x": [
+   [
+    125.0,
+    150.0,
+    11,
+    0.8601515842752115
+   ],
+   [
+    150.0,
+    180.0,
+    18,
+    0.8631154440549808
+   ],
+   [
+    180.0,
+    210.0,
+    10,
+    0.9141228391602754
+   ],
+   [
+    210.0,
+    240.0,
+    8,
+    0.8449903168387749
+   ],
+   [
+    240.0,
+    300.0,
+    28,
+    0.8483845777395242
+   ]
+  ],
+  "length": [
+   [
+    50.0,
+    80.0,
+    0,
+    null
+   ],
+   [
+    80.0,
+    120.0,
+    0,
+    null
+   ],
+   [
+    120.0,
+    180.0,
+    36,
+    0.896322633900556
+   ],
+   [
+    180.0,
+    300.0,
+    25,
+    0.8601515842752115
+   ],
+   [
+    300.0,
+    10000.0,
+    14,
+    0.7483094158289323
+   ]
+  ],
+  "cos_sim": [
+   [
+    0.9,
+    0.95,
+    7,
+    1.0972150188691627
+   ],
+   [
+    0.95,
+    0.98,
+    32,
+    0.896322633900556
+   ],
+   [
+    0.98,
+    1.01,
+    36,
+    0.8106163730294464
+   ]
+  ],
+  "subset_vertexed": null,
+  "subset_vertexless": {
+   "N": 75,
+   "median": 0.8576435103285047,
+   "err_boot": 0.02243151831898914,
+   "p16": 0.7449150954841348,
+   "p84": 1.107629542797243,
+   "peak": 0.8413951416451976,
+   "core_frac": 0.8666666666666667,
+   "core_median": 0.8307774529357677,
+   "mean_log": 0.9085596339531893,
+   "gate_ok": true
+  },
+  "subset_orphan": null,
+  "mip_q_per_cm_median": 231.98672394754706
+ },
+ "records": [
+  "/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/kpv2_pointcept/lartpc/larformer_analysis/flashmodel_calib/results/s1ep2p8cew6/records/run1ovl_calib6k.shard0000000.npz"
+ ],
+ "n_events": 3245,
+ "n_candidates": 4599,
+ "date": "2026-09-11T20:08:29",
+ "git_sha": "b47eb96",
+ "gammacal_version": "gammacal-1",
+ "argv": [
+  "lartpc/larformer_analysis/flashmodel_calib/scripts/fit_gamma.py",
+  "--sample",
+  "run1ovl_calib6k",
+  "--calib-object",
+  "cluster",
+  "--n-boundary",
+  "-1",
+  "--min-len",
+  "120",
+  "--nu-qfrac-min",
+  "0.3",
+  "--no-require-mu-class",
+  "--rms-perp-max",
+  "4",
+  "--lin-min",
+  "0.95",
+  "--iso-track-ke",
+  "1e9",
+  "--iso-shower-e",
+  "1e9",
+  "--nboot",
+  "500",
+  "--tag",
+  "clu_anyb_L120_nuq",
+  "--plots",
+  "lartpc/larformer_analysis/flashmodel_calib/results/s1ep2p8cew6/plots"
+ ],
+ "hostname": "login-p01.pax.tufts.edu"
+}

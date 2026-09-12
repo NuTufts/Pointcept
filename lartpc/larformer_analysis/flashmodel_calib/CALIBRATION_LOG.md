@@ -447,3 +447,45 @@ Implied data/MC light ratios: run 3 = 0.41 / 0.83 ~ 0.50; run 1 ~ 0.53 / 0.85
 ~ 0.6. Deployed table (run 1: 0.80, else 1.0) is far from all of these; any
 promotion needs the closure step (PROTOCOL section 7) and a decision on
 re-inference. Pages: `results/s1ep2p8cew6/viz/{bnb5e19,extbnb200k}_calib3k_cluster_2b/`.
+
+---
+
+## 2026-09-12 — 2x2 complete: run-1 overlay calibration run; data vs MC and run 1 vs run 3
+
+Run-1 overlay pilot (mcc9_v28, TRAINPOOL, calibration only), 6,000 events in
+calibration mode -> 3,245 flash-matched clusters (`run1ovl_calib6k`). Its
+flash window was measured on the pilot production: [3.6, 5.2] us, same as
+run-3 MC.
+
+MC purity. In an overlay the in-time light is the neutrino's, so a cluster can
+win the shape match while a bright nu flash (or a dim unrelated one) is what
+the PMTs saw: the ratio then sits at ~3-4 (> 3000 PE) or ~0.1 (< 300 PE) and
+the core fraction drops to ~0.5. The records carry the true-nu charge fraction
+of the calibration slice, and `fit_gamma --nu-qfrac-min 0.3` (MC only) removes
+those associations: core fraction 0.85-0.87, flat in brightness. Data cells
+cannot use it and do not need it (single cosmic per in-time flash).
+
+Object for all four cells: whole flash-matched cluster, track-like, length
+> 120 cm, >= 1 boundary end, every boundary end at x > 125 cm (cathode half);
+MC additionally nu_qfrac >= 0.3. Multipliers on gamma_beam = 5.25:
+
+| | run 1 | run 3 | run 1 / run 3 |
+|---|---|---|---|
+| **data** | bnb5e19 **0.545 +- 0.006** (255) [through-going: 0.533 +- 0.010 (107)] | EXT **0.428 +- 0.006** (275) [through-going: 0.414 +- 0.008 (110)] | **1.27 +- 0.02** |
+| **mc** | run-1 overlay **0.858 +- 0.022** (75) [1 boundary: 0.846 +- 0.022 (65)] | numu overlay **0.833 +- 0.025** (62) [1 boundary: 0.827 +- 0.026 (54)] | 1.03 +- 0.04 |
+| **data / mc** | 0.64 +- 0.02 | 0.51 +- 0.02 | |
+
+Reading: the simulated light scale is the same in both periods (the
+simulation does not follow the light-yield history), real data is brighter
+in run 1 than in run 3 by 27%, and data is dimmer than simulation by 36%
+(run 1) and 49% (run 3). All four cells pass the gates and are flat in run
+number, flash time in window, boundary x and length. Object caveat: the MC
+cells are exiting CC muons (truth-selected), the data cells are cosmic muons;
+the instance-based production-stream arms (0.99 MC, 0.67 / 0.84 data) are
+biased high by mask incompleteness and are superseded.
+
+Implication for the deployed table `{run 1: 0.80, else 1.0}`: every cell is
+off (MC ~0.85 both periods; run-1 data 0.55; run-3 data 0.43). Promotion
+still needs closure (PROTOCOL section 7) and the re-inference decision; the
+`flash_calib.py` table stays empty until then. Result JSONs:
+`results/s1ep2p8cew6/{bnb5e19,extbnb200k,mcoverlay67k,run1ovl}_calib*__muon_clu_*.json`.

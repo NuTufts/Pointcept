@@ -59,7 +59,11 @@ WHOLE flash-matched cluster (`fit_gamma.py --calib-object cluster
 --min-len 120 --iso-track-ke 1e9 --iso-shower-e 1e9`): track-like,
 through-going and long, so it is complete by construction. Segmenter
 instances hold only ~78% of a cosmic muon's points and bias the ratio high
-(30-35% in data); short clusters are fragments and bias it high too.
+(30-35% in data); short clusters are fragments and bias it high too. On
+overlays add `--nu-qfrac-min 0.3` (the in-time light is the neutrino's, so the
+calibration slice must hold the true-nu charge; removes the aligned-cosmic and
+dim-flash mis-associations). Data cells use `--n-boundary -1` (>= 1 boundary
+end); the through-going subset (`--n-boundary 2`) is the cleanest cross-check.
 
 **Production stream (cross-check).** The selection below on the nu-stream
 kp2 + nu_reco output. Kept because it needs no extra inference and because

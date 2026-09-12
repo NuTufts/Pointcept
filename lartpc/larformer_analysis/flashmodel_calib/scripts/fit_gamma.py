@@ -58,6 +58,9 @@ def select_muons(ev, mu, args, window):
         window, margin=args.window_margin, min_pe=args.flash_min_pe)
         for i in evi])
     cut("in-window single flash", ok_flash)
+    if args.nu_qfrac_min >= 0:
+        cut(f"MC truth: cluster holds >= {args.nu_qfrac_min:g} of the true nu charge",
+            ev["nu_qfrac"][evi] >= args.nu_qfrac_min)
     if args.require_mu_class:
         cut("segmenter muon class", mu["pdg"] == 13)
     if args.rms_perp_max < 1e8 and "rms_perp" in mu:
@@ -170,6 +173,10 @@ def build_parser():
     ap.add_argument("--match-dy", type=float, default=60.0)
     ap.add_argument("--match-dz", type=float, default=100.0)
     ap.add_argument("--qfrac-min", type=float, default=0.9, help="truth_nu arm")
+    ap.add_argument("--nu-qfrac-min", type=float, default=-1.0,
+                    help="muon arm, MC only: require the calibration slice to hold "
+                         "at least this fraction of the true neutrino charge "
+                         "(overlay purity: the in-time light is the nu's). -1 = off")
     ap.add_argument("--nboot", type=int, default=2000)
     return ap
 
