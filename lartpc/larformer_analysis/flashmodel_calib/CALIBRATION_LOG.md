@@ -576,3 +576,15 @@ union's prediction however gamma is set. The meaningful closure for the
 production-side check is only informative on samples where the nu union is
 the in-time light source (beam-on, overlays); on EXT it measures slicing
 completeness, which is a separate question.
+
+**Run-1 EXT tranche A production DONE (2026-09-11 23:43).**
+`/cluster/tufts/wongjiradlab/larbys/data/larformer/run1_C1_extbnb/dlgen2_larformer_ntuple_extbnb_run1_A.root`:
+15,381 entries, 182 branches, runs 4952-6998, foundVertex 0.574 (all nu
+stream; the fm list had 1 entry), both cew6 shower BDTs and calo_calib recal3
+baked (export logs). Gamma provenance branches: flashGammaEff 2.861 and
+flashGammaScale 0.5449 on every event; flashObsPE / flashTimeUs /
+nuSlicePredPE / nuSliceFlashChi2 set on 80.3% (events with an in-window
+flash), flash time p16-84 3.66-5.03 us. Chain version pinned in
+`submit_extbnb_chain.sh`. Remaining run-1 EXT tranches (filenos 1001-13801 of
+the stride-2 list) can be converted and chained the same way; the EXT
+normalisation for this tranche is a gate-count question outside this log.
