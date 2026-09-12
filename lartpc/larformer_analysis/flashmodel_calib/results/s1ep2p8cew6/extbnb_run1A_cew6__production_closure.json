@@ -1,0 +1,46 @@
+{
+ "sample": "extbnb_run1A_cew6",
+ "kind": "data",
+ "period": 1,
+ "chain": "s1ep2p8cew6",
+ "check": "production_closure",
+ "production_gamma_eff": [
+  2.8607
+ ],
+ "cuts": {
+  "sample": "extbnb_run1A_cew6",
+  "records": null,
+  "cos_min": 0.95,
+  "min_pred": 100.0,
+  "window_margin": 0.2,
+  "out": null
+ },
+ "counts": {
+  "flash": 11114,
+  "nurow": 11114,
+  "cos": 175
+ },
+ "N": 175,
+ "stats": {
+  "N": 175,
+  "median": 1.3866704750953633,
+  "err_boot": 0.12969652191800266,
+  "p16": 0.776764786482827,
+  "p84": 4.036012696670796,
+  "peak": 1.0592537251772922,
+  "core_frac": 0.37714285714285717,
+  "core_median": 1.2225303798246716,
+  "mean_log": 1.5757836728276424,
+  "gate_ok": false
+ },
+ "obs_over_pred_stored": 1.3866704750953633,
+ "date": "2026-09-11T23:03:49",
+ "git_sha": "1d6a3e1",
+ "gammacal_version": "gammacal-1",
+ "argv": [
+  "lartpc/larformer_analysis/flashmodel_calib/scripts/production_closure.py",
+  "--sample",
+  "extbnb_run1A_cew6"
+ ],
+ "hostname": "login-p01.pax.tufts.edu"
+}

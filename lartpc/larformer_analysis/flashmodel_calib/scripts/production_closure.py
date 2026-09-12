@@ -77,7 +77,7 @@ def main():
             print(f"   scan {nm}: " + " | ".join(f"[{lo:g},{hi:g}) N={N} {m:.3f}"
                                                 for lo, hi, N, m in binned_medians(x, r, e)))
     payload = dict(sample=s["tag"], kind=s["kind"], period=s["period"], chain=s["chain"],
-                   check="production_closure", production_gamma_eff=sorted(set(np.round(ge[np.isfinite(ge)], 4)).tolist()),
+                   check="production_closure", production_gamma_eff=sorted(set(np.round(ge[np.isfinite(ge)], 4).tolist())),
                    cuts=vars(args), counts=n_ok, N=st["N"], stats=st, obs_over_pred_stored=st["median"])
     out = args.out or os.path.join(CALIB_DIR, "results", s["chain"], f"{s['tag']}__production_closure.json")
     write_result(out, payload); print(f">>> {out}")

@@ -560,3 +560,19 @@ the beam-off vs beam-on check for run 1 (two triggers, one detector, same
 light scale), which run 3 could not provide (no run-3 beam-on production).
 Remaining production-side check once the chain finishes: observed / stored
 pred_pe on the production's own flash-matched nu slices ~ 1.
+
+**Production-side check on the run-1 EXT production itself (2026-09-12).**
+`scripts/production_closure.py`: observed / the production's OWN stored
+`pred_pe` (at gamma_eff 2.861) on nu slices that pass the shape test.
+11,114 events with an in-window flash; only 175 nu slices are the flash
+source at cosine >= 0.95 (the nu union in beam-off data is a bag of cosmics,
+section "2026-09-11 (later)"), and on those the median is 1.39 +- 0.13 with a
+strong brightness trend (0.83 below 300 PE, 1.1 at 300-1000, 1.27 at
+1000-3000, 2.8 above 3000) and core fraction 0.38. This is NOT a measure of
+gamma: bright beam-off flashes come from several in-time cosmics or showers of
+which the nu union captures only part, so the observed light exceeds the
+union's prediction however gamma is set. The meaningful closure for the
+(data, 1) cell is the calibration-mode one above (0.542 vs 0.545). A
+production-side check is only informative on samples where the nu union is
+the in-time light source (beam-on, overlays); on EXT it measures slicing
+completeness, which is a separate question.
