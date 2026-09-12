@@ -148,6 +148,17 @@ SAMPLES = {
         truth_sidecar=None,
         flash_window_us=(3.2, 5.4), window_source="measured 2026-09-12 (1500 merged_sp files)",
         calib_only=False),
+    "extbnb_run1_half_cew6": dict(
+        kind="data", period=1, chain="s1ep2p8cew6",
+        description="run-1 EXT half-stride-2 production (tranches A+B, filenos 1-6900 = 25% of "
+                    "the full C1 sample, 5,772,737 spills; gamma table 0.5449, window 3.2-5.4)",
+        kp2_nu_list=os.path.join(_OUT, "keypoint2_out_extbnb_run1_half_nu.txt"),
+        nu_reco_dir=f"{_L}/run1_C1_extbnb_half/nu_reco_larpid_nu",
+        merged_sp_list=os.path.join(_IN, "merged_sp_extbnb_run1_half.txt"),
+        ntuple=f"{_L}/run1_C1_extbnb_half/dlgen2_larformer_ntuple_extbnb_run1_half.root",
+        truth_sidecar=None,
+        flash_window_us=(3.2, 5.4), window_source="measured 2026-09-12 (1500 merged_sp files)",
+        calib_only=False),
     # placeholders: fill in when the productions exist
     # "extbnb_run1_cew6":   dict(kind="data", period=1, ...),
     # "bnboverlay_run1_cew6": dict(kind="mc", period=1, ...),
