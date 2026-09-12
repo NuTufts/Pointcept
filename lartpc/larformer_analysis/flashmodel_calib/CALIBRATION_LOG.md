@@ -543,3 +543,20 @@ as jobs 3589903-3589911 (prep clears the bad outputs first). The gamma
 provenance attrs of the first (wrong-chain) file were nevertheless correct:
 gamma_spec=table, gamma_scale 0.5449, gamma_eff 2.861, sample_kind data,
 flash_window 3.2,5.4, dead_opdets '' (run 4983).
+
+**Closure of (data, 1) on run-1 EXT (2026-09-12).** Calibration mode on the
+first 3,000 events of tranche A (`extbnb_run1A_calib3k`, 1,314 flash-matched
+clusters), same object and cuts as the table cell:
+
+| selection | N | s |
+|---|---|---|
+| >= 1 boundary, L > 120 | 216 | **0.542 +- 0.015** (core 0.86, gates OK) |
+| through-going, L > 120 | 95 | 0.541 +- 0.015 (core 0.91, gates OK) |
+| 1 boundary, L > 120 | 121 | 0.543 +- 0.022 |
+
+Deployed (data, 1) = 0.545 +- 0.006 (bnb5e19, beam-on): agreement to 0.5%,
+flat across runs 4971-6998. This is both the closure of the deployed cell and
+the beam-off vs beam-on check for run 1 (two triggers, one detector, same
+light scale), which run 3 could not provide (no run-3 beam-on production).
+Remaining production-side check once the chain finishes: observed / stored
+pred_pe on the production's own flash-matched nu slices ~ 1.
