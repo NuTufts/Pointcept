@@ -489,3 +489,43 @@ off (MC ~0.85 both periods; run-1 data 0.55; run-3 data 0.43). Promotion
 still needs closure (PROTOCOL section 7) and the re-inference decision; the
 `flash_calib.py` table stays empty until then. Result JSONs:
 `results/s1ep2p8cew6/{bnb5e19,extbnb200k,mcoverlay67k,run1ovl}_calib*__muon_clu_*.json`.
+
+---
+
+## 2026-09-12 — Deployed: calibrated table in production; Run-1 EXT tranche A launched
+
+`lartpc/flashmatch/flash_calib.GAMMA_SCALE_TABLE` now holds the four cells
+(written by `scripts/make_table.py --no-closure-check --write` from the
+`*_clu_anyb_L120[_nuq].json` results):
+
+| cell | scale | err | N | result |
+|---|---|---|---|---|
+| (data, 1) | 0.5449 | 0.0061 | 255 | bnb5e19_calib3k |
+| (data, 3) | 0.4281 | 0.0057 | 275 | extbnb200k_calib3k |
+| (mc, 1)   | 0.8576 | 0.0217 | 75  | run1ovl_calib6k |
+| (mc, 3)   | 0.8325 | 0.0253 | 62  | mcoverlay67k_calib3k |
+
+`submit_extbnb_chain.sh` defaults: `GAMMA_SPEC=table`, `SAMPLE_KIND=auto`,
+`FLASH_WINDOW=auto`; EXT samples pass the window explicitly. The legacy
+`GAMMA_SCALE_BY_PERIOD` (spec `auto`) is untouched and marked legacy; the
+resolver identity test still passes. Periods 2/4/5 and any unmeasured cell
+raise instead of defaulting.
+
+Run-1 EXT (mcc9_v29e_dl_run1_C1_extbnb, stride-2 list, tranche A = filenos
+1-1000, 15,381 merged_sp events, runs 4953-6998): in-time window measured on
+the merged_sp flashes = [3.2, 5.4] us (same as run-3 EXT; NOT the beam-on
+run-1 window 2.8-5.0). Chain launched with `TAG=extbnb_run1_A NINF=8 NNR=8
+NEXP=4 SAMPLE_KIND=data FLASH_WINDOW=3.2,5.4` -> gamma_eff = 5.25 x 0.5449 =
+2.861, default LArPID weights, jobs 3589639-3589651; ntuple
+`run1_C1_extbnb/dlgen2_larformer_ntuple_extbnb_run1_A.root`.
+
+Closure (PROTOCOL section 7) is folded into this production: run the
+calibration mode on a subset of the same files and check that the cluster
+arm returns 0.545 +- 0.05 (the calibration is independent of the production
+gamma, so this tests the period/kind assignment and the window, not the
+arithmetic); and check obs / stored pred_pe ~ 1 on the production's own
+flash-matched nu slices.
+
+This is the FIRST production made with a non-legacy gamma. It is not
+comparable in flash-chi2 to the cew6 run-3 EXT (gamma_eff 5.25) or bnb5e19
+(4.20) productions until those are re-inferred with the table.
