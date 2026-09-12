@@ -529,3 +529,17 @@ flash-matched nu slices.
 This is the FIRST production made with a non-legacy gamma. It is not
 comparable in flash-chi2 to the cew6 run-3 EXT (gamma_eff 5.25) or bnb5e19
 (4.20) productions until those are re-inferred with the table.
+
+**Correction (same day).** The first launch (jobs 3589639-3589651) ran with
+the WRONG chain: `submit_inference_shard.sh` takes the cascade config and the
+slicer/segmenter checkpoints from environment variables that the cew6
+productions had exported by hand, and a launch from a clean shell fell back to
+the base config + default checkpoints. Symptom: cosmic slice rows in the
+tables and 311 flashmatch-stream vs 66 nu-stream files (the cew6 chain has no
+cosmic rows). Cancelled; `submit_extbnb_chain.sh` now carries the frozen
+v2_s1ep2p8cew6 chain version as checked, exported defaults (config, slicer,
+segmenter, both shower BDTs, LLR attachment tables) and prints it. Relaunched
+as jobs 3589903-3589911 (prep clears the bad outputs first). The gamma
+provenance attrs of the first (wrong-chain) file were nevertheless correct:
+gamma_spec=table, gamma_scale 0.5449, gamma_eff 2.861, sample_kind data,
+flash_window 3.2,5.4, dead_opdets '' (run 4983).

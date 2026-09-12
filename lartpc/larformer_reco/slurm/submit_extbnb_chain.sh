@@ -56,6 +56,32 @@ LARPID_TAG=${LARPID_SAMPLE_TAG:-${TAG}}
 # apptainer "Couldn't determine user account information"). Applied to all steps.
 EXCL=${EXCLUDE_NODES:+--exclude=${EXCLUDE_NODES}}
 
+# ---- frozen chain version (v2_s1ep2p8cew6, see
+# lartpc/larformer_analysis/model_and_output_file_versions.md) -----------------
+# The stage scripts read these from the environment (--export=ALL). They used to
+# be exported by hand before launching; a launch from a clean shell then fell
+# back to the base cascade config + default checkpoints (caught 2026-09-12 on
+# the first run-1 EXT launch: cosmic slice rows, 311 fm vs 66 nu files). Every
+# value is a default here, overridable, and checked for existence.
+export CONFIG=${CONFIG:-configs/lartpc/larformer/stage4_keypoint/larformer-keypoint2-fullcascade-v6lantern-envslicer.py}
+export LARFORMER_BATTERY_SLICER_CKPT=${LARFORMER_BATTERY_SLICER_CKPT:-exp/larformer_slicer_s1_mixenriched_v1/model/epoch_2.pth}
+export LARFORMER_KP_PARTICLE_CKPT=${LARFORMER_KP_PARTICLE_CKPT:-exp/larformer_particle_s1cache_m2frecipe_rebal_v2_warm2_cew/model/epoch_6.pth}
+export LARFORMER_SHOWER_BDT=${LARFORMER_SHOWER_BDT:-lartpc/larformer_reco/export/data/shower_cosmic_bdt_cew6.joblib}
+export LARFORMER_SHOWER_BDT_NOVTX=${LARFORMER_SHOWER_BDT_NOVTX:-lartpc/larformer_reco/export/data/shower_novtx_bdt_cew6.joblib}
+ATTACH_LLR=${ATTACH_LLR:-lartpc/larformer_reco/trajfit/data/attachment_llr_tables_s1ep2p8.npz}
+if [[ "${NU_RECO_EXTRA_ARGS}" != *"--attach-llr"* ]]; then
+  NU_RECO_EXTRA_ARGS="--attach-llr-tables ${ATTACH_LLR} --attach-llr-thr ${ATTACH_LLR_THR:-4.0} ${NU_RECO_EXTRA_ARGS}"
+fi
+for f in "${CONFIG}" "${LARFORMER_BATTERY_SLICER_CKPT}" "${LARFORMER_KP_PARTICLE_CKPT}" \
+         "${LARFORMER_SHOWER_BDT}" "${LARFORMER_SHOWER_BDT_NOVTX}" "${ATTACH_LLR}"; do
+  [ -f "${WORKDIR}/${f}" ] || [ -f "${f}" ] || { echo "ERROR: chain input missing: ${f}" >&2; exit 2; }
+done
+echo "chain version : config=${CONFIG}"
+echo "                slicer=${LARFORMER_BATTERY_SLICER_CKPT}"
+echo "                segmenter=${LARFORMER_KP_PARTICLE_CKPT}"
+echo "                shower BDTs=${LARFORMER_SHOWER_BDT} , ${LARFORMER_SHOWER_BDT_NOVTX}"
+echo "                nu_reco args=${NU_RECO_EXTRA_ARGS}"
+
 MSP_LIST=${RECODIR}/inputlists/merged_sp_${TAG}.txt
 KP2_NU=${RECODIR}/outputlists/keypoint2_out_${TAG}_nu.txt
 KP2_FM=${RECODIR}/outputlists/keypoint2_out_${TAG}_fm.txt
