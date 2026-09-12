@@ -111,13 +111,16 @@ echo "prep      : ${PREP}  -> ${MSP_LIST}"
 # without an explicit GAMMA_SPEC (or a --gamma-run-scale inside INF_EXTRA_ARGS)
 # because the scale is baked into the GPU pass and decides the nu/fm streams.
 # See lartpc/larformer_analysis/flashmodel_calib/PROTOCOL.md.
-if [ -z "${GAMMA_SPEC:-}" ] && [[ "${INF_EXTRA_ARGS:-}" != *"--gamma-run-scale"* ]]; then
-  echo "ERROR: set GAMMA_SPEC=auto|auto:data|auto:mc|table|<float> (flash gamma scale for this sample)" >&2
-  exit 2
-fi
+# Defaults (2026-09-12): the calibrated (kind, period) table, kind detected from
+# the merged_sp truth content, in-window flash choice. EXT samples MUST pass
+# FLASH_WINDOW=lo,hi (beam-off windows differ from beam-on: run-1 EXT 3.2,5.4
+# vs bnb5e19 2.8,5.0; see flash_calib.FLASH_WINDOW_US). GAMMA_SPEC=auto
+# reproduces the legacy run-period table.
+GAMMA_SPEC=${GAMMA_SPEC:-table}
+if [[ "${INF_EXTRA_ARGS:-}" == *"--gamma-run-scale"* ]]; then GAMMA_SPEC=""; fi
 GAMMA_ARGS=""
-[ -n "${GAMMA_SPEC:-}" ] && GAMMA_ARGS="--gamma-run-scale ${GAMMA_SPEC}"
-GAMMA_ARGS="${GAMMA_ARGS} --sample-kind ${SAMPLE_KIND:-auto} --flash-window ${FLASH_WINDOW:-off}"
+[ -n "${GAMMA_SPEC}" ] && GAMMA_ARGS="--gamma-run-scale ${GAMMA_SPEC}"
+GAMMA_ARGS="${GAMMA_ARGS} --sample-kind ${SAMPLE_KIND:-auto} --flash-window ${FLASH_WINDOW:-auto}"
 echo "flash gamma: ${GAMMA_ARGS} ${INF_EXTRA_ARGS:-}"
 INF=$(INPUT_LIST=${MSP_LIST} OUTPUT_DIR=${KP2_STREAMS}/ NSHARDS=${NINF} \
   EXTRA_INF_ARGS="--output-tree ${GAMMA_ARGS} ${INF_EXTRA_ARGS:-}" \

@@ -9,6 +9,11 @@ excludes these channels from the sum.
   - Run 1 (bnb5e19, runs ~5121-5946): opdet 15 is LIVE  -> mask nothing.
   - Run 3 (mcc9 v29e overlay + EXT, runs ~14121-18794): opdet 15 is DEAD.
 
+NOTE (2026-09-12): GAMMA_SCALE_BY_PERIOD below is the LEGACY table (spec
+"auto"), kept only so existing products stay reproducible. Calibrated values
+keyed by (sample kind, period) live in flash_calib.py (spec "table" /
+"auto:data" / "auto:mc") and are what the reco chain uses by default now.
+
 GAMMA SCALE is a per-run multiplier on gamma_beam (the q->PE light-yield scale)
 that absorbs the run-to-run pred/obs offset. Measured (flashmodel_calib,
 2026-07-14) from in-time MIP muons and cross-checked on pi0 shower slices:

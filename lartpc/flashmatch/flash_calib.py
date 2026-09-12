@@ -28,14 +28,24 @@ GAMMA_BEAM_REF = 5.25
 GAMMA_SCALE_TABLE = {
     "chain": "s1ep2p8cew6",
     "entries": {
+        ('data', 1): {'scale': 0.5449, 'err': 0.0061, 'N': 255, 'result': 'lartpc/larformer_analysis/flashmodel_calib/results/s1ep2p8cew6/bnb5e19_calib3k__muon_clu_anyb_L120.json', 'chain': 's1ep2p8cew6', 'date': '2026-09-11', 'sample': 'bnb5e19_calib3k', 'arm': 'muon'},
+        ('data', 3): {'scale': 0.4281, 'err': 0.0057, 'N': 275, 'result': 'lartpc/larformer_analysis/flashmodel_calib/results/s1ep2p8cew6/extbnb200k_calib3k__muon_clu_anyb_L120.json', 'chain': 's1ep2p8cew6', 'date': '2026-09-11', 'sample': 'extbnb200k_calib3k', 'arm': 'muon'},
+        ('mc', 1): {'scale': 0.8576, 'err': 0.0217, 'N': 75, 'result': 'lartpc/larformer_analysis/flashmodel_calib/results/s1ep2p8cew6/run1ovl_calib6k__muon_clu_anyb_L120_nuq.json', 'chain': 's1ep2p8cew6', 'date': '2026-09-11', 'sample': 'run1ovl_calib6k', 'arm': 'muon'},
+        ('mc', 3): {'scale': 0.8325, 'err': 0.0253, 'N': 62, 'result': 'lartpc/larformer_analysis/flashmodel_calib/results/s1ep2p8cew6/mcoverlay67k_calib3k__muon_clu_anyb_L120_nuq.json', 'chain': 's1ep2p8cew6', 'date': '2026-09-11', 'sample': 'mcoverlay67k_calib3k', 'arm': 'muon'},
     },
 }
 
 # In-time beam-flash window [us] per (kind, period), measured from the
 # producer-0 flash-time histograms (flashmodel_calib, 2026-09-11).
+# Beam-on and beam-off (EXT) data have DIFFERENT windows in the same period,
+# so an optional third key element names the trigger: "bnb" (beam-on, the
+# default for kind='data') or "ext". The reco chain passes FLASH_WINDOW
+# explicitly for EXT samples.
 FLASH_WINDOW_US = {
-    ("data", 1): (2.8, 5.0),
-    ("data", 3): (3.2, 5.4),
+    ("data", 1): (2.8, 5.0),            # bnb5e19 beam-on
+    ("data", 1, "ext"): (3.2, 5.4),     # run-1 EXT (measured 2026-09-12, 1500 files)
+    ("data", 3): (3.2, 5.4),            # run-3 EXT (beam-on run 3 not measured)
+    ("data", 3, "ext"): (3.2, 5.4),
     ("mc", 3): (3.6, 5.2),
     ("mc", 1): (3.6, 5.2),      # measured on the run-1 overlay pilot (2026-09-12)
 }
@@ -88,5 +98,10 @@ def check_spec_vs_kind(spec, kind, allow_mismatch=False):
     return True
 
 
-def flash_window(kind, run):
-    return FLASH_WINDOW_US.get((str(kind), run_period(run)))
+def flash_window(kind, run, trigger=None):
+    p = run_period(run)
+    if trigger:
+        w = FLASH_WINDOW_US.get((str(kind), p, str(trigger)))
+        if w is not None:
+            return w
+    return FLASH_WINDOW_US.get((str(kind), p))

@@ -62,9 +62,9 @@ def main():
     print("\nGAMMA_SCALE_TABLE entries:\n" + body)
     if args.write:
         s = open(FC).read()
-        new = re.sub(r'(    "entries": \{\n)(.*?)(\n    \},)', lambda m: m.group(1) + body + m.group(3),
-                     s, count=1, flags=re.S)
-        assert new != s or body in s, "could not locate the entries block"
+        pat = re.compile(r'(    "entries": \{\n)(.*?)(    \},\n\})', re.S)
+        assert pat.search(s), "could not locate the entries block"
+        new = pat.sub(lambda m: m.group(1) + body + "\n" + m.group(3), s, count=1)
         open(FC, "w").write(new)
         print(f">>> wrote {len(entries)} entries into {FC}")
 
