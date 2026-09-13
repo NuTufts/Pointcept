@@ -46,6 +46,7 @@ export HDF5_USE_FILE_LOCKING=FALSE      # Lustre: h5py file locking is unreliabl
 export OMP_NUM_THREADS=${OMP_NUM_THREADS:-2}
 export MKL_NUM_THREADS=${MKL_NUM_THREADS:-2}
 export PYTHONUNBUFFERED=1
+unset PYTHONSTARTUP   # ALCF sets /etc/pythonstart, absent in the container (harmless warning)
 
 # ---- model assets: set the two roots BEFORE sourcing the shipped env.sh ----
 # (its defaults point at a stale /eagle/.../uboone/assets path)
