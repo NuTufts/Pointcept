@@ -68,3 +68,11 @@ Info for 'uboone official' samples
   A+B, filenos 1-6900 of that list) is 6,900 / 27,602 = 25% of the full sample ->
   5,772,737 spills. Tranche A alone (filenos 1-1000, `extbnb_run1_A`) is 3.62% -> 836,629 spills.
 * mcc9_v28_wctagger_bnb5e19: Run 1 open beam data. POT: 4.4e19; number of spills: 94414115
+* mcc9_v28_run1_bnboverlay: Run 1 BNB nu overlay MC, 9,538 tier2 files. The run-1
+  overlay HALF production (`run1_bnboverlay_half/`, 2026-09-13) converts the
+  TRAINPOOL list (4,740 files = unbiased 50% by md5 parity, see
+  training_data_ledger/LEDGER.md) in MC mode with truth sidecars
+  (`uboone_official/tranche_ovl_run1_half.spec` via `sbatch_tier2_tranche.sh`);
+  POT comes from the sidecars' potTree (no spill count). The 12.8k-event pilot in
+  overlay_train/ has no sidecars and is calibration-only. Chain launcher:
+  `larformer_reco/slurm/launch_run1ovl_half_chain.sh` (MC knobs baked in).

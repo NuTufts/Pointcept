@@ -1,0 +1,4 @@
+# run-1 BNB nu overlay HALF sample (TRAINPOOL list = unbiased 50% of mcc9_v28_run1_bnboverlay, 4,740 files):
+# SMOKE batch, filenos 4-6 (fileno 3 is a known dud). MC mode with truth sidecars into a FRESH root
+# (the 12.8k-event pilot in overlay_train/ has no sidecars). Fields: SAMPLE LIST OUT_ROOT MODE TRUTH_DIR STAGE MARK FIRST LAST
+mcc9_v28_run1_bnboverlay /cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/kpv2_pointcept/lartpc/data_prep/uboone_official/training_data_ledger/mcc9_v28_run1_bnboverlay_TRAINPOOL.txt /cluster/tufts/wongjiradlab/larbys/data/larformer/run1_bnboverlay_half/merged_sp mc /cluster/tufts/wongjiradlab/larbys/data/larformer/run1_bnboverlay_half/truth_sidecar /cluster/tufts/wongjiradlab/larbys/data/mcc9_scratch/tier2_staging/run1_bnboverlay_half /cluster/tufts/wongjiradlab/larbys/data/larformer/run1_bnboverlay_half/markers 4 6
