@@ -33,7 +33,9 @@ mkdir -p "$POL_LOGDIR/$TAG"
 echo ">>> sbank check: sbank-list-allocations -r polaris -p ${ACCT%%::*} -f \"+subname users_list\"  (charging $ACCT)"
 
 if [ $TEST -eq 1 ]; then
-  CMD="qsub -A $ACCT -q $QUEUE -l select=1:system=polaris -l walltime=$WALLTIME -l filesystems=home:eagle -l place=scatter -N kp2test -o $POL_LOGDIR/test -j oe lartpc/polaris/test_cascade.pbs"
+  # NTHR=<events per GPU in the throughput step> (default 50; 500 -> 2,000 events, ~15 min)
+  V="NTHR=${NTHR:-50}${SKIP_CHECKSUM:+,SKIP_CHECKSUM=$SKIP_CHECKSUM}"
+  CMD="qsub -A $ACCT -q $QUEUE -l select=1:system=polaris -l walltime=$WALLTIME -l filesystems=home:eagle -l place=scatter -N kp2test -o $POL_LOGDIR/test -j oe -v $V lartpc/polaris/test_cascade.pbs"
 else
   WORKLIST=${WORKLIST:?set WORKLIST (make_worklist.py --mode cascade ...)}
   [ -s "$WORKLIST" ] || { echo "ERROR: worklist $WORKLIST missing/empty" >&2; exit 2; }

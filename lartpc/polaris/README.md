@@ -91,6 +91,7 @@ this document are superseded. Site-specific values live in ONE file.
 | `check_kp2_attrs.py` | asserts gamma_eff / gamma_spec / sample_kind / flash_window / stream (container) |
 | `make_tufts_reference.py`, `tufts_ref_bnb5e19_idx0-499.json`, `compare_to_tufts.py` | event-by-event comparison with the Tufts cew6 production, keyed on `src_file` |
 | `run_tail_task.sh`, `tail_driver.sh`, `tail.pbs`, `qsub_tail.sh`, `hadd_check.py` | CPU tail on Polaris: regen -> nu_reco -> LArPID -> export -> hadd (+ entry-count assert) |
+| `compare_platforms.py` | cross-platform measurement: kp2 tree vs tree, ntuple vs ntuple (flip rates + errors) |
 | `make_polaris_list.py` | input list in production order (unchanged) |
 
 Layout of `$POL_DATADIR` (default `/eagle/neutrinoGPU/twongj01/data/uboone/bnb5e19_kp2_polaris`):
@@ -178,7 +179,38 @@ from `/opt/root` inside the container). Every task has a `.done` marker under
 `$POL_DATADIR/dlgen2_larformer_ntuple_bnb5e19_prod.root` (export shards are kept
 next to it).
 
-### 4.5 Verify
+### 4.5 Platform conformance (do this BEFORE production; result 2026-09-13)
+
+The first Polaris test job reproduced only 99/200 Tufts partitions bit for bit
+(155/200 same particle count, no bias: +22/-23 events), while a Tufts A100 on
+the same code reproduces 200/200. Per `docs/reference/LArFormer_Reproducibility.md`
+§4 determinism follows the driver + library stack, so Polaris (different host
+driver, A100-SXM4) is a separate conformance family. Data reconstructed on
+Polaris against MC/EXT reconstructed at Tufts would mix families; the size of
+that systematic is measured at the analysis-variable level on 2,000 events:
+
+    # Polaris: 2,000-event cascade (4 GPUs x 500, ~15 min) + tail, debug queue
+    cd /eagle/neutrinoGPU/twongj01/larformer_pointcept && git pull
+    NTHR=500 bash lartpc/polaris/qsub_cascade.sh --test          # step 4 now WARNS on partition agreement
+    TAG=throughput MODE=debug MAX_EVENTS=2000 bash lartpc/polaris/qsub_tail.sh
+    # ship the cascade tree (~220 MB) + ntuple to Tufts
+    source lartpc/polaris/polaris_env.sh; cd $POL_DATADIR/tests
+    tar czf polaris_throughput_2k.tgz throughput/0* throughput/tail/dlgen2_larformer_ntuple_bnb5e19_throughput.root
+    scp polaris_throughput_2k.tgz <user>@login.pax.tufts.edu:/cluster/tufts/wongjiradlab/larbys/data/larformer/polaris_it_tufts/from_polaris/
+
+    # Tufts: the same 2,000 events (indices 0-1999) through the same scripts
+    # (polaris_it_tufts/cas2k.sbatch + tail), then
+    pol_exec "python3 lartpc/polaris/compare_platforms.py kp2 --a <tufts tree> --b <polaris tree>"
+    pol_exec "python3 lartpc/polaris/compare_platforms.py ntuple --a <tufts.root> --b <polaris.root> --csv diff.csv"
+
+`compare_platforms.py` prints event-level flip rates with binomial errors
+(foundVertex, prong counts, PID multisets, shower energy, cosmic BDT score,
+flash chi2, vertex distance). Decide with those numbers whether to (a) quote
+the shift as a systematic, (b) move MC/EXT to Polaris too (one family), or
+(c) keep bnb5e19 at Tufts. The Hopper family in the reproducibility study
+(1.9% event drop-flips) was ruled non-conforming.
+
+### 4.6 Verify
 
 * `check_cascade.py` exits 0: 64 markers, every log ends `DONE`, 0 Tracebacks,
   SKIP count reported (Tufts bnb5e19 had none); nu-file count ~176k.
