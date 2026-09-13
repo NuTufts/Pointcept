@@ -43,8 +43,15 @@ export POL_APPTAINER_FLAGS=${POL_APPTAINER_FLAGS:-}  # e.g. --fakeroot if the si
 
 # ---- runtime environment ---------------------------------------------------
 export HDF5_USE_FILE_LOCKING=FALSE      # Lustre: h5py file locking is unreliable
+# thread caps for the CPU tail (24-32 processes per 64-thread node). OpenBLAS
+# does NOT honour OMP_NUM_THREADS: without OPENBLAS_NUM_THREADS every nu_reco
+# process spawned 64 BLAS threads and the node hit its process limit
+# (pthread_create / fork "Resource temporarily unavailable", 2026-09-13).
 export OMP_NUM_THREADS=${OMP_NUM_THREADS:-2}
 export MKL_NUM_THREADS=${MKL_NUM_THREADS:-2}
+export OPENBLAS_NUM_THREADS=${OPENBLAS_NUM_THREADS:-2}
+export NUMEXPR_NUM_THREADS=${NUMEXPR_NUM_THREADS:-2}
+export VECLIB_MAXIMUM_THREADS=${VECLIB_MAXIMUM_THREADS:-2}
 export PYTHONUNBUFFERED=1
 unset PYTHONSTARTUP   # ALCF sets /etc/pythonstart, absent in the container (harmless warning)
 
