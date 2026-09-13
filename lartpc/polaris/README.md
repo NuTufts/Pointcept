@@ -127,7 +127,7 @@ order); (2) 2-event smoke into `tests/smoke/` and the attr assertions
 (gamma_eff 2.86073, table, data, 2.8,5.0, stream nu); (3) 4 GPUs x 50 events
 (indices 0-199) into `tests/throughput/` with s/event per GPU; (4)
 `compare_to_tufts.py` against indices 0-199 of the Tufts cew6 production. Read
-`$POL_DATADIR/logs/test/kp2test.o<jobid>`: every step prints PASS/FAIL; all PASS
+`$POL_DATADIR/logs/test/<jobid>.polaris-pbs-01...OU` (PBS names the file by job id when -o is a directory): every step prints PASS/FAIL; all PASS
 writes `tests/throughput/.PASS`, which the production qsub requires.
 Expect ~1.5-2.5 s/event. If it is much slower with idle GPUs the single-stripe
 images are the bottleneck (`lfs migrate -c 8 <image>`, optional).
