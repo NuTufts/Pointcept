@@ -16,7 +16,10 @@ import sys
 import numpy as np
 import torch
 
-PRONGCNN_DIR = "/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/prongCNN"
+# env PRONGCNN_DIR overrides (portability; the repo is github.com/NuTufts/prongCNN,
+# its checkpoints/ holds LArPID_{default,alternate}_network_weights.pt, 85 MB each)
+PRONGCNN_DIR = os.environ.get("PRONGCNN_DIR", "").strip() or \
+    "/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/prongCNN"
 CHECKPOINT_DIR = os.path.join(PRONGCNN_DIR, "checkpoints")
 PID_PDG = (11, 22, 13, 211, 2212)
 

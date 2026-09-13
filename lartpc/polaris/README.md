@@ -159,8 +159,11 @@ walltime generous (a shard of 2,750 events is ~1.5 h; ask for 3 h).
 
 Either (a) run the CPU tail on Polaris: `regen_kp2_list.sh` (nu/fm lists) ->
 `run_nu_reco.py` shards -> LArPID (`lartpc/larformer_reco/larpid/apply_larpid.py`;
-needs the external `prongCNN` repo + its `checkpoints/LArPID_default_network_weights.pt`,
-NOT in this repo: `lartpc/larformer_reco/larpid/model.py` `PRONGCNN_DIR`) ->
+needs the external `prongCNN` repo — `git clone https://github.com/NuTufts/prongCNN.git`
+(2 MB) plus its `checkpoints/LArPID_default_network_weights.pt` and
+`LArPID_alternate_network_weights.pt` (85 MB each, from Tufts
+`/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/prongCNN/checkpoints/`);
+point env `PRONGCNN_DIR` at the clone) ->
 `export_gen2ntuple.py` (data mode, both cew6 shower BDTs in git) -> hadd; or
 (b) pack `$OUT/keypoint2_streams` with
 `lartpc/data_prep/squashfs/pack_merged_sp_squashfs.sh` (it packs any 2-level
