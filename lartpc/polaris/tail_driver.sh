@@ -16,7 +16,7 @@ set -u
   "${POL_KP2_NU:?}" "${POL_KP2_FM:?}" "${POL_NTUPLE:?}"
 STAGES=${STAGES:-regen,nu_reco,larpid,export,hadd}
 NNR=${NNR:-120}; NEXP=${NEXP:-96}
-PPN_NU_RECO=${PPN_NU_RECO:-24}; PPN_LARPID=${PPN_LARPID:-32}; PPN_EXPORT=${PPN_EXPORT:-24}
+PPN_NU_RECO=${PPN_NU_RECO:-24}; PPN_LARPID=${PPN_LARPID:-32}; PPN_EXPORT=${PPN_EXPORT:-8}   # export: ~6 h5 opens per event on Lustre, keep concurrency low
 NN=1; HOSTFILE=${POL_HOSTFILE:-${PBS_NODEFILE:-}}
 if [ -n "$HOSTFILE" ] && [ -r "$HOSTFILE" ]; then NN=$(awk '!s[$0]++' "$HOSTFILE" | wc -l); fi
 WLD=$POL_TAIL/worklists; mkdir -p "$WLD" "$POL_TAIL/.done" "$POL_LOGDIR/$POL_TAG/tail" \

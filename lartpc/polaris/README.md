@@ -171,7 +171,7 @@ you checked). Re-check any time with
 `tail_driver.sh` runs regen (find-based nu/fm lists; refuses to regenerate once
 nu_reco outputs exist -- gidx = line number must stay fixed), nu_reco (120 shards
 per stream, 24 per node), LArPID (one task per nu_reco shard, 32 per node, CPU,
-default run-1 weights via `PRONGCNN_DIR`), export (96 shards, data mode:
+default run-1 weights via `PRONGCNN_DIR`), export (96 shards, 8 per node because of Lustre metadata load, data mode:
 `--truth-dir` absent, `--weights-pkl none`, cew6 shower BDTs) and hadd (ROOT
 from `/opt/root` inside the container). Every task has a `.done` marker under
 `$POL_DATADIR/.done/`, so resubmitting the same command resumes;
