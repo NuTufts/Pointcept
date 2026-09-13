@@ -48,7 +48,10 @@ OUTPUT_DIR=${OUTPUT_DIR:-${RECODIR}/output/nu_reco_valdata_all/}
 # ---- per-shard range over the KEYPOINT2 list --------------------------------
 # ceil(NLINES / NSHARDS) events per shard, contiguous, non-overlapping. The
 # driver clamps the last shard to the real list length.
-NLINES=$(grep -c . "${KEYPOINT2_LIST}")
+NLINES=$(grep -c . "${KEYPOINT2_LIST}" || true)
+# an empty stream list is a legitimate outcome (the flashmatch stream fires on
+# only ~5 events per 100k), not an error -- exit clean so afterok dependents run
+[ "${NLINES:-0}" -eq 0 ] && { echo ">>> ${KEYPOINT2_LIST} is empty; nothing to do."; exit 0; }
 PER_SHARD=$(( (NLINES + NSHARDS - 1) / NSHARDS ))
 START=$(( SLURM_ARRAY_TASK_ID * PER_SHARD ))
 N=${PER_SHARD}

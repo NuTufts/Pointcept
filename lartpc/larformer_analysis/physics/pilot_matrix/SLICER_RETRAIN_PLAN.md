@@ -2242,3 +2242,85 @@ model_and_output_file_versions.md (tag candidate: v2_s1ep2p8cew6).
   ntuples. First campaign run at the new sizing rules (20 shards/
   sample, 24h, contrib partition) — export+hadd x3 in well under an
   hour vs ~4.5h/shard before.
+
+### 2026-09-11 — Run-1 campaign Phase 1: gamma pilot MEASURED
+
+Chain unblocked first: the fm-stream nu_reco (3513475) failed instantly on all
+20 tasks because the flashmatch stream list was EMPTY, and `grep -c` on an empty
+file exits 1 under `set -eu`. An empty fm stream is NORMAL at this scale (~5 fm
+events per 100k: 11/200,011 EXT, 4/67,214 MC; 12,812 events expects <1).
+PERMANENT FIX: submit_nu_reco_shard.sh treats an empty list as a clean no-op;
+submit_larpid_shard_cpu.sh's `ls` no longer dies on a missing/empty shard dir.
+Export (3528535, 20 shards) + hadd (3528536) rerun with the empty fm list ->
+ntuple 12,812 entries, foundVertex 0.774, all primaryVtxStream==0.
+
+VERIFIED the arm really ran at scale 1.0 (flash attrs: gamma_beam 5.25,
+gamma_scale 1.0, gamma_eff 5.25, dead_opdets '' = opdet15 live, correct for
+run1) — so gamma = 5.25 x median(obs/pred) reads off with no rescaling.
+
+RESULT (fit_gamma_run.py, run1_bnboverlay_MC): N=135 calibration muons (far
+better than the ~13 projected from the run-3 val), median obs/pred 0.910
+(16-84%: 0.73-1.43) -> gamma_fit 4.779, i.e. GAMMA_SCALE = 0.910 +- 0.038.
+  vs the run-1 table value 0.80 (data-derived): 2.9 sigma
+  vs run-3 MC 1.00:                            2.4 sigma
+INTERPRETATION (hypothesis, not established): an overlay's in-time light is
+data cosmic light PLUS simulated nu light, and pred_pe sums charge from both.
+A charge-weighted mixture of a 0.80 data component and a 1.0 MC component
+lands near 0.91 — which is what we see. If so, the correct scale is
+SAMPLE-specific (overlay != pure data != pure MC), not merely run-specific,
+and the EXT (pure data cosmics) should come back near 0.80.
+NEXT: (a) closure arm at 0.91 requiring median(obs/pred)=1.00+-0.05;
+(b) EXT-side measurement to test the mixture hypothesis; (c) only then decide
+the table structure. Production must pass --gamma-run-scale per sample; do NOT
+edit GAMMA_SCALE_BY_PERIOD (both samples are run_period()==1, so an edit would
+retroactively change bnb5e19).
+
+### 2026-09-11 — Run-1 campaign Phase 2 done + EXT conversion STARTED
+
+Conversion is provably independent of the flashmatch tuning (the converter has
+ZERO references to gamma/pred_pe/chi2/dead_opdets; it folds in only the RAW
+observed flashes + pmt_positions — all tuning-dependent quantities are computed
+later at cascade inference). So staging+conversion was started while the gamma
+question is still open.
+
+PHASE 2 (script generalization), all defaults preserve prior behavior:
+- stage_overlay_train_batch.sh + submit_overlay_train_convert.sh now take
+  LIST / OUT_ROOT / MODE(mc|data) / STAGE / MARK / TRUTH_DIR.
+- MODE=data -> --is-data (no --mcc9), no label completion.
+- Truth sidecar (MC) now extracted INSIDE the task BEFORE the staged dlmerged
+  is deleted — the only chance, since tier2 is unmounted on compute nodes.
+- complete_labels.py DECOUPLED from the converter exit code (fixes the ~1% of
+  filenos that wrote good h5 then crashed in teardown and silently skipped
+  label completion).
+- Per-fileno marker $MARK/fileno<N>.ok records rc/nout/done/truth; written ONLY
+  when the converter's "Done." line proves the entry loop finished, so a
+  mid-loop truncation can no longer masquerade as complete. Stager skip test is
+  marker-first with the h5 glob as fallback (pre-marker conversions still skip).
+- Headers bumped to --time=24:00:00, --partition=batch,preempt,wongjiradlab.
+- New run_tier2_tranche.sh: serial batch sequencer over a spec file.
+BACKWARD-COMPAT VERIFIED: stager with no env on mcc9_v28_run1_bnboverlay 1-10
+skipped 9/10 (the 10th is known dud fileno 3).
+
+EXT SUBSET: stride-2 list mcc9_v29e_dl_run1_C1_extbnb_stride2.txt (13,801 of
+27,602) rather than a head slice — the tier2 list is ordered by hash bucket
+(10038/10038/7526) so a head slice samples buckets unevenly, which would bias
+the later gate-count fraction. Stride-2 bucket coverage 5019/5019/3763.
+
+DATA-MODE SMOKE (array 3553002, filenos 1-3): 3/3 COMPLETED, markers
+rc=0 done=1 mode=data, 34 events, staging auto-cleaned. h5 validated:
+run=4983 (run period 1, inside the run1 xsec-pickle range 4952-7770),
+trackid/pid all -1 (data mode), 31 flashes with pe/time_us, pmt_positions
+(32,3). MEASURED 7.4 MB/event (vs 9.9 estimated) and ~11 ev/file (vs 15.3;
+noisy at N=3) -> the campaign may be materially cheaper than the 1.97 TB
+budgeted. Pilot will pin both down.
+EXT-A LAUNCHED: filenos 1-1000 of the stride2 list, 4 serial batches of 250.
+- FLASHMATCH CALIBRATION HANDED OFF to a dedicated session:
+  flashmodel_calib/cross_sample_calibration_log.md (deployed constants, the
+  two estimators + the production-gamma_eff arithmetic trap, all four
+  measurements with bulk-vs-clean-muon comparison, the unresolved
+  run1-vs-run3 DATA direction contradiction, open questions, repro commands).
+  HEADLINE CORRECTION: my earlier "run-3 EXT pred is 2.5x too high" came from
+  the clean-muon estimator, which drops 77% of candidates on that sample; the
+  bulk estimator (N=66k) says 1.42x. Prefer bulk for pure-cosmic data. Also:
+  neither estimator reproduces the deployed run-1 0.80 on the cew6 chain
+  (bulk 0.637 / muon 0.605) — it was measured on an older chain.

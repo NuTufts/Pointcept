@@ -35,7 +35,7 @@ SAMPLE_TAG=${SAMPLE_TAG:-mcc9_v29e_dl_run3b_bnb_nu_overlay}
 DEVICE=${DEVICE:-cuda}
 
 mkdir -p "${OUTPUT_DIR}" "${WORKDIR}/logs/export"
-SHARDS=($(ls ${NU_RECO_DIR}/nu_reco_shard*.h5 | sort))
+SHARDS=($(ls ${NU_RECO_DIR}/nu_reco_shard*.h5 2>/dev/null | sort || true))
 [ ${SLURM_ARRAY_TASK_ID} -ge ${#SHARDS[@]} ] && { echo "no shard"; exit 0; }
 IN=${SHARDS[$SLURM_ARRAY_TASK_ID]}
 OUT=${OUTPUT_DIR}/nu_reco_larpid_$(basename ${IN} | sed 's/nu_reco_//')
