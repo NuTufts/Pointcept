@@ -1095,7 +1095,17 @@ def main():
         # Per-event order invariance (shared helper; see its docstring).
         if args.deterministic:
             reseed_per_event(args.seed)
-        batch = larformer_collate([ds[i]])
+        # An unreadable input (corrupt merged_sp h5) must not kill a multi-
+        # thousand-event shard: log it, write nothing for the event (the event
+        # then simply has no cascade file, like an event with no nu slice) and
+        # move on. Seen 2026-09-12 on run-1 EXT (bad object header version).
+        try:
+            batch = larformer_collate([ds[i]])
+        except Exception as ex:
+            src = real_files[i] if i < len(real_files) else f"index {i}"
+            print(f"  [{i}] SKIP unreadable input {src}: "
+                  f"{type(ex).__name__}: {ex}", flush=True)
+            continue
         batch = {k: (v.to(args.device) if torch.is_tensor(v) else v)
                  for k, v in batch.items()}
         # --- slice-ids-only: sidecar from a separate slicer forward, no Stage-3.

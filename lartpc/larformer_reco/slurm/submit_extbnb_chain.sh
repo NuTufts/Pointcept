@@ -103,6 +103,15 @@ mkdir -p "${WORKDIR}/logs/export" "${WORKDIR}/logs/data_prep"
 # below stay afterok (halt the chain on a genuine stage failure).
 dep_arg() { [ -n "$1" ] && echo "--dependency=afterany:$1" || echo ""; }
 
+# ---- resume mode: RESUME_AFTER_INF=<inference job id> skips prep + inference
+# (keeps the existing MSP_LIST and keypoint2_streams) and hangs regen on that
+# job -- for re-running a single failed inference shard by hand and then the
+# CPU tail without redoing the GPU pass.
+if [ -n "${RESUME_AFTER_INF:-}" ]; then
+  [ -s "${MSP_LIST}" ] || { echo "ERROR: resume needs the existing ${MSP_LIST}" >&2; exit 2; }
+  INF=${RESUME_AFTER_INF}
+  echo "RESUME: skipping prep + inference; regen waits for job ${INF}"
+else
 # ---- 0) prep: build the merged_sp list + clean downstream dirs --------------
 # (find, not ls -- E2BIG at scale; clean keypoint2_streams + nu_reco dirs so
 #  stale shard files can't poison the glob consumers.)
@@ -159,6 +168,7 @@ INF=$(INPUT_LIST=${MSP_LIST} OUTPUT_DIR=${KP2_STREAMS}/ NSHARDS=${NINF} \
   --array=0-$((NINF-1)) --time=${JOB_TIME} \
   ${SLURMDIR}/submit_inference_shard.sh)
 echo "inference : ${INF}  (${NINF} GPU shards) -> ${KP2_STREAMS}"
+fi   # end of the non-resume (prep + inference) block
 
 # ---- 2) regen: split keypoint2_streams into nu / fm lists -------------------
 REGEN=$(sbatch --parsable ${EXCL} --dependency=afterok:${INF} \
