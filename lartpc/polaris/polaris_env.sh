@@ -167,6 +167,18 @@ pol_check_env() {
   nimg=$(ls "$POL_IMGDIR"/*_merged_sp_*.sqfs 2>/dev/null | wc -l)
   if [ "$nimg" -eq 12 ]; then echo "    ok  12 squashfs images"; else echo "    ERROR: $nimg squashfs images (expect 12) in $POL_IMGDIR"; rc=1; fi
   command -v apptainer >/dev/null 2>&1 && echo "    ok  apptainer $(apptainer --version 2>/dev/null | awk '{print $NF}')" || { echo "    MISSING apptainer"; rc=1; }
+  # python packages the export stage needs that are NOT in pointcept_cuml.sif:
+  # they come from the user's ~/.local (pip --user, bound into the container).
+  # Tufts production versions: scikit-learn 1.8.0 (the cew6 BDT pickles),
+  # uproot 5.7.2, awkward 2.9.0. Install on the far side (inside the container,
+  # with the site proxy set):  pip install --user scikit-learn==1.8.0 uproot==5.7.2 awkward==2.9.0
+  local pyver
+  if pyver=$(apptainer exec $(pol_eagle_bind) "$POL_SIF" python3 -c "import sklearn, uproot, awkward, sys; print(sklearn.__version__, uproot.__version__, awkward.__version__, sklearn.__file__)" 2>/dev/null); then
+    echo "    ok  container python: sklearn/uproot/awkward = $pyver"
+    case "$pyver" in 1.8.0\ *) ;; *) echo "    WARNING: scikit-learn != 1.8.0 (cew6 shower BDT pickles were made with 1.8.0)";; esac
+  else
+    echo "    MISSING python packages in the container: scikit-learn / uproot / awkward (pip install --user scikit-learn==1.8.0 uproot==5.7.2 awkward==2.9.0 inside the container)"; rc=1
+  fi
   [ $rc -eq 0 ] && echo ">>> pol_check_env: PASS" || echo ">>> pol_check_env: FAIL"
   return $rc
 }

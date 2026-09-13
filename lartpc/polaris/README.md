@@ -224,6 +224,13 @@ the shift as a systematic, (b) move MC/EXT to Polaris too (one family), or
 ## 5. Gotchas
 
 * Set `HDF5_USE_FILE_LOCKING=FALSE` in every process (Lustre).
+* `pointcept_cuml.sif` does NOT contain scikit-learn, uproot or awkward; the
+  export stage gets them from the user's `~/.local` (pip --user, which
+  apptainer binds in). Install once on Polaris, inside the container, with the
+  ALCF proxy: `export HTTPS_PROXY=http://proxy.alcf.anl.gov:3128 HTTP_PROXY=$HTTPS_PROXY`
+  then `apptainer exec $POL_SIF pip install --user scikit-learn==1.8.0 uproot==5.7.2 awkward==2.9.0`
+  (the versions of the Tufts production; the cew6 BDT pickles need 1.8.0).
+  `pol_check_env` checks them.
 * `/eagle` is a symlink to `/lus/eagle/projects`; inside the container only
   `/lus` is a real mount (on login nodes the container's `/eagle` is an empty
   tree apptainer creates for the squashfs mount points, so files "vanish").
