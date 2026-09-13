@@ -37,11 +37,22 @@ keypoint_weights = os.environ.get("LARFORMER_KP_KEYPOINT_CKPT", "").strip() or (
     f"{_REPO}/exp/larformer_keypoint2_particle_cachedpredmask_v1/"
     "model/epoch_30.pth")
 
+# The keypoint model inherits its Sonata pretrain path from
+# larformer-keypoint2-slice-v1.py (hard-coded Tufts old-repo path; the weights
+# are overwritten by keypoint_weights at load time but the file must exist).
+# Off-site (Polaris) the assets env.sh exports LARFORMER_SONATA_PRETRAIN; honour
+# it here like the cascade configs do (found by the Tufts smoke of the Polaris
+# scripts, 2026-09-12).
+_kp_model = dict(_kp.model)
+_sonata = os.environ.get("LARFORMER_SONATA_PRETRAIN", "").strip()
+if _sonata:
+    _kp_model["backbone_weight"] = _sonata
+
 particle_source = "predicted"
 model = dict(
     type="CascadedKeypoint",
     cascade=dict(_casc.model),
-    keypoint_model=dict(_kp.model),
+    keypoint_model=_kp_model,
     particle_source=particle_source,
     no_object_class_id=int(_kp.model.get("num_classes", 8)) - 1,
 )
@@ -65,4 +76,4 @@ data = dict(
 nu_thresh = 0.3
 save_path = "exp/larformer_keypoint2_fullcascade_hybrid_infer"
 
-del os, pointcept, Config, _casc, _kp, _CFG_DIR, _REPO, _test
+del os, pointcept, Config, _casc, _kp, _CFG_DIR, _REPO, _test, _kp_model, _sonata

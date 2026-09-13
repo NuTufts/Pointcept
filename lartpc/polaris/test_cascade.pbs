@@ -1,0 +1,85 @@
+#!/bin/bash
+# ---------------------------------------------------------------------------
+# First job on Polaris: environment sanity, input list, 2-event smoke, 4-GPU
+# throughput, comparison with the Tufts production. Debug queue, 1 node.
+# Submit with:  bash lartpc/polaris/qsub_cascade.sh --test
+# Optional -v: SKIP_CHECKSUM=1, NTHR=50 (events per GPU in the throughput step)
+# Writes $POL_DATADIR/tests/throughput/.PASS when every step passes (the
+# production qsub requires it).
+# ---------------------------------------------------------------------------
+#PBS -N kp2test
+#PBS -l select=1:system=polaris
+#PBS -l walltime=00:45:00
+#PBS -l filesystems=home:eagle
+#PBS -l place=scatter
+#PBS -j oe
+set -u
+cd "${PBS_O_WORKDIR:-$(pwd)}"
+# shellcheck disable=SC1091
+source lartpc/polaris/polaris_env.sh
+JID=${PBS_JOBID:-nojob}; JID=${JID%%.*}
+NTHR=${NTHR:-50}
+FAILS=0
+step() { echo; echo "=================== $(date +%FT%T) $*"; }
+result() { if [ "$1" -eq 0 ]; then echo ">>> PASS: $2"; else echo ">>> FAIL: $2 (rc=$1)"; FAILS=$((FAILS + 1)); fi; }
+T=$POL_DATADIR/tests; mkdir -p "$T/smoke" "$T/throughput" "$POL_DATADIR/lists" "$POL_LOGDIR/test"
+rm -f "$T/throughput/.PASS"
+
+step "0. assets, container, GPU"
+if [ "${SKIP_CHECKSUM:-0}" != 1 ]; then
+  (cd "$POL_ASSETS" && sha256sum -c sha256sums.txt); result $? "sha256sums"
+fi
+pol_check_env; result $? "pol_check_env"
+nvidia-smi -L
+NG=$(nvidia-smi -L 2>/dev/null | grep -c GPU); [ "$NG" -eq 4 ]; result $? "4 GPUs visible ($NG)"
+pol_exec --nv "python3 -c 'import torch, pointops; print(torch.__version__, torch.cuda.is_available(), torch.cuda.get_device_name(0))' && ls $POL_MSP_MNT | head -3"
+result $? "container: torch + pointops import, GPU, squashfs mount"
+
+step "1. input list (production order)"
+LIST=$POL_DATADIR/lists/merged_sp_bnb5e19_polaris.txt
+if [ -s "$LIST" ]; then
+  echo ">>> exists: $LIST ($(wc -l < "$LIST") lines)"
+else
+  pol_exec "python3 lartpc/polaris/make_polaris_list.py --merged-sp $POL_MSP_MNT --out $LIST"
+fi
+NL=$(grep -c . "$LIST" 2>/dev/null || echo 0); [ "$NL" -eq 176302 ]; result $? "list has 176302 paths ($NL)"
+export POL_LIST=$LIST
+
+step "2. two-event smoke (GPU 0)"
+rm -rf "$T/smoke"; mkdir -p "$T/smoke"
+JOBENV=$POL_LOGDIR/test/job_${JID}_smoke.env
+echo "export POL_TAG=test_smoke POL_OUTDIR='$T/smoke' POL_LIST='$LIST'; source '$POL_REPO/lartpc/polaris/polaris_env.sh'" > "$JOBENV"
+( source "$JOBENV"; SLOT=0 bash lartpc/polaris/run_cascade_shard.sh 0 0 2 ); result $? "smoke shard rc"
+SLOG=$POL_LOGDIR/test_smoke/cascade_shard000.log
+grep -q "Injecting LoRA" "$SLOG"; result $? "deghoster LoRA injected"
+grep -q "larformer_slicer_s1_mixenriched_v1/model/epoch_2.pth" "$SLOG"; result $? "slicer ckpt = mixenriched epoch_2"
+grep -q "n_particles=" "$SLOG"; result $? "at least one n_particles line"
+grep -c "n_particles=" "$SLOG" | sed 's/^/    n_particles lines: /'
+! grep -q Traceback "$SLOG"; result $? "no Traceback in smoke log"
+pol_exec "python3 lartpc/polaris/check_kp2_attrs.py --tree $T/smoke --sample 5"; result $? "flash attrs (gamma_eff 2.86073, table, data, 2.8,5.0, stream nu)"
+
+step "3. throughput: 4 GPUs x $NTHR events (indices 0-$((4 * NTHR - 1)))"
+rm -rf "$T/throughput"; mkdir -p "$T/throughput"
+WL=$T/throughput.wl
+python3 lartpc/polaris/make_worklist.py --mode range --start 0 --n $((4 * NTHR)) --nshards 4 --out "$WL"
+JOBENV=$POL_LOGDIR/test/job_${JID}_thr.env
+echo "export POL_TAG=throughput POL_OUTDIR='$T/throughput' POL_LIST='$LIST'; source '$POL_REPO/lartpc/polaris/polaris_env.sh'" > "$JOBENV"
+T0=$(date +%s)
+bash lartpc/polaris/node_launcher.sh "$JOBENV" "$WL" 4 lartpc/polaris/run_cascade_shard.sh; result $? "4 throughput shards"
+echo ">>> wall for the step: $(( $(date +%s) - T0 )) s (includes 4x model build)"
+python3 lartpc/polaris/check_cascade.py --worklist "$WL" --outdir "$T/throughput" --logdir "$POL_LOGDIR/throughput" --tag throughput --throughput
+result $? "check_cascade (all 4 shards DONE)"
+nvidia-smi --query-gpu=name,memory.total --format=csv,noheader | head -1
+
+step "4. compare with the Tufts cew6 production (indices 0-$((4 * NTHR - 1)))"
+pol_exec "python3 lartpc/polaris/compare_to_tufts.py --ref lartpc/polaris/tufts_ref_bnb5e19_idx0-499.json --tree $T/throughput --max-index $((4 * NTHR - 1))"
+result $? "src_file linkage + partition agreement"
+
+echo
+if [ $FAILS -eq 0 ]; then
+  date +%FT%T > "$T/throughput/.PASS"
+  echo ">>> TEST JOB: ALL PASS -> $T/throughput/.PASS written; production may be submitted"
+else
+  echo ">>> TEST JOB: $FAILS FAILED step(s); fix before production"
+fi
+exit $FAILS

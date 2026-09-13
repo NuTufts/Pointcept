@@ -49,5 +49,10 @@ PhotonLib cache `lartpc/flashmatch/data/photonlib_v6_70kV.npz`, flags
 Determinism is per GPU type: A100 outputs differ from the Tufts ones at the
 float32 level in the slicer partition.
 
+The mount root must exist inside the container image (or be under a bound
+host path): apptainer cannot create `/data/...` in the read-only image without
+`--writable-tmpfs`/`--fakeroot`. `lartpc/polaris/polaris_env.sh` therefore mounts
+the images under a host directory with 12 empty `NNN/` mount points.
+
 Reading from the images is sequential large-file I/O on Lustre (one
 squashfs block read per h5 open) instead of a metadata lookup per file.

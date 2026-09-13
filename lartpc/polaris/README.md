@@ -26,7 +26,7 @@ per event (6,533 events in 3.3 h), so the full sample is ~95 GPU-hours: on
 |---|---|
 | repo clone (branch `nutufts_lartpc_keypointdev_v2`) | `/eagle/neutrinoGPU/twongj01/larformer_pointcept` |
 | assets (checkpoints, PhotonLib cache, container, `env.sh`, `sha256sums.txt`) | `/eagle/neutrinoGPU/twongj01/polaris_assets` |
-| bnb5e19 merged_sp as 12 squashfs images + manifests | `/eagle/neutrinoGPU/twongj01/data/uboone/mcc9_v28_wctagger_bnb5e19` |
+| bnb5e19 merged_sp as 12 squashfs images + manifests | `/eagle/neutrinoGPU/twongj01/data/uboone/mcc9_v28_wctagger_bnb5e19/squashfs/` |
 | project / allocation | `neutrinoGPU` |
 
 Assets layout (see `docs/reference/Running_Inference_Offsite.md`):
@@ -41,7 +41,12 @@ segmenter, keypoint checkpoints, PhotonLib cache), `oldrepo_assets/sonata/...`
    command. `polaris_assets/env.sh` sets every env var; edit its two roots.
 2. `lartpc/data_prep/squashfs/README.md` + `mount_args.sh` — how the 12
    images are bind-mounted into the container so the tree looks like
-   `<mount>/NNN/NN/merged_bnb5e19_filenoNNNNN_entryNNNNNN.h5`.
+   `<mount>/NNN/NN/merged_bnb5e19_filenoNNNNN_entryNNNNNN.h5`. The mount root
+   must exist in the container: `polaris_env.sh` uses a host directory
+   (`$POL_DATADIR/merged_sp_mnt`, 12 empty `NNN/` mount points) so that only
+   bind mounts are needed; a root like `/data/...` that is absent from the
+   image needs `--writable-tmpfs` or `--fakeroot` (mkdir of the mount point
+   fails otherwise: seen at Tufts with apptainer 1.5).
 3. `lartpc/polaris/make_polaris_list.py` — builds the input list in the
    Tufts PRODUCTION order from `bnb5e19_production_basenames.txt.gz`
    (176,302 of the 176,336 files; the order defines the cascade event index,
@@ -69,113 +74,132 @@ segmenter, keypoint checkpoints, PhotonLib cache), `oldrepo_assets/sonata/...`
    `submit_export_merge.sh`, `regen_kp2_list.sh`, and
    `lartpc/larformer_reco/README.md`.
 
-## 4. Test, then launch
+## 4. Scripts (`lartpc/polaris/`) and the procedure
 
-### 4.1 Environment sanity (debug queue, 1 node)
+Everything below is scripted; the hand-typed commands of the first version of
+this document are superseded. Site-specific values live in ONE file.
 
-    module load apptainer
-    cd /eagle/neutrinoGPU/twongj01/larformer_pointcept
-    (cd /eagle/neutrinoGPU/twongj01/polaris_assets && sha256sum -c sha256sums.txt)   # all OK
-    export LARFORMER_KPV2_ROOT=/eagle/neutrinoGPU/twongj01/polaris_assets/kpv2_assets
-    export LARFORMER_OLD_REPO=/eagle/neutrinoGPU/twongj01/polaris_assets/oldrepo_assets
-    source /eagle/neutrinoGPU/twongj01/polaris_assets/env.sh
-    export HDF5_USE_FILE_LOCKING=FALSE        # Lustre: h5py file locking is unreliable
-    IMG=/eagle/neutrinoGPU/twongj01/data/uboone/mcc9_v28_wctagger_bnb5e19
-    SIF=/eagle/neutrinoGPU/twongj01/polaris_assets/pointcept_cuml.sif
-    apptainer exec --nv $(bash lartpc/data_prep/squashfs/mount_args.sh $IMG /data/bnb5e19/merged_sp) $SIF \
-      bash -c "nvidia-smi -L; cd $PWD && export PYTHONPATH=\$PWD && python3 -c 'import torch, pointops; print(torch.cuda.is_available(), torch.cuda.get_device_name(0))' && ls /data/bnb5e19/merged_sp | head -3"
+| file | role |
+|---|---|
+| `polaris_env.sh` | all Eagle paths, accounts, chain-version pins, `pol_exec` (container + squashfs mounts), `pol_check_env` |
+| `make_worklist.py` | shard ranges -> text worklist (cascade / range / nu_reco / larpid / export) |
+| `node_launcher.sh` | per-node runner: takes its share of a worklist, runs `ppn` tasks concurrently (`SLOT` -> GPU) |
+| `run_cascade_shard.sh` | one GPU shard: retry x3, timestamped log, `.done` / `.running` markers, idempotent |
+| `cascade.pbs`, `qsub_cascade.sh` | the GPU pass (16 nodes x 4 GPUs) and its qsub builder with guards |
+| `test_cascade.pbs` | first job: checksums, imports, list, 2-event smoke, 4-GPU throughput, Tufts comparison |
+| `check_cascade.py` | per-shard verification + `.resume` worklist + s/event (stdlib, host python) |
+| `check_kp2_attrs.py` | asserts gamma_eff / gamma_spec / sample_kind / flash_window / stream (container) |
+| `make_tufts_reference.py`, `tufts_ref_bnb5e19_idx0-499.json`, `compare_to_tufts.py` | event-by-event comparison with the Tufts cew6 production, keyed on `src_file` |
+| `run_tail_task.sh`, `tail_driver.sh`, `tail.pbs`, `qsub_tail.sh`, `hadd_check.py` | CPU tail on Polaris: regen -> nu_reco -> LArPID -> export -> hadd (+ entry-count assert) |
+| `make_polaris_list.py` | input list in production order (unchanged) |
 
-Expect: 12 checksums OK, 4 GPUs listed, `True NVIDIA A100...`, dirs `000 001 002`.
-If `pointops` fails to import, the container was built for the Tufts CUDA
-driver; check `nvidia-smi` driver vs the container's CUDA (apptainer `--nv`
-usually handles it).
+Layout of `$POL_DATADIR` (default `/eagle/neutrinoGPU/twongj01/data/uboone/bnb5e19_kp2_polaris`):
+`lists/` (merged_sp list, worklists), `logs/<tag>/`, `merged_sp_mnt/` (12 empty
+mount points; the images appear there INSIDE the container only),
+`tests/{smoke,throughput}/`, `keypoint2_streams/` (production cascade tree),
+`nu_reco_streams_{nu,fm}/`, `nu_reco_larpid_{nu,fm}/`, the final ntuple.
 
-### 4.2 Input list (once)
+Polaris facts the scripts assume (checked 2026-09-12, `docs/reference/Polaris_Site_Info_2026-09-12.md`):
+apptainer 1.4.1 via `module use /soft/modulefiles; module load spack-pe-base apptainer`;
+queues `debug` 1-2 nodes / 1 h / 1 running job per user, `prod` -> `small`
+10-24 nodes / 3 h, `preemptable` 1-10 nodes / 72 h; `-A <project>::<suballocation>`
+is mandatory (submanagement): `neutrinoGPU::DetsimGPU` (100 node-hours, production)
+and `neutrinoGPU::debug` (tests) -- confirm with
+`sbank-list-allocations -r polaris -p neutrinoGPU -f "+subname users_list"` that
+your user is on both. PBS charges elapsed wall x nodes only, so walltimes are
+generous. Budget for this campaign: ~25-30 node-hours GPU pass, ~10 tail, <1 tests.
 
-    apptainer exec $(bash lartpc/data_prep/squashfs/mount_args.sh $IMG /data/bnb5e19/merged_sp) $SIF \
-      bash -c "cd $PWD && python3 lartpc/polaris/make_polaris_list.py --merged-sp /data/bnb5e19/merged_sp \
-               --out lartpc/larformer_reco/inputlists/merged_sp_bnb5e19_polaris.txt"
+### 4.1 Once: pull, configure, check (login node, no job)
 
-Expect `wrote 176302 paths in production order`. The paths are container
-paths (`/data/bnb5e19/merged_sp/...`), so every inference process must mount
-the images at the same `/data/bnb5e19/merged_sp`.
+    cd /eagle/neutrinoGPU/twongj01/larformer_pointcept && git pull
+    $EDITOR lartpc/polaris/polaris_env.sh      # the POL_* defaults at the top; edit only if a path differs
+    source lartpc/polaris/polaris_env.sh && pol_check_env   # every asset, 12 images, apptainer -> PASS
 
-### 4.3 Two-event smoke (interactive, one GPU)
+### 4.2 Test job (debug queue, 1 node, <= 45 min, `-A neutrinoGPU::debug`)
 
-    OUT=/eagle/neutrinoGPU/twongj01/data/uboone/bnb5e19_kp2_polaris
-    apptainer exec --nv $(bash lartpc/data_prep/squashfs/mount_args.sh $IMG /data/bnb5e19/merged_sp) $SIF bash -c "
-      cd $PWD && export PYTHONPATH=\$PWD && export HDF5_USE_FILE_LOCKING=FALSE && \
-      python3 tools/larformer/run_larformer_keypoint2_cascade_inference.py \
-        --config configs/lartpc/larformer/stage4_keypoint/larformer-keypoint2-fullcascade-v6lantern-envslicer.py \
-        --input-list lartpc/larformer_reco/inputlists/merged_sp_bnb5e19_polaris.txt \
-        --output-dir $OUT/smoke/ --start-event 0 --n-events 2 \
-        --deterministic --save-score-maps --device cuda --output-tree --no-gt \
-        --gamma-run-scale table --sample-kind data --flash-window 2.8,5.0 \
-        --photonlib \$LARFORMER_KPV2_ROOT/lartpc/flashmatch/data/photonlib_v6_70kV.npz"
+    bash lartpc/polaris/qsub_cascade.sh --test         # DRYRUN=1 to only print the qsub line
 
-Check the log for the chain being built (`[DeghostSegmentor] Injecting LoRA`,
-slicer/particle checkpoints = the mixenriched epoch_2 / cew epoch_6 paths),
-two `n_particles=` lines and `DONE`; then
-`h5dump -a /flash/gamma_eff -a /flash/gamma_spec -a /flash/sample_kind -a /flash/flash_window <file>`
-must show `2.86073`, `"table"`, `"data"`, `"2.8,5.0"`, and `/stream` = `"nu"`.
-`--no-gt` is right for data (no truth). Do NOT pass `--no-flash`.
+Runs `test_cascade.pbs`: (0) `sha256sum -c`, `pol_check_env`, 4 GPUs, in-container
+`import torch, pointops` + squashfs listing; (1) builds
+`$POL_DATADIR/lists/merged_sp_bnb5e19_polaris.txt` (176,302 paths, production
+order); (2) 2-event smoke into `tests/smoke/` and the attr assertions
+(gamma_eff 2.86073, table, data, 2.8,5.0, stream nu); (3) 4 GPUs x 50 events
+(indices 0-199) into `tests/throughput/` with s/event per GPU; (4)
+`compare_to_tufts.py` against indices 0-199 of the Tufts cew6 production. Read
+`$POL_DATADIR/logs/test/kp2test.o<jobid>`: every step prints PASS/FAIL; all PASS
+writes `tests/throughput/.PASS`, which the production qsub requires.
+Expect ~1.5-2.5 s/event. If it is much slower with idle GPUs the single-stripe
+images are the bottleneck (`lfs migrate -c 8 <image>`, optional).
 
-### 4.4 Throughput (one node, 4 GPUs, ~200 events each)
+Then the tail on the same 200 events (debug queue, 1 node):
 
-Launch 4 processes on one node, one per GPU (`CUDA_VISIBLE_DEVICES=k`), with
-`--start-event k*200 --n-events 200` into a scratch `--output-dir`. Measure
-seconds/event from the log timestamps; expect ~1.5-2 s/event. Memory: the
-Tufts shards run with 32 GB host RAM per process; 4 processes/node fit.
+    TAG=throughput MODE=debug MAX_EVENTS=200 bash lartpc/polaris/qsub_tail.sh
 
-### 4.5 Production launch
+Expect in `logs/throughput/tail/`: nu_reco/larpid/export tasks DONE and the hadd
+line `merged EventTree entries: 200 (== shard sum), potTree: 0, showerCosmicScore branch: True`;
+ntuple at `tests/throughput/tail/dlgen2_larformer_ntuple_bnb5e19_throughput.root`.
 
-Shard the 176,302-event list into contiguous ranges (`NSHARDS` = nodes x 4;
-`PER=ceil(176302/NSHARDS)`, shard k = `--start-event k*PER --n-events PER`),
-one process per GPU, all writing into ONE `--output-dir` with `--output-tree`
-(files never collide: names carry the event index). PBS sketch:
+### 4.3 Production GPU pass (`prod` queue, `-A neutrinoGPU::DetsimGPU`)
 
-    qsub -A neutrinoGPU -q prod -l select=16:system=polaris -l walltime=03:00:00 \
-         -l filesystems=home:eagle -l place=scatter launch_bnb5e19.pbs
+    source lartpc/polaris/polaris_env.sh
+    python3 lartpc/polaris/make_worklist.py --mode cascade \
+        --list $POL_DATADIR/lists/merged_sp_bnb5e19_polaris.txt --nshards 64 --out $POL_DATADIR/lists/cascade_prod.wl
+    MODE=prod NODES=16 WALLTIME=03:00:00 TAG=prod WORKLIST=$POL_DATADIR/lists/cascade_prod.wl \
+        bash lartpc/polaris/qsub_cascade.sh
 
-where `launch_bnb5e19.pbs` runs, on each node (`mpiexec -n <nodes> --ppn 1`
-or a `$PBS_NODEFILE` loop), a script that starts 4 background python
-processes (one per `CUDA_VISIBLE_DEVICES`) for that node's 4 shard indices
-and waits. Give every shard a log `logs/inference/polaris_<shard>.log`; the
-Tufts shard script's retry loop (3 attempts) is worth copying. Keep per-job
-walltime generous (a shard of 2,750 events is ~1.5 h; ask for 3 h).
+64 shards of 2,755 events, 4 per node, one wave on 16 nodes (~1.5 h at 2 s/event;
+the `small` cap is 3 h). If the test showed > 2.3 s/event use `--nshards 96` and
+`NODES=24` (1,837 events per shard). The job ends with `check_cascade.py`; if
+anything is unfinished it writes `cascade_prod.wl.resume` (each line resumes a
+shard from its last logged event; `--deterministic` makes the resumed range
+bit-identical) and prints the relaunch line, e.g.
 
-### 4.6 Verify
+    MODE=debug NODES=1 TAG=prod OUTDIR=$POL_DATADIR/keypoint2_streams WORKLIST=$POL_DATADIR/lists/cascade_prod.wl.resume bash lartpc/polaris/qsub_cascade.sh
 
-* `find $OUT -name 'keypoint2_event*_0.h5' | wc -l` ~ 176k (events with no nu
-  slice have no file; Tufts bnb5e19 had one file per event within ~0.1%).
-* Every shard log ends with `DONE`; no `Traceback` in the logs; count
-  `SKIP unreadable` lines (Tufts bnb5e19 had no corrupt inputs).
-* Spot-check attrs on a few files (4.3), and compare `n_particles` per event
-  for ~20 events against Tufts (`/cluster/tufts/wongjiradlab/larbys/data/ub_on_tufts/larformer_bnb5e19_s1ep2p8cew6/keypoint2_streams`):
-  partitions should match; `pred_pe`/`chi2` differ by the gamma (2.861 vs 4.20)
-  and at the float32 level (different GPU type).
+Never launch a relaunch while the first job still runs (`qstat -u $USER`): the
+qsub wrapper refuses if `keypoint2_streams/.shards/*.running` exist (FORCE=1 after
+you checked). Re-check any time with
 
-### 4.7 After the GPU pass
+    python3 lartpc/polaris/check_cascade.py --worklist $POL_DATADIR/lists/cascade_prod.wl \
+        --outdir $POL_DATADIR/keypoint2_streams --logdir $POL_LOGDIR/prod --tag prod --throughput
 
-Either (a) run the CPU tail on Polaris: `regen_kp2_list.sh` (nu/fm lists) ->
-`run_nu_reco.py` shards -> LArPID (`lartpc/larformer_reco/larpid/apply_larpid.py`;
-needs the external `prongCNN` repo — `git clone https://github.com/NuTufts/prongCNN.git`
-(2 MB) plus its `checkpoints/LArPID_default_network_weights.pt` and
-`LArPID_alternate_network_weights.pt` (85 MB each, from Tufts
-`/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/prongCNN/checkpoints/`);
-point env `PRONGCNN_DIR` at the clone) ->
-`export_gen2ntuple.py` (data mode, both cew6 shower BDTs in git) -> hadd; or
-(b) pack `$OUT/keypoint2_streams` with
-`lartpc/data_prep/squashfs/pack_merged_sp_squashfs.sh` (it packs any 2-level
-tree; ~11 GB per 100k events, so ~20 GB total) and Globus it back to Tufts,
-where `submit_extbnb_chain.sh RESUME_AFTER_INF=...` style resumption of the
-tail is available. (b) is simpler; (a) needs prongCNN shipped over.
+### 4.4 Production tail (`prod` queue, 10 nodes = the queue minimum, ~1 h)
+
+    TAG=prod MODE=prod NODES=10 WALLTIME=03:00:00 bash lartpc/polaris/qsub_tail.sh
+
+`tail_driver.sh` runs regen (find-based nu/fm lists; refuses to regenerate once
+nu_reco outputs exist -- gidx = line number must stay fixed), nu_reco (120 shards
+per stream, 24 per node), LArPID (one task per nu_reco shard, 32 per node, CPU,
+default run-1 weights via `PRONGCNN_DIR`), export (96 shards, data mode:
+`--truth-dir` absent, `--weights-pkl none`, cew6 shower BDTs) and hadd (ROOT
+from `/opt/root` inside the container). Every task has a `.done` marker under
+`$POL_DATADIR/.done/`, so resubmitting the same command resumes;
+`STAGES=export,hadd` runs a subset. Result:
+`$POL_DATADIR/dlgen2_larformer_ntuple_bnb5e19_prod.root` (export shards are kept
+next to it).
+
+### 4.5 Verify
+
+* `check_cascade.py` exits 0: 64 markers, every log ends `DONE`, 0 Tracebacks,
+  SKIP count reported (Tufts bnb5e19 had none); nu-file count ~176k.
+* `pol_exec "python3 lartpc/polaris/check_kp2_attrs.py --tree $POL_DATADIR/keypoint2_streams --sample 50"`.
+* `pol_exec "python3 lartpc/polaris/compare_to_tufts.py --ref lartpc/polaris/tufts_ref_bnb5e19_idx0-499.json --tree $POL_DATADIR/keypoint2_streams"`:
+  `src_file` identical for all 500 (index linkage), identical partitions for the
+  large majority (A100 vs Tufts float32 differences change a minority upstream
+  of the flash table); `pred_pe`/`chi2` differ by the gamma (2.861 vs 4.20).
+* hadd line: EventTree entries == shard sum, potTree 0 (data), `showerCosmicScore` present.
 
 ## 5. Gotchas
 
 * Set `HDF5_USE_FILE_LOCKING=FALSE` in every process (Lustre).
+* `LARFORMER_SONATA_PRETRAIN` (from the assets `env.sh`) must be exported: the
+  keypoint model's config inherits a hard-coded Tufts path for the Sonata
+  pretrain and only the production config honours the env var (fixed
+  2026-09-12 after the Tufts smoke of these scripts loaded it from the old
+  repo path). `pol_check_env` asserts the file; a missing file kills the cascade
+  at model build.
 * The squashfs mounts are read-only and must be mounted at the same
-  container path the list was built with.
+  container path the list was built with (`POL_MSP_MNT`; the list stores it).
 * The configs resolve checkpoint paths from `LARFORMER_KPV2_ROOT` /
   `LARFORMER_OLD_REPO`; if you copy assets INTO the clone instead, the
   defaults in `env.sh` can point at the clone.

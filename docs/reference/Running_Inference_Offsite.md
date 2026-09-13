@@ -31,7 +31,9 @@ variables with the Tufts defaults, so a clone anywhere works without edits:
   `kpv2_assets` directory).
 * `LARFORMER_OLD_REPO` -- where the Sonata pretrain lives (`oldrepo_assets`).
 
-`<assets>/env.sh` sets both plus the per-stage checkpoint variables
+`<assets>/env.sh` sets both plus the per-stage checkpoint variables (all of
+them must be exported: `LARFORMER_SONATA_PRETRAIN` is also read by the keypoint
+model's config, whose base file hard-codes the Tufts path)
 (`LARFORMER_BATTERY_SLICER_CKPT`, `LARFORMER_KP_PARTICLE_CKPT`,
 `LARFORMER_KP_KEYPOINT_CKPT`, `LARFORMER_SONATA_PRETRAIN`). Edit the two roots
 at its top, then `source env.sh`.

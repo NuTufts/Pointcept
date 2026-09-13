@@ -1,0 +1,43 @@
+#!/bin/bash
+# ---------------------------------------------------------------------------
+# PBS job: CPU tail (nu_reco -> LArPID -> export -> hadd) over a cascade tree.
+# Submit through qsub_tail.sh. Required -v: TAG, KP2_STREAMS, TAIL, MSP_LIST.
+# Optional -v: STAGES, NNR, NEXP, MAX_EVENTS (build a head -N merged_sp list,
+# used for the test on the 200-event throughput tree), FORCE_REGEN.
+# ---------------------------------------------------------------------------
+#PBS -N kp2tail
+#PBS -l select=1:system=polaris
+#PBS -l walltime=00:45:00
+#PBS -l filesystems=home:eagle
+#PBS -l place=scatter
+#PBS -j oe
+set -u
+cd "${PBS_O_WORKDIR:-$(pwd)}"
+# shellcheck disable=SC1091
+source lartpc/polaris/polaris_env.sh
+JID=${PBS_JOBID:-nojob}; JID=${JID%%.*}
+: "${TAG:?}" "${KP2_STREAMS:?}" "${TAIL:?}" "${MSP_LIST:?}"
+echo ">>> job ${PBS_JOBID:-none} tag=$TAG nodes=$(awk '!s[$0]++' "${PBS_NODEFILE:-/dev/null}" | wc -l) $(date +%FT%T)"
+pol_check_env || exit 2
+mkdir -p "$TAIL/lists" "$POL_LOGDIR/$TAG/tail"
+if [ -n "${MAX_EVENTS:-}" ]; then
+  SUB=$TAIL/lists/merged_sp_${TAG}_head${MAX_EVENTS}.txt
+  head -n "$MAX_EVENTS" "$MSP_LIST" > "$SUB"; MSP_LIST=$SUB
+  echo ">>> merged_sp universe restricted to the first $MAX_EVENTS events: $SUB"
+fi
+export JOBENV=$POL_LOGDIR/$TAG/tail/job_$JID.env
+export POL_TAG=$TAG POL_TAIL=$TAIL POL_KP2_STREAMS=$KP2_STREAMS POL_MSP_LIST=$MSP_LIST
+export POL_KP2_NU=$TAIL/lists/keypoint2_out_${TAG}_nu.txt POL_KP2_FM=$TAIL/lists/keypoint2_out_${TAG}_fm.txt
+export POL_NTUPLE=$TAIL/dlgen2_larformer_ntuple_bnb5e19_${TAG}.root
+export POL_HOSTFILE=$POL_LOGDIR/$TAG/tail/nodefile_$JID
+if [ -n "${PBS_NODEFILE:-}" ]; then cp "$PBS_NODEFILE" "$POL_HOSTFILE"; else hostname > "$POL_HOSTFILE"; fi
+{
+  echo "export POL_TAG='$POL_TAG' POL_TAIL='$POL_TAIL' POL_KP2_STREAMS='$POL_KP2_STREAMS' POL_MSP_LIST='$POL_MSP_LIST'"
+  echo "export POL_KP2_NU='$POL_KP2_NU' POL_KP2_FM='$POL_KP2_FM' POL_NTUPLE='$POL_NTUPLE' POL_HOSTFILE='$POL_HOSTFILE'"
+  echo "source '$POL_REPO/lartpc/polaris/polaris_env.sh'"
+} > "$JOBENV"
+T0=$(date +%s)
+bash lartpc/polaris/tail_driver.sh
+rc=$?
+echo ">>> tail rc=$rc elapsed=$(( $(date +%s) - T0 ))s $(date +%FT%T)"
+exit $rc

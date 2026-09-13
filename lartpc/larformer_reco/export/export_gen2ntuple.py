@@ -579,7 +579,10 @@ def main():
     ap.add_argument("--nu-reco-nu-dir", required=True,
                     help="nu_reco_larpid shards for the nu stream")
     ap.add_argument("--nu-reco-fm-dir", required=True)
-    ap.add_argument("--weights-pkl", required=True)
+    ap.add_argument("--weights-pkl", required=True,
+                    help="xsecWeight pickle {run:{subrun:{event:w}}}; 'none' for "
+                         "data (every event then gets xsecWeight -1, as with a "
+                         "pickle that lacks the run)")
     ap.add_argument("--out", required=True)
     ap.add_argument("--start", type=int, default=0)
     ap.add_argument("--n", type=int, default=-1)
@@ -618,7 +621,8 @@ def main():
 
     in_wcfv = load_wcfv(args.wcfv_lib)
     truth = TruthIndex(args.truth_dir)
-    weights = pickle.load(open(args.weights_pkl, "rb"))
+    weights = ({} if args.weights_pkl.strip().lower() == "none"
+               else pickle.load(open(args.weights_pkl, "rb")))
     calib = load_shower_calib() or None
     if args.no_recalib_showers:
         print(">>> showerRecoE = nu_reco part_energy (no export-time recalib)")

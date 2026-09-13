@@ -1,0 +1,38 @@
+#!/bin/bash
+# ---------------------------------------------------------------------------
+# PBS job: keypoint2 cascade GPU pass over a worklist, 4 shards per node.
+# Submit through qsub_cascade.sh (it supplies -A, -q, select, walltime, -v).
+# Required -v variables: WORKLIST, TAG, OUTDIR, LIST.
+# ---------------------------------------------------------------------------
+#PBS -N kp2cascade
+#PBS -l select=1:system=polaris
+#PBS -l walltime=00:30:00
+#PBS -l filesystems=home:eagle
+#PBS -l place=scatter
+#PBS -j oe
+set -u
+cd "${PBS_O_WORKDIR:-$(pwd)}"
+# shellcheck disable=SC1091
+source lartpc/polaris/polaris_env.sh
+JID=${PBS_JOBID:-nojob}; JID=${JID%%.*}
+: "${WORKLIST:?}" "${TAG:?}" "${OUTDIR:?}" "${LIST:?}"
+: "${PBS_NODEFILE:?cascade.pbs must run under PBS (qsub_cascade.sh)}"
+echo ">>> job ${PBS_JOBID:-none} tag=$TAG nodes=$(awk '!s[$0]++' "$PBS_NODEFILE" | wc -l) $(date +%FT%T)"
+echo ">>> worklist=$WORKLIST ($(grep -c . "$WORKLIST") shards) out=$OUTDIR list=$LIST"
+pol_check_env || exit 2
+mkdir -p "$POL_LOGDIR/$TAG" "$OUTDIR"
+JOBENV=$POL_LOGDIR/$TAG/job_$JID.env
+HOSTFILE=$POL_LOGDIR/$TAG/nodefile_$JID; cp "$PBS_NODEFILE" "$HOSTFILE"
+{
+  echo "export POL_TAG='$TAG' POL_OUTDIR='$OUTDIR' POL_LIST='$LIST' POL_HOSTFILE='$HOSTFILE'"
+  echo "source '$POL_REPO/lartpc/polaris/polaris_env.sh'"
+} > "$JOBENV"
+NN=$(awk '!s[$0]++' "$HOSTFILE" | wc -l)
+T0=$(date +%s)
+mpiexec -n "$NN" --ppn 1 --hostfile "$HOSTFILE" --cpu-bind none \
+  bash "$POL_REPO/lartpc/polaris/node_launcher.sh" "$JOBENV" "$WORKLIST" 4 "$POL_REPO/lartpc/polaris/run_cascade_shard.sh"
+rc=$?
+echo ">>> launcher rc=$rc elapsed=$(( $(date +%s) - T0 ))s $(date +%FT%T)"
+python3 lartpc/polaris/check_cascade.py --worklist "$WORKLIST" --outdir "$OUTDIR" \
+  --logdir "$POL_LOGDIR/$TAG" --tag "$TAG" --throughput
+exit $rc
