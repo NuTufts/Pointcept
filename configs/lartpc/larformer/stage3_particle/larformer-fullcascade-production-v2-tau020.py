@@ -36,7 +36,9 @@ against the new cache next.
 
 _base_ = ["./larformer-particle-fullcascade-ptv3crosslevel.py"]
 
-_KPV2 = "/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/kpv2_pointcept"
+# repo root: env LARFORMER_KPV2_ROOT overrides (portability to other clusters)
+_KPV2 = __import__("os").environ.get("LARFORMER_KPV2_ROOT", "").strip() or \
+    "/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/kpv2_pointcept"
 
 model = dict(
     cascaded_slicer=dict(

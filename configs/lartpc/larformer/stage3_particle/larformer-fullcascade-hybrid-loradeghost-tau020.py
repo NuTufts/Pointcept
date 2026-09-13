@@ -18,7 +18,9 @@ LoRA's Sonata backbone runs enable_flash=False -> fp32-safe as-is.
 
 _base_ = ["./larformer-fullcascade-production-v2-tau020.py"]
 
-_OLD_REPO = "/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept"
+# old-repo root (sonata pretrain etc.): env LARFORMER_OLD_REPO overrides
+_OLD_REPO = __import__("os").environ.get("LARFORMER_OLD_REPO", "").strip() or \
+    "/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept"
 
 model = dict(
     cascaded_slicer=dict(

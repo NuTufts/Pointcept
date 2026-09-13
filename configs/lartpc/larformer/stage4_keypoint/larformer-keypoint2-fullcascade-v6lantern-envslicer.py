@@ -25,7 +25,9 @@ _kp = Config.fromfile(
 coord_center = tuple(_casc.coord_center)
 coord_scale = float(_casc.coord_scale)
 
-_REPO = "/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/kpv2_pointcept"
+# repo root: env LARFORMER_KPV2_ROOT overrides (portability to other clusters)
+_REPO = os.environ.get("LARFORMER_KPV2_ROOT", "").strip() or \
+    "/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/kpv2_pointcept"
 
 particle_weights = os.environ.get("LARFORMER_KP_PARTICLE_CKPT", "").strip() or (
     f"{_REPO}/exp/larformer_particle_v2_cached_ptv3crosslevel_m2frecipe/"

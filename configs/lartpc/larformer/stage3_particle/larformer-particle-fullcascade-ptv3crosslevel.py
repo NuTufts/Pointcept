@@ -44,7 +44,9 @@ from pointcept.models.LArFormer import trainer as _t
 from pointcept.models.LArFormer import particle_evaluator as _pe
 del _t, _pe
 
-_REPO = "/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept"
+# old-repo root (sonata pretrain, legacy defaults): env LARFORMER_OLD_REPO overrides
+_REPO = os.environ.get("LARFORMER_OLD_REPO", "").strip() or \
+    "/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/pointcept"
 
 
 def _env(name, default):
