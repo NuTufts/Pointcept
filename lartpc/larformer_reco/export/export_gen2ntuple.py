@@ -641,16 +641,27 @@ def main():
     fout = uproot.recreate(args.out)
     tree = schema.mktree(fout)
     FLUSH = 4000                # events per extend() batch (bounds RAM)
-    stats = dict(noweight=0, notruth=0, found=0, orphans=0, orphan_events=0)
+    stats = dict(noweight=0, notruth=0, found=0, orphans=0, orphan_events=0,
+                 unreadable=0)
     for msp_path in msp:
         base = os.path.basename(msp_path)
         ev = schema.new_event()
         m = re.search(r"fileno(\d+)", base)
         fileno = int(m.group(1)) if m else -1
         ev["fileid"] = fileno
-        with h5py.File(msp_path, "r") as f:
-            a = f["entry_0"].attrs
-            rse = (int(a["run"]), int(a["subrun"]), int(a["event"]))
+        # An unreadable merged_sp (corrupt h5, e.g. run-1 EXT
+        # fileno01646_entry000002: "bad object header version number") must
+        # not kill a 1,700-event shard: the cascade already skips such events
+        # (no kp2 file), so they get no ntuple row either. The potTree row of
+        # the fileno is unaffected (keyed by fileno from the list, see above).
+        try:
+            with h5py.File(msp_path, "r") as f:
+                a = f["entry_0"].attrs
+                rse = (int(a["run"]), int(a["subrun"]), int(a["event"]))
+        except Exception as ex:  # noqa: BLE001
+            print(f"  [skip] unreadable merged_sp {base}: {type(ex).__name__}: {ex}", flush=True)
+            stats["unreadable"] += 1
+            continue
         ev["run"], ev["subrun"], ev["event"] = rse
 
         # ---- truth + weight -------------------------------------------------
@@ -981,7 +992,8 @@ def main():
           f"{stats['orphans']} vertex-less prongs in "
           f"{stats['orphan_events']} events), "
           f"{stats['noweight']} missing/inf weight, "
-          f"{stats['notruth']} missing truth; {len(fn)} potTree entries "
+          f"{stats['notruth']} missing truth; {stats['unreadable']} unreadable "
+          f"merged_sp skipped; {len(fn)} potTree entries "
           f"-> {args.out}")
 
 
