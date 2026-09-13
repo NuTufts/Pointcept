@@ -72,7 +72,7 @@ Info for 'uboone official' samples
   overlay HALF production (`run1_bnboverlay_half/`, 2026-09-13) converts the
   TRAINPOOL list (4,740 files = unbiased 50% by md5 parity, see
   training_data_ledger/LEDGER.md) in MC mode with truth sidecars
-  (`uboone_official/tranche_ovl_run1_half.spec` via `sbatch_tier2_tranche.sh`);
+  (`uboone_official/tranche_ovl_run1_half.spec` via `tmux_tier2_tranche.sh`, login-side: tier2 is not mounted on any compute node);
   POT comes from the sidecars' potTree (no spill count). The 12.8k-event pilot in
   overlay_train/ has no sidecars and is calibration-only. Chain launcher:
   `larformer_reco/slurm/launch_run1ovl_half_chain.sh` (MC knobs baked in).
