@@ -15,7 +15,15 @@ cd "$K"; [ -s "$SPEC" ] || { echo "ERROR: $SPEC missing/empty" >&2; exit 2; }
 if tmux has-session -t "$NAME" 2>/dev/null; then echo "ERROR: tmux session $NAME exists (tmux attach -t $NAME)" >&2; exit 2; fi
 mkdir -p logs/data_prep
 LOG=logs/data_prep/$NAME.log
-CMD="cd $K && echo \"=== sequencer started \$(date) on \$(hostname) spec=$SPEC ===\" >> $LOG && bash lartpc/data_prep/uboone_official/run_tier2_tranche.sh $SPEC >> $LOG 2>&1"
-if [ -n "$AFTER" ]; then CMD="$CMD && if grep -q 'ALL BATCHES DONE' $LOG; then echo \"=== after: $AFTER\" >> $LOG; $AFTER >> $LOG 2>&1; fi"; fi
-tmux new-session -d -s "$NAME" "bash -c '$CMD'"
+RUN=logs/data_prep/$NAME.run.sh          # the session runs a script file (no nested quoting)
+{
+  echo '#!/bin/bash'
+  echo "cd '$K'"
+  echo "echo \"=== sequencer started \$(date) on \$(hostname) spec=$SPEC ===\" >> '$LOG'"
+  echo "bash lartpc/data_prep/uboone_official/run_tier2_tranche.sh '$SPEC' >> '$LOG' 2>&1"
+  if [ -n "$AFTER" ]; then
+    echo "if grep -q 'ALL BATCHES DONE' '$LOG'; then echo \"=== after: $AFTER\" >> '$LOG'; $AFTER >> '$LOG' 2>&1; else echo '=== sequencer did not finish; after-command skipped' >> '$LOG'; fi"
+  fi
+} > "$RUN"
+tmux new-session -d -s "$NAME" "bash $RUN"
 echo "started tmux session $NAME on $(hostname); log $LOG"
