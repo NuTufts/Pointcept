@@ -146,6 +146,9 @@ pol_check_env() {
            "$LARFORMER_KPV2_ROOT/sonata/lora_deghost_v6noghosts_lantern/model/epoch_25.pth" \
            "$POL_PHOTONLIB" "$LARFORMER_SHOWER_BDT" "$LARFORMER_SHOWER_BDT_NOVTX" \
            "$POL_ATTACH_LLR" \
+           "$POL_REPO/lartpc/larformer_reco/export/lib_wirecell_fiducial_volume.so" \
+           "$POL_REPO/lartpc/larformer_reco/trajfit/data/range2ke_lar.npz" \
+           "$POL_REPO/lartpc/larformer_reco/trajfit/data/calo_calib.npz" \
            "$PRONGCNN_DIR/checkpoints/LArPID_default_network_weights.pt" \
            "$PRONGCNN_DIR/models/models_instanceNorm_reco_2chan_quadTask.py" \
            "$PRONGCNN_DIR/models/normalization_constants.py"; do

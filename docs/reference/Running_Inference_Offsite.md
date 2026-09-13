@@ -19,7 +19,10 @@ directory (Tufts copy: `/cluster/tufts/wongjiradlab/larbys/data/larformer/polari
 | `pointcept_cuml.sif` | 12.6 GB | the container (custom CUDA ops are built inside it) |
 
 Everything else (configs, code, LLR tables, SCE maps, shower BDTs, calo
-calibration, flash gamma table) is tracked in git.
+calibration, flash gamma table) is tracked in git. NOTE: `.gitignore` excludes
+`*.npz` and `*.so`, so new data files of those types must be `git add -f`'ed
+(the s1ep2p8 attachment LLR table and `lib_wirecell_fiducial_volume.so` were
+missing on Polaris until 2026-09-13; `pol_check_env` now asserts them).
 
 ## Roots and environment
 
