@@ -37,9 +37,10 @@ result $? "container: torch + pointops import, GPU, squashfs mount"
 
 step "1. input list (production order)"
 LIST=$POL_DATADIR/lists/merged_sp_bnb5e19_polaris.txt
-if [ -s "$LIST" ]; then
-  echo ">>> exists: $LIST ($(wc -l < "$LIST") lines)"
+if [ -s "$LIST" ] && head -1 "$LIST" | grep -q "^$POL_MSP_MNT/"; then
+  echo ">>> exists: $LIST ($(wc -l < "$LIST") lines, prefix $POL_MSP_MNT)"
 else
+  [ -s "$LIST" ] && echo ">>> list prefix differs from POL_MSP_MNT=$POL_MSP_MNT -> rebuilding"
   pol_exec "python3 lartpc/polaris/make_polaris_list.py --merged-sp $POL_MSP_MNT --out $LIST"
 fi
 NL=$(grep -c . "$LIST" 2>/dev/null || echo 0); [ "$NL" -eq 176302 ]; result $? "list has 176302 paths ($NL)"

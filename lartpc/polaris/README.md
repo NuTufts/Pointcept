@@ -224,6 +224,12 @@ the shift as a systematic, (b) move MC/EXT to Polaris too (one family), or
 ## 5. Gotchas
 
 * Set `HDF5_USE_FILE_LOCKING=FALSE` in every process (Lustre).
+* `/eagle` is a symlink to `/lus/eagle/projects`; inside the container only
+  `/lus` is a real mount (on login nodes the container's `/eagle` is an empty
+  tree apptainer creates for the squashfs mount points, so files "vanish").
+  `polaris_env.sh` canonicalizes every POL_* path with `readlink -f`, so lists
+  and binds use `/lus/...`. Source it in a fresh shell (stale POL_* exports
+  from an older shell are canonicalized but keep their old value otherwise).
 * `LARFORMER_SONATA_PRETRAIN` (from the assets `env.sh`) must be exported: the
   keypoint model's config inherits a hard-coded Tufts path for the Sonata
   pretrain and only the production config honours the env var (fixed

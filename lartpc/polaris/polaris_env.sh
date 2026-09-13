@@ -12,23 +12,29 @@
 # ---------------------------------------------------------------------------
 
 # ---- site paths -----------------------------------------------------------
-export POL_EAGLE=${POL_EAGLE:-/eagle/neutrinoGPU/twongj01}
-export POL_REPO=${POL_REPO:-$POL_EAGLE/larformer_pointcept}
-export POL_ASSETS=${POL_ASSETS:-$POL_EAGLE/polaris_assets}
-export POL_SIF=${POL_SIF:-$POL_ASSETS/pointcept_cuml.sif}
+# Every path is canonicalized (readlink -f): on Polaris /eagle is a symlink to
+# /lus/eagle/projects and only /lus is a real mount inside the container (on the
+# login nodes the container's /eagle is an empty auto-created mount-point tree,
+# seen 2026-09-13). Stale POL_* exports from an older shell are canonicalized
+# too, but start from a fresh shell if in doubt.
+pol_canon() { readlink -f "$1" 2>/dev/null || echo "$1"; }
+export POL_EAGLE=$(pol_canon "${POL_EAGLE:-/eagle/neutrinoGPU/twongj01}")
+export POL_REPO=$(pol_canon "${POL_REPO:-$POL_EAGLE/larformer_pointcept}")
+export POL_ASSETS=$(pol_canon "${POL_ASSETS:-$POL_EAGLE/polaris_assets}")
+export POL_SIF=$(pol_canon "${POL_SIF:-$POL_ASSETS/pointcept_cuml.sif}")
 # the 12 bnb5e19_merged_sp_NNN.sqfs images (note the squashfs/ leaf)
-export POL_IMGDIR=${POL_IMGDIR:-$POL_EAGLE/data/uboone/mcc9_v28_wctagger_bnb5e19/squashfs}
+export POL_IMGDIR=$(pol_canon "${POL_IMGDIR:-$POL_EAGLE/data/uboone/mcc9_v28_wctagger_bnb5e19/squashfs}")
 # all outputs of this campaign (lists, logs, tests, keypoint2_streams, tail)
-export POL_DATADIR=${POL_DATADIR:-$POL_EAGLE/data/uboone/bnb5e19_kp2_polaris}
+export POL_DATADIR=$(pol_canon "${POL_DATADIR:-$POL_EAGLE/data/uboone/bnb5e19_kp2_polaris}")
 # where the images are mounted INSIDE the container. The input list is built
 # with this prefix, so it must never change once the list exists. Default: a
 # host directory (12 empty NNN/ mount points created by pol_exec), which needs
 # only bind mounts. A path that does not exist in the image (the README's
 # /data/bnb5e19/merged_sp) additionally needs POL_APPTAINER_FLAGS=--writable-tmpfs
 # (overlay support) or --fakeroot -- not guaranteed on every node.
-export POL_MSP_MNT=${POL_MSP_MNT:-$POL_DATADIR/merged_sp_mnt}
-export POL_LOGDIR=${POL_LOGDIR:-$POL_DATADIR/logs}
-export PRONGCNN_DIR=${PRONGCNN_DIR:-$POL_EAGLE/prongCNN}
+export POL_MSP_MNT=$(pol_canon "${POL_MSP_MNT:-$POL_DATADIR/merged_sp_mnt}")
+export POL_LOGDIR=$(pol_canon "${POL_LOGDIR:-$POL_DATADIR/logs}")
+export PRONGCNN_DIR=$(pol_canon "${PRONGCNN_DIR:-$POL_EAGLE/prongCNN}")
 
 # ---- PBS accounting (ALCF suballocation form: project::subname) -----------
 export POL_ACCOUNT=${POL_ACCOUNT:-neutrinoGPU::DetsimGPU}      # production
@@ -43,8 +49,8 @@ export PYTHONUNBUFFERED=1
 
 # ---- model assets: set the two roots BEFORE sourcing the shipped env.sh ----
 # (its defaults point at a stale /eagle/.../uboone/assets path)
-export LARFORMER_KPV2_ROOT=${LARFORMER_KPV2_ROOT:-$POL_ASSETS/kpv2_assets}
-export LARFORMER_OLD_REPO=${LARFORMER_OLD_REPO:-$POL_ASSETS/oldrepo_assets}
+export LARFORMER_KPV2_ROOT=$(pol_canon "${LARFORMER_KPV2_ROOT:-$POL_ASSETS/kpv2_assets}")
+export LARFORMER_OLD_REPO=$(pol_canon "${LARFORMER_OLD_REPO:-$POL_ASSETS/oldrepo_assets}")
 if [ -r "$POL_ASSETS/env.sh" ]; then
   # shellcheck disable=SC1091
   source "$POL_ASSETS/env.sh"
@@ -103,13 +109,15 @@ pol_mount_args() {
   bash "$POL_REPO/lartpc/data_prep/squashfs/mount_args.sh" "$POL_IMGDIR" "$POL_MSP_MNT"
 }
 
-# bind the data filesystem root (/eagle) explicitly only if the site apptainer
-# config does not already expose it (a duplicate bind is an error in some
-# apptainer versions). Cached in POL_EAGLE_BIND for child processes.
+# bind the data filesystem root (/lus on Polaris) explicitly only if the site
+# apptainer config does not already expose it (a duplicate bind is an error in
+# some apptainer versions). Cached in POL_EAGLE_BIND for child processes. The
+# check uses a FILE (the sif) rather than a directory: apptainer auto-creates
+# directories for mount points, so `test -d` can succeed on an empty tree.
 pol_eagle_bind() {
   if [ -z "${POL_EAGLE_BIND+x}" ]; then
     local rest=${POL_EAGLE#/}; local root=/${rest%%/*}
-    if apptainer exec "$POL_SIF" test -d "$POL_EAGLE" 2>/dev/null; then
+    if apptainer exec "$POL_SIF" test -f "$POL_SIF" 2>/dev/null; then
       export POL_EAGLE_BIND=""
     else
       export POL_EAGLE_BIND="--bind $root:$root"
