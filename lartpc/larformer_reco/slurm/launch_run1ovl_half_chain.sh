@@ -23,6 +23,13 @@ echo ">>> markers: $NMARK (expect >= $((NFILES - NDUD))), truth sidecars: $NTRUT
 [ "$NMARK" -ge $((NFILES - NDUD)) ] || { echo "ERROR: conversion incomplete ($NMARK markers)"; exit 2; }
 [ "$NTRUTH" -ge $((NMARK - 5)) ] || { echo "ERROR: truth sidecars ($NTRUTH) lag markers ($NMARK)"; exit 2; }
 if squeue -u twongj01 -h -o '%j' | grep -q "ovl_train_conv\|tier2_tranche_ovl\|ovl1_half_conv"; then echo "ERROR: conversion jobs still running"; exit 2; fi
+# partial conversions (no marker, but h5s/sidecar present: mid-file converter
+# crashes) must be retried or dropped first, else the sample carries files with
+# a full-file POT and only part of their events
+NPART=$(bash lartpc/data_prep/uboone_official/retry_incomplete_tranche.sh lartpc/data_prep/uboone_official/tranche_ovl_run1_half.spec --dry-run | grep -c " partial ")
+if [ "$NPART" -gt 0 ] && [ "${ALLOW_INCOMPLETE:-0}" != 1 ]; then
+  echo "ERROR: $NPART partially converted filenos; run (login node): bash lartpc/data_prep/uboone_official/retry_incomplete_tranche.sh lartpc/data_prep/uboone_official/tranche_ovl_run1_half.spec  (ALLOW_INCOMPLETE=1 to override)"; exit 2
+fi
 LOCK=$DATADIR/.chain_submitted
 if [ -e "$LOCK" ]; then echo "ERROR: chain already submitted ($(cat $LOCK)); remove $LOCK to force"; exit 2; fi
 if squeue -u twongj01 -h -o '%j' | grep -q "^bnbovl_run1_half_"; then echo "ERROR: bnbovl_run1_half jobs already queued"; exit 2; fi
