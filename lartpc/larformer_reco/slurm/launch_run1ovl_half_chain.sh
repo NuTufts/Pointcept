@@ -16,7 +16,11 @@ K=/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/kpv2_pointcept
 C=/cluster/tufts/wongjiradlabnu/larbys/containers/pointcept_cuml.sif
 cd $K
 DATADIR=/cluster/tufts/wongjiradlab/larbys/data/larformer/run1_bnboverlay_half
-NFILES=4740; NDUD=${NDUD:-60}          # 26 known duds <= fileno 160 + margin
+NFILES=4740
+# allowed missing = 26 known duds + the deterministic crashers dropped by
+# retry_incomplete_tranche.sh (listed in <spec>.dropped) + a small margin
+NDROP=$(cat lartpc/data_prep/uboone_official/tranche_ovl_run1_half.spec.dropped 2>/dev/null | wc -l)
+NDUD=${NDUD:-$((26 + NDROP + 5))}
 NMARK=$(ls $DATADIR/markers/*.ok 2>/dev/null | wc -l)
 NTRUTH=$(ls $DATADIR/truth_sidecar/truth_fileno*.h5 2>/dev/null | wc -l)
 echo ">>> markers: $NMARK (expect >= $((NFILES - NDUD))), truth sidecars: $NTRUTH"
