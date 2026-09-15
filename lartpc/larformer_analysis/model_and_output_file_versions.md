@@ -255,6 +255,25 @@ recal3 (gamma a=0.01553, b=-12.80) is BAKED INTO showerRecoE.
 Normalizations, EXT/MC hygiene halves: identical to v2_s1ep2p8 (same
 underlying events, same row conventions).
 
+### 3c. RUN-1 TABLE-GAMMA productions (2026-09-13/15) — the "table-gamma" campaign
+Same cew6 chain, calibrated gamma table (section 0), in-window flash choice,
+LArPID DEFAULT weights (run-period rule: only run-3 tags use the alternate
+weights). `$L=/cluster/tufts/wongjiradlab/larbys/data/larformer`.
+| sample | ntuple | events | normalization |
+|---|---|---|---|
+| run-1 EXT half (C1 extbnb stride-2 filenos 1-6900 = 25% of full C1) | `$L/run1_C1_extbnb_half/dlgen2_larformer_ntuple_extbnb_run1_half.root` | 104,516 | 5,772,737 spills (one corrupt merged_sp skipped); gamma_eff 2.861, window 3.2-5.4 |
+| run-1 BNB nu overlay half (mcc9_v28 TRAINPOOL = unbiased 50% by md5 parity) | `$L/run1_bnboverlay_half/dlgen2_larformer_ntuple_bnbovl_run1_half.root` | 182,069 | potTree 4,673 rows, totPOT 2.2903e20; gamma_eff 4.502 (mc,1 = 0.8576 from the pilot), window 3.6-5.2; run-1 xsec pickle (916 events carry xsecWeight 0, all trueNuMode 1; 2 events -1) |
+| bnb5e19 beam data (run 1) | on Polaris, pending the cross-platform conformance decision (`lartpc/polaris/README.md` 4.5) | 176,302 | POT 4.4e19 |
+Overlay sample composition: 4,740 TRAINPOOL files minus 26 ledger duds minus 41
+deterministic converter crashers (list: `lartpc/data_prep/uboone_official/
+tranche_ovl_run1_half.spec.dropped`; 0.9% file loss, whole files dropped so
+POT stays consistent). `..._v0_partialduds.root` next to it is the first export
+that still contained the two partial "dud" files (63 events): comparator only.
+Intermediates: `$L/run1_bnboverlay_half/{keypoint2_streams,nu_reco_streams_*,
+nu_reco_larpid_*,truth_sidecar,merged_sp}`; kp2 lists in
+`lartpc/larformer_reco/outputlists/keypoint2_out_bnbovl_run1_half_{nu,fm}.txt`
+(do NOT regenerate: nu_reco/larpid shards are keyed by their line numbers).
+
 ### 3b. Intrinsic-nue signal sample (added 2026-09-10)
 
 | sample | ntuple | events |
