@@ -24,10 +24,16 @@ scan () {   # prints "fileno kind" for every unmarked fileno of the spec (kind: 
     for i in $(seq "$FIRST" "$LAST"); do
       ZFN=$(printf %05d "$i")
       [ -s "$MARK/fileno$ZFN.ok" ] && continue
-      if grep -q "^$SAMPLE $i\$" "$DUDS" 2>/dev/null; then echo "$i dud"; continue; fi
       OUT=$OUT_ROOT/$(printf %03d $((i/100)))
       nh5=$(ls "$OUT"/merged_${SAMPLE}_fileno${ZFN}_*.h5 2>/dev/null | wc -l)
       side=""; [ "$TRUTH_DIR" != "-" ] && [ -s "$TRUTH_DIR/truth_fileno$ZFN.h5" ] && side=1
+      if grep -q "^$SAMPLE $i\$" "$DUDS" 2>/dev/null; then
+        # ledger duds are not retried, but the "deterministic segfault" kind
+        # leaves PARTIAL outputs (run-1 overlay filenos 3 and 87: 44 and 19
+        # events + a full-file sidecar) that must still be cleaned out
+        if [ "$nh5" -gt 0 ] || [ -n "$side" ]; then echo "$i dudpartial nh5=$nh5 sidecar=${side:-0}"; else echo "$i dud"; fi
+        continue
+      fi
       if [ "$nh5" -gt 0 ] || [ -n "$side" ]; then echo "$i partial nh5=$nh5 sidecar=${side:-0}"; else echo "$i missing"; fi
     done
   done < "$SPEC"
@@ -48,8 +54,13 @@ clean () {  # delete partial outputs of the filenos on stdin ("fileno ...")
 for round in $(seq 1 "$ROUNDS"); do
   mapfile -t ROWS < <(scan)
   NDUD=$(printf '%s\n' "${ROWS[@]}" | grep -c ' dud$' || true)
+  mapfile -t DUDP < <(printf '%s\n' "${ROWS[@]}" | grep ' dudpartial ' || true)
   mapfile -t TODO < <(printf '%s\n' "${ROWS[@]}" | grep -E ' (partial|missing)' || true)
-  echo ">>> round $round: unmarked filenos: ${#ROWS[@]} (duds $NDUD, to retry ${#TODO[@]})"
+  echo ">>> round $round: unmarked filenos: ${#ROWS[@]} (duds $NDUD, duds with partial output ${#DUDP[@]}, to retry ${#TODO[@]})"
+  if [ ${#DUDP[@]} -gt 0 ]; then
+    printf '    %s\n' "${DUDP[@]}"
+    if [ $DRY -eq 0 ]; then printf '%s\n' "${DUDP[@]}" | clean; printf '%s\n' "${DUDP[@]}" >> "${SPEC}.dropped"; echo ">>> cleaned ${#DUDP[@]} partial dud(s) -> appended to ${SPEC}.dropped"; fi
+  fi
   printf '    %s\n' "${TODO[@]}"
   [ ${#TODO[@]} -eq 0 ] && { echo ">>> nothing to retry"; break; }
   [ $DRY -eq 1 ] && { echo "(dry run)"; break; }
