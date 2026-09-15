@@ -24,6 +24,8 @@ scan () {   # prints "fileno kind" for every unmarked fileno of the spec (kind: 
     for i in $(seq "$FIRST" "$LAST"); do
       ZFN=$(printf %05d "$i")
       [ -s "$MARK/fileno$ZFN.ok" ] && continue
+      # already dropped by an earlier run of this tool: never re-attempt
+      grep -qE "^$i( |\$)" "${SPEC}.dropped" 2>/dev/null && continue
       OUT=$OUT_ROOT/$(printf %03d $((i/100)))
       nh5=$(ls "$OUT"/merged_${SAMPLE}_fileno${ZFN}_*.h5 2>/dev/null | wc -l)
       side=""; [ "$TRUTH_DIR" != "-" ] && [ -s "$TRUTH_DIR/truth_fileno$ZFN.h5" ] && side=1
