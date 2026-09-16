@@ -43,6 +43,6 @@ for k in STAGES NNR NEXP MAX_EVENTS FORCE_REGEN PPN_NU_RECO PPN_LARPID PPN_EXPOR
 done
 echo ">>> sbank check: sbank-list-allocations -r polaris -p ${ACCT%%::*} -f \"+subname users_list\"  (charging $ACCT)"
 CMD=(qsub -A "$ACCT" -q "$QUEUE" -l "select=$NODES:system=polaris" -l "walltime=$WALLTIME" -l filesystems=home:eagle -l place=scatter -N "kp2tail_$TAG" -o "$POL_LOGDIR/$TAG/tail" -j oe -v "$V" lartpc/polaris/tail.pbs)
-printf '>>> %q ' "${CMD[@]}"; echo
+echo ">>> ${CMD[*]}"
 if [ "${DRYRUN:-0}" = 1 ]; then echo "(DRYRUN: not submitted)"; exit 0; fi
 "${CMD[@]}"
