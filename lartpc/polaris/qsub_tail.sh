@@ -35,12 +35,14 @@ if ls "$KP2_STREAMS"/.shards/*.running >/dev/null 2>&1 && [ "${FORCE:-0}" != 1 ]
   echo "ERROR: cascade shards still running/stale in $KP2_STREAMS/.shards (FORCE=1 to override)" >&2; exit 2
 fi
 mkdir -p "$POL_LOGDIR/$TAG/tail" "$TAIL"
-V="TAG=$TAG,KP2_STREAMS=$KP2_STREAMS,TAIL=$TAIL,MSP_LIST=$MSP_LIST"
+# PBS -v separates variables with commas, so every value is single-quoted
+# (STAGES=export,hadd would otherwise be split: "cannot send environment")
+V="TAG='$TAG',KP2_STREAMS='$KP2_STREAMS',TAIL='$TAIL',MSP_LIST='$MSP_LIST'"
 for k in STAGES NNR NEXP MAX_EVENTS FORCE_REGEN PPN_NU_RECO PPN_LARPID PPN_EXPORT; do
-  v=${!k:-}; [ -n "$v" ] && V="$V,$k=$v"
+  v=${!k:-}; [ -n "$v" ] && V="$V,$k='$v'"
 done
 echo ">>> sbank check: sbank-list-allocations -r polaris -p ${ACCT%%::*} -f \"+subname users_list\"  (charging $ACCT)"
-CMD="qsub -A $ACCT -q $QUEUE -l select=$NODES:system=polaris -l walltime=$WALLTIME -l filesystems=home:eagle -l place=scatter -N kp2tail_$TAG -o $POL_LOGDIR/$TAG/tail -j oe -v $V lartpc/polaris/tail.pbs"
-echo ">>> $CMD"
+CMD=(qsub -A "$ACCT" -q "$QUEUE" -l "select=$NODES:system=polaris" -l "walltime=$WALLTIME" -l filesystems=home:eagle -l place=scatter -N "kp2tail_$TAG" -o "$POL_LOGDIR/$TAG/tail" -j oe -v "$V" lartpc/polaris/tail.pbs)
+printf '>>> %q ' "${CMD[@]}"; echo
 if [ "${DRYRUN:-0}" = 1 ]; then echo "(DRYRUN: not submitted)"; exit 0; fi
-$CMD
+"${CMD[@]}"

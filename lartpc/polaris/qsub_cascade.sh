@@ -52,7 +52,7 @@ else
   fi
   NSH=$(grep -c . "$WORKLIST"); SLOTS=$((NODES * 4))
   echo ">>> $NSH shards on $NODES nodes x 4 GPUs = $SLOTS slots (waves: $(( (NSH + SLOTS - 1) / SLOTS )))"
-  CMD="qsub -A $ACCT -q $QUEUE -l select=$NODES:system=polaris -l walltime=$WALLTIME -l filesystems=home:eagle -l place=scatter -N kp2_$TAG -o $POL_LOGDIR/$TAG -j oe -v WORKLIST=$WORKLIST,TAG=$TAG,OUTDIR=$OUTDIR,LIST=$LIST lartpc/polaris/cascade.pbs"
+  CMD="qsub -A $ACCT -q $QUEUE -l select=$NODES:system=polaris -l walltime=$WALLTIME -l filesystems=home:eagle -l place=scatter -N kp2_$TAG -o $POL_LOGDIR/$TAG -j oe -v WORKLIST='$WORKLIST',TAG='$TAG',OUTDIR='$OUTDIR',LIST='$LIST' lartpc/polaris/cascade.pbs"
 fi
 echo ">>> $CMD"
 if [ "${DRYRUN:-0}" = 1 ]; then echo "(DRYRUN: not submitted)"; exit 0; fi
