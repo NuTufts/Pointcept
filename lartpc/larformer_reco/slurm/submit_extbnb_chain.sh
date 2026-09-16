@@ -177,7 +177,8 @@ REGEN=$(sbatch --parsable ${EXCL} --dependency=afterok:${INF} \
   --error=logs/export/${TAG}_regen.%j.err \
   --wrap="find ${KP2_STREAMS} -name 'keypoint2_event*_0.h5' ! -name '*_fm_0.h5' | sort > ${KP2_NU}; \
           find ${KP2_STREAMS} -name 'keypoint2_event*_fm_0.h5' | sort > ${KP2_FM}; \
-          wc -l ${KP2_NU} ${KP2_FM}")
+          wc -l ${KP2_NU} ${KP2_FM}; \
+          apptainer exec --bind /cluster:/cluster ${CONTAINER} bash -c \"cd ${WORKDIR} && PYTHONPATH=. python3 lartpc/larformer_reco/export/build_kp_map_cache.py ${KP2_NU} ${KP2_FM}\"")
 echo "regen     : ${REGEN}  -> ${KP2_NU} , ${KP2_FM}"
 
 # ---- 3) nu_reco : nu + fm streams (LLR attachment) -------------------------

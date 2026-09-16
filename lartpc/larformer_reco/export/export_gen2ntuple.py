@@ -69,6 +69,9 @@ import pickle
 import ctypes
 import argparse
 
+import json
+import contextlib
+
 import numpy as np
 import h5py
 import uproot
@@ -106,8 +109,31 @@ def load_wcfv(libpath):
         obj, float(x), float(y), float(z)))
 
 
-def build_kp_map(kp_list):
-    """src_file -> (gidx, kp_path)."""
+def _kp_cache_path(list_path):
+    return list_path + ".srcmap.json"
+
+
+def build_kp_map(kp_list, list_path=None):
+    """src_file -> (gidx, kp_path).
+
+    Opening every kp2 file of the list is the dominant per-shard cost on a
+    Lustre filesystem (176k opens per shard for bnb5e19; 25 ms each on
+    Polaris/Eagle, 6 ms at Tufts). The map depends only on the list, so it is
+    cached as JSON next to the list (`<list>.srcmap.json`, keyed on the list's
+    length, first/last entry and mtime); every shard reuses it. Prebuild with
+    export/build_kp_map_cache.py, or let the first shard write it (atomic
+    rename; concurrent builders just write identical content)."""
+    key = None
+    if list_path and kp_list:
+        try:
+            key = {"n": len(kp_list), "first": kp_list[0], "last": kp_list[-1],
+                   "mtime": os.path.getmtime(list_path)}
+            with open(_kp_cache_path(list_path)) as fh:
+                c = json.load(fh)
+            if c.get("key") == key:
+                return {src: (int(g), pth) for src, (g, pth) in c["map"].items()}
+        except Exception:
+            pass
     out = {}
     for gidx, p in enumerate(kp_list):
         try:
@@ -117,7 +143,37 @@ def build_kp_map(kp_list):
                 out[src] = (gidx, p)
         except Exception:
             continue
+    if key is not None:
+        try:
+            tmp = _kp_cache_path(list_path) + f".tmp{os.getpid()}"
+            with open(tmp, "w") as fh:
+                json.dump({"key": key, "map": out}, fh)
+            os.replace(tmp, _kp_cache_path(list_path))
+        except Exception:
+            pass
     return out
+
+
+# LArPID/nu_reco shard files are opened once and kept open for the whole
+# shard (a few dozen files; opening them per event was ~1 Lustre open/event).
+_RECO_FILES = {}
+
+
+def _reco_file(path):
+    f = _RECO_FILES.get(path)
+    if f is None:
+        f = _RECO_FILES[path] = h5py.File(path, "r")
+    return f
+
+
+def _cached_h5(cache, path):
+    """Context manager yielding a read-only h5py.File kept in `cache` (opened
+    once per event instead of once per vertex/stream); the caller closes the
+    cache at the end of the event."""
+    f = cache.get(path)
+    if f is None:
+        f = cache[path] = h5py.File(path, "r")
+    return contextlib.nullcontext(f)
 
 
 def build_reco_map(nu_reco_dir):
@@ -632,7 +688,7 @@ def main():
     for s, klist, rdir in (("nu", args.kp2_nu_list, args.nu_reco_nu_dir),
                            ("flashmatch", args.kp2_fm_list,
                             args.nu_reco_fm_dir)):
-        streams[s] = {"kp": build_kp_map(read_list(klist)),
+        streams[s] = {"kp": build_kp_map(read_list(klist), list_path=klist),
                       "reco": build_reco_map(rdir)}
         print(f">>> stream {s}: {len(streams[s]['kp'])} kp2, "
               f"{len(streams[s]['reco'])} reco events", flush=True)
@@ -693,6 +749,7 @@ def main():
         vtx_rows = []                      # (score, stream, x, y, z, chi2, ref)
         stream_ev = {}
         kp_paths = {}                      # stream -> kp2 path (reco or not)
+        kp_open = {}                       # kp2 path -> open h5 (closed at event end)
         for s in ("nu", "flashmatch"):
             hit = streams[s]["kp"].get(base)
             if hit is None:
@@ -702,10 +759,9 @@ def main():
             rr = streams[s]["reco"].get(gidx)
             if rr is None:
                 continue
-            fr = h5py.File(rr[0], "r")
+            fr = _reco_file(rr[0])
             gr = fr[rr[1]]
             if _attr_str(gr.attrs, "src_file") != base:
-                fr.close()
                 continue
             stream_ev[s] = (fr, gr, kp_path)
             vcm = gr["vertices_cm"][()]
@@ -751,7 +807,7 @@ def main():
             sel = np.nonzero(d["part_interaction"] == ii)[0]
             if sel.size and msp_pts is None:
                 msp_pts = MspTruthPoints(msp_path)
-            with h5py.File(kp_path, "r") as fkp:
+            with _cached_h5(kp_open, kp_path) as fkp:
                 slice_coords = fkp["slice/coord_cm"][()]
                 for i in sel:
                     kind = int(d["part_kind"][i])
@@ -851,7 +907,7 @@ def main():
         # denominator (-1 when there are no attached prongs).
         n_orph = 0
         for s, kp_path in kp_paths.items():
-            with h5py.File(kp_path, "r") as fkp:
+            with _cached_h5(kp_open, kp_path) as fkp:
                 sattr = _attr_str(fkp.attrs, "stream")
                 chi2s = float(fkp.attrs.get("flash_chi2", np.nan))
                 npart = int(fkp.attrs.get("n_particles", 0))
@@ -964,8 +1020,8 @@ def main():
             ev["recoNuE"] = reco_e
             ev["vtxContainment"] = (0 if not ev["vtxIsFiducial"]
                                     else (2 if contained else 1))
-        for s in stream_ev:
-            stream_ev[s][0].close()
+        for f in kp_open.values():
+            f.close()
         events.append(ev)
         n_now += 1
         if n_now % 200 == 0:
@@ -987,6 +1043,9 @@ def main():
                                      np.float32),
                 "totGoodPOT": np.asarray([truth.pot[k][1] for k in fn],
                                          np.float32)})
+    for f in _RECO_FILES.values():
+        f.close()
+    _RECO_FILES.clear()
     fout.close()
     print(f">>> {len(events)} events ({stats['found']} with a vertex; "
           f"{stats['orphans']} vertex-less prongs in "

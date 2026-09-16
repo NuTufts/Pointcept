@@ -224,6 +224,12 @@ the shift as a systematic, (b) move MC/EXT to Polaris too (one family), or
 ## 5. Gotchas
 
 * Set `HDF5_USE_FILE_LOCKING=FALSE` in every process (Lustre).
+* Lustre is slow at file opens. The exporter used to open every kp2 file of the
+  list per shard (176k opens) plus ~5 files per event: 48 s/event on Polaris
+  (2026-09-16). Now the kp2 map is cached as `<list>.srcmap.json` (prebuilt by
+  `tail_driver.sh` after regen via `export/build_kp_map_cache.py`), LArPID
+  shard files stay open, and each kp2 file is opened once per event. Output
+  verified bit-identical on 2,000 events.
 * `pointcept_cuml.sif` does NOT contain scikit-learn, uproot or awkward; the
   export stage gets them from the user's `~/.local` (pip --user, which
   apptainer binds in). Install once on Polaris, inside the container, with the

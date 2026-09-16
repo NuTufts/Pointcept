@@ -49,6 +49,12 @@ if want regen; then
   wc -l "$POL_KP2_NU" "$POL_KP2_FM"
   [ -s "$POL_KP2_NU" ] || { echo "ERROR: empty nu list" >&2; exit 2; }
 fi
+# kp2 src_file map cache (<list>.srcmap.json): built ONCE here instead of by
+# every export shard (176k Lustre opens per shard otherwise; 2026-09-16)
+if want regen || want export; then
+  banner "kp2 map cache"
+  ( source "$JOBENV"; pol_exec "python3 lartpc/larformer_reco/export/build_kp_map_cache.py $POL_KP2_NU $POL_KP2_FM" ) || exit 2
+fi
 
 # ---- nu_reco (nu + fm in one worklist) ---------------------------------------
 if want nu_reco; then
