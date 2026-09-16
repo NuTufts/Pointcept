@@ -974,6 +974,10 @@ def main():
     ap.add_argument("--photonlib", default=None,
                     help="photon-library npz cache (default: "
                          "lartpc/flashmatch/data/photonlib_v6_70kV.npz)")
+    ap.add_argument("--skip-events", default="",
+                    help="comma-separated SORTED-list event indices to skip "
+                         "(events that crash the GPU forward with a device-side "
+                         "fault; they get no cascade file, like unreadable inputs)")
     ap.add_argument("--max-spacepoints", type=int, default=None,
                     help="Override cfg.data.test.max_spacepoints (random "
                          "subsample before deghoster+slicer). The config "
@@ -1091,7 +1095,14 @@ def main():
               f"(r={args.calib_cluster_radius} cm, >= {args.calib_min_points} pts, "
               f"<= {args.calib_max_clusters}), source = best shape cos >= "
               f"{args.calib_cos_min}; only stream='calib' files are written")
+    skip_events = {int(x) for x in str(args.skip_events).split(",") if x.strip()}
+    if skip_events:
+        print(f">>> skipping {len(skip_events)} event index(es): {sorted(skip_events)}")
     for i in range(start, end):
+        if i in skip_events:
+            print(f"  [{i}] SKIP requested (--skip-events)"
+                  f" {os.path.basename(real_files[i]) if i < len(real_files) else ''}", flush=True)
+            continue
         # Per-event order invariance (shared helper; see its docstring).
         if args.deterministic:
             reseed_per_event(args.seed)
