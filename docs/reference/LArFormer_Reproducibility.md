@@ -308,6 +308,13 @@ spacepoint-by-spacepoint vs the A100-80GB reference (pax050):
 | A100 vs H200 | Ampere↔Hopper | 235 k (0.27%) | 20.2% | 3.8% | **7 / 378 (1.9%)** | **does NOT conform** |
 | H100 vs H200 | Hopper↔Hopper | 1 | 0.03% | 1.3% | **0 / 378** | conforms (event-level) |
 
+**Polaris (ALCF) A100-SXM4-40GB, host driver 580.65.06 (2026-09-16, 2,000 bnb5e19
+events, `docs/reference/Polaris_Conformance_2026-09-16.md`):** 47.6% bit-identical
+partitions, foundVertex flips 3.8%, prong-count flips 21.6%, unbiased -> a
+separate family (worse than Hopper at the event level). Same in-container
+libraries as Tufts, different host driver: consistent with the driver-stack
+attribution of section 4.
+
 **Conformance families:** `{A100 (any memory size), L40S}` are mutually
 bit/event-identical → one allowlist, zero systematic. `{H100, H200}` form a
 separate Hopper family (event-level consistent with each other) that diverges

@@ -1,11 +1,13 @@
-# Polaris (A100-SXM4, ALCF) vs Tufts (A100-PCIe, driver 575.57.08): cross-platform conformance
+# Polaris (A100-SXM4-40GB, driver 580.65.06, ALCF) vs Tufts (A100-PCIe 40/80 GB, driver 575.57.08): cross-platform conformance
 
 Measured 2026-09-16 on the same 2,000 bnb5e19 events (production indices
 0-1999) run through the identical container, code (commit 43a186d), checkpoints
 and flags on both clusters (`lartpc/polaris/compare_platforms.py`; inputs in
 `/cluster/tufts/wongjiradlab/larbys/data/larformer/polaris_it_tufts/{gpu/tests/throughput,from_polaris}`).
 Tufts vs its own earlier cew6 production reproduces 200/200 events bit for bit,
-so every difference below is the platform (driver + GPU SKU), cf.
+so every difference below is the platform: host driver 580.65.06 (Polaris) vs
+575.57.08 (Tufts) on the same in-container CUDA/torch libraries, plus the SXM4
+vs PCIe SKU (same GA100 die), cf.
 `LArFormer_Reproducibility.md` §4.3.
 
 ## Cascade level (keypoint2 files)
