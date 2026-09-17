@@ -255,15 +255,48 @@ recal3 (gamma a=0.01553, b=-12.80) is BAKED INTO showerRecoE.
 Normalizations, EXT/MC hygiene halves: identical to v2_s1ep2p8 (same
 underlying events, same row conventions).
 
-### 3c. RUN-1 TABLE-GAMMA productions (2026-09-13/15) — the "table-gamma" campaign
-Same cew6 chain, calibrated gamma table (section 0), in-window flash choice,
-LArPID DEFAULT weights (run-period rule: only run-3 tags use the alternate
-weights). `$L=/cluster/tufts/wongjiradlab/larbys/data/larformer`.
+### 3c. RUN-1 TABLE-GAMMA productions (2026-09-13/16) — the "table-gamma" campaign, ALL THREE DONE
+The complete run-1 data/MC/EXT set for the pi0 and single-photon data-vs-MC
+plots, all processed AT TUFTS (A100 pool, driver 575.57.08, one conformance
+family; Polaris was measured and ruled out, `docs/reference/Polaris_Conformance_2026-09-16.md`).
+Same cew6 chain as section 1 (slicer mixenriched epoch_2, segmenter cew
+epoch_6, keypoint epoch_30, cew6 shower BDTs, s1ep2p8 attachment LLR thr 4.0),
+calibrated gamma table (section 0), in-window flash choice, LArPID DEFAULT
+weights for all three (run-period rule: only run-3 tags use the alternate
+weights), current exporter (flash provenance branches, showerCosmicScore,
+showerNoVtxScore, vertex-less prongs). `$L=/cluster/tufts/wongjiradlab/larbys/data/larformer`.
 | sample | ntuple | events | normalization |
 |---|---|---|---|
 | run-1 EXT half (C1 extbnb stride-2 filenos 1-6900 = 25% of full C1) | `$L/run1_C1_extbnb_half/dlgen2_larformer_ntuple_extbnb_run1_half.root` | 104,516 | 5,772,737 spills (one corrupt merged_sp skipped); gamma_eff 2.861, window 3.2-5.4 |
 | run-1 BNB nu overlay half (mcc9_v28 TRAINPOOL = unbiased 50% by md5 parity) | `$L/run1_bnboverlay_half/dlgen2_larformer_ntuple_bnbovl_run1_half.root` | 182,069 | potTree 4,673 rows, totPOT 2.2903e20; gamma_eff 4.502 (mc,1 = 0.8576 from the pilot), window 3.6-5.2; run-1 xsec pickle (916 events carry xsecWeight 0, all trueNuMode 1; 2 events -1) |
-| bnb5e19 beam data (run 1) | on Polaris, pending the cross-platform conformance decision (`lartpc/polaris/README.md` 4.5) | 176,302 | POT 4.4e19 |
+| bnb5e19 beam-on data (run 1, mcc9_v28 wctagger, full sample) | `$L/bnb5e19_run1_table/dlgen2_larformer_ntuple_bnb5e19_run1_table.root` | 176,302 | POT 4.4e19, 94,414,115 spills; gamma_eff 2.861 (data,1 = 0.5449), window 2.8-5.0; xsecWeight -1 (data) |
+**Normalization for data-vs-MC (data as the reference):**
+EXT-half -> data: scale by spills 94,414,115 / 5,772,737 = 16.355 (beam-off
+cosmic normalization; hygiene halves per section 7 still apply to EXT rows);
+overlay-half -> data: scale by POT 4.4e19 / 2.2903e20 = 0.19211 (times
+xsecWeight per event; 916 events carry weight 0). All three files carry
+`flashGammaEff`, so the flash chi2 columns are mutually comparable (unlike the
+legacy-gamma cew6 files in section 3, gamma_eff 4.20/5.25).
+
+**bnb5e19_run1_table provenance (2026-09-15/16):** launcher
+`larformer_reco/slurm/launch_bnb5e19_table_chain.sh`; event membership + order =
+`lartpc/polaris/bnb5e19_production_basenames.txt.gz` (176,302 of the 176,336
+merged_sp files, identical to the cew6 production, list at
+`$L/bnb5e19_run1_table/merged_sp_bnb5e19_production.txt`). Inference shard 4
+failed 3x on node pax051 at event 22318 (fileno01397_entry000006, 2.24 M
+spacepoints; "CUDA error: unrecognized error code"); the same event ran cleanly
+on pax052 (9 particles, = cew6) and that output was placed in the tree, the
+shard was rerun with `--skip-events 22318`, and the tail was resumed
+(RESUME_AFTER_INF). Verified: 32/32 shards DONE, 176,302 nu-stream cascade
+files (+10 flash-match), nu_reco 111,654 reco / 64,648 no-slice / 0 errors,
+LArPID default weights on 60/60 shards, export 0 tracebacks, hadd 176,302 ==
+shard sum, foundVertex 63.3%. Intermediates:
+`$L/bnb5e19_run1_table/{keypoint2_streams,nu_reco_streams_*,nu_reco_larpid_*}`;
+kp2 lists `larformer_reco/outputlists/keypoint2_out_bnb5e19_run1_table_{nu,fm}.txt`
+(do NOT regenerate). The legacy-gamma cew6 file
+(`$D/larformer_bnb5e19_s1ep2p8cew6/...`) stays as the comparator for the
+gamma-only difference (same events, same chain, gamma 4.20 vs 2.861).
+
 Overlay sample composition: 4,740 TRAINPOOL files minus 26 ledger duds minus 41
 deterministic converter crashers (list: `lartpc/data_prep/uboone_official/
 tranche_ovl_run1_half.spec.dropped`; 0.9% file loss, whole files dropped so
@@ -390,7 +423,9 @@ cosmic BDT); with the vertex-free BDT retrained on cew6
 purity 0.334 at EXT 93. Details: `physics/single_photon/README.md`.
 
 ### 8. Status
-v2_s1ep2p8cew6 is the TALK version. v2_s1ep2p8 files (section above)
+2026-09-16: the run-1 table-gamma set (section 3c: bnb5e19, EXT half, overlay
+half) is complete and is the input for the run-1 pi0 / single-photon data-vs-MC
+remake. v2_s1ep2p8cew6 is the TALK version. v2_s1ep2p8 files (section above)
 remain in place as comparators — do not delete before the talk.
 Post-talk queue: retrain shower+event BDTs on cew6, data/pred dip
 investigation, segmenter options in docs/reference/Segmenter_Improvement_Options.md.
