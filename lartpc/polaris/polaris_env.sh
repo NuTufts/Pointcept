@@ -47,11 +47,15 @@ export HDF5_USE_FILE_LOCKING=FALSE      # Lustre: h5py file locking is unreliabl
 # does NOT honour OMP_NUM_THREADS: without OPENBLAS_NUM_THREADS every nu_reco
 # process spawned 64 BLAS threads and the node hit its process limit
 # (pthread_create / fork "Resource temporarily unavailable", 2026-09-13).
-export OMP_NUM_THREADS=${OMP_NUM_THREADS:-2}
-export MKL_NUM_THREADS=${MKL_NUM_THREADS:-2}
-export OPENBLAS_NUM_THREADS=${OPENBLAS_NUM_THREADS:-2}
-export NUMEXPR_NUM_THREADS=${NUMEXPR_NUM_THREADS:-2}
-export VECLIB_MAXIMUM_THREADS=${VECLIB_MAXIMUM_THREADS:-2}
+# FORCED, not defaulted: PBS presets OMP_NUM_THREADS=64 on Polaris compute nodes
+# (diag_export.sh 2026-09-16: 8 exporters x 64 OpenMP threads = 22 s/event vs
+# 0.8 s/event alone). Override with POL_THREADS.
+export POL_THREADS=${POL_THREADS:-2}
+export OMP_NUM_THREADS=$POL_THREADS
+export MKL_NUM_THREADS=$POL_THREADS
+export OPENBLAS_NUM_THREADS=$POL_THREADS
+export NUMEXPR_NUM_THREADS=$POL_THREADS
+export VECLIB_MAXIMUM_THREADS=$POL_THREADS
 export PYTHONUNBUFFERED=1
 unset PYTHONSTARTUP   # ALCF sets /etc/pythonstart, absent in the container (harmless warning)
 

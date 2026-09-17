@@ -224,6 +224,9 @@ the shift as a systematic, (b) move MC/EXT to Polaris too (one family), or
 ## 5. Gotchas
 
 * Set `HDF5_USE_FILE_LOCKING=FALSE` in every process (Lustre).
+* PBS presets `OMP_NUM_THREADS=64` on compute nodes; `polaris_env.sh` forces all
+  thread caps to `POL_THREADS` (2). With the preset, 8 exporters ran at 22 s/event
+  (0.8 alone) -- the "export timeout" of 2026-09-16.
 * Lustre is slow at file opens. The exporter used to open every kp2 file of the
   list per shard (176k opens) plus ~5 files per event: 48 s/event on Polaris
   (2026-09-16). Now the kp2 map is cached as `<list>.srcmap.json` (prebuilt by
