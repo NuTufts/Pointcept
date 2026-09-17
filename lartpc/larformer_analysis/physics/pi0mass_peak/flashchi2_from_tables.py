@@ -34,11 +34,17 @@ def main():
                     help="also make combined CC+NC panels (flashchi2_all_*) "
                          "with this single cut line (e.g. 3162.3)")
     ap.add_argument("--pot", type=float, default=4.4e19)
+    ap.add_argument("--ext-weight-from-table", action="store_true",
+                    help="per-EXT-row weight = --ext-scale x table w (see "
+                         "datamc_ext_overlay.py); default = uniform --ext-scale")
     ap.add_argument("--plots", required=True)
     args = ap.parse_args()
     os.makedirs(args.plots, exist_ok=True)
     mc = np.load(args.mc_npz); da = np.load(args.data_npz)
     ex = np.load(args.ext_npz)
+    ext_w = np.full(len(ex["sel_ge2"]), args.ext_scale, np.float64)
+    if args.ext_weight_from_table:
+        ext_w = ext_w * np.asarray(ex["w"], np.float64)
 
     lbins = np.linspace(0, 8, 33)
     ctr = 0.5 * (lbins[:-1] + lbins[1:])
@@ -80,7 +86,7 @@ def main():
                 colors = list(CAT_COLORS)
                 labels = [f"{CATS[c]} ({ws[c].sum():.0f})" for c in range(6)]
                 stack.append(np.clip(lex[em], 0, 7.999))
-                ws.append(np.full(int(em.sum()), args.ext_scale))
+                ws.append(ext_w[em])
                 colors.append("#e5e5e5")
                 labels.append(f"EXT cosmic ({ws[-1].sum():.0f})")
                 ax.hist(stack, bins=lbins, weights=ws, stacked=True,

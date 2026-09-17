@@ -40,6 +40,11 @@ def main():
                     help="also make combined CC+NC m_gg panels (eq2 and ge2, "
                          "no stream split) with this SINGLE flash-chi2 cut "
                          "(e.g. 3162.3 = log10<3.5); signal = true CC+NC pi0")
+    ap.add_argument("--ext-weight-from-table", action="store_true",
+                    help="per-EXT-row weight = --ext-scale x the table's w "
+                         "(hygiene-filtered tables carry w=2 on the held-out "
+                         "half). Default off keeps the historical uniform "
+                         "--ext-scale (which under-counts w=2 rows by 2x).")
     ap.add_argument("--plots", required=True)
     ap.add_argument("--pot", type=float, default=4.4e19)
     ap.add_argument("--flashchi2-cut-nc", type=float, default=None,
@@ -56,6 +61,11 @@ def main():
     mc = np.load(args.mc_npz)
     da = np.load(args.data_npz)
     ex = np.load(args.ext_npz)
+    ext_w = np.full(len(ex["sel_ge2"]), args.ext_scale, np.float64)
+    if args.ext_weight_from_table:
+        ext_w = ext_w * np.asarray(ex["w"], np.float64)
+        print(f">>> EXT weights = {args.ext_scale:.4f} x table w "
+              f"(sum over rows {ext_w.sum():.1f})")
 
     import matplotlib
     matplotlib.use("Agg")
@@ -95,7 +105,7 @@ def main():
                                  bins[0], clip_hi) for c in range(6)]
                 ws = [mc["w"][mm & (mc["cat"] == c)] for c in range(6)]
                 stack.append(np.clip(ex[obs_key][em], bins[0], clip_hi))
-                ws.append(np.full(int(em.sum()), args.ext_scale))
+                ws.append(ext_w[em])
                 colors = CAT_COLORS + [EXT_COLOR]
                 labels = [f"{CATS[c]} ({ws[c].sum():.0f})" for c in range(6)]
                 labels.append(f"EXT cosmic ({ws[6].sum():.0f})")
@@ -144,7 +154,7 @@ def main():
                      for c in range(6)]
             ws = [mc["w"][mm & (mc["cat"] == c)] for c in range(6)]
             stack.append(np.clip(ex["m_vtx2start"][em], 0, 499))
-            ws.append(np.full(int(em.sum()), args.ext_scale))
+            ws.append(ext_w[em])
             labels = [f"{CATS[c]} ({ws[c].sum():.0f})" for c in range(6)]
             labels.append(f"EXT cosmic ({ws[6].sum():.0f})")
             fig, ax = plt.subplots(figsize=(6.8, 4.6))
@@ -221,7 +231,7 @@ def main():
                                 sig_cat = mc["cat"] <= 1
                             sig = mc["w"][mb & sig_cat].sum()
                             tot = (mc["w"][mb].sum()
-                                   + args.ext_scale * int(eb.sum()))
+                                   + ext_w[eb].sum())
                             p = sig / tot if tot > 0 else np.nan
                             n = int(mb.sum()) + int(eb.sum())
                             pur.append(p)
@@ -291,7 +301,7 @@ def main():
                                      bins[0], clip_hi) for c in range(6)]
                     ws = [mc["w"][mm & (mc["cat"] == c)] for c in range(6)]
                     stack.append(np.clip(ex[obs_key][em], bins[0], clip_hi))
-                    ws.append(np.full(int(em.sum()), args.ext_scale))
+                    ws.append(ext_w[em])
                     colors = CAT_COLORS + [EXT_COLOR]
                     labels = [f"{CATS[c]} ({ws[c].sum():.0f})" for c in range(6)]
                     labels.append(f"EXT cosmic ({ws[6].sum():.0f})")
@@ -340,7 +350,7 @@ def main():
                         mb = mm & (mc[obs_key] >= lo) & (mc[obs_key] < hi)
                         eb = em & (ex[obs_key] >= lo) & (ex[obs_key] < hi)
                         sig = mc["w"][mb & (mc["cat"] == 1)].sum()
-                        tot = mc["w"][mb].sum() + args.ext_scale * int(eb.sum())
+                        tot = mc["w"][mb].sum() + ext_w[eb].sum()
                         p = sig / tot if tot > 0 else np.nan
                         nn = int(mb.sum()) + int(eb.sum())
                         pur.append(p)
@@ -379,7 +389,7 @@ def main():
                                & (t["m_vtx2start"] < 170))
             mpk = pk(mc, mm)
             cw = [mc["w"][mpk & (mc["cat"] == c)].sum() for c in range(6)]
-            extw = args.ext_scale * int(pk(ex, em).sum())
+            extw = ext_w[pk(ex, em)].sum()
             tot = sum(cw) + extw
             print(hdr % (slab, "%.1f" % cw[0], "%.1f" % cw[1], "%.1f" % cw[2],
                          "%.1f" % cw[3], "%.1f" % cw[4], "%.1f" % cw[5],
@@ -393,7 +403,7 @@ def main():
         dm = stream_mask(da, False, eq2) & np.isfinite(da["m_vtx2start"])
         pk = lambda t, m: m & (t["m_vtx2start"] >= 100) & (t["m_vtx2start"] < 170)
         mc_pk = mc["w"][pk(mc, mm)].sum()
-        ext_pk = args.ext_scale * int(pk(ex, em).sum())
+        ext_pk = ext_w[pk(ex, em)].sum()
         dat_pk = int(pk(da, dm).sum())
         print(f"  [{vlab:9s}] data {dat_pk:4d} | MC {mc_pk:6.1f} "
               f"(ratio {dat_pk/max(mc_pk,1e-9):.2f}) | MC+EXT "

@@ -188,3 +188,91 @@ analysis scripts are reused as-is; only the ntuples are regenerated.
   (fully-true m_gg reconstructs at ~300 MeV) — the 20-MeV detectability
   threshold is ~9 MeV actual. Longstanding convention; pending explicit
   redefinition decision.
+
+---
+
+# Run-1 table-gamma remake (2026-09-17)
+
+The cew6 talk plots compared RUN-1 beam data against RUN-3 MC overlay and
+RUN-3 EXT, all with the legacy flash light-yield scale. Run 1 and run 3 differ
+in light yield (and readout noise), so the cosmic (EXT) placement in every
+observable and the flash-chi2 spectra carried a period mismatch on top of the
+data/MC one. This remake uses the run-1 productions of
+`model_and_output_file_versions.md` s3c (same cew6 chain, calibrated
+(kind, period) gamma table, in-window flash choice, current exporter):
+
+| leg | ntuple (`$L=/cluster/tufts/wongjiradlab/larbys/data/larformer`) | events | normalisation |
+|---|---|---|---|
+| MC run-1 BNB overlay half | `$L/run1_bnboverlay_half/dlgen2_larformer_ntuple_bnbovl_run1_half.root` | 182,069 | xsecWeight x 4.4e19 / POT (inside the table; POT see exclusion below) |
+| bnb5e19 run-1 data | `$L/bnb5e19_run1_table/dlgen2_larformer_ntuple_bnb5e19_run1_table.root` | 176,302 | unit; 4.4e19 POT; spills 10,375,708 (July normalisation) vs 94,414,115 (data_prep README) -- OPEN, see below |
+| EXT run-1 C1 half | `$L/run1_C1_extbnb_half/dlgen2_larformer_ntuple_extbnb_run1_half.root` | 104,516 | beam spills / 5,772,737: **1.7974** with 10,375,708 (used); 16.355 with 94,414,115 (archived `*_spills94M` dirs) |
+
+**bnb5e19 spill count -- OPEN (2026-09-17).** `lartpc/data_prep/README.md`
+lists 94,414,115 spills for mcc9_v28_wctagger_bnb5e19; the July EXT
+normalisation (memory `extbnb-cosmic-normalization`, `datamc_ext_overlay.py`
+docstring) used 10,375,708 for the same sample, which is also what 4.4e19 POT
+implies at the BNB ~4.2e12 POT/spill. The 94.4M value makes the cosmic-only
+prediction 1.71M events against 176,302 beam triggers and puts the EXT band
+9x above the data in the pure-cosmic flash-chi2 sideband (first pass, plots
+kept in `plots_run1tg_*_spills94M/`), so the suite now defaults to
+`BEAM_SPILLS=10375708` (scale 1.7974). Even that over-predicts the cosmic
+sideband: the EXT scale that gives data/pred = 1 is 1.2-1.5 in the
+chi2 > cut sidebands and 1.31 at trigger level (`(176,302 - 39,310 MC) /
+104,516`), i.e. the half-stride-2 EXT spill count (file fraction x 23,090,946)
+looks ~25-30% low. Run-3 EXT at the July spill ratio matched its sideband to
+2-6%. Needs the official gate counts (E1DCNT_wcut / EXT) for both samples.
+
+Working point unchanged from the talk: shower cosmicScore >= 0.164, event
+BDT >= 0.21 (`ext_bdt_model_flashblind_cew6.joblib`), union muon finder
+(KE > 50), chi2 CC < 1e4 / NC < 1778 (combined 3162). recal3 is baked in
+the ntuples: no `--recal-gamma-*` on `pi0_mass_analysis.py`, identity
+constants on the SBND scripts.
+
+What is different from the cew6 suite (`run_cew6_suite_freshpair.sh`):
+
+1. **Flash chi2 from the ntuple** (`pi0_mass_analysis.py --flashchi2-from-ntuple`,
+   branch `nuSliceFlashChi2`; -1 = no in-window flash -> NaN -> fails the chi2
+   cut). The old `--cascade-dir` re-scan re-applied a fixed PMT-15 dead mask to
+   every sample; PMT 15 is live in run 1, so on run-1 data that mask distorted
+   the chi2 (cew6 bnb5e19: median +0.6%, up to +15%). On the cew6 run-3 MC/EXT
+   the branch is bit-identical to the re-scan (verified on the ts0164 tables).
+   No cascade RSE-map builds are needed any more. 12-19% of vertex-found
+   events (2% of true 1pi0 signal) have no in-window flash and drop at the
+   chi2 step; the legacy productions gave those events a chi2 from the
+   brightest flash anywhere in the readout.
+2. **MC training-overlap exclusion.** The overlay half converted the TRAINPOOL
+   list; its filenos 1-350 are the generic-mu pilot (12,812 events) and 7,930
+   of those sit in the cew6 segmenter training list. `run1ovl_trainpool_exclusion.py`
+   maps ntuple rows to filenos through the truth sidecars, drops those 324
+   files whole and re-sums the POT from the sidecars (2.2903e20 ->
+   2.1292e20, 92.96%); `pi0_mass_analysis.py --exclude-rows` zeroes the rows
+   (w=0, cat=-1, never selected) and uses the kept POT. Whole-file dropping
+   keeps the POT exact and avoids the composition bias of dropping the
+   nu-deposit-filtered event subset. Caveat: the SBND scripts take w from the
+   table (so weighted numbers are clean) but their unweighted
+   efficiency-vs-Evis curve still counts the excluded rows.
+3. **No classifier hygiene**: neither BDT was trained on run-1 events, so
+   `apply_event_bdt.py --hygiene none` (all EXT rows, no odd x2). The inline
+   BDT-filter python of the cew6 scripts is retired in favour of
+   `apply_event_bdt.py` (`--hygiene cew6` reproduces the old convention).
+4. `pi0_step_tables.py` generalises `cew6_step_tables.py` (ntuples, prefix,
+   EXT scale, hygiene as arguments; adds a data column with data/pred).
+5. `--ext-weight-from-table` on `datamc_ext_overlay.py` and
+   `flashchi2_from_tables.py`: EXT per-row weight = `--ext-scale` x table w.
+   Default off = historical behaviour. **Found while doing this:** the cew6
+   talk overlays and flash-chi2 spectra (`plots_cew6_overlay_cew6_ts0164`,
+   `plots_cew6_flashchi2_cew6_ts0164`) used the uniform 1.1818 on tables whose
+   held-out EXT rows carry w=2, so their EXT component is 2x too low
+   (e.g. reco-NC eq2 near-peak EXT 8.3 shown vs 16.6). The step tables in
+   `CEW6_TALK_TABLES.md` (x2.3636 explicit) are correct. Re-run the two cew6
+   plotters with the flag to fix the pictures.
+6. `flashchi2_before_after.py`: cew6 (old) vs run-1 (new) flash-chi2
+   spectra side by side, EXT weighted by table w in both.
+
+Drivers: `run_run1tg_tables.sh` (array: mc/data/ext tables + exclusion
+list) then `run_run1tg_suite.sh --dependency=afterok:<tables>` (BDT filters,
+overlays, step tables, flash-chi2 spectra + before/after, SBND suite).
+Tables `{mc,data,ext}_run1tg_ts0164{,_bdt,_nochi2bdt}_table.npz`; plots
+`plots_{mc,data,ext}_run1tg_ts0164/`, `plots_run1tg_overlay_ts0164/`
+(+`step_tables.txt`), `plots_run1tg_flashchi2_ts0164/`,
+`plots_run1tg_sbnd{,_sbndflow}_ts0164/`. Numbers: `RUN1_TABLEGAMMA_TABLES.md`.

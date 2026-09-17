@@ -149,8 +149,28 @@ def main():
                     help="real-data mode: unit weights (no xsecWeight/POT "
                          "scaling), no truth categories (all events tagged "
                          "'data'), truth-dependent plots skipped")
+    ap.add_argument("--flashchi2-from-ntuple", action="store_true",
+                    help="take the nu-slice flash chi2 from the ntuple branch "
+                         "nuSliceFlashChi2 (cascade-baked dead/saturation "
+                         "masks and gamma; sentinel <0 -> NaN = no in-window "
+                         "flash) instead of re-scanning the cascade with "
+                         "--cascade-dir. Verified bit-identical to the "
+                         "--cascade-dir recompute on the cew6 run-3 MC/EXT; "
+                         "on run-1 samples PMT 15 is live, so this branch is "
+                         "the right one and the fixed '15' mask is not.")
+    ap.add_argument("--exclude-rows", default=None,
+                    help="npz with a 'rows' array of ntuple row indices to drop "
+                         "entirely (w=0, no truth category, never selected) -- "
+                         "e.g. MC files that fed model training. If the npz "
+                         "carries 'kept_pot', it replaces the potTree POT sum "
+                         "unless --sample-pot is given.")
+    ap.add_argument("--sample-pot", type=float, default=None,
+                    help="override the sample POT (default: potTree sum)")
     args = ap.parse_args()
     os.makedirs(args.plots, exist_ok=True)
+    if args.cascade_dir and args.flashchi2_from_ntuple:
+        raise SystemExit("--cascade-dir and --flashchi2-from-ntuple are exclusive")
+    excl = np.load(args.exclude_rows) if args.exclude_rows else None
 
     fin = uproot.open(args.ntuple)
     if args.data:
@@ -160,6 +180,13 @@ def main():
         pot = fin["potTree"].arrays(library="np")
         pot_sum = (float(np.sum(pot["totGoodPOT"]))
                    or float(np.sum(pot["totPOT"])))
+        if args.sample_pot is not None:
+            print(f">>> potTree POT {pot_sum:.4e} overridden by --sample-pot")
+            pot_sum = args.sample_pot
+        elif excl is not None and "kept_pot" in excl.files:
+            print(f">>> potTree POT {pot_sum:.4e} -> kept POT after row "
+                  f"exclusion {float(excl['kept_pot']):.4e}")
+            pot_sum = float(excl["kept_pot"])
         scale = args.pot / pot_sum
         print(f">>> sample POT {pot_sum:.3e}, target {args.pot:.2e} "
               f"-> scale {scale:.4f}")
@@ -211,6 +238,15 @@ def main():
     vtx_ok = ((np.asarray(a["foundVertex"]) == 1)
               & (np.asarray(a["primaryVtxStream"]) == 0)
               & (np.asarray(a["vtxIsFiducial"]) == 1))
+    keep = np.ones(n, bool)
+    if excl is not None:
+        keep[np.asarray(excl["rows"], np.int64)] = False
+        w[~keep] = 0.0
+        cat[~keep] = -1            # no category: out of every plot/denominator
+        vtx_ok = vtx_ok & keep
+        print(f">>> excluded {int((~keep).sum())} rows via {args.exclude_rows}"
+              f" | true signal left: CC {int((cat==0).sum())} "
+              f"NC {int((cat==1).sum())}")
     is_g = (a["showerLArFormerPID"] == 22) & (a["showerRecoE"] > RECO_G_MIN)
     if args.shower_bdt_min is not None:
         sb = t.arrays(["showerCosmicScore"])["showerCosmicScore"]
@@ -357,10 +393,17 @@ def main():
         print(f">>> flash-fix: corrected chi2 for "
               f"{int(np.isfinite(flash_chi2[sel2p]).sum())}/{int(sel2p.sum())} "
               f"selected events")
+    elif args.flashchi2_from_ntuple:
+        fc = np.asarray(t.arrays(["nuSliceFlashChi2"])["nuSliceFlashChi2"],
+                        np.float64)
+        flash_chi2 = np.where(fc >= 0.0, fc, np.nan)   # -1 = no in-window flash
+        print(f">>> flash chi2 from ntuple nuSliceFlashChi2: finite for "
+              f"{int(np.isfinite(flash_chi2[sel2p]).sum())}/{int(sel2p.sum())} "
+              f"selected events (no in-window flash -> NaN)")
 
     # ---- cutflow + selection summary --------------------------------------
     print("\n== CUTFLOW (raw | POT-weighted) ==")
-    for lab, m in (("all events", np.ones(n, bool)),
+    for lab, m in (("all events", keep),
                    ("reco vtx (nu-stream, in FV)", vtx_ok),
                    (">=2 reco photons >20 MeV", vtx_ok & (n_g >= 2)),
                    ("default selection (mass ok)", sel2p),
@@ -466,12 +509,12 @@ def main():
     h = ax.hist2d(np.clip(p_true[m2], 0, 1199), np.clip(p_reco[m2], 0, 1199),
                   bins=[np.linspace(0, 1200, 40)] * 2, cmin=1, cmap="viridis")
     ax.plot([0, 1200], [0, 1200], "r--", lw=1, label="reco = true")
-    r = p_reco[m2] / p_true[m2]
+    r = p_reco[m2] / p_true[m2] if m2.any() else np.array([np.nan])
     ax.set(xlabel=r"true $p_{\pi^0}$ [MeV/c]",
            ylabel=r"reco $p_{\pi^0}$ [MeV/c]",
            title=f"pi0 momentum: reco vs true (selected signal, N={int(m2.sum())})\n"
-                 f"median reco/true = {np.median(r):.3f}, "
-                 f"16-84%: [{np.percentile(r,16):.2f}, {np.percentile(r,84):.2f}]")
+                 f"median reco/true = {np.nanmedian(r):.3f}, "
+                 f"16-84%: [{np.nanpercentile(r,16):.2f}, {np.nanpercentile(r,84):.2f}]")
     fig.colorbar(h[3], ax=ax, label="events")
     ax.legend(fontsize=8, loc="upper left")
     fig.tight_layout()
@@ -510,7 +553,7 @@ def main():
     # (dashed) the provisional flash-chi2 cut -- shows the cut's signal cost.
     # numerator = selected + correct stream tag (+ flash-chi2 cut); denom =
     # true signal of that CC/NC type. Needs the masked flash_chi2 (cascade-dir).
-    if args.cascade_dir and np.isfinite(flash_chi2[sel2p]).any():
+    if np.isfinite(flash_chi2[sel2p]).any():
         # per-stream cuts: cat 0 = signal CC, cat 1 = signal NC
         cut_by_cat = {0: args.flashchi2_cut,
                       1: (args.flashchi2_cut if args.flashchi2_cut_nc is None

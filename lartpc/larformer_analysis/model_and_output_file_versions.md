@@ -278,6 +278,14 @@ xsecWeight per event; 916 events carry weight 0). All three files carry
 `flashGammaEff`, so the flash chi2 columns are mutually comparable (unlike the
 legacy-gamma cew6 files in section 3, gamma_eff 4.20/5.25).
 
+**NOTE 2026-09-17 (pi0 remake, `pi0mass_peak/README.md` "Run-1 table-gamma
+remake"):** the 94,414,115 bnb5e19 spill count is inconsistent with the July
+normalisation (10,375,708 spills for the same sample = 4.4e19 POT at ~4.2e12
+POT/spill) and gives a cosmic-only prediction 10x the beam trigger count; the
+pi0 suite uses 10,375,708 / 5,772,737 = 1.7974 for the EXT half until the
+official gate counts are confirmed. Even at 1.7974 the pure-cosmic flash-chi2
+sideband prefers ~1.2-1.5, so the EXT-half spill count itself may be ~25-30% low.
+
 **bnb5e19_run1_table provenance (2026-09-15/16):** launcher
 `larformer_reco/slurm/launch_bnb5e19_table_chain.sh`; event membership + order =
 `lartpc/polaris/bnb5e19_production_basenames.txt.gz` (176,302 of the 176,336
@@ -422,7 +430,22 @@ cosmic BDT); with the vertex-free BDT retrained on cew6
 (`export/data/shower_novtx_bdt_cew6.joblib`, NOT yet deployed as default)
 purity 0.334 at EXT 93. Details: `physics/single_photon/README.md`.
 
+### 6b. Run-1 table-gamma pi0 remake (2026-09-17)
+Procedure + numbers: `pi0mass_peak/README.md` ("Run-1 table-gamma remake") and
+`pi0mass_peak/RUN1_TABLEGAMMA_TABLES.md`. Tables
+`pi0mass_peak/{mc,data,ext}_run1tg_ts0164{,_bdt,_nochi2bdt}_table.npz`
+(flash chi2 from the ntuple branch, overlay-half filenos 1-350 excluded via
+`run1ovl_trainpool_exclusion.npz` (segmenter-training pilot; kept POT
+2.1292e20), no classifier hygiene). Plots `plots_{mc,data,ext}_run1tg_ts0164/`,
+`plots_run1tg_overlay_ts0164/`, `plots_run1tg_flashchi2_ts0164/` (incl.
+before/after vs cew6), `plots_run1tg_sbnd{,_sbndflow}_ts0164/`; the first pass
+at 94.4M spills is archived as `*_spills94M/`. Drivers `run_run1tg_tables.sh`
+-> `run_run1tg_suite.sh` (BEAM_SPILLS env).
+
 ### 8. Status
+2026-09-17: run-1 pi0 remake DONE on the section-3c set (see 6b); OPEN: the
+bnb5e19 spill count (94.4M in data_prep README vs 10.4M July value; suite uses
+10.4M) and the EXT-half spill count (cosmic sideband prefers ~25-30% lower EXT).
 2026-09-16: the run-1 table-gamma set (section 3c: bnb5e19, EXT half, overlay
 half) is complete and is the input for the run-1 pi0 / single-photon data-vs-MC
 remake. v2_s1ep2p8cew6 is the TALK version. v2_s1ep2p8 files (section above)
