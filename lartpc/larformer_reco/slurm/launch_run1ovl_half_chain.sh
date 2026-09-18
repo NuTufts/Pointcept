@@ -30,7 +30,7 @@ if squeue -u twongj01 -h -o '%j' | grep -q "ovl_train_conv\|tier2_tranche_ovl\|o
 # partial conversions (no marker, but h5s/sidecar present: mid-file converter
 # crashes) must be retried or dropped first, else the sample carries files with
 # a full-file POT and only part of their events
-NPART=$(bash lartpc/data_prep/uboone_official/retry_incomplete_tranche.sh lartpc/data_prep/uboone_official/tranche_ovl_run1_half.spec --dry-run | grep -c " partial " || true)
+NPART=$(bash lartpc/data_prep/uboone_official/retry_incomplete_tranche.sh lartpc/data_prep/uboone_official/tranche_ovl_run1_half.spec --dry-run | grep -cE "^ +[0-9]+ (partial|dudpartial) " || true)
 if [ "$NPART" -gt 0 ] && [ "${ALLOW_INCOMPLETE:-0}" != 1 ]; then
   echo "ERROR: $NPART partially converted filenos; run (login node): bash lartpc/data_prep/uboone_official/retry_incomplete_tranche.sh lartpc/data_prep/uboone_official/tranche_ovl_run1_half.spec  (ALLOW_INCOMPLETE=1 to override)"; exit 2
 fi
