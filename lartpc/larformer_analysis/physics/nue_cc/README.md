@@ -1,157 +1,305 @@
 # Electron Neutrino CC Analysis
 
-This folder is dedicated to selecting electron neutrino charged current (CC) events from the MicroBooNE LArTPC data.
+Selecting electron-neutrino charged-current (CC) events from MicroBooNE LArTPC data.
 
-## Samples
-
-Intrinsic nue events are only 0.5% of BNB flux. So we need a dedicated MC sample for them. Right now the sample is on Tier 2 and needs to be copied over. It's location is 
-
-  tier2:wongjiradlab/larbys/data/mcc9/mcc9_v29e_dl_run3b_bnb_intrinsic_nue_overlay_nocrtremerge
-
-and takes up 766.21 GB of space.
+**Chain version: v2_s1ep2p8cew6** (see
+`../../model_and_output_file_versions.md`). recal3 is baked into `showerRecoE`,
+so **no analysis-side `--recal-gamma-*` is applied anywhere in this folder**.
 
 ## Truth definition
 
- - events with true vertex 10 cm away from the wall
- - nue CC events
- - primary electron energy > 20 MeV
- - primary electron visible energy (using the deduped wire plane pixel sum energy) > 20 MeV
+ - true vertex in the WireCell FV (`trueVtxInWCFV==1`; ~10 cm from the wall)
+ - nue CC (`|trueNuPDG|==12 & trueNuCCNC==0`)
+ - a primary electron with E > 20 MeV
 
 ## Selection
 
- - one primary electron attached to one of the nu candidate slice's vertices
- - vertex in the WireCell Fiducial Volume
- - log10( flashmatch_chi2 ) < 3.0. The cut value shoud be determined based on a plot comparing the log(flashmatch_chi2)
- - in LANTERN, additional cuts were used:
-    - an "electron confidence score: logit(p_e) - 0.5*(logit(p_pi) + logit(p_gamma)) < 0.0
-    - an muon confidence cut: logit(p_mu) < -3.7 
-    - a vertex score cut to remove cosmics
-    - hopefully cuts like these are not required
-    - an 'electron primariness' based on LArPID outputs: primary_score > fromcharged_score && primary_score > fromneutral_score"
-    - for these LArPID based cuts, the variables should be plotted first to see how they separate signal from background.
+ - a reco nu-stream vertex in the FV:
+   `foundVertex==1 & primaryVtxStream==0 & vtxIsFiducial==1`
+ - `>= 1` PRIMARY electron shower:
+   `showerLArFormerPID==11 & showerIsSecondary==0 & showerRecoE > 20 MeV`
+ - **observable** = leading (most energetic) primary-electron `showerRecoE`
+ - `log10(flash_chi2) < 3.0` (provisional; choose it from `flashchi2.png`)
+ - LArPID / LArFormer discriminants, chosen with `nue_cc_scan.py`
 
-# LANTERN benchmarck
+**LANTERN benchmark: ~55% efficiency at ~90% purity**, state of the art in
+MicroBooNE.
 
-Inclusive nue CC events were selected with about 55% efficiency and 90% purity, which was state-of-art in MicroBooNE.
+## RESULTS on RUN 1, table-gamma (2026-09-18)  -- use these for data vs MC
 
-# Analysis scripts
+All four samples are run 1 with the calibrated flash light-yield table
+(versions doc section 3c), so run-1-vs-run-3 differences can no longer explain
+a data/MC disagreement. Tables: `tables_run1/` (`slurm_build_tables.sh` with
+`SET=run1_tg`); every table records its sample set and the plotters refuse to
+mix sets.
 
-Two-stage, mirroring `../pi0mass_peak/` (build per-sample tables, then stack):
+| sample | ntuple (`$L=/cluster/tufts/wongjiradlab/larbys/data/larformer`) | norm |
+|---|---|---|
+| nu_e CC signal | `$L/run1_nueintrinsics_half/..._nue_run1_half.root` | POT 4.9065e22 |
+| BNB nu bkg | `$L/run1_bnboverlay_half/..._bnbovl_run1_half.root` | POT 2.1292e20 after dropping the 350 filenos that fed segmenter training (`--exclude-rows pi0mass_peak/run1ovl_trainpool_exclusion.npz`) |
+| EXT cosmic | `$L/run1_C1_extbnb_half/..._extbnb_run1_half.root` | 23,090,946 beam spills / (0.25 x 94,414,115 EXT spills) = **0.9783** per event |
+| data | `$L/bnb5e19_run1_table/..._bnb5e19_run1_table.root` | 4.4e19 POT |
 
-1. `nue_cc_analysis.py --ntuple <ntuple.root> --out tables/<tag>.npz [--data]`
-   Reads one gen2ntuple, applies the reco selection, writes a per-event table.
-   MC weight `w = xsecWeight * (--pot / sum potTree.totGoodPOT)` (`--pot` default
-   4.4e19 = the Tufts bnb5e19 beam livetime). `--data` = unit weights, no truth.
-   Stores: `sel`, `reco_ele_E`, `flash_chi2`, `w`, `nu_pdg`, `ccnc`, `is_nuecc`
-   (veto flag), `is_nuecc_fv` (signal), the leading e-shower LArPID scores
-   (log-softmax), the LArFormer/segmentation-model scores (`lf_*_score` =
-   log(prob); the raw LArFormer outputs are softmax PROBABILITIES, logged here so
-   the same confidence formulas apply), `vtx_mu_score` / `vtx_lf_mu_score`
-   (max muon score of OTHER particles at the e-vertex, LArPID / LArFormer), and
-   `vtx_dist_true`.
-2. `nue_cc_overlay.py --nue-npz --bnb-npz --ext-npz --data-npz --plots <dir>`
-   Stacks nu_e-CC signal (nue overlay) + bnb-nu background (numu CC / NC, with
-   true nue CC VETOED via `is_nuecc` to avoid double counting) + EXT cosmic
-   (`--ext-scale` default 0.17682554549 spill ratio), overlays bnb5e19 data.
-   Also makes MC-truth validation plots (need the MC tables): signal
-   `eff_vs_true_ele_ke.png` + `eff_vs_true_ele_vise.png` (selection efficiency
-   vs true electron KE / visible energy = A_GAMMA x primary-e pixel charge) and
-   `bg_truth_pid.png` (truth-matched particle of the reco'd electron for MC bkg
-   passing the cuts). Makes `reco_ele_energy.png` + `flashchi2.png` + `var_*.png` (a stacked
-   prediction+data, log-y, for EVERY candidate cut variable at the current
-   selection, with the cut line drawn if set) -- so a cutflow is just repeated
-   runs adding one flag + a new `--plots` folder each step. Prints purity +
-   true-signal efficiency. Cut flags: `--flashchi2-cut` (log10), `--elconf-cut`,
-   `--primariness-cut`, `--mu-cut` (e-shower muon), `--vtxmu-cut` (vertex muon);
-   `--no-var-plots` to skip the var_*.png.
+No classifier hygiene on run 1 (no BDT ever saw a run-1 event).
 
-Supporting studies:
-- `nue_cc_larpid_scores.py` -- per-LArPID-variable stacked prediction + data and
-  efficiency/purity-vs-cut scan (`--flash-lo/--flash-hi` band). Ranks the
-  discriminants; e-confidence is strongest.
-- `nue_cc_ext_norm.py` -- EXT-normalization diagnostic: flash-chi2 stacked + data
-  with a data/pred ratio panel + a cosmic-sideband EXT-scale fit. Result: EXT is
-  correctly normalized (fit 0.95x spill ratio); the data excess is a LOCALIZED
-  bump at log10(flashchi2)~2.7-3.0, not a global/EXT offset.
-- `add_observed_pe.py` + `nue_cc_observed_pe.py` -- the in-time flash observed PE
-  is NOT in the ntuple; add_observed_pe scans the cascade `keypoint2_streams`
-  (`flash/observed_pe`) by (run,subrun,event) and adds it to a table; the plotter
-  overlays data vs prediction to test the Run-1(data)/Run-3(MC+EXT) light-yield
-  hypothesis for the flash-chi2 excess.
+| selection | purity | eff | data / pred | plots |
+|---|---|---|---|---|
+| flash only | 0.017 | 0.748 | 4032 / 3377 = 1.19 | `plots_run1_flash/` |
+| **elconf>9 & prim>4** | **0.942** | **0.452** | **40 / 37.5 = 1.07** | `plots_run1_wp_e9p4/` |
+| **elconf>8 & prim>4** | **0.835** | **0.506** | 40 / 47.5 = 0.84 | `plots_run1_wp_e8p4/` |
+| same, EXT at sideband fit 1.44 | 0.819 | 0.506 | 40 / 48.4 = 0.83 | `plots_run1_wp_e8p4_extfit/` |
 
-## Samples (ntuples)
+**The signal-region data deficit is gone on run 1.** At `elconf>9 & prim>4`
+data/pred = 1.07 (+-0.17 stat) where every run-3 working point sat at
+0.72-0.78. The long-standing deficit was a run-1-data vs run-3-MC mismatch.
+
+**Flash chi2 SHAPE now agrees** (`plots_run1_extnorm/flashchi2_extnorm.png`):
+data/pred is flat at ~1.3 from log10 chi2 ~1.9 to 5.5. The localized
+data/pred bump at log10 chi2 2.7-3.0 in the July analysis (run-1 data vs run-3
+MC/EXT light yield) is gone. Residual: below log10 chi2 ~1.8 MC still has
+somewhat better-matched flashes than data (ratio 0.2-0.8).
+
+**Open -- the overall normalization at the LOOSE selection is ~1.3 high.**
+Three estimates of the EXT per-event weight disagree:
+spill-based 0.978 (nominal) | beam-trigger count ~1.31 (176,302 triggers minus
+~39,300 weighted overlay events, over 104,516 EXT) | cosmic-sideband fit 1.44.
+But the excess is FLAT in flash chi2, including the neutrino-dominated region
+(log10 chi2 1.9-2.5, mostly numuCC), where raising EXT alone cannot close it:
+it looks like a global factor rather than an EXT-only problem. Check the
+bnb5e19 POT (4.4e19) and spill count before tuning EXT. The tight working
+points are insensitive: EXT is 0.00 at `elconf>9 & prim>4` and 1.96 -> 2.88
+at `elconf>8 & prim>4`.
+
+**Cut tuning:** `run_nuecc_cutflow.sh` (defaults to run 1). Every step folder
+gets the headline plots plus, for each of 19 candidate variables at that
+step, `var_*.png` (stack + data | eff & purity vs threshold) and `cat_*.png`
+(stacked by what the e-candidate really is), with `scan_summary.md` ranking
+the best next cut. Override values from the env (`ELCONF=9 PRIM=2 ...`);
+`VARPLOTS=0` skips the variable plots (~20 s/step).
+
+To test a data-driven EXT correction, every plotter takes `--ext-rescale F`
+(multiplies the spill-based weight; `--ext-scale W` replaces it outright), and
+the cutflow driver takes `EXTRESCALE=F`. Reference points: x1.34 = trigger
+count (weight ~1.31), x1.47 = cosmic-sideband fit (weight 1.44).
+
+Also: `data_prep/README.md` quotes "25% of the full run-1 EXT -> 5,772,737
+spills", which is 25% of the BEAM count (23,090,946), not of the EXT count
+(94,414,115). The pi0 run-1 remake and versions doc section 3c used 5.77M.
+
+Efficiency is lower than on run 3 (0.452 vs 0.501 at `elconf>9 & prim>4`):
+different MC sample, and run 1 uses the LArPID DEFAULT weights while run 3 used
+the alternate ones, so the run-3-tuned `elconf`/`primariness` thresholds are not
+guaranteed optimal here; re-tune from `plots_run1_flash/var_*.png`.
+
+## RESULTS on cew6 (2026-09-10)
+
+All four samples on v2_s1ep2p8cew6, `log10(flashchi2)<3`, POT 4.4e19.
+
+| selection | purity | eff | data/pred | plots |
+|---|---|---|---|---|
+| flash only | 0.021 | 0.742 | 1.10 | `plots_cew6_scan_flash/` |
+| elconf>8 | 0.570 | 0.564 | 0.95 | |
+| elconf>9 | 0.815 | 0.501 | 0.84 | `plots_cew6_scan_elconf9/` |
+| **elconf>9 & primariness>4** | **0.903** | **0.501** | 0.78 | `plots_cew6_wp/` |
+| **elconf>8 & primariness>4** | **0.877** | **0.548** | 0.69 | `plots_cew6_wp_e8p4/` |
+| elconf>10 | 0.955 | 0.421 | 0.78 | |
+| (July chain, elconf>9 & vtxmu<-3.7) | 0.90 | 0.39 | - | |
+| (LANTERN) | 0.90 | 0.55 | - | |
+
+**+28% relative efficiency at matched purity vs the July chain** (0.39 -> 0.50 at
+purity 0.90). Base acceptance improved too: on identical events the cew6 chain
+finds FV vertices 0.881 -> 0.917 and >=1 primary-e candidate 0.736 -> 0.776.
+
+The two boxed rows are the recommended operating points: `elconf>9 & prim>4`
+if you want to beat LANTERN on purity, `elconf>8 & prim>4` if you want to match
+it on efficiency. Both put EXT cosmic at exactly 0.00.
+
+**The remaining efficiency loss is a low-energy turn-on, not the PID cuts.** At
+`elconf>8 & prim>4` the efficiency vs true electron KE is 0.03 (50 MeV) / 0.18
+(150) / 0.34 (250) / 0.50 (400) / 0.58 (650) / 0.64 (1000) / **0.68 plateau**
+(>1.6 GeV) -- see `plots_cew6_wp_e8p4/eff_vs_true_ele_ke.png`. The integrated
+0.548 is dominated by soft electrons below ~400 MeV. Loosening PID further
+cannot recover them; the handle is reconstruction of low-energy showers.
+
+### Which background actually dominates -- it is NOT photons
+
+Truth composition of the reco'd electron candidate at `elconf>9` (background
+total 8.99):
+
+| category | yield | share |
+|---|---|---|
+| **nu e (secondary)** -- Michel / delta ray | 3.94 | **44%** |
+| EXT cosmic | 2.36 | 26% |
+| nu photon (pi0 mis-ID) | 1.57 | 17% |
+| nu muon | 0.60 | 7% |
+| nu e (primary) in the bnb sample | 0.52 | 6% |
+
+The July chain had photons at 41% of background; on cew6 they are **17%**,
+consistent with the segmenter's gamma gains and EXT cosmic photon candidates
+-35%. So the photon-BDT handles are aimed at the third-largest background, and
+the photon vetoes measure as **net-negative** at this working point: adding
+`n_good_photons<=0` costs efficiency 0.501 -> 0.449 for purity 0.903 -> 0.893.
+
+The dominant background is secondary electrons, whose natural handle is
+**primariness** (LArPID primary vs from-charged/from-neutral) -- exactly what
+Michels and delta rays are. It is the top-ranked discriminant in the scan and it
+also removes EXT cosmic entirely (2.36 -> 0.00), since cosmic-induced showers are
+not primary either.
+
+> This REVERSES the July conclusion that "primariness is net-negative here".
+> That held when photons were 41% of the background; it does not hold on cew6.
+
+Open: `data/pred ~ 0.78` at the best working points (the long-standing deficit),
+and the EXT cosmic-sideband fit is 1.17x nominal (July was 0.95x).
+
+## Samples (v2_s1ep2p8cew6)
+
+Paths live in one place: `nue_cc_common.SAMPLES`.
 
 | role | ntuple |
 |---|---|
-| nu_e CC signal | `.../mcc9_v29e_dl_run3b_bnb_intrinsic_nue_overlay_nocrtremerge/dlgen2_larformer_ntuple_mcc9_v29e_nue_overlay.root` (POT 4.709e22; 2231 good files) |
-| BNB nu background | `../../../larformer_reco/output/mcc9_bnbnu_overlay_1500_full_satfix/dlgen2_larformer_ntuple_*.root` (POT 8.394e19) |
-| EXT cosmic | `.../mcc9_v29e_dl_run3_G1_extbnb_full/dlgen2_larformer_ntuple_extbnb_full.root` (668388 evts; spill weight 0.17682554549) |
-| bnb5e19 beam data | `.../mcc9_v28_wctagger_bnb5e19/dlgen2_larformer_ntuple_bnb5e19_full.root` (176336 evts) |
+| nu_e CC signal | `<nue dir>/dlgen2_larformer_ntuple_nue_overlay_s1ep2p8cew6_run3.root` (POT 4.709e22; 2231 good filenos) |
+| BNB nu background | `$D/larformer_mcoverlay67k_s1ep2p8cew6/dlgen2_larformer_ntuple_mc_overlay_s1ep2p8cew6_run3.root` (67,211 evts; POT 8.394e19) |
+| EXT cosmic | `$D/larformer_extbnb200k_s1ep2p8cew6/dlgen2_larformer_ntuple_extbnb200k_s1ep2p8cew6.root` (200,000 evts) |
+| bnb5e19 beam data | `$D/larformer_bnb5e19_s1ep2p8cew6/dlgen2_larformer_ntuple_bnb5e19_s1ep2p8cew6.root` (176,302 evts) |
 
-Note: the intrinsic-nue sample is 100% CC (all `trueNuCCNC==0`), so it is a pure
-nu_e-CC signal source; the bnb sample supplies numu-CC / NC background.
+`$D = /cluster/tufts/wongjiradlab/larbys/data/ub_on_tufts`. The intrinsic-nue
+sample is 100% CC, so it is a pure nu_e-CC signal source; the bnb sample supplies
+numu-CC / NC background with its true nue CC **vetoed** (`is_nuecc`) to avoid
+double counting.
 
-# Implemented Reco selection (first pass)
+### EXT normalization -- CHANGED, do not carry the old number forward
 
-- `foundVertex==1 & primaryVtxStream==0 & vtxIsFiducial==1` (a reco nu-stream
-  vertex in the fiducial volume)
-- `>= 1` PRIMARY electron shower: `showerLArFormerPID==11 & showerIsSecondary==0
-  & showerRecoE > 20 MeV`
-- **observable** = leading (most energetic) primary-electron `showerRecoE`
-- **flash-chi2 cut** `log10(flash_chi2) < 3.0` (provisional; `flash_chi2` = the
-  primary nu-vtx `recoVtxFlashChi2`). Tune from `flashchi2.png`.
+Per-EXT-event weight is `0.17682554549 / f`, `f` = fraction of the FULL
+668,388-event EXT sample processed. The July analysis used the full sample, so
+its weight was the bare spill ratio. **The cew6 EXT file is a 200,000-event
+subset**, so:
 
-## LArPID electron cuts (from the score-separation study)
+| EXT selection | fraction | per-event weight |
+|---|---|---|
+| all rows | 0.29923 | **0.5909** |
+| rows >= 100k (shower-BDT analysis half) | 0.14962 | **1.1818** |
+| rows >= 100k AND odd `event` | 0.07481 | **2.3636** |
 
-LArPID scores are LOG-softmax [e,gamma,mu,pi,p] + process [primary,fromN,fromC].
-Single-variable max purity @ eff>=0.8 (in the flash-cut selection): e-confidence
-0.37 (best), primariness 0.25, muon 0.21, e-score 0.13, e/gamma 0.10. NOTE the
-README's "< 0.0" for e-confidence was wrong-signed -- signal is at HIGH
-e-confidence; useful cut is `> ~7`.
+Using the old 0.17683 undercounts EXT by 3.3x. `nue_cc_common.ext_scale()`
+picks the right one, and switches to the hygiene half automatically whenever a
+cut uses a shower-BDT score (EXT rows < 100k are that BDT's training half).
 
-**Selections** (flash + LArPID). e-confidence ALONE traces a better purity/eff
-curve than combining cuts -- adding primariness+muon removes more signal than
-background at matched efficiency, so they are net-negative here.
+## The shower BDT scores: what they are NOT
 
-| selection (all with log10(flashchi2)<3) | purity | eff | plots |
-|---|---|---|---|
-| elconf>7 & primariness>0 & mu<-3.7 | 0.75 | 0.54 | `plots_selected/` |
-| **elconf>9 alone** | **0.87** | 0.42 | `plots_selected_elconf9/` |
-| (LANTERN benchmark) | 0.90 | 0.55 | |
+`showerCosmicScore` and `showerNoVtxScore` are **cosmic-vs-neutrino-PHOTON**
+classifiers. They are **not** e/gamma discriminators, and the exporter
+hard-assigns every `LArFormerPID==11` shower a score of exactly **1.0**
+(`export_gen2ntuple.py:532-534`, `:479-481`). Verified on the cew6 MC overlay:
+10,838 / 10,838 electron-PID showers score exactly 1.0. So a `score >= t` cut
+passes **every electron candidate unconditionally** and buys nothing.
 
-elconf>9 alone reaches ~LANTERN purity with a single cut. In BOTH selections
-data/pred ~= 0.72-0.74 (data below pred in the signal-dominated region) -> a
-persistent ~28% deficit pointing to intrinsic-nue signal over-prediction OR a
-data/MC electron-ID efficiency difference (not a selection artifact).
+They are still useful here, applied to *photons*, which is their training domain:
 
-## Hard-background variables (`nue_cc_bg_vars.py`, `plots_bgvars/`)
+- `n_good_photons` -- photons at the electron's vertex with
+  `showerCosmicScore >= 0.164` (cew6 WP). A sharper pi0 veto than the raw
+  `n_photons`, which counts cosmic-contaminated showers too and so fires on
+  signal events with a stray nearby cosmic (~9% signal cost in July).
+- `n_novtx_photons` -- VERTEX-LESS photons (`showerVtxIdx == -1`,
+  `showerStream == 0`) with `showerNoVtxScore >= 0.5`, catching pi0 partner
+  photons that failed vertex attachment. Not possible before the novtx export.
 
-Two background topologies (analyzer domain knowledge):
-1. **muon at the e-vertex** (true e-shower from a decay mu/pi whose decay muon
-   was merged into a track). `vtx_mu_score` = max LArPID muon score among the
-   OTHER reco particles sharing the leading e-shower's vertex (tracks + other
-   showers; distinct from the e-shower's OWN muon score). numu CC piles at
-   log p_mu ~ 0 (a muon-like track at the vertex); signal is low. Usable RECO
-   cut: `--vtxmu-cut`. On top of elconf>9, `vtxmu<-3.7` cuts numuCC 2.24->1.65
-   and lifts purity **0.87 -> 0.90** (LANTERN benchmark) at eff 0.42->0.39
-   (`plots_selected_elconf9_vtxmu/`).
-1b. **pi0 / mis-identified gamma** (a pi0 photon reco'd as the electron, its
-   partner photon still present). `n_photons` = # reco photons (LArFormerPID==22,
-   >20 MeV) attached to the nu vertex. Cut `--nphoton-max` (e.g. 0). At elconf>9,
-   `nphoton<=0` removes NC 1.57->1.05 (NC IS pi0, sits at n_photons=1) but leaves
-   numuCC 2.24 UNCHANGED (the numuCC residual is NOT pi0 -> use the vertex-muon
-   veto instead) at ~9% signal cost (signal brems photons). Photon-count and
-   vertex-muon vetoes are COMPLEMENTARY (NC-pi0 vs numuCC).
-2. **secondary-interaction chain** (n travels, makes a secondary interaction
-   relabeled "true", pi->mu->e far from the nu vertex). No reco proxy yet;
-   DIAGNOSED via `vtx_dist_true` = reco-vtx to SCE-corrected true-vtx distance
-   (already in the ntuple as `vtxDistToTrue`, MC only). Non-nueCC bkg has a
-   clear long tail: **>5cm = 29% of bkg vs 6% of signal** (extends to ~400cm).
-   Worth finding a reco handle (displaced-vertex / vertex-activity tag).
+To use a BDT on the electron candidate itself you must either re-score it
+analysis-side (all 22 cosmic-BDT features are ntuple branches and are stored in
+the table) or train a dedicated e-vs-gamma model. Which is worth doing is
+decided from `bg_composition.png`, not assumed.
 
-  elconf = showerElScore - 0.5*(showerPiScore + showerPhScore)
+> `showerNoVtxScore` in the canonical cew6 ntuples is the **cew6** vertex-free
+> model as of commit `0c3acef` (verified: 69% of photon showers differ from the
+> archived `*_novtxep8.root`). No analysis-side re-scoring needed.
+
+## Truth categories (`bg_cat`)
+
+`nue_cc_analysis.py` tags what the reco'd electron candidate **actually is**:
+
+`nu e (primary)` = the neutrino's primary electron (SIGNAL) · `nu e (fragment)`
+= an EM daughter of it (shower split) · `nu e (secondary)` = Michel / delta ray
+· `nu photon` = pi0 or other gamma mis-ID · `nu muon` / `nu pion` / `nu proton`
+· `nu other` · `cosmic` · `unresolved`.
+
+The cosmic test runs FIRST and is `showerTrueTID <= 0 | unlabeledPurity >= 0.5`.
+It deliberately does **not** copy `single_photon/photon_bdt_study.py`'s
+`showerTruePID <= 0`, which has two bugs:
+
+- `<= 0` swallows every **negative PDG**. On cew6 electron candidates that
+  mislabels 294 genuinely nu-matched showers as cosmic (257 positrons, 31 pi-,
+  6 mu+) -- and not one of them has `unlabeledPurity >= 0.5`, i.e. none is
+  actually cosmic-contaminated.
+- `== 0` still mislabels the ~2.5% of showers with `truePID==0` but `TID>0`:
+  neutrino-origin particles mcreco simply did not save.
+
+In MCC9 overlay the cosmics are real off-beam DATA carrying no G4 labels, so
+`origin==1 <=> trackid>0` exactly -- `TID<=0` *is* the cosmic tag, and
+`showerTrueUnlabeledPurity` is the cosmic-contamination fraction of the shower.
+This is also why label completion matters: without it the genuine-neutrino
+shower periphery is unlabeled too, inflating `unl` and blurring the boundary.
+
+## Analysis scripts
+
+`nue_cc_common.py` is the single source of truth for sample paths, the EXT
+scale and hygiene, the component/colour vocabulary, the derived-variable
+formulas, the cut definitions, and one canonical `base()` mask. Every script
+imports it; nothing re-declares those any more. (They used to, and had drifted:
+`nue_cc_larpid_scores` applied a two-sided flash band where `nue_cc_overlay`
+applied a one-sided cut, on the same tables.)
+
+1. **`nue_cc_analysis.py`** `--ntuple X.root --out tables/tag.npz [--data]`
+   One gen2ntuple -> a per-event table. MC weight
+   `w = xsecWeight * (--pot / sum potTree.totGoodPOT)`, `--pot` default 4.4e19.
+   Stores the selection, the observable, LArPID + LArFormer scores, the cew6
+   handles (objectness, cosmic/novtx scores, slice flash-chi2, vertex quality,
+   the raw cosmic-BDT features for re-scoring), the photon-veto counts, `row`
+   (needed for EXT hygiene) and, for MC, `bg_cat`.
+   Degrades gracefully on old-chain ntuples -- it names the missing branches.
+
+2. **`nue_cc_scan.py`** -- *the cut-definition tool*. For every candidate
+   variable at the current selection: `var_<key>.png` (stacked prediction +
+   data, and efficiency/purity vs threshold with the best working point marked)
+   and `cat_<key>.png` (the same variable stacked by **truth category**, which
+   is what says whether a variable separates the background you actually have),
+   plus `bg_composition.png` and `scan_summary.md`. Replaces the hand-edited
+   `run_nuecc_cutflow.sh` loop.
+
+3. **`nue_cc_overlay.py`** -- the headline plots: `flashchi2.png` (drawn with
+   NO cuts applied, since it is what the flash cut is chosen from),
+   `reco_ele_energy.png`, the `eff_vs_*.png` turn-ons, and
+   `bg_truth_category.png`. Prints purity + efficiency.
+
+Supporting studies (all now on the shared module):
+`nue_cc_larpid_scores.py` (per-LArPID-variable stack + cut scan),
+`nue_cc_ext_norm.py` (cosmic-sideband EXT-scale fit -- run this FIRST on any new
+stack to confirm the normalization before trusting any physics),
+`add_observed_pe.py` + `nue_cc_observed_pe.py` (in-time flash observed PE, not
+in the ntuple; scanned from the cascade `keypoint2_streams`),
+`nue_cc_bg_vars.py` (vertex-muon and reco-to-true-vertex diagnostics).
+
+## Known background topologies (July, to be re-measured on cew6)
+
+At `elconf>9` the background split by truth was electron 43% / photon 41% /
+muon 16%:
+
+1. **muon at the e-vertex** -- a true e-shower from a decay mu/pi whose decay
+   muon merged into a track. `vtx_mu_score` targets it; `vtxmu<-3.7` on top of
+   `elconf>9` lifted purity 0.87 -> 0.90 at eff 0.42 -> 0.39.
+2. **pi0 / mis-identified gamma** -- a pi0 photon reco'd as the electron. The
+   photon-count veto and the vertex-muon veto are COMPLEMENTARY (NC-pi0 vs
+   numuCC): at `elconf>9`, `nphoton<=0` cut NC 1.57 -> 1.05 but left numuCC
+   2.24 unchanged.
+3. **secondary-interaction chain** (n -> pi -> mu -> e far from the nu vertex).
+   No reco proxy yet; diagnosed via `vtx_dist_true` (MC only): >5 cm is 29% of
+   background vs 6% of signal.
+
+Also open: a persistent **data/pred ~ 0.72-0.74** in the signal-dominated
+selection -- intrinsic-nue over-prediction, or a data/MC electron-ID efficiency
+difference. Not a selection artifact.
+
+  elconf      = showerElScore - 0.5*(showerPiScore + showerPhScore)
   primariness = showerPrimaryScore - max(showerFromNeutralScore, showerFromChargedScore)
-  mu = showerMuScore
-(all for the leading primary e-shower.)
-
-
+  mu          = showerMuScore
+(all for the leading primary e-shower; LArPID scores are log-softmax, and the
+LArFormer probabilities are stored as log(prob) so the same formulas apply.)

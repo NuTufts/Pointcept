@@ -21,9 +21,19 @@ import os
 
 import numpy as np
 
-FULL_EXT_SCALE = 0.17682554549
-COLORS = ["#d62728", "#1f77b4", "#2ca02c", "#e5e5e5"]
-LABELS = ["nu_e CC", "nu_mu CC", "NC", "EXT cosmic"]
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import nue_cc_common as C  # noqa: E402
+
+# EXT per-event weight. The cew6 EXT ntuple is a 200,000-event SUBSET of the
+# full sample, so the weight is 0.5909 -- NOT the full-sample spill ratio
+# 0.17682554549 this script used when it ran on the old 668k EXT file. Using
+# the old value here undercounts EXT by 3.3x.
+FULL_EXT_SCALE = C.ext_scale()
+COLORS = C.COLORS
+LABELS = C.COMPONENTS
+COMPONENTS = C.COMPONENTS
 
 
 def main():
