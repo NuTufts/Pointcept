@@ -255,7 +255,7 @@ recal3 (gamma a=0.01553, b=-12.80) is BAKED INTO showerRecoE.
 Normalizations, EXT/MC hygiene halves: identical to v2_s1ep2p8 (same
 underlying events, same row conventions).
 
-### 3c. RUN-1 TABLE-GAMMA productions (2026-09-13/16) — the "table-gamma" campaign, ALL THREE DONE
+### 3c. RUN-1 TABLE-GAMMA productions (2026-09-13/18) — the "table-gamma" campaign: data, EXT, BNB nu overlay, intrinsic-nue overlay ALL DONE
 The complete run-1 data/MC/EXT set for the pi0 and single-photon data-vs-MC
 plots, all processed AT TUFTS (A100 pool, driver 575.57.08, one conformance
 family; Polaris was measured and ruled out, `docs/reference/Polaris_Conformance_2026-09-16.md`).
@@ -270,6 +270,7 @@ showerNoVtxScore, vertex-less prongs). `$L=/cluster/tufts/wongjiradlab/larbys/da
 | run-1 EXT half (C1 extbnb stride-2 filenos 1-6900 = 25% of full C1) | `$L/run1_C1_extbnb_half/dlgen2_larformer_ntuple_extbnb_run1_half.root` | 104,516 | 5,772,737 spills (one corrupt merged_sp skipped); gamma_eff 2.861, window 3.2-5.4 |
 | run-1 BNB nu overlay half (mcc9_v28 TRAINPOOL = unbiased 50% by md5 parity) | `$L/run1_bnboverlay_half/dlgen2_larformer_ntuple_bnbovl_run1_half.root` | 182,069 | potTree 4,673 rows, totPOT 2.2903e20; gamma_eff 4.502 (mc,1 = 0.8576 from the pilot), window 3.6-5.2; run-1 xsec pickle (916 events carry xsecWeight 0, all trueNuMode 1; 2 events -1) |
 | bnb5e19 beam-on data (run 1, mcc9_v28 wctagger, full sample) | `$L/bnb5e19_run1_table/dlgen2_larformer_ntuple_bnb5e19_run1_table.root` | 176,302 | POT 4.4e19, 94,414,115 spills; gamma_eff 2.861 (data,1 = 0.5449), window 2.8-5.0; xsecWeight -1 (data) |
+| run-1 INTRINSIC-NUE overlay half (mcc9_v28 nueintrinsics RESERVED half = unbiased 50% by md5 parity; NOT the training half) | `$L/run1_nueintrinsics_half/dlgen2_larformer_ntuple_nue_run1_half.root` | 82,624 | potTree 2,006 rows, totPOT 4.9065e22; gamma_eff 4.502 (mc,1), window 3.6-5.2; run-1 intrinsic-nue xsec pickle (767 events weight 0, 3 events -1) |
 **Normalization for data-vs-MC (data as the reference):**
 EXT-half -> data: scale by spills 94,414,115 / 5,772,737 = 16.355 (beam-off
 cosmic normalization; hygiene halves per section 7 still apply to EXT rows);
@@ -285,6 +286,25 @@ POT/spill) and gives a cosmic-only prediction 10x the beam trigger count; the
 pi0 suite uses 10,375,708 / 5,772,737 = 1.7974 for the EXT half until the
 official gate counts are confirmed. Even at 1.7974 the pure-cosmic flash-chi2
 sideband prefers ~1.2-1.5, so the EXT-half spill count itself may be ~25-30% low.
+
+**Intrinsic-nue half (2026-09-17/18), for the nue CC study:** -> data: scale by
+POT 4.4e19 / 4.9065e22 = 8.968e-4 (times xsecWeight). Content: 82,624 events,
+100% CC, 97.4% nue / 2.6% anti-nue, true vertex in the WC fiducial volume for
+92.5%; vertex found in 98.3%, within 5 cm of truth for 86.8% of those.
+Composition: 2,014 RESERVED files of `training_data_ledger/
+mcc9_v28_run1_nueintrinsics_RESERVED.txt` minus 8 deterministic converter
+crashers (`uboone_official/tranche_nue_run1_half.spec.dropped`), converted in
+MC mode with truth sidecars + label completion into a fresh root (the older
+`overlay_train/mcc9_v28_run1_nueintrinsics` TRAINPOOL conversion is TRAINING
+data and has no sidecars: never use it for analysis). Launcher
+`larformer_reco/slurm/launch_run1nue_half_chain.sh` (TAG nue_run1_half, LArPID
+default weights). Verified: 16/16 inference shards DONE on driver 575.57.08,
+82,623 nu-stream + 4 flash-match cascade files, nu_reco 81,196 reco / 0 errors,
+export 0 tracebacks / 0 missing truth, hadd == shard sum. It overlaps the
+BNB nu overlay's own intrinsic-nue content (that sample has 0.7% nue): when
+stacking, remove true nue CC from the BNB overlay or do not add this sample
+on top of it without that veto. Intermediates in `$L/run1_nueintrinsics_half/`;
+kp2 lists `outputlists/keypoint2_out_nue_run1_half_{nu,fm}.txt` (do NOT regenerate).
 
 **bnb5e19_run1_table provenance (2026-09-15/16):** launcher
 `larformer_reco/slurm/launch_bnb5e19_table_chain.sh`; event membership + order =
