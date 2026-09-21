@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH --job-name=ovl1_half2_launch
 #SBATCH --partition=batch,wongjiradlab --time=24:00:00 --mem=4G --cpus-per-task=1
-#SBATCH --output=logs/export/bnbovl_run1_half22_launch.%j.log --error=logs/export/bnbovl_run1_half22_launch.%j.log
+#SBATCH --output=logs/export/bnbovl_run1_half2_launch.%j.log --error=logs/export/bnbovl_run1_half2_launch.%j.log
 # Launch the reco chain over the run-1 BNB nu overlay SECOND half (MC): the
 # 4,798-file RESERVED list of mcc9_v28_run1_bnboverlay (unbiased 50% by md5
 # parity, disjoint from run1_bnboverlay_half2 = TRAINPOOL) converted in MC mode
