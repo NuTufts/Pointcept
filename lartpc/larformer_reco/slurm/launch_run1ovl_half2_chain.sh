@@ -5,7 +5,7 @@
 # Launch the reco chain over the run-1 BNB nu overlay SECOND half (MC): the
 # 4,798-file RESERVED list of mcc9_v28_run1_bnboverlay (unbiased 50% by md5
 # parity, disjoint from run1_bnboverlay_half2 = TRAINPOOL) converted in MC mode
-# with truth sidecars into run1_bnboverlay_half22/ (tranche_ovl_run1_half2.spec).
+# with truth sidecars into run1_bnboverlay_half2/ (tranche_ovl_run1_half2.spec).
 # Same knobs as launch_run1ovl_half_chain.sh: TRUTH_DIR, SAMPLE_KIND=mc,
 # FLASH_WINDOW=3.6,5.2, GAMMA_SPEC=table ((mc,1) = 0.8576), run-1 BNB xsec
 # pickle, LARPID_SAMPLE_TAG without 'run3' -> LArPID default weights.
