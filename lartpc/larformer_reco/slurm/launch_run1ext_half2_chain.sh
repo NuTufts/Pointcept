@@ -21,7 +21,7 @@ NMARK=$(ls $SRC/markers/*.ok | wc -l)
 echo ">>> markers: $NMARK (expect ~$MAXFILENO minus duds/dropped)"
 [ "$NMARK" -ge $((MAXFILENO - 120)) ] || { echo "ERROR: conversion incomplete ($NMARK markers)"; exit 2; }
 if squeue -u twongj01 -h -o '%j' | grep -q "ovl_train_conv\|ext1_seqB"; then echo "ERROR: conversion jobs still running"; exit 2; fi
-NPART=$(bash lartpc/data_prep/uboone_official/retry_incomplete_tranche.sh lartpc/data_prep/uboone_official/tranche_ext_run1_C.spec --dry-run | grep -cE "^ +[0-9]+ (partial|dudpartial) " || true)
+NPART=$(bash lartpc/data_prep/uboone_official/retry_incomplete_tranche.sh lartpc/data_prep/uboone_official/tranche_ext_run1_C.spec --dry-run | grep -cE "^ +[0-9]+ (partial|dudpartial) nh5=[1-9]" || true)
 if [ "$NPART" -gt 0 ] && [ "${ALLOW_INCOMPLETE:-0}" != 1 ]; then echo "ERROR: $NPART partially converted filenos; run retry_incomplete_tranche.sh on tranche_ext_run1_C.spec (login node)"; exit 2; fi
 # one submission only: a requeued/relaunched copy of this job must not submit a
 # second chain into the same DATADIR (two chains raced on 2026-09-12)

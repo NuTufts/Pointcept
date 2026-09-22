@@ -36,7 +36,9 @@ scan () {   # prints "fileno kind" for every unmarked fileno of the spec (kind: 
         if [ "$nh5" -gt 0 ] || [ -n "$side" ]; then echo "$i dudpartial nh5=$nh5 sidecar=${side:-0}"; else echo "$i dud"; fi
         continue
       fi
-      if [ "$nh5" -gt 0 ] || [ -n "$side" ]; then echo "$i partial nh5=$nh5 sidecar=${side:-0}"; else echo "$i missing"; fi
+      if [ "$nh5" -gt 0 ]; then echo "$i partial nh5=$nh5 sidecar=${side:-0}"
+      elif [ -n "$side" ]; then echo "$i sidecaronly"      # converter produced no events; the orphan sidecar is harmless but is cleaned
+      else echo "$i missing"; fi
     done
   done < "$SPEC"
 }
@@ -57,6 +59,8 @@ for round in $(seq 1 "$ROUNDS"); do
   mapfile -t ROWS < <(scan)
   NDUD=$(printf '%s\n' "${ROWS[@]}" | grep -c ' dud$' || true)
   mapfile -t DUDP < <(printf '%s\n' "${ROWS[@]}" | grep ' dudpartial ' || true)
+  mapfile -t SONLY < <(printf '%s\n' "${ROWS[@]}" | grep ' sidecaronly$' || true)
+  if [ ${#SONLY[@]} -gt 0 ] && [ $DRY -eq 0 ]; then printf '%s\n' "${SONLY[@]}" | clean; echo ">>> removed ${#SONLY[@]} orphan sidecar(s) of zero-event filenos"; fi
   mapfile -t TODO < <(printf '%s\n' "${ROWS[@]}" | grep -E ' (partial|missing)' || true)
   echo ">>> round $round: unmarked filenos: ${#ROWS[@]} (duds $NDUD, duds with partial output ${#DUDP[@]}, to retry ${#TODO[@]})"
   if [ ${#DUDP[@]} -gt 0 ]; then
@@ -78,7 +82,7 @@ for round in $(seq 1 "$ROUNDS"); do
   echo ">>> retry spec: $RETRY ($(grep -c . "$RETRY") batches)"
   bash $U/run_tier2_tranche.sh "$RETRY"
 done
-mapfile -t LEFT < <(scan | grep -vE ' dud$' || true)
+mapfile -t LEFT < <(scan | grep -vE ' (dud|sidecaronly)$' || true)
 echo ">>> still incomplete after retries: ${#LEFT[@]}"; printf '    %s\n' "${LEFT[@]}"
 if [ ${#LEFT[@]} -gt 0 ] && [ $DRY -eq 0 ]; then
   # deterministic crashers: DROP the whole file (partial h5s + sidecar) so the
