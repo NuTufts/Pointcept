@@ -255,7 +255,7 @@ recal3 (gamma a=0.01553, b=-12.80) is BAKED INTO showerRecoE.
 Normalizations, EXT/MC hygiene halves: identical to v2_s1ep2p8 (same
 underlying events, same row conventions).
 
-### 3c. RUN-1 TABLE-GAMMA productions (2026-09-13/21) — the "table-gamma" campaign: data, EXT (2 halves), BNB nu overlay, intrinsic-nue overlay (analysis + training halves) ALL DONE
+### 3c. RUN-1 TABLE-GAMMA productions (2026-09-13/23) — the "table-gamma" campaign: data, EXT (2 halves), BNB nu overlay (2 halves), intrinsic-nue overlay (analysis + training halves) ALL DONE
 The complete run-1 data/MC/EXT set for the pi0 and single-photon data-vs-MC
 plots, all processed AT TUFTS (A100 pool, driver 575.57.08, one conformance
 family; Polaris was measured and ruled out, `docs/reference/Polaris_Conformance_2026-09-16.md`).
@@ -270,6 +270,7 @@ showerNoVtxScore, vertex-less prongs). `$L=/cluster/tufts/wongjiradlab/larbys/da
 | run-1 EXT half (C1 extbnb stride-2 filenos 1-6900 = 25% of full C1) | `$L/run1_C1_extbnb_half/dlgen2_larformer_ntuple_extbnb_run1_half.root` | 104,516 | 5,772,737 spills (one corrupt merged_sp skipped); gamma_eff 2.861, window 3.2-5.4 |
 | run-1 BNB nu overlay half (mcc9_v28 TRAINPOOL = unbiased 50% by md5 parity) | `$L/run1_bnboverlay_half/dlgen2_larformer_ntuple_bnbovl_run1_half.root` | 182,069 | potTree 4,673 rows, totPOT 2.2903e20; gamma_eff 4.502 (mc,1 = 0.8576 from the pilot), window 3.6-5.2; run-1 xsec pickle (916 events carry xsecWeight 0, all trueNuMode 1; 2 events -1) |
 | bnb5e19 beam-on data (run 1, mcc9_v28 wctagger, full sample) | `$L/bnb5e19_run1_table/dlgen2_larformer_ntuple_bnb5e19_run1_table.root` | 176,302 | POT 4.4e19, 94,414,115 spills; gamma_eff 2.861 (data,1 = 0.5449), window 2.8-5.0; xsecWeight -1 (data) |
+| run-1 BNB nu overlay SECOND half (mcc9_v28 bnboverlay RESERVED list = the other unbiased 50%; disjoint from the first half) | `$L/run1_bnboverlay_half2/dlgen2_larformer_ntuple_bnbovl_run1_half2.root` | 188,560 | potTree 4,733 rows, totPOT 2.3630e20 (-> data 0.18620 x xsecWeight; both halves 4.6533e20 -> 0.094557); gamma_eff 4.502, window 3.6-5.2; run-1 BNB xsec pickle (925 events weight 0, all trueNuMode 1; 6 events -1) |
 | run-1 INTRINSIC-NUE overlay half (mcc9_v28 nueintrinsics RESERVED half = unbiased 50% by md5 parity; NOT the training half) | `$L/run1_nueintrinsics_half/dlgen2_larformer_ntuple_nue_run1_half.root` | 82,624 | potTree 2,006 rows, totPOT 4.9065e22; gamma_eff 4.502 (mc,1), window 3.6-5.2; run-1 intrinsic-nue xsec pickle (767 events weight 0, 3 events -1) |
 | run-1 EXT SECOND half (C1 extbnb stride-2 filenos 6901-13801 = another 25% of full C1; disjoint from the first half) | `$L/run1_C1_extbnb_half2/dlgen2_larformer_ntuple_extbnb_run1_half2.root` | 114,638 | 5,772,737 spills (6,900 files; one deterministic crasher dropped); gamma_eff 2.861, window 3.2-5.4. Both EXT halves together = 13,800/27,602 of C1 = 11,545,474 spills |
 | run-1 INTRINSIC-NUE overlay TRAINING half (mcc9_v28 nueintrinsics TRAINPOOL; for training the nue-CC BDTs ONLY -- never as the analysis sample) | `$L/run1_nueintrinsics_trainhalf/dlgen2_larformer_ntuple_nue_run1_trainhalf.root` | 81,470 | potTree 1,975 rows, totPOT 4.8425e22 (-> data 9.086e-4 x xsecWeight); gamma_eff 4.502, window 3.6-5.2; nue run-1 xsec pickle (826 events weight 0, 2 events -1) |
@@ -328,6 +329,20 @@ LArPID default). Verified: 16/16 shards, 0 tracebacks, hadd 81,470 == shard sum,
 100% CC, 97.1% nue, foundVertex 98.3%, within 5 cm 86.7%. These events were in
 the LArFormer training pool, so reco performance here is optimistic; that is
 acceptable for BDT training as long as the RESERVED half is the evaluation sample.
+
+**BNB overlay second half (2026-09-21/23):** the RESERVED list (4,798 files) via
+`uboone_official/tranche_ovl_run1_half2.spec` into `run1_bnboverlay_half2/`
+(fresh root, MC mode + sidecars + label completion); 4,733 files complete, 62
+deterministic converter crashers dropped whole (`tranche_ovl_run1_half2.spec.dropped`)
+and 3 zero-event files; launcher `larformer_reco/slurm/launch_run1ovl_half2_chain.sh`
+(TAG bnbovl_run1_half2, LArPID default). Verified: 32/32 inference shards on
+driver 575.57.08, 0 tracebacks, 188,560 nu-stream + 17 flash-match cascade files,
+nu_reco 146,467 reco / 0 errors, export 0 missing truth, hadd == shard sum,
+potTree == files. Content matches the first half to the per-mille: numu 99.35 vs
+99.33%, CC 72.2 vs 72.0%, foundVertex 77.7 vs 77.7%, 1.88 tracks / 1.89 showers
+per event in both -- so the two halves can be used as tune/predict partners or
+hadd'ed (365k events, 4.6533e20 POT). Intermediates in `$L/run1_bnboverlay_half2/`;
+kp2 lists `outputlists/keypoint2_out_bnbovl_run1_half2_{nu,fm}.txt` (do NOT regenerate).
 
 **bnb5e19_run1_table provenance (2026-09-15/16):** launcher
 `larformer_reco/slurm/launch_bnb5e19_table_chain.sh`; event membership + order =
