@@ -11,7 +11,7 @@ Variables (per signal event; "the photon" = the one detectable photon):
   gConvX/Y/Z      the photon's conversion point (trueSimPartEDep*)
   gConvDwall      distance of the conversion point to the TPC box wall
   ndTrueE, ndEvis  true / visible energy of every NON-detectable photon
-                  (E_vis < 20 MeV) in the event -- one entry per photon
+                  (deposited < 20 MeV) in the event -- one entry per photon
   nNonDetG        number of non-detectable photons per event
   keNonG          summed true KE of non-photon PRIMARY particles
                   (trueSimPartProcess==0; neutrons and nuclei excluded;
@@ -54,11 +54,11 @@ def main():
                     help="KE threshold [MeV] for the primary p / pi+- / mu counts")
     ap.add_argument("--ke-include-neutrons", action="store_true")
     args = ap.parse_args()
+    SPS.set_truth_scale(getattr(args, 'truth_scale', 'deposited'))
     os.makedirs(args.plots, exist_ok=True)
 
-    a, pot = SPS.load(args.mc_ntuple, True, args.novtx)
-    t = uproot.open(args.mc_ntuple)["EventTree"]
-    x = t.arrays(BR_T)
+    a, pot = SPS.load(args.mc_ntuple, True, args.novtx, extra=BR_T)
+    x = a                       # load() concatenates comma-separated files
     w0 = ak.to_numpy(a["xsecWeight"]).astype(np.float64)
     w = np.where(w0 > 0, w0, 0.0) * (args.pot / pot)
     if args.mc_odd_only:
@@ -68,7 +68,7 @@ def main():
     R = SPS.reco_tables(a, args)
     R["novtx"] = args.novtx
     names, S, *_ = SPS.build_steps(R, args.shower_bdt_min, args.flashchi2_cut,
-                                   args.bdt_after_multiplicity)
+                                   args.bdt_after_multiplicity, args.flashpe_ratio_max)
     cat = T["cat"]
     sig = T["sig_incl"]
     sel = S[-1] & sig                     # SIGNAL events passing the selection
@@ -126,13 +126,13 @@ def main():
         ("vtxY", "true vertex y [cm]", np.linspace(-250, 250, 51)),
         ("vtxZ", "true vertex z [cm]", np.linspace(-200, 1250, 59)),
         ("gTrueE", "detectable photon true E [MeV]", np.linspace(0, 1000, 41)),
-        ("gEvis", "detectable photon E_vis [MeV] (A_GAMMA x Q)", np.linspace(0, 1500, 51)),
+        ("gEvis", "detectable photon deposited E [MeV] (a_gamma x Q)", np.linspace(0, 1500, 51)),
         ("gCosBeam", r"detectable photon true $\cos\theta_{beam}$", np.linspace(-1, 1, 41)),
         ("gConvX", "photon conversion x [cm]", np.linspace(-20, 276, 38)),
         ("gConvY", "photon conversion y [cm]", np.linspace(-130, 130, 27)),
         ("gConvZ", "photon conversion z [cm]", np.linspace(-20, 1060, 37)),
         ("gConvDwall", "photon conversion point dwall [cm]", np.linspace(0, 130, 27)),
-        ("nNonDetG", "n non-detectable photons (E_vis < 20 MeV)", np.arange(-0.5, 8.5, 1)),
+        ("nNonDetG", "n non-detectable photons (deposited < 20 MeV)", np.arange(-0.5, 8.5, 1)),
         ("keNonG", "sum KE of non-photon primaries [MeV]", np.linspace(0, 1500, 51)),
         ("nProtons", f"n primary protons (KE >= {args.ke_min:.0f} MeV)", np.arange(-0.5, 8.5, 1)),
         ("nChargedPions", f"n primary charged pions (KE >= {args.ke_min:.0f} MeV)", np.arange(-0.5, 5.5, 1)),
@@ -199,7 +199,7 @@ def main():
     pw, pc, ps = w[P["evt"]], cat[P["evt"]], sel[P["evt"]]
     draw("ndTrueE", "non-detectable photon true E [MeV]", np.linspace(0, 200, 41),
          P["ndTrueE"], pw, pc, ps)
-    draw("ndEvis", "non-detectable photon E_vis [MeV]", np.linspace(0, 20, 21),
+    draw("ndEvis", "non-detectable photon deposited E [MeV]", np.linspace(0, 20, 21),
          P["ndEvis"], pw, pc, ps)
     txt = "\n".join(lines)
     print(txt)

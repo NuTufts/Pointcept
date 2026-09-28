@@ -32,6 +32,7 @@ import uproot
 import awkward as ak
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import single_photon_selection as SPS  # noqa: E402
 from single_photon_selection import (truth_tables, recal_E, BR_MC,  # noqa: E402
                                      RECO_G_MIN, binned_ratio)
 
@@ -80,8 +81,10 @@ def main():
     ap.add_argument("--pot", type=float, default=4.4e19)
     ap.add_argument("--recal-gamma-a", type=float, default=0.01553)
     ap.add_argument("--recal-gamma-b", type=float, default=-12.80)
+    ap.add_argument("--truth-scale", default="deposited", choices=["deposited", "legacy"])
     ap.add_argument("--plots", required=True)
     args = ap.parse_args()
+    SPS.set_truth_scale(getattr(args, 'truth_scale', 'deposited'))
     os.makedirs(args.plots, exist_ok=True)
 
     print(">>> loading MC ...", flush=True)

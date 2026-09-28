@@ -4,8 +4,10 @@ on the LArFormer gen2ntuple ROOT files (v2_s1ep2p8 chain, ntuple-only).
 TRUTH signal (MC overlay; per README):
   true vertex in the WireCell FV (trueVtxInWCFV==1) and, over ALL trueSimPart
   entries (primary + secondary; overlay => all nu-induced, no cosmic truth):
-    visible photon   : |PDG|==22 and E_vis = A_GAMMA x trueSimPartPixelSumQ >= 20 MeV
-    visible electron : |PDG|==11 and E_vis >= 20 MeV
+    visible photon   : |PDG|==22 and DEPOSITED E = 0.0110 x trueSimPartPixelSumQ >= 20 MeV
+    visible electron : |PDG|==11 and deposited E = 0.0101 x Q >= 20 MeV
+    (truth_calib.py, measured 2026-09-27; --truth-scale legacy restores the
+    old 0.0253 convention, under which "20 MeV" meant ~9 MeV deposited)
     visible muon     : |PDG|==13 and KE = E - m_mu >= 100 MeV (Cherenkov thr.)
     charged pions / protons / other hadrons: NEVER visible (MiniBooNE-blind)
   Visible mu / X particles must also deposit charge in the TPC (PixelSumQ>0)
@@ -67,6 +69,16 @@ Weights: MC xsecWeight scaled to --pot (sum potTree totGoodPOT); EXT rows <
 --ext-row-min (per-shower BDT training half) dropped, remaining x --ext-scale;
 beam data (--data-ntuple, 4.4e19 POT) unit weights, overlaid as points.
 
+RUN-1 TABLE-GAMMA SAMPLES (2026-09-23, the default in the slurm wrappers):
+run-1 BNB-nu overlay halves + run-1 EXT halves + bnb5e19 run-1 data, all with
+the calibrated flash-gamma table (mc,1 4.5024 / data,1 2.8607) so the flash
+chi2 is data/MC comparable. Each --*-ntuple accepts a COMMA-SEPARATED list
+(halves are concatenated, POT summed, duplicate (run,subrun,event) dropped).
+The BDT-hygiene halves do NOT apply: both cew6 BDTs were trained on RUN-3
+overlay/EXT, so run-1 MC and EXT are entirely held out -- use
+`--ext-row-min 0` and NOT `--mc-odd-only`. EXT normalization is the spill
+ratio (see the wrappers), not the run-3 1.1818.
+
 Outputs (--plots): stacked candidate-photon energy per step (+ data points),
 N-1 flash-chi2, efficiency vs true photon energy (E_vis and true E) per step,
 purity vs reco photon energy per step, BDT / chi2 threshold scans,
@@ -77,13 +89,20 @@ cutflow.txt; --out-dir gets row-aligned selection tables ({mc,ext,data}_table.np
 """
 import argparse
 import os
+import sys
 
 import numpy as np
 import uproot
 import awkward as ak
 
-A_GAMMA = 0.0253017            # MeV/ADC truth visible-energy convention
-EVIS_MIN = 20.0                # visible shower threshold [MeV]
+# truth deposited-energy scale (shared module; see its docstring for the
+# 2026-09-27 measurement and the legacy 0.0253 history). Both may be
+# overridden at runtime with --truth-scale.
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                                "..", "..")))
+from truth_calib import A_GAMMA_DEP, A_E_DEP, EVIS_MIN, em_constants   # noqa: E402
+A_GAMMA = A_GAMMA_DEP          # MeV/ADC photons: E_dep = A_GAMMA x trueSimPartPixelSumQ
+A_E = A_E_DEP                  # MeV/ADC electrons
 MU_KE_VIS = 100.0              # MiniBooNE-mimic muon visibility [MeV KE]
 X_KE_MESON = 30.0              # 1g0X strict: mu / charged mesons [MeV KE]
 X_KE_BARYON = 60.0             # 1g0X strict: protons / charged baryons
@@ -125,10 +144,19 @@ BR_NOVTX = ["showerVtxIdx", "showerStream", "showerNoVtxScore",
             "showerLArFormerMuScore", "showerLArFormerPiScore",
             "showerLArFormerPrScore", "showerNHits", "showerCharge",
             "showerChargeFrac"]
+BR_OPTIONAL = ["flashObsPE", "nuSlicePredPE"]   # read when present (run-1 table-gamma exporter)
 TPC_LO = np.array([0.0, -116.5, 0.0]); TPC_HI = np.array([256.35, 116.5, 1036.8])
 BR_MC = ["xsecWeight", "trueVtxInWCFV", "trueNuCCNC", "trueSimPartPDG",
          "trueSimPartE", "trueSimPartPixelSumQ", "trueSimPartProcess",
          "trueSimPartMID", "trueSimPartTID"]
+
+
+def set_truth_scale(scale):
+    """Select the truth EM energy constants (module globals used by truth_tables)."""
+    global A_GAMMA, A_E
+    A_GAMMA, A_E = em_constants(scale)
+    print(f">>> truth EM scale '{scale}': a_gamma {A_GAMMA:.4f}, a_e {A_E:.4f} MeV/ADC; "
+          f"visible = deposited >= {EVIS_MIN:.0f} MeV")
 
 
 def _mass_of(pdg):
@@ -145,10 +173,11 @@ def truth_tables(a):
     E = a["trueSimPartE"]
     ke = E - _mass_of(pdg)
     q = a["trueSimPartPixelSumQ"]
-    evis = A_GAMMA * np.maximum(q, 0.0)
+    evis = A_GAMMA * np.maximum(q, 0.0)          # photon deposited energy
+    evis_e = A_E * np.maximum(q, 0.0)            # electron deposited energy
     dep = q > 0                                  # deposits charge in the TPC
     vis_g = (apdg == 22) & (evis >= EVIS_MIN)
-    vis_e = (apdg == 11) & (evis >= EVIS_MIN)
+    vis_e = (apdg == 11) & (evis_e >= EVIS_MIN)
     vis_mu = (apdg == 13) & (ke >= MU_KE_VIS) & dep
     mu100_any = (apdg == 13) & (ke >= MU_KE_VIS)     # incl. muons outside the TPC
     is_meson = ak.zeros_like(pdg, dtype=bool)
@@ -301,14 +330,28 @@ def reco_tables(a, args):
         is_mu = is_mu & (a["trackStream"] == 0)
     n_mu = ak.to_numpy(ak.sum(is_mu, axis=1)).astype(np.int64)
     s1 = vtx_ok if not args.novtx else (n_g0 > 0)
+    # flash PE observed / predicted for the nu slice (NaN when the branches are
+    # absent, no flash, or no prediction) -- the --flashpe-ratio-max cut
+    pe_ratio = np.full(len(vtx_ok), np.nan)
+    if "flashObsPE" in ak.fields(a) and "nuSlicePredPE" in ak.fields(a):
+        obs = np.asarray(ak.to_numpy(a["flashObsPE"]), np.float64)
+        prd = np.asarray(ak.to_numpy(a["nuSlicePredPE"]), np.float64)
+        ok = (obs >= 0) & (prd > 0)
+        pe_ratio[ok] = obs[ok] / prd[ok]
     return dict(run=ak.to_numpy(a["run"]), subrun=ak.to_numpy(a["subrun"]),
-                event=ak.to_numpy(a["event"]), vtx_ok=vtx_ok, chi2=chi2,
+                event=ak.to_numpy(a["event"]), vtx_ok=vtx_ok, chi2=chi2, pe_ratio=pe_ratio,
                 n_g0=n_g0, n_e=n_e, n_mu=n_mu, s1=s1,
                 _is_g0=is_g0, _E=E, _score=score, _path=path_flag,
-                _dist=a["showerDistToVtx"])
+                _dist=a["showerDistToVtx"],
+                _other_g=(spid == 22) & ((a["showerStream"] == 0) if args.novtx else True))
 
 
-def build_steps(R, thr, chi2_cut, bdt_after=False):
+def step_index(names, key):
+    """Index of the step whose name contains `key` (e.g. 'flash chi2')."""
+    return next(i for i, n in enumerate(names) if key in n)
+
+
+def build_steps(R, thr, chi2_cut, bdt_after=False, pe_ratio_max=None):
     """Cumulative step masks + candidate-photon arrays for a BDT threshold.
     Returns (names, steps[nstep, n], E_cand, score_cand, n_g)."""
     is_g = R["_is_g0"] if bdt_after else (R["_is_g0"] & (R["_score"] >= thr))
@@ -324,6 +367,15 @@ def build_steps(R, thr, chi2_cut, bdt_after=False):
     E_cand, score_cand = pick(R["_E"]), pick(R["_score"], -9.0)
     path_cand = pick(R["_path"], 0.0)
     R["_cand_idx"] = idx                 # per-event leading-candidate index (diagnostics)
+    # SECOND-PHOTON tag: highest reco E among the OTHER nu-stream photon-labelled
+    # shower prongs (any BDT score, any vertex); NaN when there is none. The
+    # veto "other photon with E > e_min" is applied by the caller.
+    li = ak.local_index(R["_E"], axis=1)
+    other = R["_other_g"] & (li != ak.fill_none(ak.firsts(idx), -1))
+    oe = ak.max(ak.where(other, R["_E"], -1.0), axis=1)
+    oe = np.asarray(ak.to_numpy(ak.fill_none(oe, -1.0)), np.float64)
+    oe[oe < 0] = np.nan
+    R["other_gE_max"] = oe
     n = len(n_g)
     s1 = R["s1"]
     s2 = s1 & (n_g == 1)
@@ -339,22 +391,48 @@ def build_steps(R, thr, chi2_cut, bdt_after=False):
     s_last = s3 & np.isfinite(R["chi2"]) & (R["chi2"] < chi2_cut)
     names.append(f"S{len(steps)} flash chi2")
     steps.append(s_last)
+    # flash PE observed/predicted < max (2026-09-27): above ~3 the sample is
+    # almost pure EXT. Only when the ratio exists in the ntuple.
+    if pe_ratio_max is not None and pe_ratio_max > 0 and np.isfinite(R["pe_ratio"]).any():
+        s_pe = s_last & np.isfinite(R["pe_ratio"]) & (R["pe_ratio"] < pe_ratio_max)
+        names.append(f"S{len(steps)} flash PE ratio")
+        steps.append(s_pe)
     return names, np.stack(steps), E_cand, score_cand, n_g, path_cand
 
 
-def load(ntuple, is_mc, novtx=False):
-    fin = uproot.open(ntuple)
-    t = fin["EventTree"]
-    have = set(t.keys())
-    want = BR_RECO + (BR_MC if is_mc else []) + (BR_NOVTX if novtx else [])
-    missing = set(want) - have
-    if missing:
-        raise RuntimeError(f"{ntuple}: missing branches {sorted(missing)}")
-    a = t.arrays(want)
-    pot = None
-    if is_mc:
-        p = fin["potTree"].arrays(library="np")
-        pot = float(np.sum(p["totGoodPOT"])) or float(np.sum(p["totPOT"]))
+def load(ntuple, is_mc, novtx=False, extra=()):
+    """One ntuple, or several comma-separated (concatenated, POT summed, and
+    de-duplicated by (run,subrun,event) -- the two run-1 BNB-overlay halves
+    share one dlmerged file, 49 events)."""
+    paths = [x for x in str(ntuple).split(",") if x]
+    want = BR_RECO + (BR_MC if is_mc else []) + (BR_NOVTX if novtx else []) \
+        + [b for b in extra if b]
+    parts, pot = [], (0.0 if is_mc else None)
+    for pth in paths:
+        fin = uproot.open(pth)
+        t = fin["EventTree"]
+        have = set(t.keys())
+        missing = set(want) - have
+        if missing:
+            raise RuntimeError(f"{pth}: missing branches {sorted(missing)}")
+        opt = [b for b in BR_OPTIONAL if b in have]      # table-gamma flash branches
+        parts.append(t.arrays(sorted(set(want) | set(opt))))
+        if is_mc:
+            p = fin["potTree"].arrays(library="np")
+            pot += float(np.sum(p["totGoodPOT"])) or float(np.sum(p["totPOT"]))
+    a = parts[0] if len(parts) == 1 else ak.concatenate(parts)
+    if len(parts) > 1:
+        key = (ak.to_numpy(a["run"]).astype(np.int64) * np.int64(10 ** 10)
+               + ak.to_numpy(a["subrun"]).astype(np.int64) * np.int64(10 ** 5)
+               + ak.to_numpy(a["event"]).astype(np.int64))
+        _, first = np.unique(key, return_index=True)
+        if len(first) != len(key):
+            keep = np.zeros(len(key), bool); keep[np.sort(first)] = True
+            print(f">>> {len(paths)} files: dropped {int((~keep).sum())} duplicate "
+                  f"(run,subrun,event) rows -> {int(keep.sum())} events")
+            a = a[keep]
+        else:
+            print(f">>> {len(paths)} files concatenated: {len(key)} events (no duplicates)")
     return a, pot
 
 
@@ -400,11 +478,17 @@ def main():
     ap.add_argument("--mc-odd-only", action="store_true",
                     help="use only odd-event MC (w x2): required with the "
                          "vertex-free BDT, which trained on even events")
+    ap.add_argument("--truth-scale", default="deposited", choices=["deposited", "legacy"],
+                    help="truth EM visible-energy constants: 'deposited' (0.0110 g / "
+                         "0.0101 e MeV/ADC, measured) or 'legacy' (0.0253 for both)")
     ap.add_argument("--shower-bdt-min", type=float, default=0.192)
     ap.add_argument("--bdt-after-multiplicity", action="store_true",
                     help="count ALL photons > 20 MeV for the multiplicity cut "
                          "and apply the BDT to the single candidate afterwards "
                          "(the 2026-09-05 first-pass ordering)")
+    ap.add_argument("--flashpe-ratio-max", type=float, default=3.0,
+                    help="keep nu-slice flashObsPE/nuSlicePredPE below this (last "
+                         "step; <=0 disables; skipped when the ntuple lacks the branches)")
     ap.add_argument("--flashchi2-cut", type=float, default=316.2,
                     help="keep nu-vertex flash chi2 below this (default "
                          "10^2.5; the N-1 plot shows EXT rising above it)")
@@ -422,6 +506,7 @@ def main():
     os.makedirs(args.plots, exist_ok=True)
     if args.out_dir:
         os.makedirs(args.out_dir, exist_ok=True)
+    set_truth_scale(args.truth_scale)
 
     # ---- MC -----------------------------------------------------------------
     print(">>> loading MC ...", flush=True)
@@ -479,13 +564,16 @@ def main():
     for RR in (R, RX, RD):
         if RR is not None:
             RR["novtx"] = args.novtx
-    STEPS, S, E_cand, score_cand, n_g, path_cand = build_steps(R, thr, ccut, after)
+    prm = args.flashpe_ratio_max
+    STEPS, S, E_cand, score_cand, n_g, path_cand = build_steps(R, thr, ccut, after, prm)
     SX = EX = None
     if RX is not None:
-        _, SX, EX, _, _, PX = build_steps(RX, thr, ccut, after)
+        _, SX, EX, _, _, PX = build_steps(RX, thr, ccut, after, prm)
     SD = ED = None
     if RD is not None:
-        _, SD, ED, _, _, PD = build_steps(RD, thr, ccut, after)
+        _, SD, ED, _, _, PD = build_steps(RD, thr, ccut, after, prm)
+    k_chi2 = step_index(STEPS, "flash chi2")
+    k_pe = step_index(STEPS, "PE ratio") if any("PE ratio" in n for n in STEPS) else None
     nstep = len(STEPS)
     k_phot = 2                                   # first step with a candidate
 
@@ -499,8 +587,9 @@ def main():
     mode = ("BDT applied after the multiplicity cut" if after
             else "BDT defines the photon-candidate set")
     lines = [f"cutflow (POT-weighted to {args.pot:.2e}; shower BDT >= {thr} "
-             f"[{mode}], flash chi2 < {ccut:.0f}, mu KE > {args.mu_ke_min:.0f} "
-             f"[{args.muon_finder}])",
+             f"[{mode}], flash chi2 < {ccut:.0f}, "
+             + (f"flash PE obs/pred < {prm:g}, " if k_pe is not None else "")
+             + f"mu KE > {args.mu_ke_min:.0f} [{args.muon_finder}])",
              f"efficiency denominators (w): combined {DEN:.1f} | in-FV {DEN_FV:.1f} "
              f"| entering (out-of-FV) {DEN_EN:.1f} = no-mu {DEN_ENN:.1f} + CC-mu "
              f"{DEN_ENM:.1f} | strict 1g0X {DEN0:.1f}",
@@ -599,24 +688,43 @@ def main():
         return np.log10(np.clip(np.nan_to_num(RR["chi2"], nan=1e-3), 1e-3, None))
     cbins = np.linspace(0, 7, 57)
     fig, ax = plt.subplots(figsize=(7.0, 4.6))
-    stack_hist(ax, lchi(R), S[-2] & np.isfinite(R["chi2"]) & (R["chi2"] > 0),
+    kb = k_chi2 - 1
+    stack_hist(ax, lchi(R), S[kb] & np.isfinite(R["chi2"]) & (R["chi2"] > 0),
                lchi(RX) if RX else None,
-               (SX[-2] & np.isfinite(RX["chi2"]) & (RX["chi2"] > 0)) if RX else None,
+               (SX[kb] & np.isfinite(RX["chi2"]) & (RX["chi2"] > 0)) if RX else None,
                lchi(RD) if RD else None,
-               (SD[-2] & np.isfinite(RD["chi2"]) & (RD["chi2"] > 0)) if RD else None,
+               (SD[kb] & np.isfinite(RD["chi2"]) & (RD["chi2"] > 0)) if RD else None,
                cbins, r"$\log_{10}$ flash $\chi^2$ (nu-slice vertex)",
-               f"N-1: flash chi2 after {STEPS[-2]}, before the chi2 cut")
+               f"N-1: flash chi2 after {STEPS[kb]}, before the chi2 cut")
     ax.axvline(np.log10(ccut), color="k", ls="--", lw=1, label=f"cut {ccut:.0f}")
     ax.legend(fontsize=7)
     fig.tight_layout()
     fig.savefig(f"{args.plots}/flashchi2_nminus1.png", dpi=110)
     plt.close(fig)
 
+    # N-1 flash PE ratio (after the chi2 cut, before the ratio cut)
+    if k_pe is not None:
+        kb = k_pe - 1
+        rbins = np.linspace(0, 6, 61)
+        fig, ax = plt.subplots(figsize=(7.0, 4.6))
+        stack_hist(ax, R["pe_ratio"], S[kb] & np.isfinite(R["pe_ratio"]),
+                   RX["pe_ratio"] if RX else None,
+                   (SX[kb] & np.isfinite(RX["pe_ratio"])) if RX else None,
+                   RD["pe_ratio"] if RD else None,
+                   (SD[kb] & np.isfinite(RD["pe_ratio"])) if RD else None,
+                   rbins, "flash PE observed / predicted (nu slice)",
+                   f"N-1: flash PE ratio after {STEPS[kb]}, before the ratio cut")
+        ax.axvline(prm, color="k", ls="--", lw=1, label=f"cut {prm:g}")
+        ax.legend(fontsize=7)
+        fig.tight_layout()
+        fig.savefig(f"{args.plots}/flashperatio_nminus1.png", dpi=110)
+        plt.close(fig)
+
     # efficiency vs true photon energy (E_vis and true E), per step
     tedges = np.array([20, 40, 60, 80, 100, 150, 200, 300, 400, 600, 1000])
     tctr = 0.5 * (tedges[:-1] + tedges[1:])
     styles = ["", "o-", "s-", "^-", "d-", "*-", "v-"]
-    for xkey, xlab, stem in (("g_evis", "true photon E_vis [MeV] (A_GAMMA x Q)",
+    for xkey, xlab, stem in (("g_evis", "true photon deposited E [MeV] (a_gamma x Q)",
                               "eff_vs_true_evis"),
                              ("g_trueE", "true photon energy [MeV]",
                               "eff_vs_true_E")):
@@ -673,11 +781,11 @@ def main():
     def scan_bdt(thrs):
         eff, pur = [], []
         for t in thrs:
-            _, Sm, *_ = build_steps(R, t, ccut, after)
+            _, Sm, *_ = build_steps(R, t, ccut, after, prm)
             s = w[Sm[-1] & sig].sum(); b = w[Sm[-1] & ~sig].sum()
             e = 0.0
             if RX is not None:
-                _, Sx, *_ = build_steps(RX, t, ccut, after)
+                _, Sx, *_ = build_steps(RX, t, ccut, after, prm)
                 e = wx[Sx[-1]].sum()
             eff.append(s / DEN); pur.append(s / max(s + b + e, 1e-9))
         return np.array(eff), np.array(pur)
@@ -697,7 +805,7 @@ def main():
 
     lthr = np.linspace(1.5, 6.0, 46)
     eff, pur = [], []
-    base, basex = S[-2], (SX[-2] if SX is not None else None)
+    base, basex = S[k_chi2 - 1], (SX[k_chi2 - 1] if SX is not None else None)
     for lt in lthr:
         pm = base & np.isfinite(R["chi2"]) & (R["chi2"] < 10 ** lt)
         s = w[pm & sig].sum(); b = w[pm & ~sig].sum()
@@ -710,7 +818,7 @@ def main():
     ax.plot(lthr, eff * pur, "^-", ms=3, label="eff x purity")
     ax.axvline(np.log10(ccut), color="k", ls="--", lw=1, label="current")
     ax.set(xlabel=r"$\log_{10}$ flash $\chi^2$ cut (keep below)", ylim=(0, 1),
-           title=f"flash-chi2 scan ({STEPS[-2]} applied)")
+           title=f"flash-chi2 scan ({STEPS[k_chi2 - 1]} applied; PE-ratio cut not applied)")
     ax.legend(fontsize=8); ax.grid(alpha=0.3)
     fig.tight_layout(); fig.savefig(f"{args.plots}/scan_flashchi2.png", dpi=110)
     plt.close(fig)

@@ -7,7 +7,7 @@ MicroBooNE events that would be consistent with the MiniBooNE single-shower exce
 
 The signal definition considers the following:
 
- - We want to isolate events with exactly 1 visible photon in the final state. Visibility is determined by the true amount of visible energy in MeV calculated by   scaling the true "deduplicated charge". This charge -- which is actually the sum of the pixel values -- is found in the ntuples as the branch 'trueSimPartPixelSumQ'. To convert to energy we are using the convention: E_vis = A_GAMMA × PixelSumQ with A_GAMMA = 0.0253017 MeV/ADC. Note, however, this is an old calibration before labels for what is a true energy deposit expanded. We use this for now but will do so for all analyses once the shower energy calibration is more mature. For now use the criteria for a visible shower as E_vis>=20 MeV (more like 9 MeV because of current A_GAMMA is miscalibrated). This visibility threshold is applied to both electron and photon showers.
+ - We want to isolate events with exactly 1 visible photon in the final state. Visibility is determined by the true DEPOSITED energy in MeV, calculated by scaling the true "deduplicated charge" (`trueSimPartPixelSumQ`): E_dep = a × PixelSumQ with a_gamma = 0.0110 and a_e = 0.0101 MeV/ADC (`lartpc/larformer_analysis/truth_calib.py`, measured 2026-09-27 on well-contained true particles; reco showerRecoE / E_dep median 1.04, so truth and reco are on one scale). A visible shower has E_dep >= 20 MeV, for photons and electrons alike. (Until 2026-09-27 the legacy constant 0.0253017, a July reco fit, was used; it overstated deposited energy x2.3 so "20 MeV" meant ~9 MeV deposited while the reco cut was 20 MeV. `--truth-scale legacy` reproduces those results.)
  - MiniBooNE was a Ring Imagine Ring Cherenkov detector and so it was blind for particles below Cherenkov threshold. 
    To mimic selections in MicroBooNE, visibility for non-photon particles is based on the Cherenkov threshold KE. We follow the thresholds used in the MicroBooNE inclusive selection (https://arxiv.org/pdf/2502.06064). Muons are not visible is below its KE<100 MeV. Charged pions and protons are always considered as not visible by MiniBooNE. This is not a great assumption for pions -- but their momentum is hard to estimate accurately due to their propensity to reinteract or decay in flight.
  - These visibility thresholds apply to both primary and secondary final state particles. (Primaries are those particles produced by the initial nu interaction+FSI. Because neutral pions produced by nu interactions decay effectively immediately, their daugher photons are also considered primary.)
@@ -90,7 +90,8 @@ run on the current chain; their findings are summarised in
 | `shower_novtx_bdt.py` | vertex-FREE per-shower cosmic BDT (features that exist for `showerVtxIdx=-1` prongs: E, angles, start dwall, objectness, class scores, nHits, charge, hasVtx, slice multiplicity); trained on EVEN MC nu photons vs EXT rows<100k; saves the joblib the exporter applies via `LARFORMER_SHOWER_BDT_NOVTX` (`showerNoVtxScore`) |
 | `single_photon_diagnostics.py` | stacked MC/EXT + data distributions for selected events (final step and pre-chi2): flash PE, candidate start x/y/z, cos theta_beam, n reco protons, PE-centroid vs shower-line distance at x=0, distance to wall along +/- direction, flash PE vs E; needs the cascade dirs (flash PE) and reuses the pi0 study's cached RSE maps; `slurm/submit_single_photon_diagnostics.sh` |
 | `single_photon_truth.py` | truth characterization of SIGNAL events stacked by signal category with the selected subset overlaid: true vertex x/y/z, detectable-photon true E / E_vis / cos theta_beam / conversion point + dwall, non-detectable photon true E / E_vis, summed KE of non-photon primaries, primary p / pi+- / mu counts; `slurm/submit_single_photon_truth.sh` |
-| `single_photon_path_tables.py` | efficiency / purity tables with the VERTEX sample (candidate on the primary in-FV vertex) and the NO-VERTEX sample (vertex-less / non-FV-vertex candidate) kept separate, per step from S2 on, with per-category efficiencies, in-FV vs entering purity and the two final energy stacks; `slurm/submit_single_photon_path_tables.sh` |
+| `single_photon_path_tables.py` | efficiency / purity tables split 2x2: (VERTEX sample: candidate on the primary in-FV vertex | NO-VERTEX sample: vertex-less / non-FV-vertex candidate) x (passes | fails the SECOND-PHOTON veto = another nu-stream photon prong with reco E > `--veto2g-emin`, default 10 MeV); per step from S2 on, per-category efficiencies, purities, a 2x2 summary and the four final energy stacks; `slurm/submit_single_photon_path_tables.sh` |
+| `single_photon_missed_photon.py` | missed-second-photon anatomy for selected in-FV >=2-visible-photon events: per missed photon a reco STAGE (no prong / merged into candidate / track prong / electron prong / photon prong E<=20 / attached BDT-fail / unattached vertex-free-BDT-fail), truth E, E_vis, vertex->conversion distance, conversion x/y/z + dwall, prong reco E + score, provisional m_gg with the accepted candidate (vs true m_gg), and a second-photon VETO scan (bkg removed vs signal kept per category); `slurm/submit_single_photon_missed_photon.sh` |
 | `slurm/submit_single_photon_selection.sh`, `slurm/submit_photon_bdt_study.sh` | batch-partition wrappers (`sbatch ... [extra args]`; env `MC`, `EXT`, `DATA`, `PLOTS`, `OUTDIR`) |
 
 Decisions folded into the code (2026-09-05): the X-visibility thresholds apply to
@@ -285,3 +286,106 @@ The cew6 vertex-free model is now the deployed default (ep8 archived as
 [`CEW6_SINGLE_PHOTON_TABLES.md`](CEW6_SINGLE_PHOTON_TABLES.md). Headline:
 eff 0.218 / purity 0.342 (ep8 chain 0.198 / 0.350; cew6 with stale BDTs
 0.219 / 0.307), EXT 85 (was 142), data/pred 1.08.
+
+## RUN-1 TABLE-GAMMA SAMPLES (2026-09-23) -- the current default
+
+The scripts now default to the run-1 simulation + run-1 beam-off + run-1
+bnb5e19 data (versions doc section 3c), so prediction and data come from the
+same run period with the calibrated flash-gamma table. Numbers and cut tables:
+[`RUN1_SINGLE_PHOTON_TABLES.md`](RUN1_SINGLE_PHOTON_TABLES.md).
+
+Script changes for it:
+- `--mc/ext/data-ntuple` take a COMMA-SEPARATED list; `load()` concatenates,
+  sums potTree and drops duplicate (run,subrun,event) rows (the two run-1
+  BNB-overlay halves share one dlmerged file, 49 events). Default = both MC
+  halves (370,580 events, POT 4.6533e20) and both EXT halves (219,154).
+- No hygiene halves: the cew6 BDTs were trained on RUN-3 samples, so all of
+  run-1 MC/EXT is held out. Wrappers pass `--ext-row-min 0` and drop
+  `--mc-odd-only`.
+- `--ext-scale` default 0.601, MEASURED in the pure-cosmic flash-chi2 sideband
+  (`ext_norm_sideband.py`), not the spill ratio 0.8987 -- the spill value
+  leaves data 10-25% under prediction with a slope in chi2, the measured one
+  gives data/pred 1.00-1.03 at every chi2 cut. Same ~30% EXT spill deficit the
+  pi0 suite reports.
+- `single_photon_diagnostics.py` now reads flash quantities from the ntuple
+  (`flashObsPE`, `nuSlicePredPE`, `flashTimeUs`) instead of the cascade files,
+  and adds `flashPredPE`, `flashPERatio` (observed/predicted) and
+  `flashTimeUs` plots; `--*-cascade` is only needed for the PE-centroid
+  variables now and its RSE maps are cached on first use. Wall distances are
+  vectorized and computed only for plotted events.
+- No `--recal-gamma-*` (recal3 baked); `photon_bdt_study.py` needs the
+  identity constants `--recal-gamma-a 0.020101 --recal-gamma-b -15.49`.
+
+Headline: eff 0.254 / purity 0.320 at flash chi2 < 316 with data/pred **1.03**
+(0.99-1.06 at every step), or eff 0.220 / purity 0.390 at chi2 < 178 with
+data/pred 1.00. 9,296 raw signal events, 5.6x the run-3 sample.
+
+### Missed second photon (2026-09-27, `plots_run1_novtx/missed_photon/`)
+
+All the information is in the ntuple: the vertex-less export makes every
+nu-slice segmenter particle a prong with its truth TID, so for each missed
+photon we can tell whether a mask existed, whether it was attached, and which
+cut it failed. The only thing the ntuple cannot split is the "no prong" class
+(not found vs deghosted vs mis-sliced vs the fragment fell below the 10-point
+orphan cut) -- that needs the slice-id sidecar inference pass, not the
+standard cascade files (which only hold nu-slice particles too).
+
+Run-1, 1,085 selected in-FV events with >=2 detectable photons (838 in the
+>=2g category, 229 CC numu, 18 CC nue), 1,109 missed photons (weighted):
+
+| stage | fraction |
+|---|---|
+| photon prong found, reco E <= 20 MeV | 0.44 |
+| no prong | 0.34 |
+| merged into the accepted candidate (photon purity - TID purity > 0.2) | 0.08 |
+| photon prong not attached, vertex-free BDT fail | 0.07 |
+| found as a track prong (mis-PID) | 0.05 |
+| photon prong attached, cosmic BDT fail | 0.02 |
+| found as an electron prong | 0.01 |
+
+The dominant class is a photon the segmenter DID find but whose calibrated
+energy is below the 20 MeV reco cut, while it is "visible" by the truth
+convention because A_GAMMA x Q is ~2.2 x the true energy (missed-photon
+true E peaks at 20-40 MeV, E_vis at 40-60). These prongs are usable: a
+SECOND-PHOTON VETO on any other nu-stream photon prong with reco E > e_min
+(no BDT) removes, at e_min = 10 MeV, 39% of the in-FV >=2g background and 39%
+of the entering >=2g background at a cost of 2% (in-FV 1g+X), 6% (1g0X) and
+8% (entering) of the signal; at 5 MeV, 49% / 46% removed for 4-10% signal
+cost. Requiring m_gg(candidate, prong) in [50,250] MeV weakens the veto
+(the soft prong's energy is under-measured, so the provisional m_gg peaks at
+30-100 MeV, not 135; the TRUE m_gg is a clean pi0 peak for all stages). The
+provisional m_gg is still a useful constraint plot for the leakage. Full scan
+in `missed_photon_stages.txt`.
+
+### Truth energy scale fixed (2026-09-27) -- `plots_run1_novtx_dep*/`
+
+See `RUN1_SINGLE_PHOTON_TABLES.md` (top section) and
+`lartpc/larformer_analysis/truth_calib.py`. Analysis-level only. All
+single-photon scripts take `--truth-scale deposited|legacy` (default
+deposited). Run-1 headline moves from eff 0.254 / purity 0.320 to
+**0.325 / 0.375** at chi2 < 316 (1g0X 0.376 -> 0.416), data/pred unchanged
+at 1.03. The pi0, nue and sigma0 scripts still hardcode 0.0253 and should
+import the shared module (not changed here).
+
+### Second-photon veto as a selection split (2026-09-27)
+
+`single_photon_selection.build_steps` now tags every event with
+`R["other_gE_max"]` (highest reco E among the OTHER nu-stream photon-labelled
+prongs, any BDT score, any vertex); `single_photon_path_tables.py` splits the
+final selection 2x2 by path x veto outcome (`--veto2g-emin`, default 10 MeV).
+Results in `RUN1_SINGLE_PHOTON_TABLES.md` and `plots_run1_novtx_dep/paths_veto2g/`.
+
+Diagnostics for the four cells (2026-09-27): `single_photon_diagnostics.py`
+takes `--veto2g pass|fail` (with `--veto2g-emin`) next to `--path`, giving
+`plots_run1_novtx_dep/diagnostics_{vertex,novertex}_{pass,fail}/` with the
+usual `preChi2/` and `final/` sets (flash PE / predicted PE / ratio / time,
+log chi2, start x/y/z, cos theta, n protons, PE-centroid distance, wall
+distances, candidate E) and `medians.txt` per cell.
+
+### Flash PE ratio cut (2026-09-27) -- `plots_run1_novtx_dep_pe3*/`
+
+S5 = observed / predicted nu-slice flash PE < 3.0 (`--flashpe-ratio-max`),
+appended after the chi2 cut in `build_steps` and therefore in every script
+(N-1 plot `flashperatio_nminus1.png`; diagnostics gain a `preRatio/` set).
+Run 1: EXT -32% for -5% signal, purity 0.375 -> 0.406 (vertex-pass cell
+0.407 -> 0.447). Numbers in `RUN1_SINGLE_PHOTON_TABLES.md`.

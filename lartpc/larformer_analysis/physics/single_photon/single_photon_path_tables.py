@@ -1,7 +1,8 @@
-"""Efficiency / purity tables for the single-photon selection with the
-VERTEX sample (candidate attached to the primary in-FV nu vertex, cosmic BDT)
-and the NO-VERTEX sample (vertex-less or non-FV-vertex candidate, vertex-free
-BDT) kept SEPARATE. Same selection machinery / options as
+"""Efficiency / purity tables for the single-photon selection split 2x2:
+(VERTEX sample: candidate on the primary in-FV nu vertex, cosmic BDT |
+NO-VERTEX sample: vertex-less or non-FV-vertex candidate, vertex-free BDT)
+x (passes | fails the SECOND-PHOTON veto: another nu-stream photon-labelled
+prong with reco E > --veto2g-emin, any BDT score, any vertex). Same selection machinery / options as
 single_photon_selection.py (--novtx required; the path is decided by the
 leading candidate at the "1 photon" step).
 
@@ -38,19 +39,24 @@ def run(ntuple, is_mc, args):
     R = SPS.reco_tables(a, args)
     R["novtx"] = args.novtx
     names, S, E, _, _, path = SPS.build_steps(R, args.shower_bdt_min, args.flashchi2_cut,
-                                              args.bdt_after_multiplicity)
-    return a, pot, names, S, E, path
+                                              args.bdt_after_multiplicity, args.flashpe_ratio_max)
+    return a, pot, names, S, E, path, R["other_gE_max"]
 
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     add_args(ap)
+    ap.add_argument("--veto2g-emin", type=float, default=10.0,
+                    help="second-photon tag: another nu-stream photon prong with reco E "
+                         "above this [MeV] (any BDT score, any vertex) -> 'veto' half")
     args = ap.parse_args()
+    SPS.set_truth_scale(getattr(args, 'truth_scale', 'deposited'))
     if not args.novtx:
         sys.exit("--novtx is required (the path split only exists there)")
     os.makedirs(args.plots, exist_ok=True)
 
-    a, pot, names, S, E, path = run(args.mc_ntuple, True, args)
+    a, pot, names, S, E, path, og = run(args.mc_ntuple, True, args)
+    v2 = og > args.veto2g_emin                     # True = FAILS the second-photon veto
     w0 = ak.to_numpy(a["xsecWeight"]).astype(np.float64)
     w = np.where(w0 > 0, w0, 0.0) * (args.pot / pot)
     if args.mc_odd_only:
@@ -60,11 +66,13 @@ def main():
     del a
     SX = EX = PX = None; wx = None
     if args.ext_ntuple:
-        _, _, _, SX, EX, PX = run(args.ext_ntuple, False, args)
+        _, _, _, SX, EX, PX, ogx = run(args.ext_ntuple, False, args)
+        v2x = ogx > args.veto2g_emin
         wx = np.zeros(len(PX)); wx[args.ext_row_min:] = args.ext_scale
     SD = ED = PD = None
     if args.data_ntuple:
-        _, _, _, SD, ED, PD = run(args.data_ntuple, False, args)
+        _, _, _, SD, ED, PD, ogd = run(args.data_ntuple, False, args)
+        v2d = ogd > args.veto2g_emin
 
     CATS, NSIG, NMC = SPS.CATS, SPS.N_SIG_CAT, SPS.N_MC_CAT
     den = {c: w[cat == c].sum() for c in range(NSIG)}
@@ -72,32 +80,46 @@ def main():
     lines = [f"denominators (w @ {args.pot:.1e} POT): "
              + " | ".join(f"{CATS[c]} {den[c]:.1f}" for c in range(NSIG))]
     k2 = 2                                     # first step with a candidate
-    for pv, plab in ((0, "VERTEX sample (candidate on the primary in-FV vertex, cosmic BDT)"),
-                     (1, "NO-VERTEX sample (vertex-less / non-FV-vertex candidate, vertex-free BDT)")):
+    SAMPLES = [(0, False, "VERTEX, passes 2nd-photon veto", "vertex_pass"),
+               (0, True, "VERTEX, FAILS 2nd-photon veto (another photon prong E > e_min)", "vertex_fail"),
+               (1, False, "NO-VERTEX, passes 2nd-photon veto", "novertex_pass"),
+               (1, True, "NO-VERTEX, FAILS 2nd-photon veto", "novertex_fail")]
+    lines.append(f"second-photon tag: another nu-stream photon prong with reco E > "
+                 f"{args.veto2g_emin:.0f} MeV (any BDT, any vertex)")
+    for pv, vf, plab, _fn in SAMPLES:
         lines.append(f"\n===== {plab} =====")
         hdr = (f"{'step':<14}" + "".join(f"{CATS[c][:12]:>13}{'eff':>6}" for c in range(NSIG))
                + f"{'sigTot':>8}{'MCbkg':>8}{'EXT':>8}{'pred':>8}{'data':>6}{'d/p':>6}"
                f"{'pur':>6}{'purFV':>7}{'purEnt':>7}{'FV:Ent':>7}")
         lines.append(hdr)
         for k in range(k2, len(names)):
-            m = S[k] & (path == pv)
+            m = S[k] & (path == pv) & (v2 == vf)
             cells = ""
             for c in range(NSIG):
                 s = w[m & (cat == c)].sum()
                 cells += f"{s:13.1f}{s / max(den[c], 1e-9):6.3f}"
             st = w[m & sig].sum(); b = w[m & ~sig].sum()
-            e = wx[SX[k] & (PX == pv)].sum() if SX is not None else 0.0
-            d = int((SD[k] & (PD == pv)).sum()) if SD is not None else 0
+            e = wx[SX[k] & (PX == pv) & (v2x == vf)].sum() if SX is not None else 0.0
+            d = int((SD[k] & (PD == pv) & (v2d == vf)).sum()) if SD is not None else 0
             tot = max(st + b + e, 1e-9)
             sfv, sen = w[m & infv].sum(), w[m & enter].sum()
             lines.append(f"{names[k]:<14}" + cells
                          + f"{st:8.1f}{b:8.1f}{e:8.1f}{tot:8.1f}{d:6d}{d / tot:6.2f}"
                          f"{st / tot:6.3f}{sfv / tot:7.3f}{sen / tot:7.3f}"
                          f"{sfv / max(sen, 1e-9):7.2f}")
-        m = S[-1] & (path == pv)
+        m = S[-1] & (path == pv) & (v2 == vf)
         lines.append("  final MC background composition: " + " | ".join(
             f"{CATS[c][5:]} {w[m & (cat == c)].sum():.1f}" for c in range(NSIG, NMC)
             if w[m & (cat == c)].sum() > 0))
+    lines.append("\n2x2 SUMMARY at the final step (w): rows = path, cols = veto outcome")
+    lines.append(f"{'':28s}{'signal':>9}{'in-FV sig':>10}{'MC bkg':>9}{'EXT':>8}{'pred':>9}{'data':>7}{'d/p':>6}{'purity':>8}{'purFV':>7}")
+    for pv, vf, plab, _fn in SAMPLES:
+        m = S[-1] & (path == pv) & (v2 == vf)
+        st, sf, b = w[m & sig].sum(), w[m & infv].sum(), w[m & ~sig].sum()
+        e = wx[SX[-1] & (PX == pv) & (v2x == vf)].sum() if SX is not None else 0.0
+        d = int((SD[-1] & (PD == pv) & (v2d == vf)).sum()) if SD is not None else 0
+        tot = max(st + b + e, 1e-9)
+        lines.append(f"{plab[:28]:28s}{st:9.1f}{sf:10.1f}{b:9.1f}{e:8.1f}{tot:9.1f}{d:7d}{d/tot:6.2f}{st/tot:8.3f}{sf/tot:7.3f}")
     txt = "\n".join(lines)
     print(txt)
     with open(os.path.join(args.plots, "path_tables.txt"), "w") as fh:
@@ -107,19 +129,19 @@ def main():
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
     bins = np.linspace(0, 1000, 41)
-    for pv, plab, fn in ((0, "vertex sample", "vertex"), (1, "no-vertex sample", "novertex")):
-        m = S[-1] & (path == pv) & np.isfinite(E)
+    for pv, vf, plab, fn in SAMPLES:
+        m = S[-1] & (path == pv) & (v2 == vf) & np.isfinite(E)
         data = [np.clip(E[m & (cat == c)], 0, 999.9) for c in range(NMC)]
         ws = [w[m & (cat == c)] for c in range(NMC)]
         cols = list(SPS.CAT_COLORS[:NMC])
         if SX is not None:
-            mx = SX[-1] & (PX == pv) & np.isfinite(EX)
+            mx = SX[-1] & (PX == pv) & (v2x == vf) & np.isfinite(EX)
             data.append(np.clip(EX[mx], 0, 999.9)); ws.append(wx[mx]); cols.append(SPS.CAT_COLORS[NMC])
         fig, ax = plt.subplots(figsize=(7.4, 4.8))
         ax.hist(data, bins=bins, weights=ws, stacked=True, color=cols,
                 label=[f"{CATS[c]} ({ws[c].sum():.1f})" for c in range(len(ws))])
         if SD is not None:
-            md = SD[-1] & (PD == pv) & np.isfinite(ED)
+            md = SD[-1] & (PD == pv) & (v2d == vf) & np.isfinite(ED)
             hd, _ = np.histogram(np.clip(ED[md], 0, 999.9), bins=bins)
             ctr = 0.5 * (bins[:-1] + bins[1:])
             ax.errorbar(ctr[hd > 0], hd[hd > 0], yerr=np.sqrt(hd[hd > 0]), fmt="ko", ms=3.5,

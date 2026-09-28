@@ -187,7 +187,11 @@ efficiency 0.099 -> 0.196 at purity 0.323 -> 0.357 (see single_photon/README).
 ### 7. Known conventions / caveats carried by this version
 
 - A_GAMMA visible-energy convention is ~2.2x actual photon energy
-  (signal-definition threshold 20 MeV E_vis ~ 9 MeV actual). Unresolved.
+  (signal-definition threshold 20 MeV E_vis ~ 9 MeV actual). RESOLVED
+  2026-09-27: measured truth deposited-energy constants (photon 0.0110,
+  electron 0.0101 MeV/ADC) in `lartpc/larformer_analysis/truth_calib.py`;
+  the single-photon study uses them; pi0/nue/sigma0 scripts still carry the
+  legacy 0.0253 and should switch to the shared module.
 - Flash model: data chi2 peak shifted+broadened vs MC (global scale+
   resolution); set aside — do not retune per-analysis.
 - Segmenter mu->e confusion ~10% (KE-flat) in THIS version's checkpoint;
@@ -475,6 +479,20 @@ but `showerNoVtxScore` was still the EP8 vertex-free model — the exporter
 default `export/data/shower_novtx_bdt.joblib` held ep8 while the cew6 retrain
 sat as `shower_novtx_bdt_cew6.joblib`. FIXED: the default is now the cew6
 model (ep8 archived `shower_novtx_bdt_ep8.joblib`); the next re-export bakes
+### 7d. Single-photon study on the RUN-1 table-gamma samples (2026-09-23)
+The single-photon scripts now DEFAULT to run-1 MC (both BNB-overlay halves,
+370,580 events after dropping the 49 shared rows, POT 4.6533e20) + run-1 EXT
+(both halves, 219,154) + bnb5e19 run-1 data. Both cew6 BDT scores verified
+present and correct in these ntuples; no hygiene halves needed (the BDTs were
+trained on RUN-3). EXT normalization: the spill ratio 0.8987 over-predicts;
+the pure-cosmic flash-chi2 sideband measures **0.601** (0.609/0.612/0.602/0.573
+for log10 chi2 > 3.0/3.5/4.0/4.5) and gives data/pred 1.00-1.03 at every chi2
+cut -- the same ~30% EXT spill deficit noted for the pi0 suite. Result:
+eff 0.254 / purity 0.320 at chi2 < 316 (data/pred 1.03), eff 0.220 / purity
+0.390 at chi2 < 178 (1.00). Tables:
+`physics/single_photon/RUN1_SINGLE_PHOTON_TABLES.md`; normalization utility
+`physics/single_photon/ext_norm_sideband.py`.
+
 it, until then pass `--novtx-model`. Single-photon result with both cew6
 BDTs: eff 0.218 / purity 0.342, EXT 85, data/pred 1.08 (ep8 chain 0.198 /
 0.350; cew6 + stale BDTs 0.219 / 0.307). Tables:
