@@ -103,6 +103,117 @@ for signal 125.7 -> 119.8 (-5%), purity 0.407 -> 0.447, in-FV purity
 Per-cell diagnostics: `diagnostics_{vertex,novertex}_{pass,fail}/` with
 `preChi2/`, `preRatio/` (the ratio N-1) and `final/`.
 
+## Folder convention (2026-09-28)
+
+Two complete, internally consistent plot suites (selection, chi2-225 and
+vertex-only variants, five-path tables, per-cell diagnostics incl. the FC/PC
+cells, truth, missed-photon and CC-numu anatomies; `slurm/run_suite.sh`):
+
+| folder | cuts | final step |
+|---|---|---|
+| `plots_run1_novtx_dep*` | S1-S4 (flash chi2 < 316), NO flash PE-ratio cut (`--flashpe-ratio-max 0`) | S4 flash chi2 |
+| `plots_run1_novtx_dep_pe3*` | + S5 flash PE ratio obs/pred < 3.0 (ADOPTED 2026-09-28) | S5 flash PE ratio |
+
+Full selection, both conventions (combined eff / purity / EXT / data/pred):
+no PE-ratio 0.325 / 0.375 / 180 / 1.03; with PE-ratio 0.309 / 0.406 / 122 /
+1.01 (`plots_run1_novtx_dep_pe3/cutflow.txt`). Missed-photon and CC-numu
+anatomies in the pe3 suite: 828 and 574 selected events (847 / 592 without).
+
+## FIVE paths: vertex veto-pass split into fully / partially contained
+(`plots_run1_novtx_dep/paths5/` without and `plots_run1_novtx_dep_pe3/paths5/`
+with the PE-ratio step; PARTIALLY contained = any nu-stream track prong, any
+PID / energy, whose reco start or end is < 10 cm from a TPC wall,
+`--contain-dwall`; targets the exiting-muon loophole found by the CC-numu
+anatomy.)
+
+At the flash-chi2 step (chi2 < 316):
+
+| cell (w) | signal | in-FV sig | MC bkg | EXT | data | d/p | purity | in-FV purity | CC numu |
+|---|---|---|---|---|---|---|---|---|---|
+| VERTEX, veto-pass, FULLY contained | 103.6 | 44.3 | 73.5 | 63.7 | 268 | 1.11 | 0.430 | 0.184 | 14.7 |
+| VERTEX, veto-pass, PARTIALLY contained | 22.1 | 16.0 | 40.3 | 5.4 | 65 | 0.96 | 0.326 | 0.236 | 27.1 |
+| VERTEX, fails veto | 9.9 | 5.7 | 36.0 | 33.7 | 95 | 1.19 | 0.124 | 0.071 | 8.0 |
+| NO-VERTEX, veto-pass | 114.7 | 6.7 | 68.9 | 57.7 | 223 | 0.92 | 0.475 | 0.028 | 4.6 |
+| NO-VERTEX, fails veto | 11.9 | 0.7 | 37.1 | 19.8 | 66 | 0.96 | 0.172 | 0.010 | 0.9 |
+
+After the additional PE-ratio step (< 3.0): FC 98.4 sig / 67.7 MC / 38.5 EXT /
+228 data, purity 0.481 (in-FV 0.211), d/p 1.11; PC 21.4 / 39.6 / 2.4 / 61,
+purity 0.337, d/p 0.96; vertex-fail 9.5 / 35.3 / 27.0 / 86, d/p 1.20;
+no-vertex pass 108.0 / 63.6 / 35.5 / 187, purity 0.522, d/p 0.90; no-vertex
+fail 11.3 / 36.0 / 18.6 / 61, d/p 0.93.
+
+The containment split does what it was meant to: of the vertex veto-pass
+CC-numu background (41.8), 27.1 lands in the PC cell and 14.7 in FC, while
+the in-FV signal splits 44.3 FC / 16.0 PC (1g+X carries most of the PC share:
+its protons/pions reach the walls). The FC cell has 64% of the vertex-pass
+signal at purity 0.43 with CC numu down to 15% of its background; the PC
+cell is a CC-numu-dominated (67% of its MC background) sideband with very
+little EXT (5.4) and in-FV purity 0.24.
+
+## SIX paths: the FC cell split by backward wall distance (2026-09-28)
+
+The candidate's BACKWARD wall distance (start point to the TPC box along
+-direction; `cand_dist_from_wall` in the shared selection, NaN = start
+outside the box, counted as entering-like) splits the vertex / veto-pass /
+fully-contained cell at 100 cm (`--dfw-cut`): `paths6/` and the
+`diagnostics_vertex_pass_FC_{in,ent}/` cells in both suites.
+
+Adopted selection (`plots_run1_novtx_dep_pe3/paths6/path_tables.txt`):
+
+| cell (w) | signal | in-FV sig | entering sig | MC bkg | EXT | data | d/p | purity | in-FV purity |
+|---|---|---|---|---|---|---|---|---|---|
+| FC, dfw >= 100 (in-TPC) | 41.8 | 26.4 | 15.4 | 41.5 | 20.4 | 119 | 1.15 | 0.403 | **0.254** |
+| FC, dfw < 100 (entering-like) | 56.6 | 16.7 | 39.9 | 26.3 | 18.0 | 109 | 1.08 | 0.561 | 0.166 |
+| vertex veto-pass PC | 21.4 | 15.6 | 5.8 | 39.6 | 2.4 | 61 | 0.96 | 0.337 | 0.246 |
+| vertex veto-fail | 9.5 | 5.6 | 3.9 | 35.3 | 27.0 | 86 | 1.20 | 0.132 | 0.078 |
+| no-vertex veto-pass | 108.0 | 6.2 | 101.8 | 63.6 | 35.5 | 187 | 0.90 | 0.522 | 0.030 |
+| no-vertex veto-fail | 11.3 | 0.6 | 10.7 | 36.0 | 18.6 | 61 | 0.93 | 0.171 | 0.009 |
+
+The in-TPC cell carries 61% of the FC in-FV signal (26.4 of 43.1) with the
+entering signal cut from 55.4 to 15.4 and the entering backgrounds from 10.4
+to 5.1; its residual background is in-FV physics (>=2g 19.8, CC numu 10.1)
+plus 20 EXT, so its in-FV purity 0.25 is now limited by the in-FV
+backgrounds, not by entering photons. The entering-like cell keeps 40 of the
+55 entering signal at purity 0.56 and becomes the second entering sideband.
+Efficiencies vs truth containment: 1g0X truth-FC -> in-TPC cell 0.199,
+1g+X 0.256 (entering-like cell 0.104 / 0.169). Without the PE-ratio step
+(`plots_run1_novtx_dep/paths6/`): in-TPC cell 44.0 signal / 46.3 MC bkg /
+31.6 EXT, entering-like 59.6 / 27.2 / 32.1.
+
+## FC / PC efficiencies against TRUTH containment (2026-09-28)
+
+Truth definition (single_photon_selection.truth_tables, `pc_true`): any
+charged track-like nu-origin particle (mu, pi+-, K+-, p, charged baryons;
+primary or secondary) that deposits charge whose true START or END point is
+< 10 cm from a TPC wall (or outside). This mirrors the reco criterion (any
+nu-stream track prong start/end < 10 cm) except that the ntuple has only
+particle endpoints, not trajectories. NOTE `trueSimPartContained` is a
+DIFFERENT flag (end in the WireCell FV) and is not used.
+
+Agreement on selected vertex veto-pass signal (adopted selection): 0.940
+overall; 1.8% of truth-FC events are reco PC, 21.8% of truth-PC events are
+reco FC (16% / 11% if the truth track floor is KE >= 20 / 50 MeV: the
+disagreement is dominated by soft protons near a wall that leave no reco
+track). Reco-FC selected signal is 92.9 truth-FC / 5.5 truth-PC; reco-PC is
+1.7 / 19.7.
+
+Efficiency into each reco cell, denominator = all true events of the row
+(adopted selection, PE-ratio ON; `plots_run1_novtx_dep_pe3/paths5/path_tables.txt`):
+
+| true signal, truth containment | N(w) | -> vtx-pass FC | -> vtx-pass PC | vtx-fail | novtx-pass | novtx-fail | any |
+|---|---|---|---|---|---|---|---|
+| 1g0X, FC | 49.0 | **0.303** | 0.008 | 0.031 | 0.048 | 0.008 | 0.397 |
+| 1g0X, PC | 7.2 | 0.145 | **0.197** | 0.013 | 0.026 | 0.000 | 0.382 |
+| 1g+X, FC | 60.9 | **0.425** | 0.012 | 0.043 | 0.036 | 0.003 | 0.520 |
+| 1g+X, PC | 40.5 | 0.033 | **0.322** | 0.033 | 0.037 | 0.000 | 0.425 |
+| entering no-mu, FC | 330.2 | 0.100 | 0.001 | 0.007 | 0.145 | 0.015 | 0.268 |
+| entering no-mu, PC | 85.6 | 0.030 | 0.042 | 0.004 | 0.276 | 0.039 | 0.390 |
+| entering CC-mu, FC | 199.4 | 0.095 | 0.001 | 0.005 | 0.119 | 0.008 | 0.228 |
+| entering CC-mu, PC | 33.0 | 0.017 | 0.049 | 0.009 | 0.200 | 0.029 | 0.304 |
+
+Without the PE-ratio step (`plots_run1_novtx_dep/paths5/`) the FC->FC and
+PC->PC numbers are 0.316 / 0.211 (1g0X) and 0.435 / 0.327 (1g+X).
+
 ---
 # LEGACY-SCALE RESULTS (2026-09-23, A_GAMMA = 0.0253) -- superseded
  Supersedes `CEW6_SINGLE_PHOTON_TABLES.md` (run-3 MC/EXT

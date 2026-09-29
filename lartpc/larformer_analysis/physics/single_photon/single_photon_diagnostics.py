@@ -20,6 +20,9 @@ Variables (per selected event, leading photon candidate):
                  t) with the x=0 plane; NaN if |dir_x| < 1e-3
   flashDistFwd : same but only counted when the intersection is FORWARD (t>0),
                  else NaN -- separates "light ahead" from "light behind"
+  vtxDwall     : wall distance of the reco primary vertex; 0 for events in the
+                 NO-VERTEX path (candidate not on a primary in-FV vertex)
+  startDwall   : wall distance of the candidate shower start point (all showers)
   distToWall   : distance from start to the TPC wall along +dir
   distFromWall : distance from start to the TPC wall along -dir
                  (both NaN when the start is outside the TPC box)
@@ -57,7 +60,7 @@ TPC_LO, TPC_HI = SPS.TPC_LO, SPS.TPC_HI
 BR_EXTRA = ["showerStartDirX", "showerStartDirY", "showerStartDirZ",
             "showerStartPosX", "showerStartPosY", "showerStartPosZ",
             "showerCosTheta", "trackLArFormerPID", "trackRecoE", "trackStream",
-            "trackVtxIdx"]
+            "trackVtxIdx", "vtxX", "vtxY", "vtxZ"]
 # flash quantities carried by the table-gamma exporter (no cascade files
 # needed); absent on older ntuples, in which case --*-cascade still works
 BR_FLASH = ["flashObsPE", "nuSlicePredPE", "flashTimeUs", "flashGammaEff"]
@@ -138,7 +141,9 @@ def per_sample(ntuple, is_mc, args, cascade, tag):
     idx = R["_cand_idx"]
     pathsel = getattr(args, "path", None)
     v2 = getattr(args, "veto2g", None)
-    if pathsel is not None or v2 is not None:
+    ct = getattr(args, "contain", None)
+    dfs = getattr(args, "dfw", None)
+    if pathsel is not None or v2 is not None or ct is not None or dfs is not None:
         S = S.copy()
         keep = np.ones(len(path_cand), bool)
         if pathsel is not None:
@@ -146,6 +151,12 @@ def per_sample(ntuple, is_mc, args, cascade, tag):
         if v2 is not None:            # 'fail' = another photon prong above e_min
             fails = R["other_gE_max"] > args.veto2g_emin
             keep &= (fails if v2 == "fail" else ~fails)
+        if ct is not None:            # 'pc' = a nu-stream track ends/starts < dwall of a wall
+            pcm = R["track_min_dwall"] < args.contain_dwall
+            keep &= (pcm if ct == "pc" else ~pcm)
+        if dfs is not None:           # 'in' = backward wall distance >= cut (in-TPC-like)
+            din = R["cand_dist_from_wall"] >= args.dfw_cut
+            keep &= (din if dfs == "in" else ~din)
         for k in range(2, len(names)):
             S[k] = S[k] & keep
     out = dict(steps=S, names=names, E=E_cand, path=path_cand,
@@ -160,6 +171,12 @@ def per_sample(ntuple, is_mc, args, cascade, tag):
     dr = np.stack([pick(ex[f"showerStartDir{c}"]) for c in "XYZ"], 1)
     out["startX"], out["startY"], out["startZ"] = st.T
     out["cosBeam"] = dr[:, 2]
+    with np.errstate(invalid="ignore"):
+        out["startDwall"] = np.minimum((st - TPC_LO).min(1), (TPC_HI - st).min(1))
+    vx = np.stack([np.asarray(ak.to_numpy(ex["vtx" + c]), np.float64) for c in "XYZ"], 1)
+    vdw = np.minimum((vx - TPC_LO).min(1), (TPC_HI - vx).min(1))
+    vdw = np.where(R["vtx_ok"] & (path_cand == 0), vdw, 0.0)     # no-vertex path -> 0
+    out["vtxDwall"] = vdw
     # protons: nu-stream tracks (any vertex incl. orphans when --novtx)
     is_p = (ex["trackLArFormerPID"] == 2212) & (ex["trackRecoE"] > args.proton_ke_min)
     if args.novtx and "trackStream" in ak.fields(ex):
@@ -230,6 +247,14 @@ def main():
                     help="restrict to events that pass / fail the second-photon veto "
                          "(another nu-stream photon prong with reco E > --veto2g-emin)")
     ap.add_argument("--veto2g-emin", type=float, default=10.0)
+    ap.add_argument("--contain", default=None, choices=["fc", "pc"],
+                    help="restrict to FULLY (fc) or PARTIALLY (pc) contained events: pc = any "
+                         "nu-stream track prong start/end < --contain-dwall from a TPC wall")
+    ap.add_argument("--contain-dwall", type=float, default=10.0)
+    ap.add_argument("--dfw", default=None, choices=["in", "ent"],
+                    help="restrict by the candidate's backward wall distance: 'in' >= --dfw-cut "
+                         "(in-TPC-like), 'ent' < cut or start outside (entering-like)")
+    ap.add_argument("--dfw-cut", type=float, default=SPS.DFW_CUT)
     args = ap.parse_args()
     SPS.set_truth_scale(getattr(args, 'truth_scale', 'deposited'))
     os.makedirs(args.plots, exist_ok=True)
@@ -273,6 +298,8 @@ def main():
          np.arange(-0.5, 5.5, 1)),
         ("flashDist", "|PE centroid - shower-line hit at x=0| [cm]", np.linspace(0, 600, 31)),
         ("flashDistFwd", "same, forward intersections only [cm]", np.linspace(0, 600, 31)),
+        ("vtxDwall", "reco vertex dwall [cm] (0 = no-vertex path)", np.linspace(0, 130, 27)),
+        ("startDwall", "candidate shower start dwall [cm]", np.linspace(0, 130, 27)),
         ("distToWall", "distance to wall along +dir [cm]", np.linspace(0, 1000, 41)),
         ("distFromWall", "distance to wall along -dir [cm]", np.linspace(0, 1000, 41)),
         ("E", "candidate photon energy [MeV]", np.linspace(0, 1000, 41)),

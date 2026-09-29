@@ -90,8 +90,9 @@ run on the current chain; their findings are summarised in
 | `shower_novtx_bdt.py` | vertex-FREE per-shower cosmic BDT (features that exist for `showerVtxIdx=-1` prongs: E, angles, start dwall, objectness, class scores, nHits, charge, hasVtx, slice multiplicity); trained on EVEN MC nu photons vs EXT rows<100k; saves the joblib the exporter applies via `LARFORMER_SHOWER_BDT_NOVTX` (`showerNoVtxScore`) |
 | `single_photon_diagnostics.py` | stacked MC/EXT + data distributions for selected events (final step and pre-chi2): flash PE, candidate start x/y/z, cos theta_beam, n reco protons, PE-centroid vs shower-line distance at x=0, distance to wall along +/- direction, flash PE vs E; needs the cascade dirs (flash PE) and reuses the pi0 study's cached RSE maps; `slurm/submit_single_photon_diagnostics.sh` |
 | `single_photon_truth.py` | truth characterization of SIGNAL events stacked by signal category with the selected subset overlaid: true vertex x/y/z, detectable-photon true E / E_vis / cos theta_beam / conversion point + dwall, non-detectable photon true E / E_vis, summed KE of non-photon primaries, primary p / pi+- / mu counts; `slurm/submit_single_photon_truth.sh` |
-| `single_photon_path_tables.py` | efficiency / purity tables split 2x2: (VERTEX sample: candidate on the primary in-FV vertex | NO-VERTEX sample: vertex-less / non-FV-vertex candidate) x (passes | fails the SECOND-PHOTON veto = another nu-stream photon prong with reco E > `--veto2g-emin`, default 10 MeV); per step from S2 on, per-category efficiencies, purities, a 2x2 summary and the four final energy stacks; `slurm/submit_single_photon_path_tables.sh` |
+| `single_photon_path_tables.py` | efficiency / purity tables split into FIVE paths: VERTEX sample (candidate on the primary in-FV vertex) x passes the SECOND-PHOTON veto (another nu-stream photon prong with reco E > `--veto2g-emin`, default 10 MeV) x (FULLY / PARTIALLY contained: any nu-stream track prong start or end < `--contain-dwall` 10 cm from a wall), plus vertex veto-fail, plus NO-VERTEX (vertex-less / non-FV-vertex candidate) x (pass / fail veto); per step from S2 on, per-category efficiencies, purities, a five-path summary and one final energy stack per cell; `slurm/submit_single_photon_path_tables.sh` |
 | `single_photon_missed_photon.py` | missed-second-photon anatomy for selected in-FV >=2-visible-photon events: per missed photon a reco STAGE (no prong / merged into candidate / track prong / electron prong / photon prong E<=20 / attached BDT-fail / unattached vertex-free-BDT-fail), truth E, E_vis, vertex->conversion distance, conversion x/y/z + dwall, prong reco E + score, provisional m_gg with the accepted candidate (vs true m_gg), and a second-photon VETO scan (bkg removed vs signal kept per category); `slurm/submit_single_photon_missed_photon.sh` |
+| `single_photon_ccmu_anatomy.py` | CC-numu background anatomy for selected events: muon failure mode (not reconstructed / reco'd as shower / track with wrong PID / mu-PID but soft because exiting, broken, or genuinely soft / not vetoed) x the accepted candidate's truth (visible photon, sub-threshold photon, the muon, electron, hadron, cosmic) + the true detectable-photon count; per-mode muon KE / reco KE / completeness plots; an exiting-muon veto scan (mu-PID track ending < d cm from a wall, any E); `slurm/submit_single_photon_ccmu_anatomy.sh` |
 | `slurm/submit_single_photon_selection.sh`, `slurm/submit_photon_bdt_study.sh` | batch-partition wrappers (`sbatch ... [extra args]`; env `MC`, `EXT`, `DATA`, `PLOTS`, `OUTDIR`) |
 
 Decisions folded into the code (2026-09-05): the X-visibility thresholds apply to
@@ -205,8 +206,12 @@ LATER: the EXT-BNB sample is Run 3 while the beam data is Run 1 (lower light
 yield and quieter electronics in Run 3) -- a likely driver of the data/EXT
 mismatch in the flash-chi2 and flash-PE shapes. Resolution = process a Run 1
 EXT-BNB sample; deferred until the in-FV / entering separation is settled.
-Diagnostics can be run per sample with `--path 0` (vertex) / `--path 1`
-(no-vertex): `plots_v2_s1ep2p8_novtx/diagnostics_{vertex,novertex}/`.
+Diagnostics can be run per cell: `--path 0|1` (vertex / no-vertex),
+`--veto2g pass|fail` (second-photon veto), `--contain fc|pc` (containment,
+`--contain-dwall`); folders `preChi2/`, `preRatio/` (N-1 for the PE-ratio
+step) and `final/`. Run-1 five-path cells:
+`plots_run1_novtx_dep/diagnostics_vertex_pass_{FC,PC}/` (2026-09-28) plus the
+older `diagnostics_{vertex,novertex}/`.
 
 Per-path diagnostics (2026-09-06): in the VERTEX sample the backward wall
 distance separates entering from in-FV signal (entering median 57-71 cm but
@@ -389,3 +394,81 @@ appended after the chi2 cut in `build_steps` and therefore in every script
 (N-1 plot `flashperatio_nminus1.png`; diagnostics gain a `preRatio/` set).
 Run 1: EXT -32% for -5% signal, purity 0.375 -> 0.406 (vertex-pass cell
 0.407 -> 0.447). Numbers in `RUN1_SINGLE_PHOTON_TABLES.md`.
+
+### CC-numu background anatomy (2026-09-27, `plots_run1_novtx_dep/ccmu_anatomy/`)
+
+Run 1, 592 selected in-FV CC-numu events (57.0 w). Muon failure modes:
+mu-PID track but reco KE <= 100 MeV because the muon EXITS (range energy =
+contained part only) 0.53 | track with wrong PID (p/pi) 0.13 | genuinely soft
+after mu PID 0.13 | not reconstructed at all 0.12 | broken track 0.05 | reco'd
+as a shower 0.05 (1.7 w where that shower IS the accepted photon). Only 24% of
+the true muons are contained. The photon candidate is a REAL visible photon in
+72% of events (event has 1 detectable photon 43%, >=2 30%, 0 27%); cosmic /
+unlabeled 15%, electron 8%, the muon 3%, hadron 2%.
+The dominant mode has a cheap fix: 72% / 83% of the exiting-mode reco tracks
+end within 5 / 10 cm of a wall. An EXITING-MUON VETO (mu-PID track, any reco
+E, end < 10 cm from a wall) keeps 0.55 of CC numu and 0.78 of entering CC
+while keeping 0.996 / 0.951 / 0.982 of 1g0X / 1g+X / entering signal and
+0.985 of the >=2g background (i.e. it is orthogonal to the second-photon
+veto). Full scan in `ccmu_anatomy.txt`.
+
+### Five paths: containment split (2026-09-27, `plots_run1_novtx_dep/paths5/`)
+
+`single_photon_selection.reco_tables` now stores `track_min_dwall` (smallest
+wall distance of any nu-stream track prong's start or end); the path tables
+split the vertex veto-pass cell into FULLY / PARTIALLY contained
+(`--contain-dwall`, 10 cm). Numbers in `RUN1_SINGLE_PHOTON_TABLES.md`. The
+PC cell collects 65% of the vertex veto-pass CC-numu background (27.1 of
+41.8) with only 5.4 EXT; the FC cell keeps 64% of the vertex-pass signal at
+purity 0.43. NOTE: the selection gained a final flash PE-ratio step
+(`--flashpe-ratio-max`, default 3.0, added in a parallel session and included
+in commit 40f5f61); tables report both the chi2 step and that last step.
+
+The flash PE-ratio cut (`--flashpe-ratio-max 3.0`) is adopted as the 6th
+selection step (2026-09-28): it removes EXT from the vertex-pass cells
+(FC EXT 63.7 -> 38.5, PC 5.4 -> 2.4) at ~5% signal cost.
+
+### Plot-suite convention (2026-09-28)
+
+`slurm/run_suite.sh <ROOT> [--flashpe-ratio-max X]` submits the whole
+single-photon plot suite (selection + variants, five-path tables, per-cell
+diagnostics incl. FC/PC, truth, missed-photon, CC-numu anatomy).
+`plots_run1_novtx_dep*` = PE-ratio step OFF (final = S4 flash chi2);
+`plots_run1_novtx_dep_pe3*` = PE-ratio step ON at 3.0 (final = S5; the
+adopted selection). Every file in each tree was regenerated under its own
+convention; stale PE-ratio outputs were removed from the OFF tree.
+
+### Truth containment + FC/PC efficiencies (2026-09-28)
+
+`truth_tables` now provides `pc_true` / `true_track_min_dwall` (any depositing
+charged track-like particle with true start or end < 10 cm from a TPC wall;
+mirrors the reco criterion up to endpoints-vs-trajectory). The path tables
+print the truth-vs-reco agreement (0.94 on selected vertex-pass signal; the
+disagreement is truth-PC events with a soft near-wall proton and no reco
+track) and per-(category x truth containment) efficiencies into each reco
+cell: 1g0X FC->FC 0.30, PC->PC 0.20; 1g+X FC->FC 0.43, PC->PC 0.32
+(adopted selection). See `RUN1_SINGLE_PHOTON_TABLES.md`.
+
+### Entering-vs-in-FV separators, due diligence (2026-09-28)
+
+Diagnostics gained `vtxDwall` (reco primary-vertex wall distance; 0 for the
+no-vertex path) and `startDwall` (candidate shower start wall distance).
+Medians in the vertex veto-pass FC cell (adopted selection): in-FV signal vs
+entering signal = 24-30 vs 18-21 cm (vtxDwall), 24-29 vs 18-19 cm
+(startDwall), 130-144 vs 45-51 cm (distFromWall). The two new variables
+barely separate the classes (entering photons convert a few cm inside, right
+where in-FV vertices also sit), while the BACKWARD wall distance along the
+shower direction separates them by a factor ~3 -- it stays the variable of
+choice. Plots: `plots_run1_novtx_dep*/diagnostics_*/{preChi2,preRatio,final}/
+{vtxDwall,startDwall}.png`.
+
+### Six paths: FC split by backward wall distance (2026-09-28)
+
+`single_photon_selection.build_steps` stores `cand_dist_from_wall` (and
+`cand_dist_to_wall`, shared `rays_to_wall`); `path_tables` splits the vertex
+veto-pass FC cell at `--dfw-cut` 100 cm into in-TPC (>= 100) and
+entering-like (< 100 or start outside) cells -> six leaf paths (`paths6/`).
+Diagnostics take `--dfw in|ent`; `run_suite.sh` now produces
+`diagnostics_vertex_pass_FC_{in,ent}` and `paths6`. Numbers in
+`RUN1_SINGLE_PHOTON_TABLES.md`: the in-TPC cell keeps 61% of the FC in-FV
+signal at in-FV purity 0.25 with entering signal down 3.6x.

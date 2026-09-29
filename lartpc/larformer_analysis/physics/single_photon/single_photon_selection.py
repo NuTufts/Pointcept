@@ -133,7 +133,12 @@ BR_RECO = ["run", "subrun", "event", "foundVertex", "primaryVtxStream",
            "showerAttConfident", "showerIsSecondary", "showerDistToVtx",
            "trackLArFormerPID", "trackIsSecondary", "trackRecoE",
            "trackClassified", "trackMuScore", "trackElScore", "trackPhScore",
-           "trackPiScore", "trackPrScore"]
+           "trackPiScore", "trackPrScore",
+           "trackStartPosX", "trackStartPosY", "trackStartPosZ",
+           "trackEndPosX", "trackEndPosY", "trackEndPosZ",
+           "showerStartPosX", "showerStartPosY", "showerStartPosZ",
+           "showerStartDirX", "showerStartDirY", "showerStartDirZ"]
+DFW_CUT = 100.0             # backward wall distance splitting in-TPC vs entering-like
 BR_NOVTX = ["showerVtxIdx", "showerStream", "showerNoVtxScore",
             "nuSliceFlashChi2", "nuSliceNParticles", "fmSliceNParticles",
             "trackVtxIdx", "trackStream",
@@ -148,7 +153,11 @@ BR_OPTIONAL = ["flashObsPE", "nuSlicePredPE"]   # read when present (run-1 table
 TPC_LO = np.array([0.0, -116.5, 0.0]); TPC_HI = np.array([256.35, 116.5, 1036.8])
 BR_MC = ["xsecWeight", "trueVtxInWCFV", "trueNuCCNC", "trueSimPartPDG",
          "trueSimPartE", "trueSimPartPixelSumQ", "trueSimPartProcess",
-         "trueSimPartMID", "trueSimPartTID"]
+         "trueSimPartMID", "trueSimPartTID",
+         "trueSimPartX", "trueSimPartY", "trueSimPartZ",
+         "trueSimPartEndX", "trueSimPartEndY", "trueSimPartEndZ"]
+TRACKLIKE = (13, 211, 321, 2212, 3222, 3112, 3312, 3334)   # charged track-like PDGs
+CONTAIN_DWALL = 10.0        # truth + reco containment: track start/end < this from a wall
 
 
 def set_truth_scale(scale):
@@ -229,6 +238,30 @@ def truth_tables(a):
     cat[out["sig_1g0x"]] = 0
     out["cat"] = cat
     out["ccnc"] = ak.to_numpy(a["trueNuCCNC"]).astype(np.int64)
+    # TRUTH containment, mirroring the reco definition (any nu-stream track
+    # prong start/end < CONTAIN_DWALL of a TPC wall): any charged track-like
+    # particle that deposits charge (Q>0) whose true START or END point is
+    # within CONTAIN_DWALL of the TPC box (or outside it). Only start/end are
+    # in the ntuple, not the trajectory. out["true_track_min_dwall"] is the
+    # smallest such distance (NaN = no track-like deposit), and
+    # out["true_track_min_dwall_ke<N>"] variants apply a KE >= N MeV floor.
+    trk = ak.zeros_like(pdg, dtype=bool)
+    for p_ in TRACKLIKE:
+        trk = trk | (apdg == p_)
+    trk = trk & dep
+    dw = None
+    for pre in ("trueSimPart", "trueSimPartEnd"):
+        for k, c in enumerate("XYZ"):
+            v = a[pre + c]
+            d = np.minimum(v - TPC_LO[k], TPC_HI[k] - v)
+            dw = d if dw is None else np.minimum(dw, d)
+    for kemin in (0.0, 20.0, 50.0):
+        sel_ = trk & (ke >= kemin)
+        tmin = ak.fill_none(ak.min(ak.where(sel_, dw, 1e9), axis=1), np.nan)
+        v = np.asarray(ak.to_numpy(tmin), np.float64)
+        v[v > 1e8] = np.nan
+        out["true_track_min_dwall" + ("" if kemin == 0 else f"_ke{int(kemin)}")] = v
+    out["pc_true"] = out["true_track_min_dwall"] < CONTAIN_DWALL
     return out
 
 
@@ -329,6 +362,21 @@ def reco_tables(a, args):
     if args.novtx:
         is_mu = is_mu & (a["trackStream"] == 0)
     n_mu = ak.to_numpy(ak.sum(is_mu, axis=1)).astype(np.int64)
+    # CONTAINMENT: smallest wall distance of any nu-stream track prong's start
+    # or end point (any PID, any energy); NaN when the event has no track.
+    # Partially contained = this < --contain-dwall (path_tables). Exiting
+    # muons with under-measured range energy are the target (ccmu anatomy).
+    dw = None
+    for pre in ("trackStartPos", "trackEndPos"):
+        for k, c in enumerate("XYZ"):
+            v = a[pre + c]
+            d = np.minimum(v - TPC_LO[k], TPC_HI[k] - v)
+            dw = d if dw is None else np.minimum(dw, d)
+    if args.novtx:
+        dw = ak.where(a["trackStream"] == 0, dw, 1e9)
+    tmin = ak.fill_none(ak.min(dw, axis=1), np.nan)
+    track_min_dwall = np.asarray(ak.to_numpy(tmin), np.float64)
+    track_min_dwall[track_min_dwall > 1e8] = np.nan
     s1 = vtx_ok if not args.novtx else (n_g0 > 0)
     # flash PE observed / predicted for the nu slice (NaN when the branches are
     # absent, no flash, or no prediction) -- the --flashpe-ratio-max cut
@@ -341,7 +389,10 @@ def reco_tables(a, args):
     return dict(run=ak.to_numpy(a["run"]), subrun=ak.to_numpy(a["subrun"]),
                 event=ak.to_numpy(a["event"]), vtx_ok=vtx_ok, chi2=chi2, pe_ratio=pe_ratio,
                 n_g0=n_g0, n_e=n_e, n_mu=n_mu, s1=s1,
+                track_min_dwall=track_min_dwall,
                 _is_g0=is_g0, _E=E, _score=score, _path=path_flag,
+                _spX=a["showerStartPosX"], _spY=a["showerStartPosY"], _spZ=a["showerStartPosZ"],
+                _sdX=a["showerStartDirX"], _sdY=a["showerStartDirY"], _sdZ=a["showerStartDirZ"],
                 _dist=a["showerDistToVtx"],
                 _other_g=(spid == 22) & ((a["showerStream"] == 0) if args.novtx else True))
 
@@ -349,6 +400,27 @@ def reco_tables(a, args):
 def step_index(names, key):
     """Index of the step whose name contains `key` (e.g. 'flash chi2')."""
     return next(i for i, n in enumerate(names) if key in n)
+
+
+def rays_to_wall(st, dr):
+    """Vectorized distance from each start (n,3) along +dir (n,3) to the TPC
+    box boundary; NaN where the start is outside the box or inputs are not
+    finite."""
+    n = len(st)
+    out = np.full(n, np.nan)
+    ok = (np.isfinite(st).all(1) & np.isfinite(dr).all(1)
+          & (st >= TPC_LO).all(1) & (st <= TPC_HI).all(1))
+    if not ok.any():
+        return out
+    S, D = st[ok], dr[ok]
+    with np.errstate(divide="ignore", invalid="ignore"):
+        t = np.where(D > 0, (TPC_HI - S) / D, (TPC_LO - S) / D)
+    t[np.abs(D) < 1e-9] = np.inf
+    t[t < 0] = np.inf
+    tmin = t.min(1)
+    tmin[~np.isfinite(tmin)] = np.nan
+    out[ok] = tmin
+    return out
 
 
 def build_steps(R, thr, chi2_cut, bdt_after=False, pe_ratio_max=None):
@@ -376,6 +448,14 @@ def build_steps(R, thr, chi2_cut, bdt_after=False, pe_ratio_max=None):
     oe = np.asarray(ak.to_numpy(ak.fill_none(oe, -1.0)), np.float64)
     oe[oe < 0] = np.nan
     R["other_gE_max"] = oe
+    # BACKWARD WALL DISTANCE of the leading candidate: distance from its start
+    # point to the TPC box along -direction (NaN if no candidate or start
+    # outside the box). Entering photons point back to a wall within a few
+    # tens of cm; in-FV photons mostly do not -> path split at DFW_CUT.
+    st = np.stack([pick(R["_sp" + c]) for c in "XYZ"], 1)
+    dr = np.stack([pick(R["_sd" + c]) for c in "XYZ"], 1)
+    R["cand_dist_from_wall"] = rays_to_wall(st, -dr)
+    R["cand_dist_to_wall"] = rays_to_wall(st, dr)
     n = len(n_g)
     s1 = R["s1"]
     s2 = s1 & (n_g == 1)
