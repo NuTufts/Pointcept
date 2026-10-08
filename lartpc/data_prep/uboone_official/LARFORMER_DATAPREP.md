@@ -16,6 +16,11 @@ For split-level validation metrics on the resulting `stage3pred_*.h5`
 files, see
 [`../larformer_particle_analysis/README.md`](../larformer_particle_analysis/README.md).
 
+**Processing a new sample end to end** (dlmerged → analysis ntuple): see
+[`../../../docs/reference/Sample_Processing_Procedure.md`](../../../docs/reference/Sample_Processing_Procedure.md).
+Production conversions use the tranche tools (`tranche_*.spec`, `tmux_tier2_tranche.sh`,
+`retry_incomplete_tranche.sh`) rather than the single-file `run_larformer_wconfig.sh` below.
+
 ---
 
 ## The two stages

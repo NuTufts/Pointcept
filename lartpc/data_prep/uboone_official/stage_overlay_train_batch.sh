@@ -38,7 +38,13 @@ for i in $(seq $FIRST $LAST); do
     [ -f "$STAGE/fileno${ZFN}.root" ] && { n=$((n+1)); continue; }
     SRC=$(sed -n "${i}p" "$LIST")
     [ -n "$SRC" ] || { echo "WARN: empty line $i"; continue; }
-    cp "$SRC" "$STAGE/fileno${ZFN}.root" && n=$((n+1))
+    # tier2 sources must be copied (login-only mount); any other source (e.g.
+    # tier1 /cluster/tufts/wongjiradlab/.../globus) is readable from compute
+    # nodes, so stage a symlink -- the task's rm -f then removes only the link
+    case "$SRC" in
+        /cluster/tier2/*) cp "$SRC" "$STAGE/fileno${ZFN}.root" && n=$((n+1)) ;;
+        *) [ -f "$SRC" ] && ln -sf "$SRC" "$STAGE/fileno${ZFN}.root" && n=$((n+1)) ;;
+    esac
 done
 echo "staged $n files (skipped $skip already-converted) -> $STAGE"
 cd $KPV2

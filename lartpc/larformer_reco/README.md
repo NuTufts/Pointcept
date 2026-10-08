@@ -26,6 +26,10 @@ stream + linkage conventions):
 
 ## Running the full chain (merged_sp → ntuple)
 
+> **New sample?** Follow the end-to-end procedure in
+> [`docs/reference/Sample_Processing_Procedure.md`](../../docs/reference/Sample_Processing_Procedure.md)
+> (survey → smoke → tranche conversion → generic `slurm/launch_tranche_chain.sh` → verify → register).
+
 The whole downstream campaign is orchestrated by one dependency-chained SLURM
 submitter, **`slurm/submit_extbnb_chain.sh`** (the name is historical — it is the
 *general* chain and handles both data and MC via the `TRUTH_DIR` knob). Stages:
