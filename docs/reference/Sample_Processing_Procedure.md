@@ -132,6 +132,12 @@ the converter (rc=129, or a stuck ROOT teardown: `scancel` that task). Those lea
 **partial** h5s with no marker. The retry tool deletes the partial outputs and
 retries them. Deterministic crashers are dropped whole into `<spec>.dropped`.
 Never let a partial file into a sample: its sidecar carries the full-file POT.
+The retry goes through the stager, so it is also blocked by the **500 GB
+free-disk guard**: the partial outputs are deleted, the re-conversion refuses,
+and the fileno ends up in `.dropped` as `missing`. That is safe, because the
+file is excluded cleanly. To recover such files later, free disk and re-run
+`retry_incomplete_tranche.sh <spec>` (it skips `.dropped` filenos, so remove the
+line first). This happened to isogamma_run45 fileno 79: a segfault, 441 GB free.
 Files with no MC truth trees (reco-only upstream files) fail every event and
 cannot be recovered (the nue run-3 sample lost 33% this way).
 
@@ -164,11 +170,28 @@ Other knobs (env, pass through): `EXCLUDE_NODES=pax051` (flaky on huge events),
 Partition rules: GPU arrays only `gpu,preempt`, never `wongjiradlab`; CPU arrays
 `batch,wongjiradlab`, ≥60 shards, ≥24 h limits. Do not hunt for limits empirically.
 
-**Recovering a failed inference shard**: rerun that shard by hand (add
-`--skip-events <i>` for an event that crashes one node; it can be rerun on
-another node and its output copied into the tree), then relaunch only the CPU
-tail with `RESUME_AFTER_INF=<job id>` and the same env. That skips prep and
-inference and keeps the lists. Before any rerun, clean the downstream dirs:
+**Recovering failed inference shards.** A failed shard leaves the downstream
+jobs in `DependencyNeverSatisfied`. Typical causes: a bad GPU node
+(`CUDA-capable device(s) is/are busy or unavailable` at model load, as with
+pax007 on 2026-10-07), or one huge event crashing a node (then add
+`--skip-events <i>` to that shard, run the event on another node and copy its
+output into the tree). Procedure: `scancel` the stalled tail jobs, rerun only the
+failed array indices with the chain's inference env, then resubmit the CPU tail
+in resume mode. Example (isogamma_run45, shards 9-11):
+```bash
+export CONFIG=configs/lartpc/larformer/stage4_keypoint/larformer-keypoint2-fullcascade-v6lantern-envslicer.py
+export LARFORMER_BATTERY_SLICER_CKPT=exp/larformer_slicer_s1_mixenriched_v1/model/epoch_2.pth
+export LARFORMER_KP_PARTICLE_CKPT=exp/larformer_particle_s1cache_m2frecipe_rebal_v2_warm2_cew/model/epoch_6.pth
+INF=$(INPUT_LIST=lartpc/larformer_reco/inputlists/merged_sp_<TAG>.txt OUTPUT_DIR=$DATADIR/keypoint2_streams/ NSHARDS=<NINF> \
+  EXTRA_INF_ARGS="--output-tree --gamma-run-scale <g> --sample-kind <kind> --flash-window <lo,hi>" \
+  sbatch --parsable --exclude=<badnode> --export=ALL --array=9-11 --time=24:00:00 lartpc/larformer_reco/slurm/submit_inference_shard.sh)
+TAG=<TAG> DATADIR=$DATADIR TRUTH_DIR=$DATADIR/truth_sidecar LARPID_SAMPLE_TAG=<TAG> WEIGHTS_PKL=<pkl|none> \
+  GAMMA_SPEC=<g> SAMPLE_KIND=<kind> FLASH_WINDOW=<lo,hi> NINF=<NINF> EXCLUDE_NODES=<badnode> RESUME_AFTER_INF=$INF \
+  bash lartpc/larformer_reco/slurm/submit_extbnb_chain.sh
+```
+`NSHARDS` must equal the original NINF (shards are contiguous slices of the
+list). Resume mode keeps the merged_sp list and keypoint2_streams. Before any
+*re-inference* of shards that already wrote output, clean the downstream dirs:
 stale shards poison the glob consumers.
 
 ## STEP 5: verify (all must hold before registering)
@@ -237,10 +260,11 @@ normalizations: versions doc §3c.
 | run-1 intrinsic nue half | mc overlay / 1 | `tranche_nue_run1_half.spec` | `launch_run1nue_half_chain.sh` | `nue_run1_half` | table (mc,1) / 3.6,5.2 | done |
 | run-1 intrinsic nue TRAIN half | mc overlay / 1 | sidecar-only pass (`run_sidecar_only_tranche.sh`) | `launch_run1nue_trainhalf_chain.sh` | `nue_run1_trainhalf` | table (mc,1) / 3.6,5.2 | done (BDT training only) |
 | bnb5e19 | data beam-on / 1 | (pre-existing merged_sp) | `launch_bnb5e19_table_chain.sh` | `bnb5e19_run1_table` | table (data,1) / 2.8,5.0 | done |
-| mcc9.10 isotropic 1γ gun, runs 4/5 | pure MC (CORSIKA) / 4 | `tranche_isogamma_run45.spec` (tier1, symlink staging) | `launch_tranche_chain.sh` via `logs/data_prep/isog_finish.run.sh` | `isogamma_run45` | **0.8325 = (mc,3) proxy** (no (mc,4) cell; no in-time muons to calibrate) / 3.6,5.2 (verified) ; WEIGHTS_PKL none ; LArPID default | launched 2026-10-07 |
+| mcc9.10 isotropic 1γ gun, runs 4/5 | pure MC (CORSIKA) / 4 | `tranche_isogamma_run45.spec` (tier1, symlink staging) | `launch_tranche_chain.sh` via `logs/data_prep/isog_finish.run.sh` | `isogamma_run45` | **0.8325 = (mc,3) proxy** (no (mc,4) cell; no in-time muons to calibrate) / 3.6,5.2 (verified) ; WEIGHTS_PKL none ; LArPID default | chain running (2026-10-08) |
 
 Per-sample notes: **isogamma_run45** has 248 files and 54,670 events (3-829
-per file). All runs are 18961-19752, i.e. period 4, despite the "run45" name.
+per file). 247 files / 53,938 events were converted; fileno 79 was dropped (see STEP 3).
+The user approved the (mc,3) proxy gamma. All runs are 18961-19752, i.e. period 4, despite the "run45" name.
 One γ per event, 0-9.8 GeV (median 0.39), gun t0 3.13-4.72 µs, isotropic, and
 some start outside the TPC. Truth: `trueNuPDG=22`, `trueNuE`=Eγ, `trueVtx`=gun
 start. `trueSimPart` EDep=inf when the photon never converts in the TPC.
