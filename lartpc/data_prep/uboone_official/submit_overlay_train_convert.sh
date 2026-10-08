@@ -40,6 +40,14 @@ case "$MODE" in
   data) CONVFLAGS="--is-data" ;;
   *)    echo "ERROR: MODE must be mc|data (got '$MODE')"; exit 1 ;;
 esac
+# larcv image tick order: mcc9 v28/v29e images are stored tick-backward (-tb);
+# mcc9.10 images are tick-forward. A wrong choice mirrors the drift coordinate
+# (x_reco ~ -x_true - 80 cm on mcc9.10 with -tb), so check it in the smoke.
+case "${TICK:-backward}" in
+  backward) TBFLAG="-tb" ;;
+  forward)  TBFLAG=""    ;;
+  *) echo "ERROR: TICK must be backward|forward (got '$TICK')"; exit 1 ;;
+esac
 
 # skip if this fileno already produced output
 if [ -s "$MARK/fileno${ZFN}.ok" ] || ls "$OUT"/merged_${SAMPLE}_fileno${ZFN}_*.h5 >/dev/null 2>&1; then
@@ -57,7 +65,7 @@ apptainer exec --bind /cluster:/cluster \
   source setenv_pointcept_container.sh >/dev/null 2>&1 && cd $KPV2 && \
   python3 lartpc/data_prep/uboone_official/convert_dlmerged_to_larformer_h5.py \
     -i $LOCAL -o $OUT --tag $SAMPLE --fileno-tag fileno${ZFN} \
-    --adc wire -tb $CONVFLAGS -v 1" 2>&1 | tee "$CLOG/fileno${ZFN}.log"
+    --adc wire $TBFLAG $CONVFLAGS -v 1" 2>&1 | tee "$CLOG/fileno${ZFN}.log"
 RC=${PIPESTATUS[0]}
 NOUT=$(ls "$OUT"/merged_${SAMPLE}_fileno${ZFN}_*.h5 2>/dev/null | wc -l)
 # "Done." is printed only after the entry loop completes; its absence means the

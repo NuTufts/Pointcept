@@ -20,12 +20,13 @@ OUT_ROOT=${OUT_ROOT:-/cluster/tufts/wongjiradlab/larbys/data/larformer/overlay_t
 MODE=${MODE:-mc}                 # mc | data  (data => --is-data, no label completion)
 TRUTH_DIR=${TRUTH_DIR:-}         # MC only; set => sidecar extracted in the task
 MARK=${MARK:-$(dirname "$OUT_ROOT")/markers}
+TICK=${TICK:-backward}         # backward (-tb, mcc9 v28/v29e) | forward (mcc9.10)
 [ -f "$LIST" ] || { echo "ERROR: list not found: $LIST"; exit 1; }
 mkdir -p "$STAGE" "$MARK"
 # disk guard: never start a batch that could fill the volume
 AVAIL_GB=$(df -BG --output=avail /cluster/tufts/wongjiradlab | tail -1 | tr -dc '0-9')
 [ "${AVAIL_GB:-0}" -lt 500 ] && { echo "ERROR: only ${AVAIL_GB}G free on wongjiradlab; aborting"; exit 1; }
-echo "list=$LIST mode=$MODE out=$OUT_ROOT free=${AVAIL_GB}G"
+echo "list=$LIST mode=$MODE tick=$TICK out=$OUT_ROOT free=${AVAIL_GB}G"
 n=0; skip=0
 for i in $(seq $FIRST $LAST); do
     ZFN=$(printf "%05d" $i)
@@ -49,7 +50,7 @@ done
 echo "staged $n files (skipped $skip already-converted) -> $STAGE"
 cd $KPV2
 JID=$(sbatch --parsable \
-      --export=ALL,SAMPLE=$SAMPLE,LIST=$LIST,STAGE=$STAGE,OUT_ROOT=$OUT_ROOT,MODE=$MODE,TRUTH_DIR=$TRUTH_DIR,MARK=$MARK,FILENO_BASE=$FIRST \
+      --export=ALL,SAMPLE=$SAMPLE,LIST=$LIST,STAGE=$STAGE,OUT_ROOT=$OUT_ROOT,MODE=$MODE,TRUTH_DIR=$TRUTH_DIR,MARK=$MARK,TICK=$TICK,FILENO_BASE=$FIRST \
       --array=0-$((LAST-FIRST))${THR} \
       lartpc/data_prep/uboone_official/submit_overlay_train_convert.sh)
 # array index = fileno - FIRST (slurm MaxArraySize is 2000, filenos go higher)

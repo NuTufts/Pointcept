@@ -77,6 +77,7 @@ PDG/time/energy, and the in-time flash-time histogram. Use it to fill this table
 | **Staging** | tier2 sources (`/cluster/tier2/...`) are login-only and get **copied** to `.../mcc9_scratch/tier2_staging/<TAG>` batch by batch. Other paths (e.g. tier1 `.../larbys/data/globus/`) get **symlinked** automatically. |
 | **GAMMA_SPEC** | the flash light-yield scale, baked into the GPU pass. `table` if `flash_calib.GAMMA_SCALE_TABLE` has a `(kind, period)` cell: currently (data,1) (data,3) (mc,1) (mc,3). For any other cell, `table` raises a KeyError. Then either calibrate the cell first (PROTOCOL.md: needs in-time through-going muons, so overlays/data only) or pass an explicit float and **record the proxy choice** in the launcher and the versions doc. MC cells are nearly period-independent ((mc,1)/(mc,3) = 1.03), so the nearest MC cell is the standard proxy for MC. Never use a data cell for MC or vice versa. |
 | **FLASH_WINDOW** | read it off the survey's flash-time histogram and compare with `flash_calib.FLASH_WINDOW_US`: MC 3.6,5.2; run-1 beam-on 2.8,5.0; EXT 3.2,5.4 (EXT **must** pass it explicitly). The launcher requires it. |
+| **TICK** (spec column 10) | larcv image tick order. `backward` (default, converter `-tb`) for the mcc9 v28/v29e productions. **`forward` for mcc9.10** (verified on isogamma_run45). A wrong choice mirrors the drift coordinate (`x_reco ~ -x_true - 80 cm`), and the whole chain still runs "successfully" on garbage. Never assume: STEP 2's geometry check decides. |
 | **SAMPLE_KIND** | derived from MODE by the launcher (`mc`/`data`). |
 | **WEIGHTS_PKL** | GENIE CV xsec-weight pickle in `pointcept_env/gen2ntuple/event_weighting/` matching the sample (run period and nu flavour), e.g. `weights_forCV_v48_Sep24_{bnb_nu,intrinsic_nue}_run{1,3}.pkl`. Use `none` for data and for non-GENIE samples (particle guns); every event then gets `xsecWeight=-1`. |
 | **LArPID weights** | `larpid/model.py:select_checkpoint`: the substring `run3` in `LARPID_SAMPLE_TAG` → alternate weights, else default. The run-period rule: only run-3 samples get `run3` in the tag. The launcher defaults `LARPID_SAMPLE_TAG=$TAG`, so do **not** put `run3` in TAG unless it is a run-3 sample. |
@@ -96,9 +97,11 @@ python3 lartpc/data_prep/uboone_official/convert_dlmerged_to_larformer_h5.py -i 
    --tag <TAG> --fileno-tag fileno00001 --adc wire -tb <--mcc9|--is-data> -v 1 -n 5
 python3 lartpc/larformer_reco/export/extract_truth_sidecar.py --input-dlmerged <file1> --out <smoke>/truth_fileno00001.h5 --max-events 5   # MC
 PYTHONPATH=$K python3 lartpc/data_prep/uboone_official/complete_labels.py --h5 <smoke>/merged_sp/*.h5                                     # MC
+python3 lartpc/data_prep/uboone_official/check_merged_sp_geometry.py --truth <smoke>/truth_fileno00001.h5 <smoke>/merged_sp/*.h5      # MC: MUST print ok
 ```
+(Drop `-tb` for TICK=forward. Use `-n 12` or more so that several events have truth-matched points.)
 
-Check: `Done. 5 entries processed`; MB/event (for the disk budget); s/event
+Check: **the geometry check prints `ok`** (median centroid-minus-true x of a few cm; a ~100 cm or larger offset or negative centroids = wrong TICK). For data (no truth), the all-points x range must sit roughly within [-40, 290] cm. Then: `Done. N entries processed`; MB/event (for the disk budget); s/event
 (the largest file must finish inside the 24 h task limit); the truth sidecar
 attrs (`trueNuPDG`, `trueVtx*`, `truePrimPart`) make sense for the generator.
 Non-neutrino generators go through the same code path: a particle gun is
@@ -210,7 +213,7 @@ print(np.unique(ev["flashGammaEff"].array()))           # == 5.25 * gamma scale 
 print(ev["foundVertex"].array().mean())
 pot = f["potTree"]; print(pot.num_entries, pot["totPOT"].array().sum())   # MC: rows == converted files
 ```
-MC: truth is filled (`trueNuE > 0` for all events, or the gun's E), and
+MC: **reco must follow truth**: `vtxDistToTrue` for foundVertex events should have a median of a few cm (nu samples: within 5 cm for ~87%), and efficiency must depend on truth (e.g. photon converts in the TPC vs not). Flat efficiency vs truth, or vertices hundreds of cm away, means the inputs are wrong (this is how the TICK error was found). Also check that truth is filled (`trueNuE > 0` for all events, or the gun's E), and
 `xsecWeight` is as expected (−1 for `none`; a handful of 0/−1 is normal with a
 pickle). Compare foundVertex and the stream split (nu vs fm counts) with a
 sibling production in the versions doc.
@@ -230,6 +233,13 @@ sibling production in the versions doc.
 ---
 
 ## Gotchas collected from past productions
+
+- **Tick order (mcc9.10)**: the first isogamma_run45 production (2026-10-07) used the
+  default `-tb`. Every job completed cleanly and the ntuple looked complete, but all
+  spacepoints were mirrored in x, giving foundVertex 20% flat in photon energy and
+  vertices a median 4 m from truth. It was discarded and reconverted with TICK=forward.
+  A clean chain is not a correct chain: always run the STEP 2 geometry check and the
+  STEP 5 reco-vs-truth check.
 
 - **Gamma/window are baked into the GPU pass.** A wrong choice means a full
   re-inference. Legacy `GAMMA_SPEC=auto` exists only for reproducing old files.
@@ -260,10 +270,11 @@ normalizations: versions doc §3c.
 | run-1 intrinsic nue half | mc overlay / 1 | `tranche_nue_run1_half.spec` | `launch_run1nue_half_chain.sh` | `nue_run1_half` | table (mc,1) / 3.6,5.2 | done |
 | run-1 intrinsic nue TRAIN half | mc overlay / 1 | sidecar-only pass (`run_sidecar_only_tranche.sh`) | `launch_run1nue_trainhalf_chain.sh` | `nue_run1_trainhalf` | table (mc,1) / 3.6,5.2 | done (BDT training only) |
 | bnb5e19 | data beam-on / 1 | (pre-existing merged_sp) | `launch_bnb5e19_table_chain.sh` | `bnb5e19_run1_table` | table (data,1) / 2.8,5.0 | done |
-| mcc9.10 isotropic 1γ gun, runs 4/5 | pure MC (CORSIKA) / 4 | `tranche_isogamma_run45.spec` (tier1, symlink staging) | `launch_tranche_chain.sh` via `logs/data_prep/isog_finish.run.sh` | `isogamma_run45` | **0.8325 = (mc,3) proxy** (no (mc,4) cell; no in-time muons to calibrate) / 3.6,5.2 (verified) ; WEIGHTS_PKL none ; LArPID default | chain running (2026-10-08) |
+| mcc9.10 isotropic 1γ gun, runs 4/5 | pure MC (CORSIKA) / 4 | `tranche_isogamma_run45.spec` (tier1, symlink staging, **TICK=forward**) | `launch_tranche_chain.sh` via `logs/data_prep/isog_finish.run.sh` | `isogamma_run45` | **0.8325 = (mc,3) proxy** (no (mc,4) cell; no in-time muons to calibrate) / 3.6,5.2 (verified) ; WEIGHTS_PKL none ; LArPID default | reprocessing since 2026-10-08 (first production discarded: wrong tick order) |
 
 Per-sample notes: **isogamma_run45** has 248 files and 54,670 events (3-829
-per file). 247 files / 53,938 events were converted; fileno 79 was dropped (see STEP 3).
+per file). The first production (247 files, fileno 79 dropped) was discarded for the tick-order
+error. The reconversion (TICK=forward, truth sidecars reused) passed the geometry check on its first file.
 The user approved the (mc,3) proxy gamma. All runs are 18961-19752, i.e. period 4, despite the "run45" name.
 One γ per event, 0-9.8 GeV (median 0.39), gun t0 3.13-4.72 µs, isotropic, and
 some start outside the TPC. Truth: `trueNuPDG=22`, `trueNuE`=Eγ, `trueVtx`=gun

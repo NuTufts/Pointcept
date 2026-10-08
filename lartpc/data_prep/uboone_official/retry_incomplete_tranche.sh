@@ -19,7 +19,7 @@ cd "$K"; U=lartpc/data_prep/uboone_official
 DUDS=$U/training_data_ledger/generic_mu_tranche1_dud_filenos.txt
 
 scan () {   # prints "fileno kind" for every unmarked fileno of the spec (kind: dud|partial|missing)
-  while read -r SAMPLE LIST OUT_ROOT MODE TRUTH_DIR STAGE MARK FIRST LAST; do
+  while read -r SAMPLE LIST OUT_ROOT MODE TRUTH_DIR STAGE MARK FIRST LAST _TICK; do
     case "${SAMPLE:-#}" in ''|'#'*) continue ;; esac
     for i in $(seq "$FIRST" "$LAST"); do
       ZFN=$(printf %05d "$i")
@@ -44,7 +44,7 @@ scan () {   # prints "fileno kind" for every unmarked fileno of the spec (kind: 
 }
 clean () {  # delete partial outputs of the filenos on stdin ("fileno ...")
   while read -r i _; do
-    while read -r SAMPLE LIST OUT_ROOT MODE TRUTH_DIR STAGE MARK FIRST LAST; do
+    while read -r SAMPLE LIST OUT_ROOT MODE TRUTH_DIR STAGE MARK FIRST LAST _TICK; do
       case "${SAMPLE:-#}" in ''|'#'*) continue ;; esac
       [ "$i" -ge "$FIRST" ] && [ "$i" -le "$LAST" ] || continue
       ZFN=$(printf %05d "$i"); OUT=$OUT_ROOT/$(printf %03d $((i/100)))
