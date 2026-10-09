@@ -348,6 +348,12 @@ flash. vtxScore does not discriminate (median 0.8 in every category);
 vtxFracHitsOnCosmic is -1 (unfilled) for this sample. 30% of events have no
 in-window flash in the ntuple vs ~18% expected from the dlmerged flash-time survey
 (not yet understood).
+Plots (`physics/single_photon/isogamma_flashchi2_plots.py` -> `plots_isogamma/`,
+gitignored): stacked log10(chi2) by vertex category; efficiency and purity vs the
+cut, denominator/signal = photon converts in the TPC (39,940 events). At
+log10(chi2) < 2.5 (3.0): event-level efficiency 0.44 (0.49) with purity 0.98
+(0.97); requiring the vertex on the photon, 0.31 (0.34) with purity 0.70 (0.67).
+Without a chi2 cut (no-flash events kept) 0.75 / 0.37 efficiency, 0.79 / 0.39 purity.
 
 **EXT second half (2026-09-18/19):** tranche C of the stride-2 list
 (`uboone_official/tranche_ext_run1_C.spec`, filenos 6901-13801, data mode into the
