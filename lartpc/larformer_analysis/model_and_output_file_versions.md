@@ -335,6 +335,19 @@ pick), 75% when it converts, 79% converting >10 cm from the walls, rising from
 61% (E<50 MeV) to 83% (0.8-2 GeV); >=1 reco shower in 97% of fiducial
 conversions. Use: photon-reco efficiency/resolution studies and single-photon
 selection signal shape; never stack it with beam samples.
+Flash chi2 vs vertex placement (`physics/single_photon/isogamma_flashchi2_study.py`):
+of 37,853 found vertices, 39% are on the photon (<5 cm from the conversion point),
+4% ambiguous (5-20 cm), 57% on a cosmic. log10(nuSliceFlashChi2): photon vertices
+median 1.95 (10-90%: 1.6-2.5), cosmic picks 3.2 (converting events) / 4.2 (photon
+never converted), and 26% / 64% of cosmic picks have NO in-window flash (chi2 -1).
+Cut log10(chi2) < 2.5: photon-vertex eff 84%, cosmic-pick leak 20%, purity 70%
+(< 3.0: 90% / 25% / 67%). The leaking cosmic picks are NOT the photon's own slice
+with a misplaced vertex (only 12% of them have a reco shower within 10 cm of the
+conversion point, same as the failing ones): they are cosmic slices that match the
+flash. vtxScore does not discriminate (median 0.8 in every category);
+vtxFracHitsOnCosmic is -1 (unfilled) for this sample. 30% of events have no
+in-window flash in the ntuple vs ~18% expected from the dlmerged flash-time survey
+(not yet understood).
 
 **EXT second half (2026-09-18/19):** tranche C of the stride-2 list
 (`uboone_official/tranche_ext_run1_C.spec`, filenos 6901-13801, data mode into the
