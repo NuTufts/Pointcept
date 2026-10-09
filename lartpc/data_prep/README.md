@@ -60,14 +60,14 @@ Simulation should be scaled by POT to match the beam data. EXTBNB is scaled by t
 
 Info for 'uboone official' samples
 
-* mcc9_v29e_dl_run1_C1_extbnb: Run 1 C1 EXTBNB. Full sample number of spills: 23090946
+* mcc9_v29e_dl_run1_C1_extbnb: Run 1 C1 EXTBNB. Full sample number of spills: 94414115
   Subsets: the exact spill count for a subset of files is hard to recompute, so a
   subset is normalized by its file fraction x the full-sample spills (user decision
   2026-09-12). The stride-2 list (`mcc9_v29e_dl_run1_C1_extbnb_stride2.txt`, 13,801 of
   27,602 files) is every other file; the run-1 EXT half-stride-2 production (tranches
   A+B, filenos 1-6900 of that list) is 6,900 / 27,602 = 25% of the full sample ->
   5,772,737 spills. Tranche A alone (filenos 1-1000, `extbnb_run1_A`) is 3.62% -> 836,629 spills.
-* mcc9_v28_wctagger_bnb5e19: Run 1 open beam data. POT: 4.4e19; number of spills: 94414115
+* mcc9_v28_wctagger_bnb5e19: Run 1 open beam data. POT: 4.4e19; number of spills: 23090946
 * mcc9_v28_run1_nueintrinsics: Run 1 intrinsic-nue overlay MC, 4,000 tier2 files
   (`uboone_official/inputlists/mcc9_v28_wctagger_nueintrinsics_tier2.txt`). The
   analysis half = the ledger's RESERVED list (2,014 files) converted 2026-09-17
@@ -75,6 +75,10 @@ Info for 'uboone official' samples
   82,624 events, totPOT 4.9065e22; `tranche_nue_run1_half.spec`, chain launcher
   `larformer_reco/slurm/launch_run1nue_half_chain.sh`). The TRAINPOOL half in
   overlay_train/ is training data without sidecars.
+* mcc9.10_isotropic_one_gamma_run45: isotropic single-photon gun with simulated CORSIKA
+  cosmics (248 files, 54,670 events; 247 files / 53,938 events converted 2026-10-09 into
+  `$L/mcc9.10_isotropic_one_gamma_run45/`, TICK=forward). No normalization: a particle gun
+  has no POT (the potTree values are meaningless) and no spill count. Performance sample only.
 * mcc9_v28_run1_bnboverlay: Run 1 BNB nu overlay MC, 9,538 tier2 files. The run-1
   overlay HALF production (`run1_bnboverlay_half/`, 2026-09-13) converts the
   TRAINPOOL list (4,740 files = unbiased 50% by md5 parity, see

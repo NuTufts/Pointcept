@@ -276,11 +276,15 @@ normalizations: versions doc §3c.
 | run-1 intrinsic nue half | mc overlay / 1 | `tranche_nue_run1_half.spec` | `launch_run1nue_half_chain.sh` | `nue_run1_half` | table (mc,1) / 3.6,5.2 | done |
 | run-1 intrinsic nue TRAIN half | mc overlay / 1 | sidecar-only pass (`run_sidecar_only_tranche.sh`) | `launch_run1nue_trainhalf_chain.sh` | `nue_run1_trainhalf` | table (mc,1) / 3.6,5.2 | done (BDT training only) |
 | bnb5e19 | data beam-on / 1 | (pre-existing merged_sp) | `launch_bnb5e19_table_chain.sh` | `bnb5e19_run1_table` | table (data,1) / 2.8,5.0 | done |
-| mcc9.10 isotropic 1γ gun, runs 4/5 | pure MC (CORSIKA) / 4 | `tranche_isogamma_run45.spec` (tier1, symlink staging, **TICK=forward**) | `launch_tranche_chain.sh` via `logs/data_prep/isog_finish.run.sh` | `isogamma_run45` | **0.8325 = (mc,3) proxy** (no (mc,4) cell; no in-time muons to calibrate) / 3.6,5.2 (verified) ; WEIGHTS_PKL none ; LArPID default | reprocessing since 2026-10-08 (first production discarded: wrong tick order) |
+| mcc9.10 isotropic 1γ gun, runs 4/5 | pure MC (CORSIKA) / 4 | `tranche_isogamma_run45.spec` (tier1, symlink staging, **TICK=forward**) | `launch_tranche_chain.sh` via `logs/data_prep/isog_finish.run.sh` | `isogamma_run45` | **0.8325 = (mc,3) proxy** (no (mc,4) cell; no in-time muons to calibrate) / 3.6,5.2 (verified) ; WEIGHTS_PKL none ; LArPID default | DONE 2026-10-09 (247/248 files, 53,938 ev; registered in versions doc §3c) |
 
 Per-sample notes: **isogamma_run45** has 248 files and 54,670 events (3-829
 per file). The first production (247 files, fileno 79 dropped) was discarded for the tick-order
-error. The reconversion (TICK=forward, truth sidecars reused) passed the geometry check on its first file.
+error. The reconversion (TICK=forward, truth sidecars reused) passed the geometry check and the
+reco-vs-truth check (foundVertex 70%, rising with photon energy; reco vertex within 5 cm of the
+true conversion point in 50% of found-vertex events). **Gun-sample caveat:** `trueVtx*` and
+hence `vtxDistToTrue` refer to the photon ORIGIN; the conversion point is the photon's
+`trueSimPart` EDep in the truth sidecar (`physics/single_photon/verify_isogamma_ntuple.py`).
 The user approved the (mc,3) proxy gamma. All runs are 18961-19752, i.e. period 4, despite the "run45" name.
 One γ per event, 0-9.8 GeV (median 0.39), gun t0 3.13-4.72 µs, isotropic, and
 some start outside the TPC. Truth: `trueNuPDG=22`, `trueNuE`=Eγ, `trueVtx`=gun

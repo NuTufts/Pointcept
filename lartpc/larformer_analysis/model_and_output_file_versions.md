@@ -278,6 +278,7 @@ showerNoVtxScore, vertex-less prongs). `$L=/cluster/tufts/wongjiradlab/larbys/da
 | run-1 INTRINSIC-NUE overlay half (mcc9_v28 nueintrinsics RESERVED half = unbiased 50% by md5 parity; NOT the training half) | `$L/run1_nueintrinsics_half/dlgen2_larformer_ntuple_nue_run1_half.root` | 82,624 | potTree 2,006 rows, totPOT 4.9065e22; gamma_eff 4.502 (mc,1), window 3.6-5.2; run-1 intrinsic-nue xsec pickle (767 events weight 0, 3 events -1) |
 | run-1 EXT SECOND half (C1 extbnb stride-2 filenos 6901-13801 = another 25% of full C1; disjoint from the first half) | `$L/run1_C1_extbnb_half2/dlgen2_larformer_ntuple_extbnb_run1_half2.root` | 114,638 | 5,772,737 spills (6,900 files; one deterministic crasher dropped); gamma_eff 2.861, window 3.2-5.4. Both EXT halves together = 13,800/27,602 of C1 = 11,545,474 spills |
 | run-1 INTRINSIC-NUE overlay TRAINING half (mcc9_v28 nueintrinsics TRAINPOOL; for training the nue-CC BDTs ONLY -- never as the analysis sample) | `$L/run1_nueintrinsics_trainhalf/dlgen2_larformer_ntuple_nue_run1_trainhalf.root` | 81,470 | potTree 1,975 rows, totPOT 4.8425e22 (-> data 9.086e-4 x xsecWeight); gamma_eff 4.502, window 3.6-5.2; nue run-1 xsec pickle (826 events weight 0, 2 events -1) |
+| mcc9.10 ISOTROPIC SINGLE-PHOTON gun, run period 4 (runs 18961-19752; pure MC with simulated CORSIKA cosmics, one photon per event, 0-10 GeV, uniform in the TPC, isotropic; a reco-performance sample, NOT a beam sample) | `$L/mcc9.10_isotropic_one_gamma_run45/dlgen2_larformer_ntuple_isogamma_run45.root` | 53,938 | NO normalization (particle gun: potTree 247 rows but POT meaningless, xsecWeight -1 for all); gamma_eff 4.371 = 5.25 x 0.8325 (**proxy**: the (mc,3) cell, no (mc,4) cell exists and a gun has no in-time muons to calibrate one), window 3.6-5.2; LArPID default |
 **Normalization for data-vs-MC (data as the reference):**
 EXT-half -> data: scale by spills 94,414,115 / 5,772,737 = 16.355 (beam-off
 cosmic normalization; hygiene halves per section 7 still apply to EXT rows);
@@ -313,6 +314,28 @@ stacking, remove true nue CC from the BNB overlay or do not add this sample
 on top of it without that veto. Intermediates in `$L/run1_nueintrinsics_half/`;
 kp2 lists `outputlists/keypoint2_out_nue_run1_half_{nu,fm}.txt` (do NOT regenerate).
 
+**Isotropic single-photon gun (2026-10-07/09), for photon reco performance:**
+248 dlmerged files (`uboone_official/inputlists/mcc9.10_isotropic_one_gamma_run45.txt`,
+tier1 globus) converted in MC mode with truth sidecars + label completion
+(`uboone_official/tranche_isogamma_run45.spec`, **TICK=forward**: mcc9.10 images
+are tick-forward, the first production with the default -tb mirrored x and was
+discarded; see `docs/reference/Sample_Processing_Procedure.md`). 247 files
+converted, fileno 79 dropped (deterministic converter segfault). Launcher: the
+generic `larformer_reco/slurm/launch_tranche_chain.sh` (TAG isogamma_run45,
+EXCLUDE_NODES=pax007). Verified: 12/12 inference shards, all CPU stages 60/60,
+0 tracebacks, hadd 53,938 == merged_sp list, 53,936 nu-stream + 3 fm files.
+Truth: `trueNuPDG`=22, `trueNuE`=photon energy, `trueVtx*`=photon ORIGIN (the gun
+point), so **`vtxDistToTrue` measures distance to the origin, not to the
+conversion point** (median 43.6 cm; the photon flies a median 23 cm). Against the
+true conversion point (`trueSimPart` EDep of the photon, in the sidecar): reco
+vertex within 5 cm for 50% of found-vertex events (26% at E<100 MeV, 55% above
+1 GeV); the rest sit on a cosmic. Reco vs truth: foundVertex 70% overall, 57% when
+the photon never converts in the TPC (cosmic-only events; the vertex is a cosmic
+pick), 75% when it converts, 79% converting >10 cm from the walls, rising from
+61% (E<50 MeV) to 83% (0.8-2 GeV); >=1 reco shower in 97% of fiducial
+conversions. Use: photon-reco efficiency/resolution studies and single-photon
+selection signal shape; never stack it with beam samples.
+
 **EXT second half (2026-09-18/19):** tranche C of the stride-2 list
 (`uboone_official/tranche_ext_run1_C.spec`, filenos 6901-13801, data mode into the
 same `run1_C1_extbnb/merged_sp` root as A+B; 13,796 markers total), launcher
@@ -347,6 +370,12 @@ potTree == files. Content matches the first half to the per-mille: numu 99.35 vs
 per event in both -- so the two halves can be used as tune/predict partners or
 hadd'ed (365k events, 4.6533e20 POT). Intermediates in `$L/run1_bnboverlay_half2/`;
 kp2 lists `outputlists/keypoint2_out_bnbovl_run1_half2_{nu,fm}.txt` (do NOT regenerate).
+
+**NOTE 2026-09-23 (nue_cc):** the two BNB-overlay halves are NOT perfectly
+disjoint: one dlmerged file, run 7023 subrun 193 (49 events; fileid 2596 in the
+first half, 977 in the second), appears in both (identical truth). Analyses
+that hadd/stack the halves should drop it once; `nue_cc_common.load_one_table`
+dedupes by (run,subrun,event). The EXT halves were checked and are disjoint.
 
 **bnb5e19_run1_table provenance (2026-09-15/16):** launcher
 `larformer_reco/slurm/launch_bnb5e19_table_chain.sh`; event membership + order =
@@ -473,12 +502,6 @@ silently DISABLES the BDT (score -9) rather than erroring.
 - Confusion A/B subset: `larformer_reco/inputlists/merged_sp_confusion_test2000.txt`;
   kp2 outputs `larformer_reco/output/kp2_conf_test2000_{old,new,cew6}/`.
 
-### 7c. Single-photon study, FRESH-PAIR ntuples (2026-09-10)
-Verified on the promoted ntuples: `showerCosmicScore` = cew6 model (WP 0.164),
-but `showerNoVtxScore` was still the EP8 vertex-free model — the exporter
-default `export/data/shower_novtx_bdt.joblib` held ep8 while the cew6 retrain
-sat as `shower_novtx_bdt_cew6.joblib`. FIXED: the default is now the cew6
-model (ep8 archived `shower_novtx_bdt_ep8.joblib`); the next re-export bakes
 ### 7d. Single-photon study on the RUN-1 table-gamma samples (2026-09-23)
 The single-photon scripts now DEFAULT to run-1 MC (both BNB-overlay halves,
 370,580 events after dropping the 49 shared rows, POT 4.6533e20) + run-1 EXT
@@ -493,6 +516,12 @@ eff 0.254 / purity 0.320 at chi2 < 316 (data/pred 1.03), eff 0.220 / purity
 `physics/single_photon/RUN1_SINGLE_PHOTON_TABLES.md`; normalization utility
 `physics/single_photon/ext_norm_sideband.py`.
 
+### 7c. Single-photon study, FRESH-PAIR ntuples (2026-09-10)
+Verified on the promoted ntuples: `showerCosmicScore` = cew6 model (WP 0.164),
+but `showerNoVtxScore` was still the EP8 vertex-free model — the exporter
+default `export/data/shower_novtx_bdt.joblib` held ep8 while the cew6 retrain
+sat as `shower_novtx_bdt_cew6.joblib`. FIXED: the default is now the cew6
+model (ep8 archived `shower_novtx_bdt_ep8.joblib`); the next re-export bakes
 it, until then pass `--novtx-model`. Single-photon result with both cew6
 BDTs: eff 0.218 / purity 0.342, EXT 85, data/pred 1.08 (ep8 chain 0.198 /
 0.350; cew6 + stale BDTs 0.219 / 0.307). Tables:
