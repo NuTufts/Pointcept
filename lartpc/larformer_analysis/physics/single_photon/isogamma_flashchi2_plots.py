@@ -145,7 +145,7 @@ def fig_eff_pur(conv, fv, d, lchi, out_eff, out_pur):
         ax.set_xlabel("cut value c:  log10(nu-slice flash chi2) < c", color=INK)
         ax.set_ylabel(ylab, color=INK)
         ax.set_title("isogamma_run45: " + title, color=INK, fontsize=9.5, loc="left")
-        ax.legend(frameon=False, fontsize=9, loc="lower right" if "ffic" in ylab else "center right")
+        ax.legend(frameon=False, fontsize=9, loc="lower right")
         style(ax)
         fig.tight_layout()
         fig.savefig(out, dpi=150)
