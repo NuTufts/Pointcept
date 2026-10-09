@@ -23,9 +23,10 @@ MARK=${MARK:-$(dirname "$OUT_ROOT")/markers}
 TICK=${TICK:-backward}         # backward (-tb, mcc9 v28/v29e) | forward (mcc9.10)
 [ -f "$LIST" ] || { echo "ERROR: list not found: $LIST"; exit 1; }
 mkdir -p "$STAGE" "$MARK"
-# disk guard: never start a batch that could fill the volume
+# disk guard: never start a batch that could fill the volume (MIN_FREE_GB: the
+# retry tool lowers it, a retry is a handful of files)
 AVAIL_GB=$(df -BG --output=avail /cluster/tufts/wongjiradlab | tail -1 | tr -dc '0-9')
-[ "${AVAIL_GB:-0}" -lt 500 ] && { echo "ERROR: only ${AVAIL_GB}G free on wongjiradlab; aborting"; exit 1; }
+[ "${AVAIL_GB:-0}" -lt "${MIN_FREE_GB:-500}" ] && { echo "ERROR: only ${AVAIL_GB}G free on wongjiradlab (< ${MIN_FREE_GB:-500}G); aborting"; exit 1; }
 echo "list=$LIST mode=$MODE tick=$TICK out=$OUT_ROOT free=${AVAIL_GB}G"
 n=0; skip=0
 for i in $(seq $FIRST $LAST); do

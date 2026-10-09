@@ -135,12 +135,15 @@ the converter (rc=129, or a stuck ROOT teardown: `scancel` that task). Those lea
 **partial** h5s with no marker. The retry tool deletes the partial outputs and
 retries them. Deterministic crashers are dropped whole into `<spec>.dropped`.
 Never let a partial file into a sample: its sidecar carries the full-file POT.
-The retry goes through the stager, so it is also blocked by the **500 GB
-free-disk guard**: the partial outputs are deleted, the re-conversion refuses,
-and the fileno ends up in `.dropped` as `missing`. That is safe, because the
-file is excluded cleanly. To recover such files later, free disk and re-run
-`retry_incomplete_tranche.sh <spec>` (it skips `.dropped` filenos, so remove the
-line first). This happened to isogamma_run45 fileno 79: a segfault, 441 GB free.
+Conversion tasks run on `batch,preempt,wongjiradlab` and are **not requeued**,
+so preempted tasks show up as `missing` filenos (21 of 248 for isogamma_run45);
+the retry pass recovers them. The retry relaxes the stager's free-disk guard to
+`RETRY_MIN_FREE_GB` (default 100 GB; full batches need 500 GB, `MIN_FREE_GB`).
+If a retry batch cannot be submitted at all, the tool **stops with exit 2 and
+drops nothing**, and the finisher does not launch the chain. (Before 2026-10-09 it
+silently dropped such filenos as if they were crashers, and the launcher accepted
+the loss.) Only filenos that still fail after real retries go to `<spec>.dropped`.
+To re-attempt a dropped fileno, remove its line from `.dropped` and re-run the tool.
 Files with no MC truth trees (reco-only upstream files) fail every event and
 cannot be recovered (the nue run-3 sample lost 33% this way).
 
@@ -168,7 +171,7 @@ to `lartpc/larformer_reco/{inputlists,outputlists}/*_<TAG>*.txt`. **Never
 regenerate** the kp2 lists after the fact: nu_reco and larpid shards are keyed
 by line number.
 
-Other knobs (env, pass through): `EXCLUDE_NODES=pax051` (flaky on huge events),
+Other knobs (env, pass through): **`EXCLUDE_NODES=pax007`** (its GPUs intermittently fail at model load with "CUDA-capable device(s) is/are busy or unavailable": 3 shards in each of the two isogamma launches) and `pax051` (flaky on huge events). Use it by default,
 `NNR`/`NEXP` (CPU shards, default 60), `NU_RECO_EXTRA_ARGS`, `INF_EXTRA_ARGS`.
 Partition rules: GPU arrays only `gpu,preempt`, never `wongjiradlab`; CPU arrays
 `batch,wongjiradlab`, ≥60 shards, ≥24 h limits. Do not hunt for limits empirically.
@@ -255,6 +258,9 @@ sibling production in the versions doc.
   fixed from a segfault in ubdl/ublarcvapp). Such files produce no events.
 - **LArMatch score name differs** (MC `lm_score` vs EXT `larmatch_score`). The
   cascade disables the lm pre-filter, so this only matters for training data.
+- **Check the conversion count before trusting a launch**: the launcher's marker guard
+  allows `dropped + NDUD` missing files. Read `<spec>.dropped` and make sure every entry
+  is a real crasher (failed after retries), not a never-retried fileno.
 - **Heavy work goes to batch** (sbatch). Only the tmux sequencer and the
   tier2 copies run on a login node.
 

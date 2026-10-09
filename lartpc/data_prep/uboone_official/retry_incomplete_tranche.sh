@@ -80,7 +80,13 @@ for round in $(seq 1 "$ROUNDS"); do
     for t in "${TODO[@]}"; do i=${t%% *}; if [ "$i" -ge "$FIRST" ] && [ "$i" -le "$LAST" ]; then echo "$line" >> "$RETRY"; break; fi; done
   done < "$SPEC"
   echo ">>> retry spec: $RETRY ($(grep -c . "$RETRY") batches)"
-  bash $U/run_tier2_tranche.sh "$RETRY"
+  # a retry is small: relax the stager's free-disk guard (500 G for full batches).
+  # If any retry batch was NOT submitted (disk guard, sbatch error), its filenos
+  # were never retried: stop WITHOUT dropping them (they are not crashers).
+  ROUT=$(MIN_FREE_GB=${RETRY_MIN_FREE_GB:-100} bash $U/run_tier2_tranche.sh "$RETRY" 2>&1); echo "$ROUT"
+  if echo "$ROUT" | grep -q "no job id"; then
+    echo "ERROR: a retry batch was not submitted (see above); nothing dropped. Fix the cause and re-run this tool." >&2; exit 2
+  fi
 done
 mapfile -t LEFT < <(scan | grep -vE ' (dud|sidecaronly)$' || true)
 echo ">>> still incomplete after retries: ${#LEFT[@]}"; printf '    %s\n' "${LEFT[@]}"
