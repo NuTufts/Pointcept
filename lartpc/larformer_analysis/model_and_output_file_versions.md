@@ -278,7 +278,6 @@ showerNoVtxScore, vertex-less prongs). `$L=/cluster/tufts/wongjiradlab/larbys/da
 | run-1 INTRINSIC-NUE overlay half (mcc9_v28 nueintrinsics RESERVED half = unbiased 50% by md5 parity; NOT the training half) | `$L/run1_nueintrinsics_half/dlgen2_larformer_ntuple_nue_run1_half.root` | 82,624 | potTree 2,006 rows, totPOT 4.9065e22; gamma_eff 4.502 (mc,1), window 3.6-5.2; run-1 intrinsic-nue xsec pickle (767 events weight 0, 3 events -1) |
 | run-1 EXT SECOND half (C1 extbnb stride-2 filenos 6901-13801 = another 25% of full C1; disjoint from the first half) | `$L/run1_C1_extbnb_half2/dlgen2_larformer_ntuple_extbnb_run1_half2.root` | 114,638 | 5,772,737 spills (6,900 files; one deterministic crasher dropped); gamma_eff 2.861, window 3.2-5.4. Both EXT halves together = 13,800/27,602 of C1 = 11,545,474 spills |
 | run-1 INTRINSIC-NUE overlay TRAINING half (mcc9_v28 nueintrinsics TRAINPOOL; for training the nue-CC BDTs ONLY -- never as the analysis sample) | `$L/run1_nueintrinsics_trainhalf/dlgen2_larformer_ntuple_nue_run1_trainhalf.root` | 81,470 | potTree 1,975 rows, totPOT 4.8425e22 (-> data 9.086e-4 x xsecWeight); gamma_eff 4.502, window 3.6-5.2; nue run-1 xsec pickle (826 events weight 0, 2 events -1) |
-| mcc9.10 ISOTROPIC SINGLE-PHOTON gun, run period 4 (runs 18961-19752; pure MC with simulated CORSIKA cosmics, one photon per event, 0-10 GeV, uniform in the TPC, isotropic; a reco-performance sample, NOT a beam sample) | `$L/mcc9.10_isotropic_one_gamma_run45/dlgen2_larformer_ntuple_isogamma_run45.root` | 53,938 | NO normalization (particle gun: potTree 247 rows but POT meaningless, xsecWeight -1 for all); gamma_eff 4.371 = 5.25 x 0.8325 (**proxy**: the (mc,3) cell, no (mc,4) cell exists and a gun has no in-time muons to calibrate one), window 3.6-5.2; LArPID default |
 **Normalization for data-vs-MC (data as the reference):**
 EXT-half -> data: scale by spills 94,414,115 / 5,772,737 = 16.355 (beam-off
 cosmic normalization; hygiene halves per section 7 still apply to EXT rows);
@@ -313,47 +312,6 @@ BNB nu overlay's own intrinsic-nue content (that sample has 0.7% nue): when
 stacking, remove true nue CC from the BNB overlay or do not add this sample
 on top of it without that veto. Intermediates in `$L/run1_nueintrinsics_half/`;
 kp2 lists `outputlists/keypoint2_out_nue_run1_half_{nu,fm}.txt` (do NOT regenerate).
-
-**Isotropic single-photon gun (2026-10-07/09), for photon reco performance:**
-248 dlmerged files (`uboone_official/inputlists/mcc9.10_isotropic_one_gamma_run45.txt`,
-tier1 globus) converted in MC mode with truth sidecars + label completion
-(`uboone_official/tranche_isogamma_run45.spec`, **TICK=forward**: mcc9.10 images
-are tick-forward, the first production with the default -tb mirrored x and was
-discarded; see `docs/reference/Sample_Processing_Procedure.md`). 247 files
-converted, fileno 79 dropped (deterministic converter segfault). Launcher: the
-generic `larformer_reco/slurm/launch_tranche_chain.sh` (TAG isogamma_run45,
-EXCLUDE_NODES=pax007). Verified: 12/12 inference shards, all CPU stages 60/60,
-0 tracebacks, hadd 53,938 == merged_sp list, 53,936 nu-stream + 3 fm files.
-Truth: `trueNuPDG`=22, `trueNuE`=photon energy, `trueVtx*`=photon ORIGIN (the gun
-point), so **`vtxDistToTrue` measures distance to the origin, not to the
-conversion point** (median 43.6 cm; the photon flies a median 23 cm). Against the
-true conversion point (`trueSimPart` EDep of the photon, in the sidecar): reco
-vertex within 5 cm for 50% of found-vertex events (26% at E<100 MeV, 55% above
-1 GeV); the rest sit on a cosmic. Reco vs truth: foundVertex 70% overall, 57% when
-the photon never converts in the TPC (cosmic-only events; the vertex is a cosmic
-pick), 75% when it converts, 79% converting >10 cm from the walls, rising from
-61% (E<50 MeV) to 83% (0.8-2 GeV); >=1 reco shower in 97% of fiducial
-conversions. Use: photon-reco efficiency/resolution studies and single-photon
-selection signal shape; never stack it with beam samples.
-Flash chi2 vs vertex placement (`physics/single_photon/isogamma_flashchi2_study.py`):
-of 37,853 found vertices, 39% are on the photon (<5 cm from the conversion point),
-4% ambiguous (5-20 cm), 57% on a cosmic. log10(nuSliceFlashChi2): photon vertices
-median 1.95 (10-90%: 1.6-2.5), cosmic picks 3.2 (converting events) / 4.2 (photon
-never converted), and 26% / 64% of cosmic picks have NO in-window flash (chi2 -1).
-Cut log10(chi2) < 2.5: photon-vertex eff 84%, cosmic-pick leak 20%, purity 70%
-(< 3.0: 90% / 25% / 67%). The leaking cosmic picks are NOT the photon's own slice
-with a misplaced vertex (only 12% of them have a reco shower within 10 cm of the
-conversion point, same as the failing ones): they are cosmic slices that match the
-flash. vtxScore does not discriminate (median 0.8 in every category);
-vtxFracHitsOnCosmic is -1 (unfilled) for this sample. 30% of events have no
-in-window flash in the ntuple vs ~18% expected from the dlmerged flash-time survey
-(not yet understood).
-Plots (`physics/single_photon/isogamma_flashchi2_plots.py` -> `plots_isogamma/`,
-gitignored): stacked log10(chi2) by vertex category; efficiency and purity vs the
-cut, denominator/signal = photon converts in the TPC (39,940 events). At
-log10(chi2) < 2.5 (3.0): event-level efficiency 0.44 (0.49) with purity 0.98
-(0.97); requiring the vertex on the photon, 0.31 (0.34) with purity 0.70 (0.67).
-Without a chi2 cut (no-flash events kept) 0.75 / 0.37 efficiency, 0.79 / 0.39 purity.
 
 **EXT second half (2026-09-18/19):** tranche C of the stride-2 list
 (`uboone_official/tranche_ext_run1_C.spec`, filenos 6901-13801, data mode into the
@@ -424,6 +382,103 @@ Intermediates: `$L/run1_bnboverlay_half/{keypoint2_streams,nu_reco_streams_*,
 nu_reco_larpid_*,truth_sidecar,merged_sp}`; kp2 lists in
 `lartpc/larformer_reco/outputlists/keypoint2_out_bnbovl_run1_half_{nu,fm}.txt`
 (do NOT regenerate: nu_reco/larpid shards are keyed by their line numbers).
+
+### 3d. ISOTROPIC SINGLE-PHOTON GUN sample (mcc9.10, run period 4) — added 2026-10-09; photon reco-performance sample, NOT a beam sample
+
+**What it is.** Official MicroBooNE mcc9.10 `isotropic_one_gamma` production: one
+photon per event, shot from a point uniform in the TPC with an isotropic direction,
+energy 0-10 GeV (median 0.39 GeV), start time 3.13-4.72 us (inside the beam
+window), on top of SIMULATED CORSIKA cosmics (pure MC, not a data overlay). Run
+numbers 18961-19752 = run period 4 for every file (the "run45" in the name is the
+production's, not what is in the files). 248 dlmerged files / 54,670 events,
+`$K/lartpc/data_prep/uboone_official/inputlists/mcc9.10_isotropic_one_gamma_run45.txt`
+(tier1, `.../larbys/data/globus/isotropic_one_gamma_run45_reco2_prod_reco2_dlreco_4a/`).
+
+**Use it for:** photon reconstruction efficiency and resolution vs energy and
+position, the signal shape of single-photon selections, and flash-matching
+behaviour of a lone shower. **Do not** stack it with beam samples, normalize it
+to POT or spills, or use it to calibrate the flash gamma (no in-time muons).
+
+| item | value |
+|---|---|
+| ntuple | `$L/mcc9.10_isotropic_one_gamma_run45/dlgen2_larformer_ntuple_isogamma_run45.root` |
+| events | **53,938** (247 of 248 files; fileno 79 dropped: deterministic converter segfault). 53,936 nu-stream + 3 flash-match cascade files; `primaryVtxStream` 0 for all but 2 found vertices |
+| normalization | **none**. potTree has 247 rows but the POT of a particle gun is meaningless; `xsecWeight` = -1 for every event (`WEIGHTS_PKL=none`) |
+| chain | v2_s1ep2p8cew6 (section 1): slicer mixenriched epoch_2, segmenter cew epoch_6, keypoint epoch_30, cew6 shower BDTs, attachment LLR thr 4.0, LArPID DEFAULT weights (tag has no `run3`) |
+| flash gamma | `flashGammaEff` 4.371 = 5.25 x 0.8325 = the **(mc,3) cell used as a PROXY**: no (mc,4) cell is measured and a gun sample has no muons to measure one with; (mc,1)/(mc,3) agree to 3%. User-approved 2026-10-08. Flash window 3.6-5.2 us (verified on this sample's flash-time histogram), `SAMPLE_KIND=mc` |
+| intermediates | `$L/mcc9.10_isotropic_one_gamma_run45/{merged_sp,truth_sidecar,markers,keypoint2_streams,nu_reco_streams_{nu,fm},nu_reco_larpid_{nu,fm}}`; lists `larformer_reco/inputlists/merged_sp_isogamma_run45.txt`, `outputlists/keypoint2_out_isogamma_run45_{nu,fm}.txt` (do NOT regenerate) |
+| provenance | spec `uboone_official/tranche_isogamma_run45.spec` (MC mode, truth sidecars, label completion, **TICK=forward**), launcher `larformer_reco/slurm/launch_tranche_chain.sh` (TAG isogamma_run45, NINF=12, EXCLUDE_NODES=pax007). Procedure: `docs/reference/Sample_Processing_Procedure.md` |
+
+**Processing history (why this took three attempts).** (1) 2026-10-07: converted
+with the default `-tb`; mcc9.10 larcv images are TICK-FORWARD, so every spacepoint
+was mirrored in x (x_reco ~ -x_true - 80 cm). The chain ran "cleanly" (foundVertex
+20%, flat in photon energy and in whether the photon converted; vtxDistToTrue
+median 4 m) — discarded. (2) 2026-10-08 reconversion TICK=forward: 21 conversion
+tasks preempted + the retry refused by the stager's disk guard, 3 inference shards
+failed on pax007 (`CUDA-capable device(s) is/are busy or unavailable`) — tail
+cancelled. (3) 2026-10-09: preempted files retried (retry tool fixed, 17018fb),
+full chain relaunched excluding pax007. Verified: 12/12 inference shards, 60/60 in
+every CPU stage, 0 tracebacks, hadd 53,938 == merged_sp list, geometry check
+(photon-point centroid vs true conversion point) median 2.4 cm.
+
+**Truth conventions (gun-specific, read before cutting on truth):**
+- `trueNuPDG` = 22, `trueNuE` = photon energy [GeV], `trueNuCCNC` = 1,
+  `trueNuMode` = 0, `trueLepPDG` = 0 / `trueLepE` = -9 (the sidecar wraps the gun
+  particle as the "neutrino").
+- **`trueVtx*` = the photon ORIGIN (gun point), NOT the conversion point.** Hence
+  `vtxDistToTrue` is distance to the origin (median 43.6 cm; the photon flies a
+  median 23 cm before converting). The conversion point is the photon's
+  `trueSimPart` EDep{X,Y,Z} in the truth sidecar (`$L/.../truth_sidecar/truth_fileno*.h5`);
+  it is `inf` when the photon never converts inside the TPC (26% of events:
+  13,998 of 53,938; many of these still make light in the LAr outside the TPC).
+- `truePrimPart` has one row (the photon); `trueSimPart` holds the photon + its
+  shower daughters from mcreco.
+- The merged_sp `triplet_data/pid` labels only the photon shower (22); the CORSIKA
+  cosmic points carry pid 0 (checked on one file, not exhaustively).
+
+**Reco vs truth (`physics/single_photon/verify_isogamma_ntuple.py`):**
+
+| selection | N | foundVertex | >=1 reco shower |
+|---|---|---|---|
+| all events | 53,938 | 0.70 | 0.93 |
+| photon never converts in TPC (cosmic-only events) | 13,998 | 0.57 | 0.87 |
+| photon converts in TPC | 39,940 | 0.75 | 0.95 |
+| converts >10 cm from the walls | 26,467 | 0.79 | 0.97 |
+| ... E < 50 MeV / 0.1-0.2 / 0.4-0.8 / 0.8-2 GeV | 185 / 4,998 / 6,425 / 7,119 | 0.61 / 0.75 / 0.82 / 0.83 | 0.95 / 0.97 / 0.98 / 0.97 |
+
+Reco vertex vs the true conversion point (found vertex, photon converted):
+within 5 cm for 50% (26% at E<100 MeV, 45% at 0.1-0.3 GeV, 53% at 0.3-1 GeV, 55%
+above 1 GeV); the remainder sit on a cosmic track, i.e. the "found vertex" rate
+in cosmic-only events (57%) is the false-positive rate of the vertex finder on
+this cosmic load. Closest reco shower start to the conversion point: within 5 cm
+for 48% of converting events with >=1 shower.
+
+**Flash chi2 vs vertex placement (`physics/single_photon/isogamma_flashchi2_study.py`,
+plots `isogamma_flashchi2_plots.py` -> `plots_isogamma/`, gitignored).** Of the
+37,853 found vertices: 39% on the photon (<5 cm from the conversion point), 4%
+ambiguous (5-20 cm), 36% cosmic pick in a converting event, 21% cosmic pick in a
+non-converting event. `nuSliceFlashChi2` (== `recoVtxFlashChi2` for nu-stream
+vertices): photon vertices log10 median 1.95 (10-90%: 1.6-2.5), cosmic picks 3.2
+(converting) / 4.2 (non-converting); 26% / 64% of the cosmic picks have no
+in-window flash at all (chi2 = -1), vs 5% of photon vertices.
+
+| cut log10(chi2) < c | eff: found vertex, any position | eff: vertex on photon | purity: photon converted | purity: vertex on photon |
+|---|---|---|---|---|
+| none (no-flash events kept) | 0.75 | 0.37 | 0.79 | 0.39 |
+| 2.5 | 0.44 | 0.31 | 0.98 | 0.70 |
+| 3.0 | 0.49 | 0.34 | 0.97 | 0.67 |
+
+(efficiency denominator and purity signal = the 39,940 events whose photon converts
+in the TPC.) The knee of both curves is at c ~ 2.3-2.5. The cosmic picks that
+survive the cut are cosmic slices that match the photon's flash, not the photon's
+slice with a misplaced vertex (only 12% of them have a reco shower within 10 cm of
+the conversion point, same as the failing ones). `vtxScore` does not discriminate
+(median 0.8 in every category); `vtxFracHitsOnCosmic` is -1 (unfilled) here.
+
+**Open / caveats:** 30% of events have no in-window flash in the ntuple vs ~18%
+expected from the dlmerged flash-time survey (not understood). The cosmics are
+simulated, so cosmic flash-chi2 tails and the vertex false-positive rate need not
+match data overlay. Proxy gamma (above).
 
 ### 3b. Intrinsic-nue signal sample (added 2026-09-10)
 
@@ -567,6 +622,8 @@ at 94.4M spills is archived as `*_spills94M/`. Drivers `run_run1tg_tables.sh`
 -> `run_run1tg_suite.sh` (BEAM_SPILLS env).
 
 ### 8. Status
+2026-10-09: isotropic single-photon gun sample (section 3d) processed and
+verified; first photon-reco numbers and the flash-chi2 working point (~2.5) in 3d.
 2026-09-17: run-1 pi0 remake DONE on the section-3c set (see 6b); OPEN: the
 bnb5e19 spill count (94.4M in data_prep README vs 10.4M July value; suite uses
 10.4M) and the EXT-half spill count (cosmic sideband prefers ~25-30% lower EXT).
