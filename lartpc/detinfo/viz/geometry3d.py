@@ -12,10 +12,37 @@ import plotly.graph_objects as go
 _EDGES = [(0, 1), (1, 3), (3, 2), (2, 0), (4, 5), (5, 7), (7, 6), (6, 4),
           (0, 4), (1, 5), (2, 6), (3, 7)]
 
-# arrows: shaft length and cone length (plotly absolute cone size = |vector| * sizeref,
-# vectors are unit length)
+# arrows: line shaft + a small cone mesh drawn in detector coordinates (plotly's Cone
+# trace sizes heads relative to the scene, which made them metres long)
 ARROW_SHAFT_CM = 60.0
 ARROW_HEAD_CM = 12.0
+ARROW_HEAD_RADIUS_CM = 4.0
+
+
+def arrow_head_mesh(tips, dirs, name, color, length=ARROW_HEAD_CM, radius=ARROW_HEAD_RADIUS_CM,
+                    nseg=16, legendgroup=None, hovertext=None):
+    """One Mesh3d holding a cone (apex at each tip, pointing along dir) per arrow."""
+    X, Y, Z, I, J, K = [], [], [], [], [], []
+    for tip, d in zip(tips, dirs):
+        d = np.asarray(d, float) / np.linalg.norm(d)
+        a = np.array([1.0, 0, 0]) if abs(d[0]) < 0.9 else np.array([0, 1.0, 0])
+        e1 = np.cross(d, a); e1 /= np.linalg.norm(e1)
+        e2 = np.cross(d, e1)
+        base = np.asarray(tip) - d * length
+        i0 = len(X)
+        X.append(tip[0]); Y.append(tip[1]); Z.append(tip[2])                 # apex
+        X.append(base[0]); Y.append(base[1]); Z.append(base[2])              # base centre
+        for k in range(nseg):
+            ph = 2 * np.pi * k / nseg
+            q = base + radius * (np.cos(ph) * e1 + np.sin(ph) * e2)
+            X.append(q[0]); Y.append(q[1]); Z.append(q[2])
+        for k in range(nseg):
+            r0, r1 = i0 + 2 + k, i0 + 2 + (k + 1) % nseg
+            I += [i0, i0 + 1]; J += [r0, r1]; K += [r1, r0]                   # side, base
+    return go.Mesh3d(x=X, y=Y, z=Z, i=I, j=J, k=K, color=color, opacity=1.0, flatshading=True,
+                     name=name, showlegend=False, legendgroup=legendgroup or name,
+                     hoverinfo="text" if hovertext else "name",
+                     hovertext=hovertext)
 
 OPDET_COLORS = {
     "pmt_coated": "rgb(220,120,0)", "pmt_uncoated": "rgb(255,200,60)",
@@ -106,11 +133,10 @@ def detector_traces(di, show_full_tpc=True):
     tr.append(lines_trace(cath, "cathode", "rgb(200,30,30)", 3))
     tr.append(lines_trace(planes, "wire planes", "rgb(30,150,60)", 2))
     tr.append(lines_trace(shafts, "drift direction", "rgb(200,30,30)", 5, legendgroup="drift"))
-    tr.append(go.Cone(x=cones["x"], y=cones["y"], z=cones["z"], u=cones["u"], v=cones["v"],
-                      w=cones["w"], text=cones["text"], hoverinfo="text", sizemode="absolute",
-                      sizeref=ARROW_HEAD_CM, anchor="tip", showscale=False, name="drift direction",
-                      colorscale=[[0, "rgb(200,30,30)"], [1, "rgb(200,30,30)"]], showlegend=False,
-                      legendgroup="drift"))
+    tips = np.stack([cones["x"], cones["y"], cones["z"]], 1)
+    dirs = np.stack([cones["u"], cones["v"], cones["w"]], 1)
+    tr.append(arrow_head_mesh(tips, dirs, "drift direction", "rgb(200,30,30)",
+                              legendgroup="drift", hovertext=cones["text"][0] if len(cones["text"]) == 1 else None))
     return tr
 
 
@@ -184,11 +210,8 @@ def wire_traces(di, plane, tpc=0, cryo=0, stride=1, color="rgb(30,150,60)"):
     tip = c0 + d * ARROW_SHAFT_CM
     tr.append(lines_trace([(c0, tip)], "increasing wire dir", "rgb(230,0,0)", 5,
                           legendgroup="incdir"))
-    tr.append(go.Cone(x=[tip[0]], y=[tip[1]], z=[tip[2]], u=[d[0]], v=[d[1]], w=[d[2]],
-                      sizemode="absolute", sizeref=ARROW_HEAD_CM, anchor="tip", showscale=False,
-                      colorscale=[[0, "rgb(230,0,0)"], [1, "rgb(230,0,0)"]],
-                      name="increasing wire dir", showlegend=False, legendgroup="incdir",
-                      hoverinfo="name"))
+    tr.append(arrow_head_mesh([tip], [d], "increasing wire dir", "rgb(230,0,0)",
+                              legendgroup="incdir"))
     return tr
 
 
