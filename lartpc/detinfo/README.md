@@ -12,7 +12,7 @@ downstream is python-only (numpy + h5py), with no ROOT / LArSoft / cvmfs at use 
 | piece | status |
 |---|---|
 | [`extract/run_extract.sh`](extract/run_extract.sh), [`extract/extract_larsoft_detinfo.py`](extract/extract_larsoft_detinfo.py) | done; SBND sbndcode v10_14_02 extracted with 0 failed queries |
-| [`SCHEMA.md`](SCHEMA.md), [`dump_tables.py`](dump_tables.py) | done (schema 1.2) |
+| [`SCHEMA.md`](SCHEMA.md), [`dump_tables.py`](dump_tables.py) | done (schema 1.3: light-model tables + semi-analytic LArSoft reference) |
 | python utility: `Geometry`, `DetectorClocks`, `DetectorProperties`, `LArProperties`, `SpaceCharge` (SBND), `PhotonLibrary`, `Conventions` | done; **8/8 checks vs LArSoft reference pass** ([`tests/test_validation.py`](tests/test_validation.py)) |
 | plotly 3D geometry review page ([`viz/make_detinfo_html.py`](viz/make_detinfo_html.py)) | done |
 | SBND in-TPC light: semi-analytic model (the SBND library covers only outside the active volume) | open |

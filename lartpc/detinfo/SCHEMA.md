@@ -234,6 +234,9 @@ tables **outside** the services configuration.
   - 150 random per TPC active volume
   - line scans: x through the centre, and z and y at x = ±half drift
   - 40 points 5–60 cm inside the active volume in front of randomly chosen detectors
+- Edge case kept on purpose: the x-scan point exactly on the cathode (x = 0) gets **NaN** reflected
+  visibilities from LArSoft (distance to the cathode is 0, so 0/0). The port must reproduce it,
+  and comparisons use NaN == NaN.
 - The values come from larsim's own `SemiAnalyticalModel.cxx`, compiled with cling from a patched
   copy (`extract/larsoft_ref/semianalytic_ref.py`). Only the constructor's service lookups are replaced
   (geometry, wire readout, LAr absorption spectrum passed in); the physics code is unmodified.
