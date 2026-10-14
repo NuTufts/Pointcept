@@ -76,6 +76,23 @@ sys.path.insert(0, REPO_ROOT)
 
 from lartpc.larformer_analysis.slicer_eval.lib import categorize  # noqa: E402
 from lartpc.flashmatch import flash_chi2, flash_predict  # noqa: E402
+from lartpc.flashmatch.model import ScoreConfig, make_flash_model  # noqa: E402
+
+_FLASH_MODELS = {}
+
+
+def _flash_model(photonlib_cache, f_sys, eps, detector="uboone"):
+    """Per-process FlashModel (lartpc/flashmatch/model); 'uboone' reproduces the
+    legacy flash_predict / flash_chi2 calls bit-for-bit. Its chi2_with_oob uses the
+    detector's own drift velocity for the OOB test, as flash_chi2.chi2_with_oob did
+    (the --v-drift-cm-per-us option only affects the PE prediction)."""
+    key = (detector, photonlib_cache, float(f_sys), float(eps))
+    if key not in _FLASH_MODELS:
+        kw = dict(score=ScoreConfig(kind="neyman", f_sys=float(f_sys), eps=float(eps)))
+        if detector == "uboone":
+            kw["photonlib_cache"] = photonlib_cache
+        _FLASH_MODELS[key] = make_flash_model(detector, **kw)
+    return _FLASH_MODELS[key]
 
 
 DEFAULT_OOB_THRESHOLDS = np.array([0.0, 0.05, 0.10, 0.20, 0.50],
@@ -318,7 +335,7 @@ def _compute_pred_slices(
     gamma_by_producer, readout_factor_by_producer,
     photonlib_cache, oob_thresholds, f_sys, eps,
     v_drift, charge_source="raw_adc", share_norm="none",
-    flash_preal_min=None,
+    flash_preal_min=None, detector="uboone",
 ):
     """Returns a dict of (Q,) arrays describing every non-empty predicted
     slice in the event, sorted by query_id ascending.
@@ -331,6 +348,7 @@ def _compute_pred_slices(
     real charge at low deghost tau, but the light prediction only uses
     confidently-real SPs.
     """
+    fm = _flash_model(photonlib_cache, f_sys, eps, detector)
     no_obj = inf["no_object_class_id"]
     # Group SPs by the panoptic-argmax-winning QUERY ID. Earlier
     # versions grouped by `post/pred_slice_id` — that field is the
@@ -355,7 +373,7 @@ def _compute_pred_slices(
             iou_vs_gt_nu = np.zeros(0, dtype=np.float32),
             oob_frac     = np.zeros(0, dtype=np.float32),
             chi2         = np.zeros((0, len(oob_thresholds)), dtype=np.float32),
-            pe_pred      = np.zeros((0, 32), dtype=np.float32),
+            pe_pred      = np.zeros((0, fm.n_channels), dtype=np.float32),
         )
     uniq_q = np.sort(np.unique(pred_query[valid_sp_mask]))
     n_q = len(uniq_q)
@@ -396,13 +414,11 @@ def _compute_pred_slices(
     sp_charge[~fsel] = 0.0
 
     # Batched PE prediction.
-    pe_pred_all = flash_predict.predict_many_slices_pe(
-        pos_cm=sp_pos, charge=sp_charge, cluster_id=sp_cid,
-        n_clusters=n_q, flash_t0_us=in_time["t0_us"],
+    pe_pred_all = fm.predict_legacy(
+        sp_pos, sp_charge, sp_cid, n_q, in_time["t0_us"],
         producer_id=in_time["producer_id"],
         gamma_by_producer=gamma_by_producer,
         readout_factor_by_producer=readout_factor_by_producer,
-        photonlib_cache=photonlib_cache,
         v_drift_cm_per_us=v_drift,
     )
 
@@ -433,13 +449,9 @@ def _compute_pred_slices(
             # possible; leave chi2 NaN (excluded from min-chi2 ranking,
             # same treatment as empty slices).
             continue
-        sub = flash_chi2.chi2_with_oob(
-            pos_cm=sp_pos[member_f],
-            pe_pred=pe_pred_all[ci],
-            pe_obs=in_time["pe_obs"],
-            flash_t0_us=in_time["t0_us"],
-            oob_thresholds=oob_thresholds,
-            f_sys=f_sys, eps=eps,
+        sub = fm.chi2_with_oob(
+            sp_pos[member_f], pe_pred_all[ci], in_time["pe_obs"],
+            in_time["t0_us"], oob_thresholds,
         )
         oob_frac_arr[ci] = sub["oob_frac"]
         chi2_arr[ci, :]  = sub["chi2"]
@@ -652,14 +664,15 @@ def _compute_gt_baseline(
     inf, in_time, gt_nu_mask,
     gamma_by_producer, readout_factor_by_producer,
     photonlib_cache, oob_thresholds, f_sys, eps,
-    v_drift, charge_source="raw_adc", share_norm="none",
+    v_drift, charge_source="raw_adc", share_norm="none", detector="uboone",
 ):
     """Predicted PE + chi-2 sweep for the GT-nu union mask."""
+    fm = _flash_model(photonlib_cache, f_sys, eps, detector)
     have_raw = (charge_source == "raw_adc" and "post_rawpix" in inf)
     pos = inf["post_coord"][gt_nu_mask]
     px  = (inf["post_rawpix"] if have_raw else inf["post_pixval"])[gt_nu_mask]
     n_sp = int(gt_nu_mask.sum())
-    n_pmts = flash_chi2.N_PMTS
+    n_pmts = fm.n_channels
     if n_sp == 0:
         return dict(
             n_sp=0, oob_frac=1.0,
@@ -677,21 +690,14 @@ def _compute_gt_baseline(
             np.zeros(n_sp, dtype=np.int64),
         )
         charge = charge / share.astype(np.float32)
-    pe_pred = flash_predict.predict_slice_pe(
-        pos_cm=pos, charge=charge,
-        flash_t0_us=in_time["t0_us"],
+    pe_pred = fm.predict_legacy(
+        pos, charge, None, 1, in_time["t0_us"],
         producer_id=in_time["producer_id"],
         gamma_by_producer=gamma_by_producer,
         readout_factor_by_producer=readout_factor_by_producer,
-        photonlib_cache=photonlib_cache,
         v_drift_cm_per_us=v_drift,
-    )
-    sub = flash_chi2.chi2_with_oob(
-        pos_cm=pos, pe_pred=pe_pred, pe_obs=in_time["pe_obs"],
-        flash_t0_us=in_time["t0_us"],
-        oob_thresholds=oob_thresholds,
-        f_sys=f_sys, eps=eps,
-    )
+    )[0]
+    sub = fm.chi2_with_oob(pos, pe_pred, in_time["pe_obs"], in_time["t0_us"], oob_thresholds)
     return dict(
         n_sp=n_sp, oob_frac=sub["oob_frac"],
         pe_pred=pe_pred.astype(np.float32),
@@ -892,6 +898,9 @@ def main():
     # PhotonLib + γ + readout-factor.
     ap.add_argument("--photonlib-cache", default=None,
                     help=f"Default: {flash_predict.PHOTONLIB_DEFAULT_CACHE}")
+    ap.add_argument("--detector", default="uboone", choices=["uboone", "sbnd"],
+                    help="flash model (lartpc/flashmatch/model); uboone = legacy "
+                         "MicroBooNE photon library, bit-identical")
     ap.add_argument("--gamma-beam",   type=float, default=flash_predict.DEFAULT_GAMMA)
     ap.add_argument("--gamma-cosmic", type=float, default=flash_predict.DEFAULT_GAMMA)
     ap.add_argument("--readout-fast-fraction",  type=float,
@@ -1054,6 +1063,7 @@ def main():
         gamma_by_producer, readout_factor_by_producer,
         args.photonlib_cache, oob_thresholds, args.f_sys, args.eps,
         args.v_drift_cm_per_us, charge_source, share_norm,
+        detector=getattr(args, "detector", "uboone"),
     )
 
     # Per-pred-slice.
@@ -1065,6 +1075,7 @@ def main():
         args.photonlib_cache, oob_thresholds, args.f_sys, args.eps,
         args.v_drift_cm_per_us, charge_source, share_norm,
         flash_preal_min=args.flash_charge_preal_min,
+        detector=getattr(args, "detector", "uboone"),
     )
     if args.verbose:
         print(f"n_pred_slices={pred['query_id'].shape[0]}  "

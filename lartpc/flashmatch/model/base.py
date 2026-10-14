@@ -119,11 +119,12 @@ class FlashModel:
             out[miss] = np.argmin(np.abs(p[miss, 0:1] - cx[None, :]), axis=1)
         return out
 
-    def drift_shift_cm(self, pos_cm, flash_t0_us):
+    def drift_shift_cm(self, pos_cm, flash_t0_us, v_drift_cm_per_us=None):
         """(N,) x shift to add: drift_dir_x(TPC) · v_drift · t_flash."""
         tpc = self.tpc_of(pos_cm)
         sign = np.asarray(self.drift_dir_x, dtype=np.float64)[np.clip(tpc, 0, None)]
-        return sign * float(self.v_drift_cm_per_us) * float(flash_t0_us)
+        v = self.v_drift_cm_per_us if v_drift_cm_per_us is None else v_drift_cm_per_us
+        return sign * float(v) * float(flash_t0_us)
 
     def drift_correct(self, pos_cm, flash_t0_us):
         """numpy copy with x_true = x_app + drift_dir_x · v · t (float32)."""
@@ -148,10 +149,10 @@ class FlashModel:
         return float(self.oob_mask(self.drift_correct(pos_cm, flash_t0_us), margin_cm).mean())
 
     # ----------------------------------------------------------- prediction
-    def _drift_correct_torch(self, pos, pos_cm, flash_t0_us):
+    def _drift_correct_torch(self, pos, pos_cm, flash_t0_us, v_drift_cm_per_us=None):
         import torch
         pos = pos.clone()
-        shift = self.drift_shift_cm(pos_cm, flash_t0_us)
+        shift = self.drift_shift_cm(pos_cm, flash_t0_us, v_drift_cm_per_us)
         uniform = shift.size == 0 or bool(np.all(shift == shift[0]))
         if uniform:
             # one drift volume (MicroBooNE): subtract a python float from the float32
@@ -163,7 +164,7 @@ class FlashModel:
         return pos
 
     def predict(self, pos_cm, charge, cluster_id=None, n_clusters=1, flash_t0_us=0.0,
-                light_yield=1.0, charge_is_photons=False, **photon_kw):
+                light_yield=1.0, charge_is_photons=False, v_drift_cm_per_us=None, **photon_kw):
         """Predicted PE per cluster: (n_clusters, n_channels) float32.
 
         pos_cm:      (N,3) RAW (apparent) positions; drift correction is applied here.
@@ -172,6 +173,7 @@ class FlashModel:
         light_yield: G, the global scale (e.g. calibrated gamma x readout factor).
         charge_is_photons: `charge` already holds photons per point (skip the charge model,
                      e.g. for MC true energy deposits x light yield).
+        v_drift_cm_per_us: override the detector's drift velocity for the t0 shift.
         """
         import torch
         pos_cm = np.asarray(pos_cm)
@@ -184,7 +186,7 @@ class FlashModel:
             raise ValueError(f"pos_cm and charge length mismatch: {pos_cm.shape[0]} vs {q_np.shape[0]}")
         dev, dt = self.device, self.vis_dtype
         pos = torch.from_numpy(pos_cm.astype(np.float32, copy=False)).to(dev)
-        pos = self._drift_correct_torch(pos, pos_cm, flash_t0_us).to(dt)
+        pos = self._drift_correct_torch(pos, pos_cm, flash_t0_us, v_drift_cm_per_us).to(dt)
         q = torch.from_numpy(np.asarray(q_np).astype(np.float32, copy=False)).to(dev)
         if cluster_id is None:
             cid = torch.zeros(pos.shape[0], dtype=torch.int64, device=dev)
@@ -203,6 +205,21 @@ class FlashModel:
     def predict_slice(self, pos_cm, charge, flash_t0_us=0.0, light_yield=1.0, **kw):
         """(n_channels,) prediction for one slice."""
         return self.predict(pos_cm, charge, None, 1, flash_t0_us, light_yield, **kw)[0]
+
+    def chi2_with_oob(self, pos_cm, pe_pred, pe_obs, flash_t0_us, oob_thresholds, margin_cm=0.0,
+                      mask=None, tpc=None):
+        """Score + OOB-threshold sweep (flash_chi2.chi2_with_oob semantics): the OOB
+        fraction uses the detector's own drift velocity and active volumes; chi2 entries
+        are NaN where oob_frac > threshold."""
+        pos_drift = self.drift_correct(pos_cm, flash_t0_us)
+        oob = self.oob_mask(pos_drift, margin_cm=margin_cm)
+        n_sp = int(np.asarray(pos_cm).reshape(-1, 3).shape[0])
+        n_oob = int(oob.sum())
+        oob_frac = (n_oob / n_sp) if n_sp > 0 else 1.0
+        chi2_base = self.chi2(pe_pred, pe_obs, mask=mask, tpc=tpc)
+        chi2_arr = np.where(np.asarray(oob_thresholds, dtype=np.float64) >= oob_frac,
+                            chi2_base, np.nan).astype(np.float32)
+        return {"oob_frac": float(oob_frac), "chi2": chi2_arr, "n_sp": n_sp, "n_oob": n_oob}
 
     # ----------------------------------------------------------- masks + score
     def channel_mask(self, pe_obs, run=None, **kw):

@@ -16,7 +16,21 @@ Status (2026-10-15):
   - MC closure on true deposits: median shape cosine 0.988 (mirrored TPCs: 0.000) and obs/pred ≈ 1.4,
     the scale to calibrate in P5.
   - Details in `SEMIANALYTIC_PORT_NOTES.md`.
-- Next: P4 (call sites take `--detector`).
+- **P4 done**: the production call sites use `lartpc.flashmatch.model` and take `--detector` (default `uboone`).
+  Each one was regression-tested against a pre-edit copy with `model/tests/regress_call_site.py`;
+  every output is exactly equal:
+
+  | call site | identical outputs |
+  |---|---|
+  | keypoint2 cascade `_flash_slice_table` | 36/36 tables |
+  | stage-3 `flash_recovery_keep` | 48/48 keep masks |
+  | `analyze_event` `_compute_pred_slices` / `_compute_gt_baseline` | 80/80 |
+  | gammacal `predict_pe_ref` | 55/55 |
+
+  - Not migrated: `tools/viz_archive/*` (archive) and scripts that only re-read stored `pred_pe`/`chi2`.
+  - SBND end-to-end through these call sites needs SBND inputs (the larcv2 → HDF5 converter), and an
+    SBND charge de-duplication (by `hit_key`) in place of the MicroBooNE pixel rule.
+- Next: P5 (SBND calibration on MC), which needs the converter.
 
 Related:
 - detector constants: [`../detinfo/`](../detinfo/README.md)

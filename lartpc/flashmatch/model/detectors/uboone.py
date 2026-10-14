@@ -71,10 +71,11 @@ class UBooNEFlashModel(base.FlashModel):
 
     def predict_legacy(self, pos_cm, charge, cluster_id, n_clusters, flash_t0_us, producer_id=0,
                        gamma_by_producer=(flash_predict.DEFAULT_GAMMA, flash_predict.DEFAULT_GAMMA),
-                       readout_factor_by_producer=None):
+                       readout_factor_by_producer=None, v_drift_cm_per_us=None):
         """Drop-in for flash_predict.predict_many_slices_pe (same arguments, same output)."""
         G = self.light_yield(gamma_by_producer, producer_id, readout_factor_by_producer)
-        return self.predict(pos_cm, charge, cluster_id, n_clusters, flash_t0_us, light_yield=G)
+        return self.predict(pos_cm, charge, cluster_id, n_clusters, flash_t0_us, light_yield=G,
+                            v_drift_cm_per_us=v_drift_cm_per_us)
 
     # ----------------------------------------------------------- masks
     @staticmethod

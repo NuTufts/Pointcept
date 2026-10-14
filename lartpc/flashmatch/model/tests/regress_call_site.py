@@ -20,6 +20,13 @@ Call sites:
             inputs: the same events; a slicer-like prediction with one query per slice
             (mask logits +-5, every 4th query no-object); K in (1, 3, 50) and
             chi2_max in (500, 1e12). Compared: the returned keep masks.
+  analyze   lartpc/larformer_analysis/slicer_eval/analyze_event.py::_compute_pred_slices and
+            _compute_gt_baseline. inputs: an `inf` dict built from the events (reco points,
+            pixval as raw pixels, tick/wires for share normalization, one query per slice,
+            every 4th query no-object, mock p_real); variants: producer 0/1, share_norm
+            none/per-slice, v_drift 0.1098/0.112, flash_preal_min None/0.5. Compared: all outputs.
+  gammacal  lartpc/larformer_analysis/flashmodel_calib/gammacal/predict.py::predict_pe_ref
+            on every slice of the events, flash t0 from the file.
 """
 import argparse
 import glob
@@ -171,14 +178,110 @@ def run_stage3(legacy_path, files):
     return n_ok == n and n > 0
 
 
+def _event_arrays(path, nu_sid):
+    import h5py
+    coord, sid, run, kind = event_inputs(path, nu_sid)
+    with h5py.File(path, "r") as f:
+        e = f["entry_0"]
+        td = e["triplet_data"]
+        pos = td["pos"][()].astype(np.float32)
+        # map the selected coords back to rows (event_inputs selects rows; recompute the same way)
+        if "hasmatch" in td and (td["hasmatch"][()] == 1).sum() >= 50:
+            sel = np.nonzero(td["hasmatch"][()] == 1)[0]
+        else:
+            sel = np.nonzero(td["pixval"][()][:, 2] > 10)[0][:20000]
+        cols = {k: td[k][()][sel] for k in ("pixval", "tick", "uwire", "ywire")}
+        fl = e["flashes"]
+        beam = np.nonzero(fl["producer_id"][()] == 0)[0]
+        if beam.size == 0:
+            return None
+        bi = beam[np.argmax(fl["total_pe"][()][beam])]
+        obs = dict(pe_obs=fl["pe"][()][bi].astype(np.float64), t0_us=float(fl["time_us"][()][bi]))
+    assert np.array_equal(pos[sel], coord)
+    return coord, sid, run, kind, cols, obs
+
+
+def run_analyze(legacy_path, files):
+    new = load_module(os.path.join(REPO, "lartpc/larformer_analysis/slicer_eval/analyze_event.py"), "ae_new")
+    old = load_module(legacy_path, "ae_legacy")
+    n_ok = n = 0
+    for path in files:
+        ev = _event_arrays(path, -5)
+        if ev is None:
+            continue
+        coord, sid, run, kind, cols, obs = ev
+        qs, qid = np.unique(sid, return_inverse=True)
+        Q = len(qs)
+        no_obj = 3
+        q_cls = np.array([no_obj if i % 4 == 3 else i % 3 for i in range(Q)], np.int32)
+        inf = dict(no_object_class_id=no_obj, post_pred_query=qid.astype(np.int64),
+                   post_pred_class=q_cls[qid], q_class_argmax=q_cls, post_coord=coord,
+                   post_pixval=cols["pixval"].astype(np.float32), post_rawpix=cols["pixval"].astype(np.float32),
+                   post_tick=cols["tick"], post_uwire=cols["uwire"], post_ywire=cols["ywire"],
+                   post_p_real=np.random.default_rng(1).uniform(size=len(coord)).astype(np.float32))
+        gt_nu = (sid == -5) if (sid == -5).any() else (qid == 0)
+        thr = np.array([0.0, 0.05, 0.1, 0.2, 0.5])
+        for pid in (0, 1):
+            for share in ("none", "per-slice"):
+                for vd in (0.1098, 0.112):
+                    for pmin in (None, 0.5):
+                        it = dict(obs, producer_id=pid)
+                        common = (inf, it, gt_nu, (5.25 * 0.86, 5.25 * 0.55), None, None, thr, 0.1, 1.0, vd,
+                                  "raw_adc", share)
+                        a = old._compute_pred_slices(*common, flash_preal_min=pmin)
+                        b = new._compute_pred_slices(*common, flash_preal_min=pmin, detector="uboone")
+                        ga = old._compute_gt_baseline(*common)
+                        gb = new._compute_gt_baseline(*common, detector="uboone")
+                        ok1, w1 = same(a, b)
+                        ok2, w2 = same(ga, gb)
+                        ok = ok1 and ok2
+                        n += 1
+                        n_ok += ok
+                        if not ok or (pid == 0 and share == "none" and vd == 0.1098 and pmin is None):
+                            print(f"  [{'PASS' if ok else 'FAIL'}] {os.path.basename(path)} run {run} pid={pid} "
+                                  f"share={share} v={vd} preal_min={pmin}: {len(b['query_id'])} slices"
+                                  f"{'' if ok else ' -- ' + (w1 or w2)}")
+    print(f"{n_ok}/{n} analyze_event outputs identical")
+    return n_ok == n and n > 0
+
+
+def run_gammacal(legacy_path, files):
+    sys.path.insert(0, os.path.join(REPO, "lartpc/larformer_analysis/flashmodel_calib"))
+    import importlib
+    gnew = importlib.import_module("gammacal.predict")
+    spec = importlib.util.spec_from_file_location("gammacal.predict_legacy", legacy_path,
+                                                  submodule_search_locations=None)
+    gold = importlib.util.module_from_spec(spec)
+    gold.__package__ = "gammacal"
+    spec.loader.exec_module(gold)
+    n_ok = n = 0
+    for path in files:
+        ev = _event_arrays(path, -5)
+        if ev is None:
+            continue
+        coord, sid, run, kind, cols, obs = ev
+        q = cols["pixval"][:, 2].astype(np.float32)
+        for s_ in np.unique(sid):
+            m = sid == s_
+            a = gold.predict_pe_ref(coord[m], q[m], obs["t0_us"])
+            b = gnew.predict_pe_ref(coord[m], q[m], obs["t0_us"])
+            n += 1
+            n_ok += np.array_equal(a, b)
+    a = gold.predict_pe_ref(coord[:0], q[:0], 0.0); b = gnew.predict_pe_ref(coord[:0], q[:0], 0.0)
+    n += 1; n_ok += np.array_equal(a, b)
+    print(f"{n_ok}/{n} gammacal predict_pe_ref vectors identical")
+    return n_ok == n and n > 0
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("site", choices=["cascade", "stage3"])
+    ap.add_argument("site", choices=["cascade", "stage3", "analyze", "gammacal"])
     ap.add_argument("--legacy", required=True, help="path of the pre-edit copy of the call-site file")
     ap.add_argument("--files", type=int, default=5, help="events per sample glob")
     a = ap.parse_args()
     files = [f for g in GLOBS for f in sorted(glob.glob(g))[: a.files]]
-    ok = run_cascade(a.legacy, files) if a.site == "cascade" else run_stage3(a.legacy, files)
+    ok = dict(cascade=run_cascade, stage3=run_stage3, analyze=run_analyze,
+              gammacal=run_gammacal)[a.site](a.legacy, files)
     sys.exit(0 if ok else 1)
 
 

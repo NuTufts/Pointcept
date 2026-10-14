@@ -1,18 +1,29 @@
 """Flash prediction at the frozen reference gamma, on CPU.
 
-`predict_slice_pe` (lartpc/flashmatch/flash_predict.py) is the production
-function: PhotonLib visibility x charge, drift-corrected by the flash t0,
-times gamma x readout factor (1.0 for the beam producer). We call it with
-gamma = GAMMA_BEAM_REF for BOTH producers so the result is `pred_ref`.
+The production flash model (lartpc/flashmatch/model, MicroBooNE = the legacy
+`predict_slice_pe` bit-for-bit): PhotonLib visibility x charge, drift-corrected
+by the flash t0, times gamma x readout factor (1.0 for the beam producer). We
+use gamma = GAMMA_BEAM_REF for BOTH producers so the result is `pred_ref`.
+This calibration (GAMMA_BEAM_REF, run-period tables) is MicroBooNE-specific.
 """
 import numpy as np
 
-from lartpc.flashmatch.flash_predict import predict_slice_pe
+from lartpc.flashmatch.model import make_flash_model
 from lartpc.flashmatch.saturation import _OPDET_POS
 
 from . import GAMMA_BEAM_REF
 
 PMT_YZ = np.asarray(_OPDET_POS, np.float64)[:, 1:3]
+
+
+_MODELS = {}
+
+
+def _model(photonlib, device):
+    key = (photonlib, device)
+    if key not in _MODELS:
+        _MODELS[key] = make_flash_model("uboone", photonlib_cache=photonlib, device=device)
+    return _MODELS[key]
 
 
 def predict_pe_ref(points_cm, q_comb, t0_us, device="cpu", photonlib=None):
@@ -21,9 +32,9 @@ def predict_pe_ref(points_cm, q_comb, t0_us, device="cpu", photonlib=None):
     q = np.ascontiguousarray(np.asarray(q_comb, np.float32))
     if pts.shape[0] == 0:
         return np.zeros(32, np.float32)
-    return predict_slice_pe(pts, q, float(t0_us), producer_id=0,
-                            gamma_by_producer=(GAMMA_BEAM_REF, GAMMA_BEAM_REF),
-                            photonlib_cache=photonlib, device=device)
+    return _model(photonlib, device).predict_legacy(
+        pts, q, None, 1, float(t0_us), producer_id=0,
+        gamma_by_producer=(GAMMA_BEAM_REF, GAMMA_BEAM_REF))[0]
 
 
 def cos_sim(a, b):
