@@ -12,6 +12,11 @@ import plotly.graph_objects as go
 _EDGES = [(0, 1), (1, 3), (3, 2), (2, 0), (4, 5), (5, 7), (7, 6), (6, 4),
           (0, 4), (1, 5), (2, 6), (3, 7)]
 
+# arrows: shaft length and cone length (plotly absolute cone size = |vector| * sizeref,
+# vectors are unit length)
+ARROW_SHAFT_CM = 60.0
+ARROW_HEAD_CM = 12.0
+
 OPDET_COLORS = {
     "pmt_coated": "rgb(220,120,0)", "pmt_uncoated": "rgb(255,200,60)",
     "xarapuca_vuv": "rgb(40,110,200)", "xarapuca_vis": "rgb(110,190,240)",
@@ -72,6 +77,7 @@ def detector_traces(di, show_full_tpc=True):
 
     act, full, cath, planes = [], [], [], []
     cones = dict(x=[], y=[], z=[], u=[], v=[], w=[], text=[])
+    shafts = []
     for t in g.IterateTPCs():
         a = t.active_bbox
         act += aabb_segments(a.min, a.max)
@@ -86,10 +92,12 @@ def detector_traces(di, show_full_tpc=True):
             lo, hi = a.min.copy(), a.max.copy()
             lo[ax] = hi[ax] = pl.center[ax]
             planes += aabb_segments(lo, hi)
+        # drift arrow: 60 cm shaft from the active-volume centre, small cone at the tip
         ctr = a.center
-        cones["x"].append(ctr[0]); cones["y"].append(ctr[1]); cones["z"].append(ctr[2])
-        d = t.drift_dir * 40.0
-        cones["u"].append(d[0]); cones["v"].append(d[1]); cones["w"].append(d[2])
+        tip = ctr + t.drift_dir * ARROW_SHAFT_CM
+        shafts.append((ctr, tip))
+        cones["x"].append(tip[0]); cones["y"].append(tip[1]); cones["z"].append(tip[2])
+        cones["u"].append(t.drift_dir[0]); cones["v"].append(t.drift_dir[1]); cones["w"].append(t.drift_dir[2])
         cones["text"].append(f"TPC {tuple(t.id)} drift {np.round(t.drift_dir, 3).tolist()}")
     tr.append(lines_trace(act, "TPC active volume", "rgb(0,0,0)", 4))
     if show_full_tpc:
@@ -97,10 +105,12 @@ def detector_traces(di, show_full_tpc=True):
                               visible="legendonly"))
     tr.append(lines_trace(cath, "cathode", "rgb(200,30,30)", 3))
     tr.append(lines_trace(planes, "wire planes", "rgb(30,150,60)", 2))
+    tr.append(lines_trace(shafts, "drift direction", "rgb(200,30,30)", 5, legendgroup="drift"))
     tr.append(go.Cone(x=cones["x"], y=cones["y"], z=cones["z"], u=cones["u"], v=cones["v"],
                       w=cones["w"], text=cones["text"], hoverinfo="text", sizemode="absolute",
-                      sizeref=40, anchor="tail", showscale=False, name="drift direction",
-                      colorscale=[[0, "rgb(200,30,30)"], [1, "rgb(200,30,30)"]], showlegend=True))
+                      sizeref=ARROW_HEAD_CM, anchor="tip", showscale=False, name="drift direction",
+                      colorscale=[[0, "rgb(200,30,30)"], [1, "rgb(200,30,30)"]], showlegend=False,
+                      legendgroup="drift"))
     return tr
 
 
@@ -170,11 +180,15 @@ def wire_traces(di, plane, tpc=0, cryo=0, stride=1, color="rgb(30,150,60)"):
                                name=f"{lab} (ch {w.channel})", hoverinfo="name"))
     # increasing-wire direction arrow from wire 0 centre
     c0 = pl.first_wire_center
-    d = pl.increasing_wire_dir * 50
-    tr.append(go.Cone(x=[c0[0]], y=[c0[1]], z=[c0[2]], u=[d[0]], v=[d[1]], w=[d[2]],
-                      sizemode="absolute", sizeref=25, anchor="tail", showscale=False,
+    d = pl.increasing_wire_dir
+    tip = c0 + d * ARROW_SHAFT_CM
+    tr.append(lines_trace([(c0, tip)], "increasing wire dir", "rgb(230,0,0)", 5,
+                          legendgroup="incdir"))
+    tr.append(go.Cone(x=[tip[0]], y=[tip[1]], z=[tip[2]], u=[d[0]], v=[d[1]], w=[d[2]],
+                      sizemode="absolute", sizeref=ARROW_HEAD_CM, anchor="tip", showscale=False,
                       colorscale=[[0, "rgb(230,0,0)"], [1, "rgb(230,0,0)"]],
-                      name="increasing wire dir", showlegend=True, hoverinfo="name"))
+                      name="increasing wire dir", showlegend=False, legendgroup="incdir",
+                      hoverinfo="name"))
     return tr
 
 
