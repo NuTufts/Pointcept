@@ -681,7 +681,14 @@ def fhicl_table(fcl, table, workdir):
         text = subprocess.run(["fhicl-dump", path], capture_output=True, text=True,
                               check=True).stdout
         import fhicl                                  # fhiclpy (UPS)
-        d = fhicl.make_pset(path)["tab"]
+        # make_pset resolves the file through FHICL_FILE_PATH only (absolute
+        # paths are rejected), so put workdir on the path for this call
+        old = os.environ.get("FHICL_FILE_PATH", "")
+        os.environ["FHICL_FILE_PATH"] = workdir + (":" + old if old else "")
+        try:
+            d = fhicl.make_pset(os.path.basename(path))["tab"]
+        finally:
+            os.environ["FHICL_FILE_PATH"] = old
         return text, d
     finally:
         os.remove(path)

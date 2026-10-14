@@ -1,4 +1,4 @@
-# detinfo HDF5 schema (v1.2)
+# detinfo HDF5 schema (v1.3)
 
 One file per (experiment, code version):
 `$DETINFO_ROOT/<det>/<product>_<version>/detinfo_<det>_<version>.h5`
@@ -192,6 +192,52 @@ The sign of `ticks_per_cm` follows the drift direction.
   `lartpc/flashmatch` cache (`(Nx, Ny, Nz, NOpDets)`); `PhotonLibrary.export_flashmatch_npz()`
   writes the npz read by `PhotonLibLookup`.
 
+## `/optical_model` (light model)
+Inputs of the semi-analytic light model and the experiment's flash matcher. These come from FHiCL
+tables **outside** the services configuration.
+- **`/optical_model/<name>/`**, one per entry in the extractor's `optical_fcl_tables`. SBND has:
+
+  | name | fcl : table |
+  |---|---|
+  | `vuv_hits` | `opticalsimparameterisations_sbnd.fcl : sbnd_vuv_RS100cm_hits_parameterization` |
+  | `vis_hits` | `… : sbnd_vis_RS100cm_hits_parameterization` |
+  | `pdfastsim_par` | `PDFastSim_sbnd.fcl : sbnd_pdfastsim_par` (semi-analytic simulation, in the active volume) |
+  | `pdfastsim_pvs` | `… : sbnd_pdfastsim_pvs` (library simulation, outside the active volume) |
+  | `flashmatch` | `opt0finder_sbnd.fcl : sbnd_opt0_finder_one_to_many` (efficiencies, skip list, charge calibration, QLL settings) |
+
+  Each has:
+  - `@fcl`, `@table`
+  - `fhicl`: the resolved table text (`fhicl-dump`)
+  - `params/`: the same table as HDF5. Sub-tables are groups, rectangular numeric sequences are
+    datasets (e.g. `vuv_hits/params/GH_PARS_flat` (4, 9), `vis_hits/params/VIS_correction_flat`
+    (k, r, x)), scalars and strings are attrs, ragged or mixed sequences are `<key>__json` attrs.
+    Examples: `flashmatch/params/FlashMatchConfig/PhotonLibHypothesis/VUVEfficiency` (312,),
+    `flashmatch/params/OpChannelsToSkip`, `flashmatch/params/CalAreaConstants`.
+- **`/optical_model/semianalytic`**: geometry as built by larsim's `SemiAnalyticalModel` itself.
+  - attrs:
+    - `DoReflectedLight`, `IncludeAnodeReflections`, `UseXeAbsorption` (from `pdfastsim_par`)
+    - `optical_path_class` (e.g. `phot::SBNDOpticalPath`: a detector sees only its own side of the cathode)
+    - `vuv_absorption_length` (cm; AbsLengthSpectrum at 9.7 eV)
+    - `cathode_centre`, `anode_centre`, `drift_distance`, `reference_source`
+  - `active_volumes` (n, 6): the `ISTPC` active volumes.
+  - `opdets` (table): `opdet`, `type` (0 rectangle = X-ARAPUCA/bar, 1 dome PMT, 2 disk PMT),
+    `orientation` (0 faces x, 1 faces y, 2 faces z), `h`, `w` (cm; rectangles only, -1 otherwise),
+    exactly as `SemiAnalyticalModel::opticalDetectors()` derives them from `OpDetGeo`.
+
+## `/validation_optical` (table)
+- Contents: LArSoft reference values of the semi-analytic model for the python port.
+- Columns:
+  - `point` (N, 3)
+  - `direct` (N, n_opdets): `detectedDirectVisibilities`
+  - `reflected` (N, n_opdets): `detectedReflectedVisibilities(AnodeMode=false)`, NaN if not configured
+- Points:
+  - 150 random per TPC active volume
+  - line scans: x through the centre, and z and y at x = ±half drift
+  - 40 points 5–60 cm inside the active volume in front of randomly chosen detectors
+- The values come from larsim's own `SemiAnalyticalModel.cxx`, compiled with cling from a patched
+  copy (`extract/larsoft_ref/semianalytic_ref.py`). Only the constructor's service lookups are replaced
+  (geometry, wire readout, LAr absorption spectrum passed in); the physics code is unmodified.
+
 ## `/validation` (table)
 - Contents: LArSoft's own answers for random points (fixed seed), 100 per TPC inside the
   active volume plus 20 anywhere in the detector enclosure.
@@ -213,6 +259,7 @@ The sign of `ticks_per_cm` follows the drift direction.
 - Use: unit tests of the python reimplementation (`tests/test_validation.py`).
 
 ## Changelog
+- 1.3: `/optical_model` (light-model FHiCL tables, semi-analytic descriptors) and `/validation_optical`.
 - 1.2: `/photon_visibility` + photon library file; SCE and voxel-id reference values and edge
   points in `/validation`; shuffle + gzip-9 compression.
 - 1.1: `/validation`; SCE config read from the dumped services FHiCL.
