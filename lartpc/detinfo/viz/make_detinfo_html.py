@@ -6,7 +6,8 @@ LAr / space-charge / photon-library property with its provenance.
 
     python lartpc/detinfo/viz/make_detinfo_html.py --detector sbnd -o sbnd_detinfo.html
     python lartpc/detinfo/viz/make_detinfo_html.py --detector sbnd --wires 0,1,0 --wire-stride 4 -o w.html
-    options: --version, --path FILE.h5, --crt-strips, --no-crt, --offline (embed plotly.js)
+    options: --version, --path FILE.h5, --crt-strips, --no-crt, --offline (embed plotly.js),
+             --artifact (page fragment for publishing as a claude.ai artifact)
 
 --wires CRYO,TPC,PLANE draws that plane's wires (one plane at a time keeps the
 page responsive; --wire-stride N draws every N-th wire). Wire 0 is red, the last
@@ -24,26 +25,47 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..",
 from lartpc.detinfo import load  # noqa: E402
 from lartpc.detinfo.viz.geometry3d import geometry_figure, sce_slice_figure  # noqa: E402
 
+PLOTLYJS_CDN = "https://cdn.jsdelivr.net/npm/plotly.js-dist-min@3.0.1/plotly.min.js"
+FONTS = ("https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500"
+         "&family=IBM+Plex+Sans:wght@400;600&display=swap")
+
 CSS = """
-:root { --bg:#ffffff; --fg:#1d1d1f; --muted:#666; --line:#ddd; --head:#f3f3f5;
-        --pass:#1a7f37; --fail:#c62828; --warn:#a15c00; }
-@media (prefers-color-scheme: dark) { :root { --bg:#16161a; --fg:#e8e8ea; --muted:#9a9aa2;
-        --line:#33333a; --head:#222228; --pass:#4ac26b; --fail:#ff6b6b; --warn:#e3a33b; } }
-body { background:var(--bg); color:var(--fg); font:14px/1.45 system-ui,sans-serif;
-       margin:0 auto; max-width:1400px; padding:16px; }
-h1 { font-size:22px; margin:4px 0 2px; } h2 { font-size:17px; margin:26px 0 8px;
-       border-bottom:1px solid var(--line); padding-bottom:4px; }
-.sub { color:var(--muted); margin-bottom:12px; }
+/* layout: one reading column, figure panels kept light (instrument display) in both themes */
+:root { --bg:#f6f7f9; --fg:#1b1f24; --muted:#5b6470; --line:#d5dae1; --head:#eaedf1;
+        --accent:#1f5fa8; --plot-bg:#ffffff;
+        --pass:#1a7f37; --fail:#c62828; --warn:#9a5b00;
+        --sans:"IBM Plex Sans",system-ui,-apple-system,"Segoe UI",sans-serif;
+        --mono:"IBM Plex Mono",ui-monospace,SFMono-Regular,Menlo,monospace; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+        --bg:#14171c; --fg:#e4e7ec; --muted:#9aa3ae; --line:#2e343d; --head:#1d2128;
+        --accent:#7fb0ea; --plot-bg:#ffffff; --pass:#4ac26b; --fail:#ff7b72; --warn:#e3a33b;
+        color-scheme: dark; } }
+:root[data-theme="dark"] { --bg:#14171c; --fg:#e4e7ec; --muted:#9aa3ae; --line:#2e343d;
+        --head:#1d2128; --accent:#7fb0ea; --plot-bg:#ffffff; --pass:#4ac26b; --fail:#ff7b72;
+        --warn:#e3a33b; color-scheme: dark; }
+body { background:var(--bg); color:var(--fg); font:14px/1.5 var(--sans); margin:0; }
+main { max-width:1400px; margin:0 auto; padding-inline:16px; padding-block:16px 40px; }
+h1 { font-size:22px; margin:4px 0 2px; text-wrap:balance; }
+h2 { font-size:17px; margin:28px 0 8px; border-bottom:1px solid var(--line); padding-bottom:4px;
+     text-wrap:balance; }
+h3 { font-size:14px; margin:10px 0 4px; color:var(--muted); text-transform:uppercase;
+     letter-spacing:.04em; }
+.sub { color:var(--muted); margin-bottom:12px; overflow-wrap:anywhere; }
+code, pre { font-family:var(--mono); }
+.plot { background:var(--plot-bg); border:1px solid var(--line); border-radius:6px; overflow:hidden;
+        max-width:100%; }
 table { border-collapse:collapse; margin:6px 0 10px; font-size:13px; }
 th, td { border:1px solid var(--line); padding:3px 8px; text-align:left; vertical-align:top; }
 th { background:var(--head); font-weight:600; }
-td.num { text-align:right; font-variant-numeric:tabular-nums; }
+td { overflow-wrap:anywhere; }
+td.num { text-align:right; font-variant-numeric:tabular-nums; font-family:var(--mono); font-size:12px; }
 .pass { color:var(--pass); font-weight:600; } .fail { color:var(--fail); font-weight:600; }
 .warn { color:var(--warn); font-weight:600; }
-details { margin:6px 0; } summary { cursor:pointer; font-weight:600; }
+details { margin:6px 0; } summary { cursor:pointer; font-weight:600; color:var(--accent); }
 pre { background:var(--head); padding:8px; overflow:auto; max-height:420px; font-size:12px; }
-.grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(380px,1fr)); gap:14px; }
-.scroll { overflow-x:auto; }
+.grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(380px,100%),1fr)); gap:14px; }
+.grid > div { min-width:0; }
+.scroll { overflow-x:auto; max-width:100%; }
 """
 
 
@@ -61,7 +83,7 @@ def kv_table(d, title=None, skip=()):
     rows = "".join(f"<tr><th>{esc(k)}</th><td>{esc(v)}</td></tr>"
                    for k, v in d.items() if k not in skip)
     cap = f"<h3>{esc(title)}</h3>" if title else ""
-    return f"{cap}<table>{rows}</table>"
+    return f"{cap}<div class='scroll'><table>{rows}</table></div>"
 
 
 def rows_table(header, rows):
@@ -145,7 +167,7 @@ def validation_checks(di):
 def checks_table(checks):
     rows = "".join(f"<tr><td class='{s}'>{s.upper()}</td><th>{esc(n)}</th><td>{esc(d)}</td></tr>"
                    for n, s, d in checks)
-    return f"<table>{rows}</table>"
+    return f"<div class='scroll'><table>{rows}</table></div>"
 
 
 # ---------------------------------------------------------------- page
@@ -154,7 +176,7 @@ def build_page(di, args):
     wires = tuple(int(x) for x in args.wires.split(",")) if args.wires else None
     fig = geometry_figure(di, wires=wires, wire_stride=args.wire_stride, crt=not args.no_crt,
                           crt_strips=args.crt_strips)
-    include = True if args.offline else "cdn"
+    include = False if args.artifact else (True if args.offline else "cdn")
     parts = []
     g = di.geometry
     pv = di.provenance
@@ -162,7 +184,8 @@ def build_page(di, args):
     parts.append(f"<div class='sub'>{esc(pv.get('experiment_product'))} {esc(di.version)} "
                  f"({esc(pv.get('qualifiers'))}) &middot; schema {esc(di.schema_version)} &middot; "
                  f"{esc(di.path)}</div>")
-    parts.append(pio.to_html(fig, include_plotlyjs=include, full_html=False))
+    parts.append("<div class='plot'>" + pio.to_html(fig, include_plotlyjs=include, full_html=False,
+                                                     config=dict(responsive=True)) + "</div>")
     if wires is None:
         parts.append("<div class='sub'>Wires not drawn: rerun with <code>--wires CRYO,TPC,PLANE "
                      "[--wire-stride N]</code>.</div>")
@@ -220,7 +243,8 @@ def build_page(di, args):
         sfigs = [sce_slice_figure(di, "fwd", 0), sce_slice_figure(di, "bkwd", 0),
                  sce_slice_figure(di, "efield", 0)]
         parts.append("<div class='grid'>" + "".join(
-            "<div>" + pio.to_html(f, include_plotlyjs=False, full_html=False) + "</div>" for f in sfigs)
+            "<div class='plot'>" + pio.to_html(f, include_plotlyjs=False, full_html=False,
+                                               config=dict(responsive=True)) + "</div>" for f in sfigs)
             + "</div>")
 
     # photon visibility
@@ -242,10 +266,20 @@ def build_page(di, args):
     parts.append(f"<details><summary>services FHiCL ({len(fcl.splitlines())} lines)</summary>"
                  f"<pre>{esc(fcl)}</pre></details>")
 
+    if wires is None:
+        title = f"{di.detector.upper()} Detector Geometry {di.version}"
+    else:
+        wpl = g.GetPlane(wires[2], wires[1], wires[0])
+        title = f"{di.detector.upper()} TPC {wires[1]} {wpl.ViewName}-Plane Wires"
+    head = (f"<title>{esc(title)}</title>"
+            f'<link rel="stylesheet" href="{FONTS}">'
+            f"<style>{CSS}</style>")
+    if args.artifact:
+        # claude.ai artifact: the host adds doctype/head/body; plotly.js from an allowed CDN
+        return head + f'<script src="{PLOTLYJS_CDN}"></script><main>{"".join(parts)}</main>'
     return (f"<!doctype html><html><head><meta charset='utf-8'>"
-            f"<meta name='viewport' content='width=device-width, initial-scale=1'>"
-            f"<title>detinfo {esc(di.detector)} {esc(di.version)}</title><style>{CSS}</style></head>"
-            f"<body>{''.join(parts)}</body></html>")
+            f"<meta name='viewport' content='width=device-width, initial-scale=1'>{head}</head>"
+            f"<body><main>{''.join(parts)}</main></body></html>")
 
 
 def main():
@@ -260,6 +294,8 @@ def main():
     ap.add_argument("--crt-strips", action="store_true")
     ap.add_argument("--no-crt", action="store_true")
     ap.add_argument("--offline", action="store_true", help="embed plotly.js (no CDN)")
+    ap.add_argument("--artifact", action="store_true",
+                    help="write a claude.ai artifact page (no html/head/body; plotly.js from jsDelivr)")
     args = ap.parse_args()
     di = load(args.detector, args.version, path=args.path)
     out = args.out or f"detinfo_{di.detector}_{di.version}.html"
