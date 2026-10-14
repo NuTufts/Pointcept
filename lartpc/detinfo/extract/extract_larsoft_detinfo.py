@@ -37,7 +37,7 @@ import traceback
 import numpy as np
 import h5py
 
-SCHEMA_VERSION = "1.2"
+SCHEMA_VERSION = "1.3"
 
 # ---------------------------------------------------------------------------
 # Per-experiment configuration. Only `sbnd` has been run so far; the `icarus`
@@ -55,6 +55,17 @@ DETECTORS = {
         sce_provider=dict(header="sbndcode/SpaceCharge/SpaceChargeSBND.h",
                           library="sbndcode_SpaceCharge",
                           cls="spacecharge.SpaceChargeSBND"),
+        # light model tables outside the services config: name -> (fcl, table)
+        optical_fcl_tables={
+            "vuv_hits": ("opticalsimparameterisations_sbnd.fcl", "sbnd_vuv_RS100cm_hits_parameterization"),
+            "vis_hits": ("opticalsimparameterisations_sbnd.fcl", "sbnd_vis_RS100cm_hits_parameterization"),
+            "pdfastsim_par": ("PDFastSim_sbnd.fcl", "sbnd_pdfastsim_par"),
+            "pdfastsim_pvs": ("PDFastSim_sbnd.fcl", "sbnd_pdfastsim_pvs"),
+            "flashmatch": ("opt0finder_sbnd.fcl", "sbnd_opt0_finder_one_to_many"),
+        },
+        # semi-analytic model reference build: optical-path tool (header, class)
+        semianalytic=dict(optical_path=("sbndcode/OpPathTool/SBNDOpticalPath.h",
+                                        "phot::SBNDOpticalPath")),
     ),
     "icarus": dict(
         product="ICARUSCODE",
@@ -63,6 +74,8 @@ DETECTORS = {
         service_table="icarus_common_services",
         aux_file_globs=[],
         sce_provider=None,
+        optical_fcl_tables={},
+        semianalytic=None,
     ),
 }
 
@@ -656,6 +669,135 @@ def extract_photonlib(ROOT, services_fhicl, outdir, tag, n_opdets):
     return info, h5path
 
 
+# ---------------------------------------------------------------------------
+# light model (semi-analytic) tables + LArSoft reference visibilities
+# ---------------------------------------------------------------------------
+def fhicl_table(fcl, table, workdir):
+    """(resolved text, python dict) of FHiCL table `table` defined in `fcl`."""
+    path = os.path.join(workdir, "_detinfo_table_dump.fcl")
+    with open(path, "w") as f:
+        f.write(f'#include "{fcl}"\ntab: @local::{table}\n')
+    try:
+        text = subprocess.run(["fhicl-dump", path], capture_output=True, text=True,
+                              check=True).stdout
+        import fhicl                                  # fhiclpy (UPS)
+        d = fhicl.make_pset(path)["tab"]
+        return text, d
+    finally:
+        os.remove(path)
+
+
+def write_fhicl_tree(group, d):
+    """Nested FHiCL dict -> HDF5: tables -> subgroups, numeric (rectangular)
+    sequences -> datasets, scalars/strings -> attrs, other sequences -> JSON attrs."""
+    for k, v in d.items():
+        if isinstance(v, dict):
+            write_fhicl_tree(group.create_group(k), v)
+        elif isinstance(v, (list, tuple)):
+            try:
+                arr = np.asarray(v, dtype=np.float64)
+                if arr.dtype == object or arr.size == 0:
+                    raise ValueError
+                group.create_dataset(k, data=arr)
+            except (ValueError, TypeError):
+                group.attrs[k + "__json"] = json.dumps(v)
+        elif v is None:
+            continue
+        else:
+            group.attrs[k] = v
+
+
+def extract_optical_model(ROOT, cfg, geom, wr, larp, outdir):
+    """Dump the light-model FHiCL tables and, if configured, build the LArSoft
+    semi-analytic model (patched copy compiled with cling, see
+    larsoft_ref/semianalytic_ref.py). Returns (tables, sam_info, model|None)."""
+    tables = {}
+    for name, (fcl, table) in cfg.get("optical_fcl_tables", {}).items():
+        res = Q.get(f"optical.table.{name}", lambda: fhicl_table(fcl, table, outdir))
+        if res is not None:
+            tables[name] = dict(fcl=fcl, table=table, text=res[0], tree=res[1])
+    sam_cfg = cfg.get("semianalytic")
+    if not sam_cfg or "vuv_hits" not in tables:
+        return tables, {}, None
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "larsoft_ref"))
+    import semianalytic_ref as R
+    cls = R.build(ROOT, os.environ["LARSIM_DIR"], sam_cfg["optical_path"][0])
+    opath = R.make_optical_path(ROOT, sam_cfg["optical_path"][1])
+    vuv = R.pset_from_text(ROOT, tables["vuv_hits"]["text"], "tab")
+    vis = R.pset_from_text(ROOT, tables["vis_hits"]["text"], "tab") if "vis_hits" in tables \
+        else ROOT.fhicl.ParameterSet()
+    par = tables.get("pdfastsim_par", {}).get("tree", {})
+    flags = dict(DoReflectedLight=bool(par.get("DoReflectedLight", False)),
+                 IncludeAnodeReflections=bool(par.get("IncludeAnodeReflections", False)),
+                 UseXeAbsorption=bool(par.get("UseXeAbsorption", False)))
+    model = R.make_model(ROOT, cls, vuv, vis, opath, flags["DoReflectedLight"],
+                         flags["IncludeAnodeReflections"], flags["UseXeAbsorption"],
+                         geom, wr, larp)
+    sam = dict(flags,
+               optical_path_class=sam_cfg["optical_path"][1],
+               reference_source="larsim " + os.environ.get("LARSIM_VERSION", "?") +
+                                " SemiAnalyticalModel.cxx (patched constructor, cling)",
+               vuv_absorption_length=float(model.absorptionLength()),
+               cathode_centre=list(model.cathodeCentre()),
+               anode_centre=list(model.anodeCentre()),
+               drift_distance=float(model.driftDistance()),
+               active_volumes=[list(model.activeVolume(i)) for i in range(model.nActiveVolumes())],
+               opdet_type=list(model.opDetType()),
+               opdet_orientation=list(model.opDetOrientation()),
+               opdet_h=list(model.opDetH()),
+               opdet_w=list(model.opDetW()))
+    return tables, sam, model
+
+
+def optical_reference_points(ROOT, geom, rng):
+    """Points for the semi-analytic reference: random in each TPC active volume,
+    line scans through the detector, and points close in front of detectors."""
+    pts = []
+    act = []
+    for c in range(int(geom.Ncryostats())):
+        for t in range(int(geom.NTPC(ROOT.geo.CryostatID(c)))):
+            a = geom.TPC(ROOT.geo.TPCID(c, t)).ActiveBoundingBox()
+            lo = np.array([a.MinX(), a.MinY(), a.MinZ()]); hi = np.array([a.MaxX(), a.MaxY(), a.MaxZ()])
+            act.append((lo, hi))
+            pts.append(rng.uniform(lo + 0.5, hi - 0.5, size=(150, 3)))
+    lo = np.min([a[0] for a in act], 0); hi = np.max([a[1] for a in act], 0)
+    c = 0.5 * (lo + hi)
+    pts.append(np.stack([np.linspace(lo[0] + 0.5, hi[0] - 0.5, 161), np.full(161, c[1]), np.full(161, c[2])], 1))
+    for x in (lo[0] * 0.5, hi[0] * 0.5):
+        pts.append(np.stack([np.full(101, x), np.full(101, c[1]), np.linspace(lo[2] + 0.5, hi[2] - 0.5, 101)], 1))
+        pts.append(np.stack([np.full(81, x), np.linspace(lo[1] + 0.5, hi[1] - 0.5, 81), np.full(81, c[2])], 1))
+    # close to optical detectors: 5-60 cm inside the active volume, at the
+    # detector's (y, z) (+-5 cm), on the detector's side of the cathode
+    nop = int(geom.NOpDets())
+    for i in rng.choice(nop, size=min(40, nop), replace=False):
+        o = geom.OpDetGeoFromOpDet(int(i)).GetCenter()
+        face = hi[0] if o.X() > c[0] else lo[0]
+        x = face - np.sign(o.X() - c[0]) * rng.uniform(5, 60)
+        pts.append(np.array([[x, o.Y() + rng.uniform(-5, 5), o.Z() + rng.uniform(-5, 5)]]))
+    return np.concatenate(pts)
+
+
+def extract_optical_validation(ROOT, geom, model, seed=20261015):
+    rng = np.random.default_rng(seed)
+    pts = optical_reference_points(ROOT, geom, rng)
+    nop = int(geom.NOpDets())
+    direct = np.zeros((len(pts), nop)); refl = np.full((len(pts), nop), np.nan)
+    v = ROOT.std.vector("double")()
+    do_refl = True
+    for i, p in enumerate(pts):
+        P = ROOT.geo.Point_t(*p)
+        model.detectedDirectVisibilities(v, P)
+        direct[i] = np.fromiter(v, dtype=np.float64, count=nop)
+        if do_refl:
+            r = Q.get("val.sam.reflected", lambda: (model.detectedReflectedVisibilities(v, P, False),
+                                                    np.fromiter(v, dtype=np.float64, count=nop))[1])
+            if r is None:
+                do_refl = False
+            else:
+                refl[i] = r
+    return dict(point=pts, direct=direct, reflected=refl)
+
+
 def copy_aux_files(globs, outdir):
     copied = []
     for pat in globs:
@@ -739,6 +881,11 @@ def main():
         PVS, plib_h5 = Q.get("photonlib", lambda: extract_photonlib(
             ROOT, services_fhicl, args.outdir, f"{args.detector}_{version}",
             int(G["detector"]["n_opdets"])), ({"note": "extraction failed"}, None))
+    print("extracting light model tables / semi-analytic reference ...", flush=True)
+    OPT_TABLES, SAM, sam_model = Q.get("optical_model", lambda: extract_optical_model(
+        ROOT, cfg, geom, wr, larp, args.outdir), ({}, {}, None))
+    OPT_VAL = (Q.get("optical_validation", lambda: extract_optical_validation(ROOT, geom, sam_model))
+               if sam_model is not None else None)
     print("computing validation reference points ...", flush=True)
     sce = Q.get("val.sce_provider", lambda: make_sce_provider(ROOT, cfg, SCE.get("fhicl")))
     voxdef = Q.get("val.voxel_def", lambda: make_voxel_def(ROOT, PVS))
@@ -803,6 +950,35 @@ def main():
             s = sg.create_group(name)
             s.create_dataset("energy_eV", data=e)
             s.create_dataset("value", data=v)
+
+        # ---- light model: FHiCL tables + semi-analytic geometry descriptors
+        if OPT_TABLES or SAM:
+            om = f.create_group("optical_model")
+            for name, t in OPT_TABLES.items():
+                tg = om.create_group(name)
+                tg.attrs["fcl"] = t["fcl"]
+                tg.attrs["table"] = t["table"]
+                tg.create_dataset("fhicl", data=t["text"], dtype=h5py.string_dtype())
+                write_fhicl_tree(tg.create_group("params"), t["tree"])
+            if SAM:
+                sg = om.create_group("semianalytic")
+                for k in ("DoReflectedLight", "IncludeAnodeReflections", "UseXeAbsorption",
+                          "optical_path_class", "reference_source", "vuv_absorption_length",
+                          "cathode_centre", "anode_centre", "drift_distance"):
+                    sg.attrs[k] = SAM[k]
+                sg.create_dataset("active_volumes", data=np.asarray(SAM["active_volumes"]))
+                write_table(sg, "opdets", dict(
+                    opdet=np.arange(len(SAM["opdet_type"])), type=SAM["opdet_type"],
+                    orientation=SAM["opdet_orientation"], h=SAM["opdet_h"], w=SAM["opdet_w"]),
+                    attrs=dict(type_enum="0=rectangle (X-ARAPUCA/bar) 1=dome PMT 2=disk PMT",
+                               orientation_enum="0=faces x (anode/cathode) 1=faces y 2=faces z",
+                               note="as built by SemiAnalyticalModel::opticalDetectors() from OpDetGeo"))
+        if OPT_VAL is not None:
+            write_table(f, "validation_optical", OPT_VAL,
+                        attrs=dict(note="LArSoft SemiAnalyticalModel reference: direct = "
+                                        "detectedDirectVisibilities, reflected = "
+                                        "detectedReflectedVisibilities(AnodeMode=false); "
+                                        "columns indexed by opdet"))
 
         # ---- photon visibility (library itself in photonlib_<det>_<ver>.h5)
         pg = f.create_group("photon_visibility")
