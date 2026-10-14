@@ -14,8 +14,12 @@ Call sites:
             per-track cosmics; run-3 EXT: slices = z bins), the file's observed flashes and
             the cascade's own de-double-counted charge context; option sets incl.
             --flash-window auto and --mask-saturated off.
-Compared: every table entry (pred_pe, chi2, oob_frac, chi2_rank, best_query, ...)
-with exact equality (NaN == NaN), and all params except the new 'detector' key.
+            Compared: every table entry (pred_pe, chi2, oob_frac, chi2_rank, best_query, ...)
+            with exact equality (NaN == NaN), and all params except the new 'detector' key.
+  stage3    tools/larformer/run_larformer_stage3_inference.py::flash_recovery_keep
+            inputs: the same events; a slicer-like prediction with one query per slice
+            (mask logits +-5, every 4th query no-object); K in (1, 3, 50) and
+            chi2_max in (500, 1e12). Compared: the returned keep masks.
 """
 import argparse
 import glob
@@ -133,14 +137,48 @@ def run_cascade(legacy_path, files):
     return n_ok == n and n > 0
 
 
+def run_stage3(legacy_path, files):
+    import torch
+    new = load_module(os.path.join(REPO, "tools/larformer/run_larformer_stage3_inference.py"), "stage3_new")
+    old = load_module(legacy_path, "stage3_legacy")
+    n_ok = n = 0
+    for path in files:
+        coord, sid, run, kind = event_inputs(path, -5)
+        qs = np.unique(sid)
+        Q = len(qs)
+        logits = torch.full((Q, coord.shape[0]), -5.0)
+        for i, q in enumerate(qs):
+            logits[i, torch.from_numpy(sid == q)] = 5.0
+        C = 4
+        cls = torch.zeros(Q, C)
+        for i in range(Q):
+            cls[i, (C - 1) if i % 4 == 3 else (i % (C - 1))] = 1.0
+        ev = {"mask_logits": {"spacepoint": logits}, "class_logits": cls}
+        batch = {"coord": torch.from_numpy(coord)}
+        for K in (1, 3, 50):
+            for chi2_max in (500.0, 1e12):
+                kw = dict(no_object_class_id=C - 1, mask_prob_threshold=0.5, gamma_beam=5.25,
+                          K=K, chi2_max=chi2_max, oob_max=0.05, gamma_scale_spec="auto")
+                a = old.flash_recovery_keep(ev, batch, path, **kw)
+                b = new.flash_recovery_keep(ev, batch, path, detector="uboone", **kw)
+                ok = (a is None and b is None) or (a is not None and b is not None and torch.equal(a, b))
+                n += 1
+                n_ok += ok
+                kept = -1 if b is None else int(b.sum())
+                print(f"  [{'PASS' if ok else 'FAIL'}] {os.path.basename(path)} run {run} K={K} "
+                      f"chi2_max={chi2_max:g}: {Q} queries, kept {kept} points")
+    print(f"{n_ok}/{n} stage-3 keep masks identical")
+    return n_ok == n and n > 0
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("site", choices=["cascade"])
+    ap.add_argument("site", choices=["cascade", "stage3"])
     ap.add_argument("--legacy", required=True, help="path of the pre-edit copy of the call-site file")
     ap.add_argument("--files", type=int, default=5, help="events per sample glob")
     a = ap.parse_args()
     files = [f for g in GLOBS for f in sorted(glob.glob(g))[: a.files]]
-    ok = run_cascade(a.legacy, files)
+    ok = run_cascade(a.legacy, files) if a.site == "cascade" else run_stage3(a.legacy, files)
     sys.exit(0 if ok else 1)
 
 

@@ -103,19 +103,27 @@ def _oob_frac_np(pts):
     return float(1.0 - inb.mean())
 
 
+_FLASH_MODELS = {}
+
+
 def flash_recovery_keep(ev_pred, filtered_batch, input_h5_path, no_object_class_id,
                         mask_prob_threshold, gamma_beam, K, chi2_max, oob_max,
-                        gamma_scale_spec="auto"):
+                        gamma_scale_spec="auto", detector="uboone"):
     """Expanded keep-mask term: union of the top-K slice queries whose PhotonLib-
     predicted PMT pattern best matches the in-time beam flash (Neyman chi2), cut by
     chi2 <= chi2_max and OOB <= oob_max. Returns an (n_sp,) bool tensor (or None if
-    no in-time beam flash). The observed flash + raw charge come from input_h5_path."""
+    no in-time beam flash). The observed flash + raw charge come from input_h5_path.
+    detector: flash model (lartpc/flashmatch/model); 'uboone' is bit-identical to the
+    legacy flash_predict/flash_chi2 path."""
     import h5py
-    from lartpc.flashmatch.flash_predict import (
-        predict_slice_pe, select_charge_y_with_uv_fallback_np)
-    from lartpc.flashmatch.flash_chi2 import neyman_chi2
+    from lartpc.flashmatch.flash_predict import select_charge_y_with_uv_fallback_np
     from lartpc.flashmatch.dead_channels import dead_opdets_for_run
     from lartpc.flashmatch import flash_calib
+    from lartpc.flashmatch.model import make_flash_model
+    fm = _FLASH_MODELS.get(detector)
+    if fm is None:
+        fm = _FLASH_MODELS[detector] = make_flash_model(detector)
+    is_uboone = fm.detector == "uboone"
 
     sp_mask = ev_pred["mask_logits"]["spacepoint"]          # (Q, n_sp) logits
     Q, n_sp = sp_mask.shape
@@ -135,13 +143,17 @@ def flash_recovery_keep(ev_pred, filtered_batch, input_h5_path, no_object_class_
         fl = e["flashes"]
         f_pe = fl["pe"][:]; f_pid = fl["producer_id"][:]
         f_tpe = fl["total_pe"][:]; f_t = fl["time_us"][:]
-    # run-aware flash config (see lartpc/flashmatch/dead_channels.py)
-    dead_opdets = dead_opdets_for_run(_run)
-    # NOTE this path uses voxel-mean Y/UV charge, not the cascade's comb
-    # charge, so its gamma is only approximately comparable (see flash_calib).
-    _kind = flash_calib.detect_kind(input_h5_path) if gamma_scale_spec == "table" else None
-    gamma_eff = float(gamma_beam) * float(
-        flash_calib.resolve(gamma_scale_spec, _run, kind=_kind))
+    if is_uboone:
+        # run-aware flash config (see lartpc/flashmatch/dead_channels.py)
+        dead_opdets = dead_opdets_for_run(_run)
+        # NOTE this path uses voxel-mean Y/UV charge, not the cascade's comb
+        # charge, so its gamma is only approximately comparable (see flash_calib).
+        _kind = flash_calib.detect_kind(input_h5_path) if gamma_scale_spec == "table" else None
+        gamma_eff = float(gamma_beam) * float(
+            flash_calib.resolve(gamma_scale_spec, _run, kind=_kind))
+    else:
+        dead_opdets = ()
+        gamma_eff = float(gamma_beam) * (1.0 if gamma_scale_spec == "auto" else float(gamma_scale_spec))
     beam = np.where(f_pid == 0)[0]
     if len(beam) == 0:
         return None
@@ -151,9 +163,12 @@ def flash_recovery_keep(ev_pred, filtered_batch, input_h5_path, no_object_class_
     # pred^2/eps term (~1e6) would push the CORRECT slice past chi2_max and get
     # it dropped. Derived once from the observed flash, so all candidate slices
     # below are scored on the same PMTs. See lartpc/flashmatch/saturation.py.
-    from lartpc.flashmatch.saturation import find_saturated
-    chi2_mask = tuple(sorted(set(dead_opdets) | set(
-        find_saturated(pe_obs, dead=dead_opdets, max_masked=4))))
+    if is_uboone:
+        from lartpc.flashmatch.saturation import find_saturated
+        chi2_mask = tuple(sorted(set(dead_opdets) | set(
+            find_saturated(pe_obs, dead=dead_opdets, max_masked=4))))
+    else:
+        chi2_mask = fm.channel_mask(pe_obs, _run, mask_saturated=True, max_saturated=4)
 
     VOX = 1.0
     vc = {}
@@ -175,11 +190,16 @@ def flash_recovery_keep(ev_pred, filtered_batch, input_h5_path, no_object_class_
         if m.sum() < 10:
             continue
         pts = post_cm[m]
-        if _oob_frac_np(pts) > oob_max:
+        oob = (_oob_frac_np(pts) if is_uboone      # legacy: fixed box, no drift shift
+               else float(fm.oob_mask(pts).mean()))
+        if oob > oob_max:
             continue
-        pe_pred = predict_slice_pe(pts, post_charge[m], t0, producer_id=0,
-                                   gamma_by_producer=(gamma_eff, gamma_eff))
-        c2 = neyman_chi2(pe_pred, pe_obs, dead_opdets=chi2_mask)
+        if is_uboone:
+            pe_pred = fm.predict_legacy(pts, post_charge[m], None, 1, t0, producer_id=0,
+                                        gamma_by_producer=(gamma_eff, gamma_eff))[0]
+        else:
+            pe_pred = fm.predict_slice(pts, post_charge[m], t0, light_yield=gamma_eff)
+        c2 = fm.chi2(pe_pred, pe_obs, mask=chi2_mask)
         if np.isfinite(c2) and c2 <= chi2_max:
             cand.append((c2, q))
     cand.sort()
@@ -619,6 +639,7 @@ def run_full_cascade_mode(args):
                     K=args.flash_recover_k,
                     chi2_max=args.flash_recover_chi2_max,
                     oob_max=args.flash_recover_oob_max,
+                    detector=args.detector,
                 )
                 if fkeep is not None and fkeep.shape == keep.shape:
                     keep = keep | fkeep
@@ -808,6 +829,9 @@ def main():
                          "Adds those slices' SPs to the particle-segmenter keep mask.")
     ap.add_argument("--flash-recover-chi2-max", type=float, default=500.0)
     ap.add_argument("--flash-recover-oob-max", type=float, default=0.05)
+    ap.add_argument("--detector", default="uboone", choices=["uboone", "sbnd"],
+                    help="flash model for --flash-recover-k (lartpc/flashmatch/model); "
+                         "uboone = legacy MicroBooNE photon library (bit-identical)")
     ap.add_argument("--flash-recover-gamma", type=float, default=5.25)
     ap.add_argument("--flash-recover-gamma-scale", default="auto",
                     help="multiplier on --flash-recover-gamma: 'auto' (legacy "
