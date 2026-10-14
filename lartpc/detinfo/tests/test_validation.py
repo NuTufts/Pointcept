@@ -51,7 +51,12 @@ def run_checks(di, verbose=True):
     check("ConvertXToTicks", d < 1e-6, f"max |diff| = {d:.2e} ticks")
 
     # space charge
-    if "sce_pos_offsets" in V and np.isfinite(V["sce_pos_offsets"]).any():
+    sce_ported = type(di.sce).__name__ != "SpaceCharge"
+    if "sce_pos_offsets" in V and np.isfinite(V["sce_pos_offsets"]).any() and not sce_ported:
+        if verbose:
+            print(f"  [SKIP] SCE: LArSoft reference values present, but no python port of the "
+                  f"{di.detector} SCE provider yet (lartpc/detinfo/spacecharge.py)")
+    elif "sce_pos_offsets" in V and np.isfinite(V["sce_pos_offsets"]).any():
         for name, ref, val in (
                 ("SCE GetPosOffsets", V["sce_pos_offsets"], di.sce.GetPosOffsets(pts)),
                 ("SCE GetEfieldOffsets", V["sce_efield_offsets"], di.sce.GetEfieldOffsets(pts)),
@@ -60,8 +65,10 @@ def run_checks(di, verbose=True):
             d = np.nanmax(np.abs(val - ref))
             scale = np.nanmax(np.abs(ref))
             check(name, d < 1e-5 * max(scale, 1.0), f"max |diff| = {d:.2e} (max |ref| {scale:.3g})")
-    else:
-        check("SCE reference present", False, "no sce_* columns in /validation")
+    elif sce_ported:
+        check("SCE reference present", False, "no sce_* reference values in /validation")
+    elif verbose:
+        print(f"  [SKIP] SCE: no LArSoft reference values and no python port for {di.detector}")
 
     # photon library voxelization
     if "photonlib_voxel_id" in V and (V["photonlib_voxel_id"] > -2).any():

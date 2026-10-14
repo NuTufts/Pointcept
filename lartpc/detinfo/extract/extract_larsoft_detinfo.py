@@ -77,7 +77,8 @@ DETECTORS = {
         aux_file_globs=[],
         sce_provider=dict(header="ubevt/SpaceCharge/SpaceChargeMicroBooNE.h",
                           library="ubevt_SpaceCharge",
-                          cls="spacecharge.SpaceChargeMicroBooNE"),
+                          cls="spacecharge.SpaceChargeMicroBooNE",
+                          needs_detprop=True),          # ctor(pset, DetectorPropertiesData)
         optical_fcl_tables={},
         semianalytic=None,
     ),
@@ -550,7 +551,7 @@ def read_hists(ROOT, path):
     return hists
 
 
-def make_sce_provider(ROOT, cfg, sce_block):
+def make_sce_provider(ROOT, cfg, sce_block, detdata=None):
     """Instantiate the experiment's SCE provider from the services FHiCL block
     (used only to compute validation reference values)."""
     spec = cfg.get("sce_provider")
@@ -562,7 +563,7 @@ def make_sce_provider(ROOT, cfg, sce_block):
     cls = ROOT
     for part in spec["cls"].split("."):
         cls = getattr(cls, part)
-    return cls(pset)
+    return cls(pset, detdata) if spec.get("needs_detprop") else cls(pset)
 
 
 def make_voxel_def(ROOT, pvs):
@@ -673,9 +674,15 @@ def extract_photonlib(ROOT, services_fhicl, outdir, tag, n_opdets):
 
     nx, ny, nz = int(info["NX"]), int(info["NY"]), int(info["NZ"])
     f = ROOT.TFile.Open(dst)
-    key = f.GetKey("PhotonLibraryData")          # highest cycle, as LArSoft's Get()
+    # LArSoft PhotonLibrary: "PhotonLibraryData" at top level, else "pmtresponse/PhotonLibraryData"
+    # (MicroBooNE); Get() returns the highest key cycle
+    tdir, tname = f, "PhotonLibraryData"
+    if not f.GetKey(tname) and f.GetDirectory("pmtresponse"):
+        tdir = f.GetDirectory("pmtresponse")
+    key = tdir.GetKey(tname)
+    info["tree_path"] = ("pmtresponse/" if tdir is not f else "") + tname
     info["tree_cycle"] = int(key.GetCycle())
-    tree = f.Get("PhotonLibraryData")
+    tree = tdir.Get(tname)
     branches = [b.GetName() for b in tree.GetListOfBranches()]
     cols = [c for c in ("Voxel", "OpChannel", "Visibility", "ReflVisibility") if c in branches]
     info["tree_entries"] = int(tree.GetEntries())
@@ -951,7 +958,7 @@ def main():
     OPT_VAL = (Q.get("optical_validation", lambda: extract_optical_validation(ROOT, geom, sam_model))
                if sam_model is not None else None)
     print("computing validation reference points ...", flush=True)
-    sce = Q.get("val.sce_provider", lambda: make_sce_provider(ROOT, cfg, SCE.get("fhicl")))
+    sce = Q.get("val.sce_provider", lambda: make_sce_provider(ROOT, cfg, SCE.get("fhicl"), detdata))
     voxdef = Q.get("val.voxel_def", lambda: make_voxel_def(ROOT, PVS))
     VAL = extract_validation(ROOT, geom, wr, detdata, sce=sce, voxdef=voxdef)
 

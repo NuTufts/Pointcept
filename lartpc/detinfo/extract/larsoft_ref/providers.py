@@ -61,6 +61,14 @@ def _declare(ROOT, key, code):
 
 def prepare(ROOT):
     """Make fhiclcpp + the provider factories known to cling (idempotent)."""
+    import os
+    if "inc_paths" not in _DECLARED:
+        # every UPS product include dir (<PRODUCT>_INC), as LArSoftUtils does per product;
+        # e.g. MicroBooNE's SpaceChargeMicroBooNE.h needs gsl/ (GSL_INC)
+        for k, v in sorted(os.environ.items()):
+            if k.endswith("_INC") and v and os.path.isdir(v):
+                ROOT.gInterpreter.AddIncludePath(v)
+        _DECLARED.add("inc_paths")
     for lib in ("fhiclcpp", "cetlib", "cetlib_except") + _LIBS:
         try:
             _load_lib(ROOT, lib)
