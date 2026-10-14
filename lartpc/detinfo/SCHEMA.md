@@ -1,4 +1,4 @@
-# detinfo HDF5 schema (v1.1)
+# detinfo HDF5 schema (v1.2)
 
 One file per (experiment, code version):
 `$DETINFO_ROOT/<det>/<product>_<version>/detinfo_<det>_<version>.h5`
@@ -10,6 +10,9 @@ the experiment's own LArSoft service providers. Inspect it with
 Next to the file:
 - `spacecharge/<map>.root`: verbatim copy of the SCE map. Its contents are also stored as arrays in `/spacecharge/histograms`.
 - `aux/`: verbatim copies of experiment files that LArSoft geometry does not expose (e.g. `sbnd_pds_mapping.json`, the photon-detector type map).
+- `photonlib/<library>.root` + `photonlib_<det>_<version>.h5`: verbatim copy of the photon
+  visibility library and its dense conversion (see "Photon library file" below). These are large
+  (~130 MB + the converted file for SBND) and are not meant for git.
 - `extract.log`: the extraction log.
 
 ## Conventions
@@ -157,6 +160,38 @@ The sign of `ticks_per_cm` follows the drift direction.
   reco → true (correction). The coordinate convention of the map axes (e.g. mirroring
   per TPC) is defined in `SpaceChargeSBND.cxx`; the python utility must reproduce it.
 
+## `/photon_visibility` (attributes)
+- Contents: the scalar values of the services `PhotonVisibilityService` table:
+  - `LibraryFile`
+  - the grid: `NX`, `NY`, `NZ`, `XMin`/`XMax`, `YMin`/`YMax`, `ZMin`/`ZMax`
+  - flags: `StoreReflected`, `IncludePropTime`, `DoNotLoadLibrary`, `UseCryoBoundary`
+  - semi-analytic model scalars
+- The array parameters of the semi-analytic model (`Cut_off`, `Distances_*`, `Mpv`, ...)
+  are only in `/provenance/services_fhicl`.
+- Library copy and conversion: `source_path`, `copied_to`, `md5`, `tree_cycle` (key
+  cycle read, the highest, as LArSoft does), `tree_entries`, `tree_branches`,
+  `n_opchannels_in_library`, `visibility_nonzero`, `refl_visibility_nonzero`, and
+  `converted_h5` (file name of the photon library file).
+
+## Photon library file `photonlib_<det>_<version>.h5`
+- Attributes: as in `/photon_visibility`, plus:
+  - `grid_min` / `grid_max` (xyz, cm) and `grid_n` (NX, NY, NZ)
+  - `layout`
+- `visibility`: float32 `[ix, iy, iz, opchannel]`, the fraction of isotropically emitted
+  photons from voxel (ix, iy, iz) that reach the optical channel.
+- `refl_visibility`: the same for reflected (visible) light, when the library stores it.
+- Voxel indices follow LArSoft `sim::PhotonVoxelDef`:
+  `ix = floor((x - XMin) / ((XMax - XMin) / NX))` (same for y, z); points outside the grid
+  have no voxel (`-1`); voxel id = `ix + iy*NX + iz*NX*NY`.
+- **SBND (`SBND_OpLibOUT_v2.00.root`) is an "outside" library: it has no entries inside the
+  TPC active volumes** (verified: 0 of 2,000 active-region voxels populated in an x-slice through
+  the TPC). SBND simulates light from inside the active volume with larsim's semi-analytic model,
+  so in-TPC flash prediction needs that model (not yet ported); the library only covers light
+  produced outside the active volume.
+- Zero entries of the sparse LArSoft tree are zeros here. The layout matches the MicroBooNE
+  `lartpc/flashmatch` cache (`(Nx, Ny, Nz, NOpDets)`); `PhotonLibrary.export_flashmatch_npz()`
+  writes the npz read by `PhotonLibLookup`.
+
 ## `/validation` (table)
 - Contents: LArSoft's own answers for random points (fixed seed), 100 per TPC inside the
   active volume plus 20 anywhere in the detector enclosure.
@@ -167,8 +202,18 @@ The sign of `ticks_per_cm` follows the drift direction.
     - `wire_coordinate[:,p]`: `PlaneGeo::WireCoordinate`
     - `nearest_wire[:,p]`: `NearestWireID`; -1 if off the plane
     - `tick[:,p]`: `ConvertXToTicks(x)`
-- Use: unit tests of the python reimplementation.
+  - from the experiment's SCE provider (NaN if it could not be built):
+    - `sce_pos_offsets`: `GetPosOffsets`
+    - `sce_efield_offsets`: `GetEfieldOffsets`
+    - `sce_cal_pos_offsets`: `GetCalPosOffsets(point, sce_cal_tpcid)`
+  - `photonlib_voxel_id`: `sim::PhotonVoxelDef::GetVoxelID` (-1 outside the grid, -2 not computed)
+- Points: 100 per TPC inside the active volume, 20 anywhere in the detector enclosure, and
+  80 edge points (40 in the active-volume union grown by 6 cm, 40 in a slab |x| < 4 cm around
+  the cathode) that exercise the SCE clamping.
+- Use: unit tests of the python reimplementation (`tests/test_validation.py`).
 
 ## Changelog
+- 1.2: `/photon_visibility` + photon library file; SCE and voxel-id reference values and edge
+  points in `/validation`; shuffle + gzip-9 compression.
 - 1.1: `/validation`; SCE config read from the dumped services FHiCL.
 - 1.0: initial.
