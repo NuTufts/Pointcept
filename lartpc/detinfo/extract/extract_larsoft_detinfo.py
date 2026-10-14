@@ -27,6 +27,7 @@ import datetime
 import glob
 import hashlib
 import json
+import re
 import os
 import shutil
 import socket
@@ -559,6 +560,13 @@ def make_sce_provider(ROOT, cfg, sce_block, detdata=None):
         return None
     load_cpp(ROOT, spec["header"], (spec["library"],))
     body = "\n".join(sce_block.splitlines()[1:-1])   # strip "Key: {" ... "}"
+    # reference build: turn on every map (sim/forward and cal/backward, spatial and
+    # E-field) so both are validated even if this services table disables some
+    body = re.sub(r"(Enable(Sim|Cal)(Spatial|Efield)SCE):\s*false", r"\1: true", body)
+    # providers that read TH3s and then close the file (e.g. SpaceChargeMicroBooNE with
+    # Voxelized_TH3) rely on art's TH1::AddDirectory(false); without it the histograms are
+    # deleted with the file and the provider segfaults on first use
+    ROOT.TH1.AddDirectory(False)
     pset = ROOT.fhicl.ParameterSet.make(body)
     cls = ROOT
     for part in spec["cls"].split("."):

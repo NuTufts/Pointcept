@@ -251,7 +251,8 @@ tables **outside** the services configuration.
     - `wire_coordinate[:,p]`: `PlaneGeo::WireCoordinate`
     - `nearest_wire[:,p]`: `NearestWireID`; -1 if off the plane
     - `tick[:,p]`: `ConvertXToTicks(x)`
-  - from the experiment's SCE provider (NaN if it could not be built):
+  - from the experiment's SCE provider, built with **all** `Enable{Sim,Cal}{Spatial,Efield}SCE`
+    flags on so that both maps are validated (NaN if the provider could not be built):
     - `sce_pos_offsets`: `GetPosOffsets`
     - `sce_efield_offsets`: `GetEfieldOffsets`
     - `sce_cal_pos_offsets`: `GetCalPosOffsets(point, sce_cal_tpcid)`
