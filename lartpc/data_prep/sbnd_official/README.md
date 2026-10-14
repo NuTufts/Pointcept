@@ -1,6 +1,7 @@
 # SBND (larcv2) → LArFormer HDF5: input analysis
 
-Status (2026-10-14): **analysis only, no converter yet.** This document records
+Status (2026-10-15): **converter written and validated on the test file** (section 8).
+The analysis below records the decisions it implements. This document records
 what the SBND larcv2 files contain, how they map onto the per-event HDF5 schema
 produced for MicroBooNE by
 [`../uboone_official/convert_dlmerged_to_larformer_h5.py`](../uboone_official/convert_dlmerged_to_larformer_h5.py),
@@ -254,3 +255,80 @@ These have to move behind a per-detector constants interface before SBND
 2. Port the §6 constants in the LArFormer chain to that utility.
 3. Write `convert_larcv2_to_larformer_h5.py` using the utility, with the
    decisions D1-D8 settled.
+
+---
+
+## 8. The converter
+
+```bash
+bash lartpc/data_prep/sbnd_official/run_convert.sh -o OUTDIR FILE.root [...] [-- -n N --drop-2plane ...]
+# then, inside the pointcept container:
+python3 lartpc/data_prep/sbnd_official/validate_converted.py OUTDIR --flash
+```
+
+- **[`convert_larcv2_to_larformer_h5.py`](convert_larcv2_to_larformer_h5.py)** writes one HDF5 file
+  per event with the MicroBooNE `merged_sp` layout. The full field list is in the module docstring.
+- **Geometry comes from `lartpc.detinfo`:**
+  - wires: nearest wire per plane of the point's TPC
+  - tick: the collection-plane tick
+  - photon-detector positions and types
+  - CRT walls
+- **Speed:** about 5 s per event on CPU.
+
+### Decisions implemented (defaults from section 3.3)
+
+| # | choice |
+|---|---|
+| D1 | 2-plane points kept, with `nhits` stored; `--drop-2plane` removes them |
+| D2 | `pixval` = raw hit integral per plane (0 = no hit). No rescaling in the file: the scale handling belongs to the model / dataset config |
+| D3 | `origin` = 1 only for particles of neutrinos with the vertex **inside** the TPC active volume; cosmic **and** dirt-neutrino particles get 2, and dirt particles also get `is_dirt` = 1. `nu_vertices` and neutrino keypoints: in-TPC neutrinos only |
+| D4 | `ssnet_label` from SPINE shape + PDG: shower → e (1) / γ (2) by PDG; track → μ 3, p/n 4, π/K 5, other 9; Michel 6, delta 7, low-energy 8; ghost 0 |
+| D5 | keypoints follow larflow `MCKeypointMaker` (see below) |
+| D6 | **no SCE shift.** `--check-sce` showed larcv2 particle steps already sit on their own reco voxels (median 0.00 cm, vs 0.83 cm after a forward SCE shift), so `start_pos_sce` = `start_pos`. `--sce-keypoints` exists for samples where that is not true |
+| D7 | `flashes`: producer 0 = PMT, 1 = X-ARAPUCA. TPC 0 and TPC 1 flashes within 0.25 µs are summed into one 312-channel vector (`tpc_mask` bits). The beam flash is chosen downstream (MC suggestion `beam_window_us` = [0, 2.5]) |
+| D8 | `truth/neutrinos` table (energy in GeV, CC/NC, mode, vertex, time, `in_tpc`, lepton PDG/energy from the particles at the vertex) |
+
+**Event IDs:** `run` = 1, `subrun` = crc32 of the input file name, `event` = entry index,
+plus `source_file` and `source_entry`.
+
+**Keypoints** (larflow `MCKeypointMaker` rules):
+- track start/end for non-e/γ/n particles with at least 3 cm between first and last step
+- for shower roots (e/γ whose parent is not e/γ):
+  - Michel, if the parent or ancestor is a muon and the process is `Decay`/`muMinusCaptureAtRest`
+  - delta, if the parent or ancestor is a muon otherwise, or the process is μ ionization or bremsstrahlung
+  - shower start otherwise, at `pos` = first step, with `startpos` = creation point
+- one neutrino vertex per in-TPC neutrino
+- **visibility**: at least 2 real voxels within 3 cm. larflow's own visibility test needs deposits on at
+  least 2 planes; this is the 3D equivalent.
+
+**SBND additions:**
+- `triplet_data`: `tpc`, `hit_key` (N,3), `nhits`, `reco_charge`, `rescaled_charge`, `reco_chi2`,
+  `reco_occupancy`, `interaction_id`, `is_dirt`, `edep_mev`
+- `mc_particle_tree`: `shape`, `interaction_id`, `energy_deposit`, `contained`, `is_dirt`,
+  `first_step`, `last_step`, `creation_process`
+- groups: `crthits`, `truth/neutrinos`, `pd_type`
+
+### Validation on the test file (21 entries, `validate_converted.py --flash`)
+
+- **Content checks, 21/21:**
+  - ghosts unlabelled; every real point has a trackid
+  - wires inside each plane's range
+  - every keypoint within 3 cm of a real point
+  - origin-1 points only from in-TPC neutrino particles
+  - 312-channel flashes
+- **Dataset:** `LArFormerDataset` loads all files with `gt_source` slice and particle and `emit_keypoints=True`.
+- **Flash table:** the keypoint2-cascade flash table with `--detector sbnd` and truth slices ranks
+  the in-TPC neutrino slice **first in 10/14** events. The prediction-vs-beam-flash shape cosine is
+  0.97–0.998 in 12/14. The scale is not calibrated yet (obs/pred 0.3–1.5).
+
+### Known limitations / next steps
+
+1. **The LArFormer models are MicroBooNE-trained.** The dataset normalization (coord centre/scale,
+   wire scale 1/3456) and the charge scale (`pixval` is a hit integral, not a 6-tick pixel ADC)
+   need SBND values before any SBND inference makes sense. That is the detinfo port of the
+   constants in section 6.
+2. **The flash charge deduplication** in the cascade (`_load_msp_flash_charge`) groups by
+   `(tick, wire)` pixels. For SBND it should split each **hit's** charge among its voxels by
+   `hit_key`. This also fixes most of the 0.3–1.5 obs/pred spread before calibration (plan P5).
+3. **The PDS channel-side inconsistency** of 6 VUV X-ARAPUCAs (see
+   `lartpc/flashmatch/SEMIANALYTIC_PORT_NOTES.md`).
