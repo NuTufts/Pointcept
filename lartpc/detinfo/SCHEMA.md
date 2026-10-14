@@ -1,4 +1,4 @@
-# detinfo HDF5 schema (v1.3)
+# detinfo HDF5 schema (v1.4)
 
 One file per (experiment, code version):
 `$DETINFO_ROOT/<det>/<product>_<version>/detinfo_<det>_<version>.h5`
@@ -175,7 +175,10 @@ The sign of `ticks_per_cm` follows the drift direction.
 
 ## Photon library file `photonlib_<det>_<version>.h5`
 - Attributes: as in `/photon_visibility`, plus:
-  - `grid_min` / `grid_max` (xyz, cm) and `grid_n` (NX, NY, NZ)
+  - `grid_min` / `grid_max` (xyz, cm): the **effective** voxel grid. With `UseCryoBoundary` (MicroBooNE)
+    it is the cryostat box, as LArSoft's PhotonVisibilityService uses, and X/Y/ZMin/Max are ignored;
+    `grid_source` says which
+  - `grid_n` (NX, NY, NZ)
   - `layout`
 - `visibility`: float32 `[ix, iy, iz, opchannel]`, the fraction of isotropically emitted
   photons from voxel (ix, iy, iz) that reach the optical channel.
@@ -263,6 +266,9 @@ tables **outside** the services configuration.
 - Use: unit tests of the python reimplementation (`tests/test_validation.py`).
 
 ## Changelog
+- 1.4: MicroBooNE support. Every `*Filename` SCE map is stored (non-primary maps under
+  `/spacecharge/histograms/<key>/`, e.g. `CalibrationInputFilename/`). The SCE reference provider is built
+  with all maps enabled. The photon-library grid follows `UseCryoBoundary`.
 - 1.3: `/optical_model` (light-model FHiCL tables, semi-analytic descriptors) and `/validation_optical`.
 - 1.2: `/photon_visibility` + photon library file; SCE and voxel-id reference values and edge
   points in `/validation`; shuffle + gzip-9 compression.

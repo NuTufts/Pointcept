@@ -579,9 +579,11 @@ def make_voxel_def(ROOT, pvs):
     if not pvs or "NX" not in pvs:
         return None
     load_cpp(ROOT, "larsim/Simulation/PhotonVoxels.h")
-    return ROOT.sim.PhotonVoxelDef(float(pvs["XMin"]), float(pvs["XMax"]), int(pvs["NX"]),
-                                   float(pvs["YMin"]), float(pvs["YMax"]), int(pvs["NY"]),
-                                   float(pvs["ZMin"]), float(pvs["ZMax"]), int(pvs["NZ"]))
+    lo = pvs.get("grid_min_eff", [pvs["XMin"], pvs["YMin"], pvs["ZMin"]])
+    hi = pvs.get("grid_max_eff", [pvs["XMax"], pvs["YMax"], pvs["ZMax"]])
+    return ROOT.sim.PhotonVoxelDef(float(lo[0]), float(hi[0]), int(pvs["NX"]),
+                                   float(lo[1]), float(hi[1]), int(pvs["NY"]),
+                                   float(lo[2]), float(hi[2]), int(pvs["NZ"]))
 
 
 def extract_validation(ROOT, geom, wr, detdata, sce=None, voxdef=None, n_inside=100,
@@ -647,7 +649,7 @@ def extract_validation(ROOT, geom, wr, detdata, sce=None, voxdef=None, n_inside=
     return out
 
 
-def extract_photonlib(ROOT, services_fhicl, outdir, tag, n_opdets):
+def extract_photonlib(ROOT, services_fhicl, outdir, tag, n_opdets, geom=None):
     """Copy the photon visibility library and convert it to a dense HDF5 file.
 
     LArSoft's PhotonLibrary stores a sparse TTree `PhotonLibraryData`
@@ -681,6 +683,18 @@ def extract_photonlib(ROOT, services_fhicl, outdir, tag, n_opdets):
     info["md5"] = md5sum(dst)
 
     nx, ny, nz = int(info["NX"]), int(info["NY"]), int(info["NZ"])
+    # PhotonVisibilityService: with UseCryoBoundary the voxel grid spans the cryostat
+    # (GeometryCore::CryostatBoundaries) and X/Y/ZMin/Max are ignored (MicroBooNE)
+    if info.get("UseCryoBoundary") and geom is not None:
+        cb = geom.Cryostat(ROOT.geo.CryostatID(0))
+        b = Q.get("photonlib.cryo_bounds", lambda: bbox(cb.Boundaries()), None) or bbox(cb)
+        info["grid_min_eff"] = [float(b[0]), float(b[1]), float(b[2])]
+        info["grid_max_eff"] = [float(b[3]), float(b[4]), float(b[5])]
+        info["grid_source"] = "cryostat boundaries (UseCryoBoundary)"
+    else:
+        info["grid_min_eff"] = [float(info["XMin"]), float(info["YMin"]), float(info["ZMin"])]
+        info["grid_max_eff"] = [float(info["XMax"]), float(info["YMax"]), float(info["ZMax"])]
+        info["grid_source"] = "PhotonVisibilityService X/Y/ZMin/Max"
     f = ROOT.TFile.Open(dst)
     # LArSoft PhotonLibrary: "PhotonLibraryData" at top level, else "pmtresponse/PhotonLibraryData"
     # (MicroBooNE); Get() returns the highest key cycle
@@ -712,8 +726,8 @@ def extract_photonlib(ROOT, services_fhicl, outdir, tag, n_opdets):
         for k, v in info.items():
             if isinstance(v, (str, int, float, bool, np.number)):
                 fo.attrs[k] = v
-        fo.attrs["grid_min"] = [float(info["XMin"]), float(info["YMin"]), float(info["ZMin"])]
-        fo.attrs["grid_max"] = [float(info["XMax"]), float(info["YMax"]), float(info["ZMax"])]
+        fo.attrs["grid_min"] = info["grid_min_eff"]
+        fo.attrs["grid_max"] = info["grid_max_eff"]
         fo.attrs["grid_n"] = [nx, ny, nz]
         for col, name in (("Visibility", "visibility"), ("ReflVisibility", "refl_visibility")):
             if col not in arr:
@@ -959,7 +973,7 @@ def main():
         print("extracting photon visibility library ...", flush=True)
         PVS, plib_h5 = Q.get("photonlib", lambda: extract_photonlib(
             ROOT, services_fhicl, args.outdir, f"{args.detector}_{version}",
-            int(G["detector"]["n_opdets"])), ({"note": "extraction failed"}, None))
+            int(G["detector"]["n_opdets"]), geom), ({"note": "extraction failed"}, None))
     print("extracting light model tables / semi-analytic reference ...", flush=True)
     OPT_TABLES, SAM, sam_model = Q.get("optical_model", lambda: extract_optical_model(
         ROOT, cfg, geom, wr, larp, args.outdir), ({}, {}, None))

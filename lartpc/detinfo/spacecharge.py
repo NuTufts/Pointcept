@@ -9,8 +9,11 @@ All accept (3,) or (N,3) arrays.
 
 Each experiment's provider has its own map conventions; the per-detector
 classes reproduce the LArSoft implementation of the extracted code version:
-    SpaceChargeSBND   <- sbndcode/SpaceCharge/SpaceChargeSBND.cxx (v10_14_02, Voxelized_TH3)
-MicroBooNE: lartpc/flashmatch/sce_microboone.py (to be folded in here).
+    SpaceChargeSBND        <- sbndcode/SpaceCharge/SpaceChargeSBND.cxx (v10_14_02, Voxelized_TH3)
+    SpaceChargeMicroBooNE  <- ubevt/SpaceCharge/SpaceChargeMicroBooNE.cxx (uboonecode v10_04_07_13,
+                              Voxelized_TH3; forward map = InputFilename, backward = CalibrationInputFilename)
+The python classes always evaluate the maps; the Enable* flags of the extracted
+configuration are reported by Enable*() but do not switch the methods off.
 """
 import numpy as np
 
@@ -166,7 +169,66 @@ class SpaceChargeSBND(SpaceCharge):
         return _ret(self._lookup("efield", x, y, z), s)
 
 
-SPACECHARGE_CLASSES = {"sbnd": SpaceChargeSBND}
+class SpaceChargeMicroBooNE(SpaceCharge):
+    """Port of SpaceChargeMicroBooNE, Voxelized_TH3 representation.
+
+    - points beyond the "too far" box (x<0 | x>266.6, |y|>126.5, z<-10 | z>1047) -> 0
+    - points between the active box (0.001..255.999, +-116.499, 0.001..1036.999) and the
+      "too far" box are moved onto the active boundary (PretendAtBoundary)
+    - map frame: x' = 2.5 - (2.5/2.56)(x/100), y' = (2.5/2.33)(y/100 + 1.165),
+      z' = (10/10.37)(z/100); ROOT TH3::Interpolate on hDx/hDy/hDz (positions) and
+      hEx/hEy/hEz (E field)
+    - E-field offsets = -map x EfieldOffsetScale (pset default 1.0; 3.65 in v10_04_07_13)
+    - GetCalPosOffsets ignores the TPC id (single TPC)
+    """
+
+    def __init__(self, h5file):
+        super().__init__(h5file)
+        if self.config.get("RepresentationType") != "Voxelized_TH3":
+            raise NotImplementedError(f"MicroBooNE SCE representation {self.config.get('RepresentationType')!r}")
+        hg = h5file["spacecharge/histograms"]
+        self.fwd = [Hist3D(hg[n]) for n in ("hDx", "hDy", "hDz")]
+        self.fwd_e = [Hist3D(hg[n]) for n in ("hEx", "hEy", "hEz")]
+        cal = hg["CalibrationInputFilename"] if "CalibrationInputFilename" in hg else None
+        self.bkwd = [Hist3D(cal[n]) for n in ("hDx", "hDy", "hDz")] if cal is not None else None
+        self.bkwd_e = [Hist3D(cal[n]) for n in ("hEx", "hEy", "hEz")] if cal is not None else None
+        self.efield_scale = float(self.config.get("EfieldOffsetScale", 1.0))
+
+    @staticmethod
+    def _prepare(p):
+        x, y, z = p[:, 0].copy(), p[:, 1].copy(), p[:, 2].copy()
+        too_far = (x < 0.0) | (x > 266.6) | (y < -126.5) | (y > 126.5) | (z < -10) | (z > 1047.0)
+        x = np.where(x < 0.001, 0.001, np.where(x > 255.999, 255.999, x))
+        y = np.where(y < -116.499, -116.499, np.where(y > 116.499, 116.499, y))
+        z = np.where(z < 0.001, 0.001, np.where(z > 1036.999, 1036.999, z))
+        xt = 2.50 - (2.50 / 2.56) * (x / 100.0)
+        yt = (2.50 / 2.33) * ((y / 100.0) + 1.165)
+        zt = (10.0 / 10.37) * (z / 100.0)
+        return xt, yt, zt, too_far
+
+    def _eval(self, hists, points, sign=1.0):
+        p, s = _pts(points)
+        xt, yt, zt, far = self._prepare(p)
+        out = np.stack([h.Interpolate(xt, yt, zt) for h in hists], axis=1) * sign
+        out[far] = 0.0
+        return _ret(out, s)
+
+    def GetPosOffsets(self, points):
+        return self._eval(self.fwd, points)
+
+    def GetCalPosOffsets(self, points, tpcid=1):
+        if self.bkwd is None:
+            raise ValueError("no backward (CalibrationInputFilename) map in this detinfo file")
+        return self._eval(self.bkwd, points)
+
+    def GetEfieldOffsets(self, points):
+        return self._eval(self.fwd_e, points, -self.efield_scale)
+
+    def GetCalEfieldOffsets(self, points, tpcid=1):
+        return self._eval(self.bkwd_e, points, -self.efield_scale)
+
+
+SPACECHARGE_CLASSES = {"sbnd": SpaceChargeSBND, "uboone": SpaceChargeMicroBooNE}
 
 
 def make_spacecharge(detector, h5file):
