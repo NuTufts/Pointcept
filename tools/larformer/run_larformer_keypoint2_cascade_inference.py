@@ -42,6 +42,7 @@ from tools.larformer.run_larformer_stage3_inference import (
 from lartpc.flashmatch.flash_predict import (
     predict_many_slices_pe, select_charge_y_with_uv_fallback_np)
 from lartpc.flashmatch.flash_chi2 import neyman_chi2, drift_correct, oob_mask
+from lartpc.flashmatch.model import ScoreConfig, make_flash_model
 from lartpc.larformer_reco.trajfit.calo import dedup_charge
 
 
@@ -545,6 +546,23 @@ def _dedup_row_charge(pos_cm, ctx):
     return out, int((~ok).sum())
 
 
+_FLASH_MODELS = {}
+
+
+def _get_flash_model(args):
+    """Per-process FlashModel for --detector (lartpc/flashmatch/model). MicroBooNE
+    reproduces the legacy flash_predict/flash_chi2 code bit-for-bit."""
+    det = str(getattr(args, "detector", "uboone"))
+    key = (det, getattr(args, "photonlib", None), float(args.flash_f_sys), float(args.flash_eps))
+    if key not in _FLASH_MODELS:
+        score = ScoreConfig(kind="neyman", f_sys=float(args.flash_f_sys), eps=float(args.flash_eps))
+        kw = dict(score=score)
+        if det == "uboone":
+            kw["photonlib_cache"] = getattr(args, "photonlib", None)
+        _FLASH_MODELS[key] = make_flash_model(det, **kw)
+    return _FLASH_MODELS[key]
+
+
 def _flash_slice_table(coord_cm, sid, p_nu_per_query, nu_qs, flashes,
                        charge_ctx, args, run=None, kind=None):
     """Per-slice flash-match table over the full-event slicer partition.
@@ -579,18 +597,35 @@ def _flash_slice_table(coord_cm, sid, p_nu_per_query, nu_qs, flashes,
                   "for the dead list and gamma scale (pass --run-override)")
             run = 0
     _run = int(run)
-    dead_opdets = resolve_dead_opdets(getattr(args, "dead_opdets", "auto"), _run)
-    flash_calib.check_spec_vs_kind(
-        spec, kind, allow_mismatch=getattr(args, "allow_kind_mismatch", False))
-    gamma_scale = flash_calib.resolve(spec, _run, kind=kind)
-    gamma_eff = float(args.gamma_beam) * float(gamma_scale)
+    fm = _get_flash_model(args)
+    is_uboone = fm.detector == "uboone"
+    if is_uboone:
+        dead_opdets = resolve_dead_opdets(getattr(args, "dead_opdets", "auto"), _run)
+        flash_calib.check_spec_vs_kind(
+            spec, kind, allow_mismatch=getattr(args, "allow_kind_mismatch", False))
+        gamma_scale = flash_calib.resolve(spec, _run, kind=kind)
+        gamma_eff = float(args.gamma_beam) * float(gamma_scale)
+    else:
+        # the gamma table / dead-PMT periods are MicroBooNE calibrations; other
+        # detectors: G = --light-yield (default: the model's) x a numeric scale
+        dead_opdets = ()
+        if spec in ("auto",):
+            gamma_scale = 1.0
+        else:
+            try:
+                gamma_scale = float(spec)
+            except ValueError:
+                raise RuntimeError(f"--gamma-run-scale {spec} is MicroBooNE-only; give a number "
+                                   f"for --detector {fm.detector}")
+        ly = getattr(args, "light_yield", None)
+        gamma_eff = float(fm.default_light_yield if ly is None else ly) * float(gamma_scale)
     # observed-flash time window: 'off' (legacy: brightest producer-0 flash at
     # any time), 'auto' (per kind/period table), or 'lo,hi' in us
     fw_spec = str(getattr(args, "flash_window", "off"))
     if fw_spec == "off":
         window = None
     elif fw_spec == "auto":
-        window = flash_calib.flash_window(kind, _run) if kind else None
+        window = (flash_calib.flash_window(kind, _run) if (kind and is_uboone) else None)
         if window is None:
             print("  [warn] --flash-window auto: no window for kind=%s run=%d; "
                   "using all producer-0 flashes" % (kind, _run))
@@ -628,7 +663,7 @@ def _flash_slice_table(coord_cm, sid, p_nu_per_query, nu_qs, flashes,
         "label": [r[0] for r in rows],
         "query": np.asarray([r[1] for r in rows], np.int32),
         "n_points": np.asarray([r[2].size for r in rows], np.int32),
-        "pred_pe": np.full((S, 32), np.nan, np.float32),
+        "pred_pe": np.full((S, fm.n_channels), np.nan, np.float32),
         "chi2": np.full(S, np.nan, np.float32),
         "oob_frac": np.full(S, np.nan, np.float32),
         "chi2_rank": np.zeros(S, np.int32),
@@ -651,7 +686,8 @@ def _flash_slice_table(coord_cm, sid, p_nu_per_query, nu_qs, flashes,
                    "calib_chain": flash_calib.GAMMA_SCALE_TABLE["chain"],
                    "flash_window": ("" if window is None
                                     else "%g,%g" % tuple(window)),
-                   "run_missing": bool(run_missing)},
+                   "run_missing": bool(run_missing),
+                   "detector": fm.detector},
     }
     if obs is None or charge_ctx is None or S == 0:
         return tbl
@@ -665,12 +701,22 @@ def _flash_slice_table(coord_cm, sid, p_nu_per_query, nu_qs, flashes,
     # subset -- a per-slice (prediction-dependent) mask would let any slice
     # excuse its own mismatches.
     sat_opdets = ()
-    if getattr(args, "mask_saturated", "auto") != "off":
-        from lartpc.flashmatch.saturation import find_saturated
-        sat_opdets = find_saturated(
-            obs["pe"], dead=dead_opdets,
-            max_masked=int(getattr(args, "max_saturated_pmts", 4)))
-    chi2_mask = tuple(sorted(set(dead_opdets) | set(sat_opdets)))
+    if is_uboone:
+        if getattr(args, "mask_saturated", "auto") != "off":
+            from lartpc.flashmatch.saturation import find_saturated
+            sat_opdets = find_saturated(
+                obs["pe"], dead=dead_opdets,
+                max_masked=int(getattr(args, "max_saturated_pmts", 4)))
+        chi2_mask = tuple(sorted(set(dead_opdets) | set(sat_opdets)))
+    else:
+        static = fm.channel_mask(obs["pe"], _run, mask_saturated=False)
+        chi2_mask = fm.channel_mask(
+            obs["pe"], _run,
+            mask_saturated=getattr(args, "mask_saturated", "auto") != "off",
+            max_saturated=int(getattr(args, "max_saturated_pmts", 4)))
+        dead_opdets = static
+        sat_opdets = tuple(sorted(set(chi2_mask) - set(static)))
+        tbl["params"]["dead_opdets"] = ",".join(str(d) for d in dead_opdets)
     tbl["params"]["saturated_opdets"] = ",".join(str(d) for d in sat_opdets)
     tbl["params"]["chi2_masked_opdets"] = ",".join(str(d) for d in chi2_mask)
 
@@ -689,18 +735,17 @@ def _flash_slice_table(coord_cm, sid, p_nu_per_query, nu_qs, flashes,
     if n_miss:
         print(f"  [warn] flash charge: {n_miss}/{len(sel)} spacepoints had "
               "no exact triplet_data match (voxel-mean fallback)")
-    tbl["pred_pe"] = predict_many_slices_pe(
-        spos, scharge, cid, S, obs["time_us"], producer_id=0,
-        gamma_by_producer=(gamma_eff, gamma_eff),
-        photonlib_cache=args.photonlib).astype(np.float32)
+    if is_uboone:       # legacy arguments, bit-identical to flash_predict
+        tbl["pred_pe"] = fm.predict_legacy(
+            spos, scharge, cid, S, obs["time_us"], producer_id=0,
+            gamma_by_producer=(gamma_eff, gamma_eff)).astype(np.float32)
+    else:
+        tbl["pred_pe"] = fm.predict(spos, scharge, cid, S, obs["time_us"],
+                                    light_yield=gamma_eff).astype(np.float32)
     for i, r in enumerate(rows):
         pos_i = coord_cm[r[2]]
-        tbl["oob_frac"][i] = float(
-            oob_mask(drift_correct(pos_i, obs["time_us"])).mean())
-        tbl["chi2"][i] = float(neyman_chi2(
-            tbl["pred_pe"][i], obs["pe"],
-            f_sys=args.flash_f_sys, eps=args.flash_eps,
-            dead_opdets=chi2_mask))
+        tbl["oob_frac"][i] = fm.oob_fraction(pos_i, obs["time_us"])
+        tbl["chi2"][i] = float(fm.chi2(tbl["pred_pe"][i], obs["pe"], mask=chi2_mask))
     ok = (tbl["oob_frac"] <= args.flash_oob_max) & np.isfinite(tbl["chi2"])
     order = np.argsort(np.where(ok, tbl["chi2"], np.inf), kind="stable")
     rank = 1
@@ -971,6 +1016,14 @@ def main():
     ap.add_argument("--flash-oob-max", type=float, default=0.05,
                     help="max fraction of a slice's points outside the TPC "
                          "(post drift-correction) for it to be chi2-ranked")
+    ap.add_argument("--detector", default="uboone", choices=["uboone", "sbnd"],
+                    help="flash model (lartpc/flashmatch/model): uboone = the legacy "
+                         "MicroBooNE photon-library model (bit-identical); sbnd = "
+                         "semi-analytic + OUT library, PMTs only")
+    ap.add_argument("--light-yield", type=float, default=None,
+                    help="non-MicroBooNE detectors: global light-yield scale G "
+                         "(default: the flash model's). MicroBooNE uses --gamma-beam "
+                         "x --gamma-run-scale instead.")
     ap.add_argument("--photonlib", default=None,
                     help="photon-library npz cache (default: "
                          "lartpc/flashmatch/data/photonlib_v6_70kV.npz)")
