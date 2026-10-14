@@ -6,6 +6,7 @@
 # extract_larsoft_detinfo.py.
 #
 #   bash run_extract.sh <detector> <version> [qualifiers] [outdir]
+#   bash run_extract.sh uboone v10_04_07_13                 # quals default: e26:prof (v08/v09: e17:prof)
 #   bash run_extract.sh sbnd v10_14_02                      # -> $DETINFO_ROOT/sbnd/sbndcode_v10_14_02/
 #
 # Notes (Tufts cluster):
@@ -20,9 +21,12 @@
 #     dense photonlib_<det>_<ver>.h5 next to the main file.
 
 set -e
-DET=${1:?detector (sbnd|icarus)}
+DET=${1:?detector (sbnd|uboone|icarus)}
 VERSION=${2:?experiment code version, e.g. v10_14_02}
-QUALS=${3:-e26:prof}
+QUALS=${3:-}
+if [ -z "$QUALS" ]; then
+  case $VERSION in v08_*|v09_*) QUALS=e17:prof ;; *) QUALS=e26:prof ;; esac
+fi
 DETINFO_ROOT=${DETINFO_ROOT:-/cluster/tufts/wongjiradlab/larbys/detinfo}
 
 case $DET in
@@ -30,6 +34,10 @@ case $DET in
     SETUP=/cvmfs/sbnd.opensciencegrid.org/products/sbnd/setup_sbnd.sh
     PRODUCT=sbndcode
     REPOS=sbn.opensciencegrid.org,sbnd.opensciencegrid.org,larsoft.opensciencegrid.org,fermilab.opensciencegrid.org ;;
+  uboone)
+    SETUP=/cvmfs/uboone.opensciencegrid.org/products/setup_uboone.sh
+    PRODUCT=uboonecode
+    REPOS=uboone.opensciencegrid.org,larsoft.opensciencegrid.org,fermilab.opensciencegrid.org ;;
   icarus)
     SETUP=/cvmfs/icarus.opensciencegrid.org/products/icarus/setup_icarus.sh
     PRODUCT=icaruscode

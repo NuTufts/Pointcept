@@ -37,7 +37,7 @@ import traceback
 import numpy as np
 import h5py
 
-SCHEMA_VERSION = "1.3"
+SCHEMA_VERSION = "1.4"
 
 # ---------------------------------------------------------------------------
 # Per-experiment configuration. Only `sbnd` has been run so far; the `icarus`
@@ -66,6 +66,20 @@ DETECTORS = {
         # semi-analytic model reference build: optical-path tool (header, class)
         semianalytic=dict(optical_path=("sbndcode/OpPathTool/SBNDOpticalPath.h",
                                         "phot::SBNDOpticalPath")),
+    ),
+    "uboone": dict(
+        product="UBOONECODE",
+        services_module=None,                    # no python loader: larsoft_ref/providers.py
+        services_fcl="services_microboone.fcl",
+        service_table="microboone_simulation_services",
+        readout=dict(header="ubcore/Geometry/WireReadoutUBooNEGeom.h",
+                     libraries=("ubcore_Geometry",), cls="geo::WireReadoutUBooNEGeom"),
+        aux_file_globs=[],
+        sce_provider=dict(header="ubevt/SpaceCharge/SpaceChargeMicroBooNE.h",
+                          library="ubevt_SpaceCharge",
+                          cls="spacecharge.SpaceChargeMicroBooNE"),
+        optical_fcl_tables={},
+        semianalytic=None,
     ),
     "icarus": dict(
         product="ICARUSCODE",
@@ -171,6 +185,23 @@ def write_scalars(group, name, d):
 # ---------------------------------------------------------------------------
 # extraction
 # ---------------------------------------------------------------------------
+def n_opchannels(geom, wr):
+    """WireReadoutGeom::NOpChannels() (larsoft >= v10_10) or NOpChannels(NOpDets) (older)."""
+    try:
+        return int(wr.NOpChannels())
+    except TypeError:
+        return int(wr.NOpChannels(geom.NOpDets()))
+
+
+def load_cpp(ROOT, header=None, libraries=()):
+    """Load libraries + a header into cling without LArSoftUtils (not in every release)."""
+    for lib in libraries:
+        if ROOT.gSystem.Load(f"lib{lib}.so") < 0 and ROOT.gSystem.Load(lib) < 0:
+            raise RuntimeError(f"cannot load library {lib}")
+    if header and not ROOT.gInterpreter.Declare(f'#include "{header}"'):
+        raise RuntimeError(f"cling cannot include {header}")
+
+
 def extract_geometry(ROOT, geom, wr):
     out = {}
     ncryo = int(geom.Ncryostats())
@@ -181,7 +212,7 @@ def extract_geometry(ROOT, geom, wr):
         n_tpcs_total=int(sum(geom.NTPC(ROOT.geo.CryostatID(c)) for c in range(ncryo))),
         n_opdets=Q.get("geom.NOpDets", lambda: int(geom.NOpDets()), -1),
         n_channels=Q.get("wr.Nchannels", lambda: int(wr.Nchannels()), -1),
-        n_opchannels=Q.get("wr.NOpChannels", lambda: int(wr.NOpChannels()), -1),
+        n_opchannels=Q.get("wr.NOpChannels", lambda: n_opchannels(geom, wr), -1),
         world_bbox=Q.get("geom.WorldBox", lambda: bbox(geom.WorldBox()), []),
         enclosure_bbox=Q.get("geom.DetectorEnclosureBox",
                              lambda: bbox(geom.DetectorEnclosureBox()), []),
@@ -464,19 +495,38 @@ def extract_spacecharge(ROOT, services_fhicl, outdir):
     info["fhicl"] = block
     info.update(fhicl_flat_values(block))
     hists = {}
-    fn = info.get("InputFilename", "")
-    src = find_on_search_path(fn) if fn else None
-    if src is None:
-        Q.failed["sce.file"] = f"could not find {fn!r} on FW_SEARCH_PATH"
-        return info, hists
-    dst_dir = os.path.join(outdir, "spacecharge")
-    os.makedirs(dst_dir, exist_ok=True)
-    dst = os.path.join(dst_dir, os.path.basename(fn))
-    shutil.copy2(src, dst)
-    info["source_path"] = src
-    info["copied_to"] = os.path.relpath(dst, outdir)
-    info["md5"] = md5sum(dst)
-    f = ROOT.TFile.Open(dst)
+    # the primary map (InputFilename) keeps the flat layout; other map files
+    # (e.g. MicroBooNE's CalibrationInputFilename = backward map) go under <key>/
+    keys = ["InputFilename"] + sorted(k for k in info if k.endswith("Filename") and k != "InputFilename")
+    for key in keys:
+        fn = info.get(key, "")
+        if not isinstance(fn, str) or not fn:
+            continue
+        src = find_on_search_path(fn)
+        if src is None:
+            if key == "InputFilename":
+                Q.failed["sce.file"] = f"could not find {fn!r} on FW_SEARCH_PATH"
+            else:
+                info[f"{key}_note"] = f"{fn!r} not found on FW_SEARCH_PATH"
+            continue
+        dst_dir = os.path.join(outdir, "spacecharge")
+        os.makedirs(dst_dir, exist_ok=True)
+        dst = os.path.join(dst_dir, os.path.basename(fn))
+        if not os.path.exists(dst):
+            shutil.copy2(src, dst)
+        pre = "" if key == "InputFilename" else f"{key}_"
+        info[pre + "source_path"] = src
+        info[pre + "copied_to"] = os.path.relpath(dst, outdir)
+        info[pre + "md5"] = md5sum(dst)
+        for name, h in read_hists(ROOT, dst).items():
+            hists[(f"{key}/" if pre else "") + name] = h
+    return info, hists
+
+
+def read_hists(ROOT, path):
+    """Every TH1/2/3 of a ROOT file as float32 arrays [ix, iy, iz] + edges."""
+    hists = {}
+    f = ROOT.TFile.Open(path)
     for key in f.GetListOfKeys():
         obj = key.ReadObj()
         if not obj.InheritsFrom("TH1"):
@@ -497,7 +547,7 @@ def extract_spacecharge(ROOT, services_fhicl, outdir):
                                     cls=obj.ClassName(),
                                     axis_titles=[str(a.GetTitle()) for a in axes])
     f.Close()
-    return info, hists
+    return hists
 
 
 def make_sce_provider(ROOT, cfg, sce_block):
@@ -506,9 +556,7 @@ def make_sce_provider(ROOT, cfg, sce_block):
     spec = cfg.get("sce_provider")
     if not spec or not sce_block:
         return None
-    import LArSoftUtils
-    LArSoftUtils.SourceCode.loadHeaderFromUPS(spec["header"])
-    LArSoftUtils.SourceCode.loadLibrary(spec["library"])
+    load_cpp(ROOT, spec["header"], (spec["library"],))
     body = "\n".join(sce_block.splitlines()[1:-1])   # strip "Key: {" ... "}"
     pset = ROOT.fhicl.ParameterSet.make(body)
     cls = ROOT
@@ -521,8 +569,7 @@ def make_voxel_def(ROOT, pvs):
     """LArSoft's own photon-library voxelization, for validation voxel ids."""
     if not pvs or "NX" not in pvs:
         return None
-    import LArSoftUtils
-    LArSoftUtils.SourceCode.loadHeaderFromUPS("larsim/Simulation/PhotonVoxels.h")
+    load_cpp(ROOT, "larsim/Simulation/PhotonVoxels.h")
     return ROOT.sim.PhotonVoxelDef(float(pvs["XMin"]), float(pvs["XMax"]), int(pvs["NX"]),
                                    float(pvs["YMin"]), float(pvs["YMax"]), int(pvs["NY"]),
                                    float(pvs["ZMin"]), float(pvs["ZMax"]), int(pvs["NZ"]))
@@ -856,15 +903,25 @@ def main():
     version = os.environ.get(f"{cfg['product']}_VERSION", "unknown")
     t_start = datetime.datetime.now(datetime.timezone.utc)
 
-    S = __import__(cfg["services_module"])
-    from ROOTutils import ROOT
-    S.ServiceManager.setConfiguration(cfg["services_fcl"], cfg["service_table"])
-    geom = S.ServiceManager("Geometry")
-    wr = S.ServiceManager("WireReadout")
-    clk = S.ServiceManager("DetectorClocks")
-    detp = S.ServiceManager("DetectorProperties")
-    larp = S.ServiceManager("LArProperties")
-    aux = Q.get("svc.AuxDetGeometry", lambda: S.ServiceManager("AuxDetGeometry"))
+    if cfg.get("services_module"):
+        # the experiment's python service loader (SBNDservices, ICARUSservices, ...)
+        S = __import__(cfg["services_module"])
+        from ROOTutils import ROOT
+        S.ServiceManager.setConfiguration(cfg["services_fcl"], cfg["service_table"])
+        geom = S.ServiceManager("Geometry")
+        wr = S.ServiceManager("WireReadout")
+        clk = S.ServiceManager("DetectorClocks")
+        detp = S.ServiceManager("DetectorProperties")
+        larp = S.ServiceManager("LArProperties")
+        aux = Q.get("svc.AuxDetGeometry", lambda: S.ServiceManager("AuxDetGeometry"))
+    else:
+        # no python loader in this release: build the providers with cling
+        import ROOT
+        sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "larsoft_ref"))
+        import providers as PV
+        text = fhicl_dump(cfg["services_fcl"], cfg["service_table"], args.outdir)
+        provs = PV.build(ROOT, PV.services_pset(ROOT, text), readout=cfg.get("readout"))
+        geom, wr, clk, detp, larp, aux = (provs[k] for k in ("geom", "wr", "clk", "detp", "larp", "aux"))
 
     clkdata = clk.DataForJob()
     detdata = detp.DataFor(clkdata)
