@@ -11,7 +11,12 @@ Status (2026-10-15):
   - `tests/test_uboone_regression.py` is **bit-identical** to the legacy code: 38/38 checks.
   - Covered: synthetic slices with 4 flash times × 2 producers, points outside the TPC, and 17 real events
     (run-1 overlay with truth points; run-3 EXT with dead PMT 15 and saturation holes 1 and 28).
-- Next: P3 (SBND model).
+- **P3 done**: `model/detectors/sbnd.py` (`SBNDFlashModel`).
+  - Unit checks 8/8; the MicroBooNE regression is still bit-identical.
+  - MC closure on true deposits: median shape cosine 0.988 (mirrored TPCs: 0.000) and obs/pred ≈ 1.4,
+    the scale to calibrate in P5.
+  - Details in `SEMIANALYTIC_PORT_NOTES.md`.
+- Next: P4 (call sites take `--detector`).
 
 Related:
 - detector constants: [`../detinfo/`](../detinfo/README.md)

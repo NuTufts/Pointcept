@@ -129,3 +129,52 @@ Notes:
 Possible further speed-ups, not done:
 - evaluate the rectangle branches only on their masked elements
 - merge charge points onto a ~1 cm grid before evaluating
+
+## SBND flash model (P3) checks
+
+`model/detectors/sbnd.py`, `SBNDFlashModel`:
+- **Visibility:** the semi-analytic model inside the active volume, the OUT library outside.
+- **Efficiencies:** the per-channel VUV/VIS arrays of `opt0finder_sbnd.fcl`.
+- **Charge model:** `q / CalArea[plane] · exp(t_drift/τ) · k_γ`.
+- **Drift:** per TPC.
+- **Mask:** the 40-channel skip list plus PMT saturation holes.
+- **Detectors:** PMTs only by default; `detectors="all"` for every sensor.
+
+**Channel facts verified** (sbndcode v10_14_02):
+- optical channel → opdet is the identity map
+- PDS types agree with the model's shapes (PMTs are domes, X-ARAPUCAs are rectangles)
+- efficiencies are per type: coated PMT 0.035/0.03 VUV with 0.039 VIS; uncoated PMT 0 VUV, 0.0375 VIS;
+  X-ARAPUCA VUV 0.021 / 0; X-ARAPUCA VIS 0 / 0.014
+
+**Inconsistency found:** VUV X-ARAPUCAs 42, 44, 46, 49, 51, 53 (all at z = 61.3 cm) sit in the
+geometry on the opposite side of the cathode from their channel parity and the PDS-map `tpc` field.
+The model follows the geometry, as the simulation does. PMTs are unaffected.
+
+Unit checks: `tests/test_sbnd_model.py`, 8/8.
+- a single point equals the semi-analytic visibility × efficiencies × charge model
+- PMT-only equals the PMT columns of the all-sensor output
+- drift sign per TPC
+- an outside-AV point uses the library
+- masks
+- the normalized-chi2 hand example
+
+**Closure on MC** (`tests/sbnd_larcv2_flash_closure.py`; test larcv2 file, 21 entries). It predicts the
+beam flash from true deposits of in-spill particles × 24000 photons/MeV and compares it with the
+simulated `opflash_tpc0` + `opflash_tpc1` on the unmasked PMTs:
+
+| deposits | cosine(pred, obs) median | mirrored-TPC baseline | obs/pred median (16–84%) |
+|---|---|---|---|
+| `sparse3d_pcluster` (true MeV on reco voxels) | **0.988** | 0.000 | 1.42 (1.28–2.25) |
+| `cluster3d_sed` (true deposits per particle) | **0.988** | 0.002 | 1.45 (1.36–2.24) |
+
+Interpretation:
+- The shape agrees closely, and swapping TPCs destroys it, so the channel mapping, efficiencies,
+  visibilities and drift side are right.
+- The scale ratio of ~1.4 is the light-yield factor to calibrate (P5). Possible causes:
+  recombination/quenching left out, plus deposits that are not stored.
+- Two outliers (entries 0 and 8, cosine ~0.7) involve particles entering from outside. Entry 0 is a dirt
+  neutrino whose muon enters the TPC. Their light from outside the active volume is not in either
+  deposit tree, so the OUT-library path is **not exercised** by this file.
+
+Running the closure needs larcv2 (see `../data_prep/sbnd_official/README.md`). The flash model must be
+built *before* `import larcv`: larcv's OpenCV loads the system HDF5 1.10, which breaks conda's h5py.

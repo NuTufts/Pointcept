@@ -3,6 +3,7 @@ Per-detector flash model (see ../SBND_SEMIANALYTIC_PLAN.md).
 
     from lartpc.flashmatch.model import make_flash_model
     fm = make_flash_model("uboone")                       # today's MicroBooNE behaviour
+    fm = make_flash_model("sbnd", detectors="all")        # SBND; default detectors = PMTs
     pe = fm.predict(pos_cm, charge, cluster_id, n_clusters, flash_t0_us, light_yield=G)
     chi2 = fm.chi2(pe[0], obs_pe, mask=fm.channel_mask(obs_pe, run))
 """
@@ -14,4 +15,7 @@ def make_flash_model(detector, **kw):
     if detector in ("uboone", "microboone"):
         from .detectors.uboone import UBooNEFlashModel
         return UBooNEFlashModel(**kw)
-    raise ValueError(f"no flash model for detector {detector!r} (available: uboone)")
+    if detector == "sbnd":
+        from .detectors.sbnd import SBNDFlashModel
+        return SBNDFlashModel(**kw)
+    raise ValueError(f"no flash model for detector {detector!r} (available: uboone, sbnd)")

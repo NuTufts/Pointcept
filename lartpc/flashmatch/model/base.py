@@ -103,15 +103,20 @@ class FlashModel:
 
     # ----------------------------------------------------------- geometry
     def tpc_of(self, pos_cm):
-        """(N,) TPC index of each point from its x position (-1 outside all x ranges).
-        Points are assigned by x only, so y/z outliers still drift with their TPC."""
+        """(N,) TPC index of each point from its x position. Points are assigned by x only
+        (y/z outliers still drift with their TPC); x outside every TPC -> nearest TPC in x."""
         p = np.asarray(pos_cm, dtype=np.float64).reshape(-1, 3)
         out = np.full(p.shape[0], -1, dtype=np.int64)
+        if len(self.active_boxes) == 1:
+            out[:] = 0                  # single drift volume: everything drifts the same way
+            return out
         for t, (lo, hi) in enumerate(self.active_boxes):
             m = (out < 0) & (p[:, 0] >= lo[0]) & (p[:, 0] <= hi[0])
             out[m] = t
-        if len(self.active_boxes) == 1:
-            out[:] = 0                  # single drift volume: everything drifts the same way
+        miss = out < 0
+        if miss.any():                  # outside every x range: nearest TPC in x
+            cx = np.array([0.5 * (lo[0] + hi[0]) for lo, hi in self.active_boxes])
+            out[miss] = np.argmin(np.abs(p[miss, 0:1] - cx[None, :]), axis=1)
         return out
 
     def drift_shift_cm(self, pos_cm, flash_t0_us):
@@ -158,20 +163,23 @@ class FlashModel:
         return pos
 
     def predict(self, pos_cm, charge, cluster_id=None, n_clusters=1, flash_t0_us=0.0,
-                light_yield=1.0, **photon_kw):
+                light_yield=1.0, charge_is_photons=False, **photon_kw):
         """Predicted PE per cluster: (n_clusters, n_channels) float32.
 
         pos_cm:      (N,3) RAW (apparent) positions; drift correction is applied here.
         charge:      (N,) per-point charge in the detector's charge-model units.
         cluster_id:  (N,) int in [0, n_clusters) (None -> one cluster).
         light_yield: G, the global scale (e.g. calibrated gamma x readout factor).
+        charge_is_photons: `charge` already holds photons per point (skip the charge model,
+                     e.g. for MC true energy deposits x light yield).
         """
         import torch
         pos_cm = np.asarray(pos_cm)
         n_clusters = int(n_clusters)
         if pos_cm.shape[0] == 0:
             return np.zeros((n_clusters, self.n_channels), dtype=np.float32)
-        q_np = self.photons(charge, pos_cm, **photon_kw)
+        q_np = (np.asarray(charge, dtype=np.float32) if charge_is_photons
+                else self.photons(charge, pos_cm, **photon_kw))
         if q_np.shape[0] != pos_cm.shape[0]:
             raise ValueError(f"pos_cm and charge length mismatch: {pos_cm.shape[0]} vs {q_np.shape[0]}")
         dev, dt = self.device, self.vis_dtype
@@ -202,9 +210,15 @@ class FlashModel:
         return ()
 
     def chi2(self, pe_pred, pe_obs, mask=None, tpc=None, return_per_channel=False):
+        """Score one predicted vector against the observed one.
+        mask: channels to exclude. tpc: if given (and channel_tpc is set), only that
+        TPC's channels are scored (e.g. SBND per-TPC flashes)."""
         cfg = self.score_cfg
         if cfg.kind == "neyman":
             from ..flash_chi2 import neyman_chi2
+            if tpc is not None and self.channel_tpc is not None:
+                other = np.nonzero(np.asarray(self.channel_tpc) != int(tpc))[0]
+                mask = tuple(sorted(set(mask or ()) | set(int(c) for c in other)))
             return neyman_chi2(pe_pred, pe_obs, f_sys=cfg.f_sys, eps=cfg.eps,
                                dead_opdets=mask, return_per_pmt=return_per_channel)
         if cfg.kind == "normalized":
