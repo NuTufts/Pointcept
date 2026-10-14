@@ -22,7 +22,7 @@ import numpy as np
 
 from .conventions import make_conventions
 from .geometry import Geometry
-from .io import find_detinfo_file, read_attrs
+from .io import find_detinfo_file, read_attrs, read_tree
 from .properties import DetectorClocks, DetectorProperties, LArProperties
 from .spacecharge import make_spacecharge
 
@@ -60,6 +60,19 @@ class DetInfo:
     @property
     def failed_queries(self):
         return json.loads(self.provenance.get("failed_queries_json", "{}"))
+
+    @cached_property
+    def optical_model(self):
+        """Light-model inputs (schema >= 1.3) as a nested dict:
+        {'vuv_hits': {...}, 'vis_hits': {...}, 'pdfastsim_par': {...}, 'flashmatch': {...},
+         'semianalytic': {attrs..., 'active_volumes', 'opdets': {...}}}.
+        Each FHiCL table entry has 'params' (the table) and 'fhicl' (resolved text)."""
+        import h5py
+        with h5py.File(self.path, "r") as f:
+            if "optical_model" not in f:
+                raise KeyError(f"{self.path} has no /optical_model (schema {self.schema_version}); "
+                               f"re-extract with schema >= 1.3")
+            return read_tree(f["optical_model"])
 
     @cached_property
     def photonlib(self):

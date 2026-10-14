@@ -30,6 +30,26 @@ def read_attrs(group):
     return out
 
 
+def read_tree(group):
+    """Group -> nested dict: subgroups -> dicts, datasets -> arrays (strings decoded),
+    attrs -> values; `<key>__json` attrs are decoded into `key`."""
+    import json
+    out = {}
+    for k, v in read_attrs(group).items():
+        if k.endswith("__json"):
+            out[k[:-6]] = json.loads(v)
+        else:
+            out[k] = v
+    for k in group.keys():
+        obj = group[k]
+        if hasattr(obj, "keys"):
+            out[k] = read_tree(obj)
+        else:
+            a = obj[()]
+            out[k] = a.decode() if isinstance(a, bytes) else (_decode(a) if hasattr(a, "dtype") else a)
+    return out
+
+
 def search_roots():
     """Where cache files are looked for, in order."""
     roots = []
