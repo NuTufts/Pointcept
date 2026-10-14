@@ -1,0 +1,1 @@
+"""Per-detector FlashModel implementations."""

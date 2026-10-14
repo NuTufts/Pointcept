@@ -6,7 +6,12 @@ Status (2026-10-15):
   - It needs float64: float32 loses up to 17% on the rectangle solid angles.
   - Speed on an L40 GPU, 1e5 points, direct + reflected: 0.12 s for the 120 PMTs, 0.65 s for all 312.
   - On CPU (4 threads): 49 µs/point for the PMTs.
-- Next: P2.
+- **P2 done**: `model/base.py` (`FlashModel`: the unified formula, per-TPC drift correction,
+  OOB fraction, Neyman score + normalized option) and `model/detectors/uboone.py` (`UBooNEFlashModel`).
+  - `tests/test_uboone_regression.py` is **bit-identical** to the legacy code: 38/38 checks.
+  - Covered: synthetic slices with 4 flash times × 2 producers, points outside the TPC, and 17 real events
+    (run-1 overlay with truth points; run-3 EXT with dead PMT 15 and saturation holes 1 and 28).
+- Next: P3 (SBND model).
 
 Related:
 - detector constants: [`../detinfo/`](../detinfo/README.md)
