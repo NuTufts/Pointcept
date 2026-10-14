@@ -1,6 +1,12 @@
 # Plan: per-detector flash model + port of the SBND semi-analytic light model
 
-Status: plan (2026-10-14). Nothing implemented yet.
+Status (2026-10-15):
+- **P0 done**: detinfo schema 1.3 has `/optical_model` and `/validation_optical`.
+- **P1 done**: `model/visibility/semianalytic.py` matches LArSoft to ~1e-10 relative on 865 points × 312 opdets.
+  - It needs float64: float32 loses up to 17% on the rectangle solid angles.
+  - Speed on an L40 GPU, 1e5 points, direct + reflected: 0.12 s for the 120 PMTs, 0.65 s for all 312.
+  - On CPU (4 threads): 49 µs/point for the PMTs.
+- Next: P2.
 
 Related:
 - detector constants: [`../detinfo/`](../detinfo/README.md)
