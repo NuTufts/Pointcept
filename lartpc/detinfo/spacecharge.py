@@ -12,6 +12,8 @@ classes reproduce the LArSoft implementation of the extracted code version:
     SpaceChargeSBND        <- sbndcode/SpaceCharge/SpaceChargeSBND.cxx (v10_14_02, Voxelized_TH3)
     SpaceChargeMicroBooNE  <- ubevt/SpaceCharge/SpaceChargeMicroBooNE.cxx (uboonecode v10_04_07_13,
                               Voxelized_TH3; forward map = InputFilename, backward = CalibrationInputFilename)
+    SpaceChargeICARUS      <- icaruscode/TPC/Simulation/SpaceCharge/SpaceChargeICARUS.cxx (v10_25_00,
+                              Voxelized_TH3; one map in |x| for both cryostats)
 The python classes always evaluate the maps; the Enable* flags of the extracted
 configuration are reported by Enable*() but do not switch the methods off.
 """
@@ -23,38 +25,64 @@ from .io import read_attrs
 class Hist3D:
     """A TH3 stored as values[ix,iy,iz] + bin edges; Interpolate() reproduces
     ROOT TH3::Interpolate (trilinear between bin centres; points outside the
-    centre-to-centre domain return 0, as ROOT does after its error message)."""
+    centre-to-centre domain return 0, as ROOT does after its error message).
+
+    For fixed-width axes the bin lookup and bin centres use ROOT's own TAxis
+    arithmetic (FindFixBin, GetBinCenter) on the axis range, so points that sit
+    exactly on the outermost bin centre (e.g. ICARUS's clamp at y=134.96) take
+    the same side as ROOT. The range is the `range_<a>` attribute when the
+    extractor stored it (TAxis::GetXmin/GetXmax), else the first/last edge."""
 
     def __init__(self, dset):
         self.values = dset[()].astype(np.float64)
         self.edges = [np.asarray(dset.attrs[f"edges_{a}"], dtype=np.float64) for a in "xyz"]
-        self.centers = [0.5 * (e[1:] + e[:-1]) for e in self.edges]
         self.name = dset.name.split("/")[-1]
+        self.fixed = []
+        for a, e in zip("xyz", self.edges):
+            n = len(e) - 1
+            rng = dset.attrs.get(f"range_{a}")
+            lo, hi = (float(rng[0]), float(rng[1])) if rng is not None else (e[0], e[-1])
+            d = np.diff(e)
+            self.fixed.append((n, lo, hi) if np.allclose(d, (hi - lo) / n, rtol=1e-9, atol=0) else None)
+        self.centers = [self._center(a, np.arange(1, len(e))) for a, e in enumerate(self.edges)]
 
-    def _lower_bin(self, axis, x):
-        """0-based index of the bin centre at or below x (ROOT: ubx-1)."""
+    def _center(self, axis, b):
+        """ROOT TAxis::GetBinCenter for 1-based bin numbers b."""
+        fx = self.fixed[axis]
+        if fx is not None:
+            n, lo, hi = fx
+            w = (hi - lo) / float(n)
+            return lo + (b - 1) * w + 0.5 * w
         e = self.edges[axis]
-        b = np.searchsorted(e, x, side="right") - 1          # 0-based bin containing x
-        b = np.clip(b, -1, len(e) - 1)
-        c = self.centers[axis]
-        bc = np.where((b >= 0) & (b < len(c)), c[np.clip(b, 0, len(c) - 1)], np.inf)
-        return np.where(x < bc, b - 1, b)
+        b = np.clip(b, 1, len(e) - 1)
+        return 0.5 * (e[b - 1] + e[b])
+
+    def _find_bin(self, axis, x):
+        """ROOT TAxis::FindFixBin (1-based; 0 underflow, n+1 overflow)."""
+        fx = self.fixed[axis]
+        if fx is not None:
+            n, lo, hi = fx
+            b = 1 + (n * (x - lo) / (hi - lo)).astype(np.int64)
+            return np.where(x < lo, 0, np.where(x >= hi, n + 1, b))
+        e = self.edges[axis]
+        return np.searchsorted(e, x, side="right")
 
     def Interpolate(self, x, y, z):
         x, y, z = (np.asarray(v, dtype=np.float64) for v in (x, y, z))
-        lo = [self._lower_bin(a, v) for a, v in enumerate((x, y, z))]
         n = self.values.shape
+        ub, frac = [], []
         ok = np.ones(x.shape, dtype=bool)
-        for a in range(3):
-            ok &= (lo[a] >= 0) & (lo[a] + 1 <= n[a] - 1)
-        li = [np.clip(l, 0, n[a] - 2) for a, l in enumerate(lo)]
-        d = []
         for a, v in enumerate((x, y, z)):
-            c = self.centers[a]
-            d.append((v - c[li[a]]) / (c[li[a] + 1] - c[li[a]]))
+            u = self._find_bin(a, v)
+            u = np.where(v < self._center(a, u), u - 1, u)
+            ok &= (u >= 1) & (u + 1 <= n[a])
+            u = np.clip(u, 1, n[a] - 1)
+            cu = self._center(a, u)
+            frac.append((v - cu) / (self._center(a, u + 1) - cu))
+            ub.append(u - 1)                                   # 0-based lower bin
         V = self.values
-        ix, iy, iz = li
-        xd, yd, zd = d
+        ix, iy, iz = ub
+        xd, yd, zd = frac
         i1 = V[ix, iy, iz] * (1 - zd) + V[ix, iy, iz + 1] * zd
         i2 = V[ix, iy + 1, iz] * (1 - zd) + V[ix, iy + 1, iz + 1] * zd
         j1 = V[ix + 1, iy, iz] * (1 - zd) + V[ix + 1, iy, iz + 1] * zd
@@ -228,7 +256,83 @@ class SpaceChargeMicroBooNE(SpaceCharge):
         return self._eval(self.bkwd_e, points, -self.efield_scale)
 
 
-SPACECHARGE_CLASSES = {"sbnd": SpaceChargeSBND, "uboone": SpaceChargeMicroBooNE}
+class SpaceChargeICARUS(SpaceCharge):
+    """Port of SpaceChargeICARUS (Voxelized_TH3) from icaruscode v10_25_00
+    (TPC/Simulation/SpaceCharge). One map serves all four drift volumes, in |x|:
+
+    - fixCoords: x -> |x| clamped to [61.94, 358.489], y to [-181.86, 134.96],
+      z to [-894.951, 894.9509]
+    - forward x offset sign = cryo_corr * tpc_corr: cryo_corr = +1 for x > 0 else -1;
+      tpc_corr = -1 for 0 < x < 210.14 or x < -210.29 (or everywhere with
+      is2DdriftSimHack), else +1
+    - GetCalPosOffsets: x sign = -1 for x < 0; |x| clamped to its cathode side
+      by the TPC id (0,1 vs 2,3 swap between the two cryostats)
+    - the services table disables every map; SCE jobs enable them with
+      enable_spacecharge_icarus.fcl (same InputFilename, is2DdriftSimHack: false)
+    - QUIRK: the provider reads pset.get<bool>("is2DdriftSimHack", "false"); the string
+      default converts to `true`, so a configuration without the key (the services
+      table) runs WITH the 2D-drift hack (x sign = -cryo_corr everywhere). The port
+      follows the extracted configuration; pass is2DdriftSimHack=False to get the
+      enable_spacecharge_icarus.fcl behaviour.
+    """
+    X_LO, X_HI = 61.94, 358.489
+    Y_LO, Y_HI = -181.86, 134.96
+    Z_LO, Z_HI = -894.951, 894.9509
+    CATH_W, CATH_E = 210.14, 210.29
+
+    def __init__(self, h5file, is2DdriftSimHack=None):
+        super().__init__(h5file)
+        if self.config.get("RepresentationType") != "Voxelized_TH3":
+            raise NotImplementedError(f"ICARUS SCE representation {self.config.get('RepresentationType')!r}")
+        hg = h5file["spacecharge/histograms"]
+        if is2DdriftSimHack is None:
+            is2DdriftSimHack = self.config.get("is2DdriftSimHack", True)   # C++ default quirk
+        self.hack_2d = bool(is2DdriftSimHack)
+        self.fwd = [Hist3D(hg[f"TrueFwd_Displacement_{a}"]) for a in "XYZ"]
+        self.bkwd = [Hist3D(hg[f"TrueBkwd_Displacement_{a}"]) for a in "XYZ"]
+        self.efield = [Hist3D(hg[f"True_ElecField_{a}"]) for a in "XYZ"]
+
+    def _fix(self, x, y, z):
+        return (np.clip(np.abs(x), self.X_LO, self.X_HI), np.clip(y, self.Y_LO, self.Y_HI),
+                np.clip(z, self.Z_LO, self.Z_HI))
+
+    @staticmethod
+    def _interp(hists, x, y, z):
+        return np.stack([h.Interpolate(x, y, z) for h in hists], axis=1)
+
+    def GetPosOffsets(self, points):
+        p, s = _pts(points)
+        x = p[:, 0]
+        cryo_corr = np.where(x > 0, 1.0, -1.0)
+        tpc_corr = np.where(((x > 0) & (x < self.CATH_W)) | ((x <= 0) & (x < -self.CATH_E)), -1.0, 1.0)
+        if self.hack_2d:
+            tpc_corr[:] = -1.0
+        out = self._interp(self.fwd, *self._fix(x, p[:, 1], p[:, 2]))
+        out[:, 0] *= cryo_corr * tpc_corr
+        return _ret(out, s)
+
+    def GetCalPosOffsets(self, points, tpcid=1):
+        p, s = _pts(points)
+        x0 = p[:, 0]
+        tpcid = np.broadcast_to(np.asarray(tpcid), x0.shape)
+        pos = x0 > 0
+        x, y, z = self._fix(x0, p[:, 1], p[:, 2])
+        near, far = np.isin(tpcid, (0, 1)), np.isin(tpcid, (2, 3))
+        x = np.where(pos & near & (x > self.CATH_W), self.CATH_W, x)
+        x = np.where(pos & far & (x < self.CATH_E), self.CATH_E, x)
+        x = np.where(~pos & far & (x > self.CATH_W), self.CATH_W, x)
+        x = np.where(~pos & near & (x < self.CATH_E), self.CATH_E, x)
+        out = self._interp(self.bkwd, x, y, z)
+        out[:, 0] *= np.where(x0 < 0, -1.0, 1.0)
+        return _ret(out, s)
+
+    def GetEfieldOffsets(self, points):
+        p, s = _pts(points)
+        return _ret(self._interp(self.efield, *self._fix(p[:, 0], p[:, 1], p[:, 2])), s)
+
+
+SPACECHARGE_CLASSES = {"sbnd": SpaceChargeSBND, "uboone": SpaceChargeMicroBooNE,
+                       "icarus": SpaceChargeICARUS}
 
 
 def make_spacecharge(detector, h5file):

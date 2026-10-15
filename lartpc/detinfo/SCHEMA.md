@@ -1,4 +1,4 @@
-# detinfo HDF5 schema (v1.4)
+# detinfo HDF5 schema (v1.5)
 
 One file per (experiment, code version):
 `$DETINFO_ROOT/<det>/<product>_<version>/detinfo_<det>_<version>.h5`
@@ -153,12 +153,19 @@ The sign of `ticks_per_cm` follows the drift direction.
   - `source_path`, `copied_to`, `md5`: of the map file
 - **`/spacecharge/histograms/<name>`:** every TH1/2/3 in the map file, as float32
   arrays indexed `[ix, iy, iz]` (bin 1 → index 0; under/overflow dropped). Attributes:
-  `class`, `title`, `axis_titles`, `edges_x`, `edges_y`, `edges_z` (n+1 bin edges each).
+  `class`, `title`, `axis_titles`, `edges_x`, `edges_y`, `edges_z` (n+1 bin edges each),
+  `range_x`, `range_y`, `range_z` (exact `TAxis::GetXmin/GetXmax`; the python `Hist3D` uses them to
+  reproduce ROOT's fixed-bin `FindFixBin`/`GetBinCenter` arithmetic bit for bit).
 - **SBND map** (`Voxelized_TH3`, 49×49×61): `True{Fwd,Bkwd}_Displacement_{X,Y,Z}_{E,W}`
   and `True_ElecField_{X,Y,Z,Mag}_{E,W}`. `E`/`W` are the east/west drift volumes
   (separate maps per TPC). `Fwd` maps true → reco position (simulation); `Bkwd` maps
   reco → true (correction). The coordinate convention of the map axes (e.g. mirroring
   per TPC) is defined in `SpaceChargeSBND.cxx`; the python utility must reproduce it.
+- **ICARUS map** (`Voxelized_TH3`, 31×31×181, `SCEoffsets_ICARUS_E500_voxelTH3.root`): one set
+  `True{Fwd,Bkwd}_Displacement_{X,Y,Z}`, `True_ElecField_{X,Y,Z}` in |x| (61.94–358.49 cm), shared by all
+  four drift volumes; signs per volume are applied by `SpaceChargeICARUS`. The services table has every
+  `Enable*` flag false (SCE jobs add `enable_spacecharge_icarus.fcl`) and no `is2DdriftSimHack` key, which
+  the provider then reads as **true** (string default `"false"` converted to bool).
 
 ## `/photon_visibility` (attributes)
 - Contents: the scalar values of the services `PhotonVisibilityService` table:
@@ -170,8 +177,16 @@ The sign of `ticks_per_cm` follows the drift direction.
   are only in `/provenance/services_fhicl`.
 - Library copy and conversion: `source_path`, `copied_to`, `md5`, `tree_cycle` (key
   cycle read, the highest, as LArSoft does), `tree_entries`, `tree_branches`,
-  `n_opchannels_in_library`, `visibility_nonzero`, `refl_visibility_nonzero`, and
+  `n_opchannels_in_library`, `n_opdets_detector`, `visibility_nonzero`, `refl_visibility_nonzero`, and
   `converted_h5` (file name of the photon library file).
+- Mapping tool (`Mapping.tool_type`, phot::IPhotonMappingTransformations): `mapping_tool`. For
+  `ICARUSPhotonMappingTransformations` (library of cryostat 0 serves both cryostats) also, reproduced
+  from the geometry:
+  - `mapping_switch_x`: points with x > it are in cryostat 1
+  - `mapping_translations` (n_cryo × 3): added to a point of cryostat c before the library lookup
+  - `mapping_channel_shifts` (n_cryo): library channel i → optical channel `remap[i] + shift[c]`
+  - `mapping_library_to_opchannel`: `remap` (`CryostatChannelRemap`, default identity)
+  - other mapping tools than the identity are recorded in `failed_queries_json` (not reproduced)
 
 ## Photon library file `photonlib_<det>_<version>.h5`
 - Attributes: as in `/photon_visibility`, plus:
@@ -180,6 +195,9 @@ The sign of `ticks_per_cm` follows the drift direction.
     `grid_source` says which
   - `grid_n` (NX, NY, NZ)
   - `layout`
+  - the `mapping_*` attributes above, when the library is mapped (ICARUS). The `visibility` array is
+    then the raw library (180 channels of cryostat 0); `PhotonLibrary.GetVisibility()` applies the
+    mapping and returns all detector channels.
 - `visibility`: float32 `[ix, iy, iz, opchannel]`, the fraction of isotropically emitted
   photons from voxel (ix, iy, iz) that reach the optical channel.
 - `refl_visibility`: the same for reflected (visible) light, when the library stores it.
@@ -261,11 +279,17 @@ tables **outside** the services configuration.
     - `sce_cal_pos_offsets`: `GetCalPosOffsets(point, sce_cal_tpcid)`
   - `photonlib_voxel_id`: `sim::PhotonVoxelDef::GetVoxelID` (-1 outside the grid, -2 not computed)
 - Points: 100 per TPC inside the active volume, 20 anywhere in the detector enclosure, and
-  80 edge points (40 in the active-volume union grown by 6 cm, 40 in a slab |x| < 4 cm around
-  the cathode) that exercise the SCE clamping.
+  80 edge points (40 in the active-volume union grown by 6 cm, 40 in slabs |x − x_c| < 4 cm around
+  the cathodes, x_c = centres of the x gaps between adjacent active volumes, cycled; x_c = 0 when
+  there is none) that exercise the SCE clamping.
+- `sce_cal_tpcid` cycles over 0..max(2, NTPC of cryostat 0)−1 (ICARUS: 0–3, so every cathode clamp is
+  exercised).
 - Use: unit tests of the python reimplementation (`tests/test_validation.py`).
 
 ## Changelog
+- 1.5: ICARUS support. SCE histograms carry `range_{x,y,z}`; photon library mapping attributes
+  (`mapping_*`, `n_opdets_detector`); validation cathode slabs at every cathode and cal TPC ids over all
+  TPCs of a cryostat.
 - 1.4: MicroBooNE support. Every `*Filename` SCE map is stored (non-primary maps under
   `/spacecharge/histograms/<key>/`, e.g. `CalibrationInputFilename/`). The SCE reference provider is built
   with all maps enabled. The photon-library grid follows `UseCryoBoundary`.

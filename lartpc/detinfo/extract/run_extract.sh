@@ -17,6 +17,7 @@
 #     CPU time is small.
 #   * h5py is not in the LArSoft python; a vendored py3.9 manylinux2014 wheel
 #     (h5py 3.11.0, unpacked) lives in $PY39_SITE (install: install_py39_h5py.sh).
+#   * Extra extractor options via DETINFO_EXTRA_ARGS (e.g. "--skip-photonlib").
 #   * Also copies the photon visibility library (~130 MB for SBND) and writes a
 #     dense photonlib_<det>_<ver>.h5 next to the main file.
 
@@ -78,7 +79,7 @@ export DETINFO_GIT_COMMIT=$GIT_COMMIT
 export DETINFO_CONTAINER=$CONTAINER
 export DETINFO_QUALS=$QUALS
 cd $OUTDIR
-python $HERE/extract_larsoft_detinfo.py --detector $DET --outdir $OUTDIR 2>&1 | grep -v '^%MSG\|^Info in <TGeo'
+python $HERE/extract_larsoft_detinfo.py --detector $DET --outdir $OUTDIR ${DETINFO_EXTRA_ARGS:-} 2>&1 | grep -v '^%MSG\|^Info in <TGeo'
 EOF
 
 echo "extracting $DET $PRODUCT $VERSION ($QUALS) -> $OUTDIR"

@@ -78,6 +78,22 @@ def run_checks(di, verbose=True):
             m = V["photonlib_voxel_id"] > -2
             agree = np.mean(vid[m] == V["photonlib_voxel_id"][m])
             check("PhotonLibrary GetVoxelID", agree == 1.0, f"agreement {agree:.4f}")
+            if pl.mapping is not None:
+                # the mapping tool needs art, so no LArSoft reference values: check that
+                # for in-TPC points the brightest channel is in the point's own cryostat
+                # and among the 4 optical detectors nearest to the point
+                inside = V["cryo"] >= 0
+                vis = pl.GetVisibility(pts[inside])
+                ch = vis.argmax(1)
+                od = np.array([di.geometry.OpDetFromOpChannel(int(c)) for c in ch])
+                centers = di.geometry.OpDetPositions()
+                d = np.linalg.norm(pts[inside][:, None, :] - centers[None], axis=2)
+                rank = (d < d[np.arange(len(od)), od][:, None]).sum(1)
+                same = np.mean(np.sign(centers[od, 0]) == np.sign(pts[inside, 0]))
+                ok = (vis.max(1) > 0).all() and same == 1.0 and np.mean(rank < 4) > 0.95
+                check("PhotonLibrary mapping (sanity)", ok,
+                      f"brightest channel in own cryostat {same:.3f}, among 4 nearest "
+                      f"{np.mean(rank < 4):.3f}")
         except FileNotFoundError as e:
             check("PhotonLibrary present", False, str(e))
     return results

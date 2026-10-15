@@ -38,11 +38,11 @@ import traceback
 import numpy as np
 import h5py
 
-SCHEMA_VERSION = "1.4"
+SCHEMA_VERSION = "1.5"
 
 # ---------------------------------------------------------------------------
-# Per-experiment configuration. Only `sbnd` has been run so far; the `icarus`
-# and `uboone` entries are best guesses to be verified when first extracted.
+# Per-experiment configuration (sbnd v10_14_02, uboone v10_04_07_13 and
+# icarus v10_25_00 extracted and validated).
 # ---------------------------------------------------------------------------
 DETECTORS = {
     "sbnd": dict(
@@ -86,11 +86,18 @@ DETECTORS = {
     "icarus": dict(
         product="ICARUSCODE",
         services_module="ICARUSservices",
-        services_fcl="services_common_icarus.fcl",
-        service_table="icarus_common_services",
+        # the g4 table = common services + PhotonVisibilityService
+        services_fcl="services_icarus_simulation.fcl",
+        service_table="icarus_g4_services",
         aux_file_globs=[],
-        sce_provider=None,
-        optical_fcl_tables={},
+        # SpaceChargeService has every Enable* false in the services table; production
+        # g4/detsim jobs switch it on with enable_spacecharge_icarus.fcl (same map file)
+        sce_provider=dict(header="icaruscode/TPC/Simulation/SpaceCharge/SpaceChargeICARUS.h",
+                          library="icaruscode_TPC_Simulation_SpaceCharge",
+                          cls="spacecharge.SpaceChargeICARUS"),
+        optical_fcl_tables={
+            "pdfastsim_pvs": ("PDFastSim_icarus.fcl", "icarus_pdfastsim_pvs"),
+        },
         semianalytic=None,
     ),
 }
@@ -547,7 +554,8 @@ def read_hists(ROOT, path):
         vals = np.ascontiguousarray(inner.transpose()).astype(np.float32)  # (x,y,z)
         hists[obj.GetName()] = dict(values=vals, edges=edges, title=str(obj.GetTitle()),
                                     cls=obj.ClassName(),
-                                    axis_titles=[str(a.GetTitle()) for a in axes])
+                                    axis_titles=[str(a.GetTitle()) for a in axes],
+                                    ranges=[[float(a.GetXmin()), float(a.GetXmax())] for a in axes])
     f.Close()
     return hists
 
@@ -572,6 +580,34 @@ def make_sce_provider(ROOT, cfg, sce_block, detdata=None):
     for part in spec["cls"].split("."):
         cls = getattr(cls, part)
     return cls(pset, detdata) if spec.get("needs_detprop") else cls(pset)
+
+
+def icarus_photon_mapping(ROOT, geom, wr, mapping):
+    """Parameters of icaruscode ICARUSPhotonMappingTransformations (PMT/LibraryMappingTools),
+    which serves both cryostats from a library of cryostat 0:
+      - cryostat of a point: 1 if x > switch_x = (C0.MaxX + C1.MinX)/2, else 0
+      - library point = point + translation[c], translation[c] = C0.Min - Cc.Min (bounding boxes)
+      - library index i -> optical channel remap[i] + shift[c]; channels of the other
+        cryostat get visibility 0
+    remap = CryostatChannelRemap (default identity over C0.NOpDet()); shift[c] = first
+    optical channel of cryostat c - first optical channel of cryostat 0."""
+    ncryo = int(geom.Ncryostats())
+    cryos = [geom.Cryostat(ROOT.geo.CryostatID(c)) for c in range(ncryo)]
+    boxes = [np.asarray(Q.get("photonlib.mapping.bbox", lambda c=c: bbox(c.BoundingBox()), None)
+                        or bbox(c)) for c in cryos]
+    first = {}
+    for ch in range(int(wr.MaxOpChannel())):
+        oid = Q.get("photonlib.mapping.opdet", lambda ch=ch: wr.OpDetGeoFromOpChannel(ch).ID(), None)
+        if oid is not None and oid.isValid:
+            first.setdefault(int(oid.Cryostat), ch)
+    remap = mapping.get("CryostatChannelRemap") or list(range(int(cryos[0].NOpDet())))
+    return dict(
+        mapping_switch_x=float(0.5 * (boxes[0][3] + boxes[1][0])) if ncryo > 1 else float("inf"),
+        mapping_translations=np.array([boxes[0][:3] - b[:3] for b in boxes], dtype=np.float64),
+        mapping_channel_shifts=np.array([first[c] - first[0] for c in range(ncryo)], dtype=np.int64),
+        mapping_library_to_opchannel=np.asarray(remap, dtype=np.int64),
+        mapping_source="icaruscode ICARUSPhotonMappingTransformations, reproduced from geometry",
+    )
 
 
 def make_voxel_def(ROOT, pvs):
@@ -612,9 +648,19 @@ def extract_validation(ROOT, geom, wr, detdata, sce=None, voxdef=None, n_inside=
     pts.append(rng.uniform(lo, hi, size=(n_edge // 2, 3)))
     cat = rng.uniform(lo, hi, size=(n_edge - n_edge // 2, 3))
     cat[:, 0] = rng.uniform(-4.0, 4.0, size=len(cat))
+    # cathodes = centres of the x gaps between adjacent active volumes of a cryostat
+    # (SBND: x=0; ICARUS: x=+-210.2; none for MicroBooNE -> slab stays at x=0)
+    cath = sorted({round(0.5 * (a[3] + b[0]), 3) for a in act for b in act
+                   if 0.0 <= b[0] - a[3] < 10.0 and a[4] > b[1] and b[4] > a[1]
+                   and a[5] > b[2] and b[5] > a[2]})
+    if cath:
+        cat[:, 0] += np.asarray(cath)[np.arange(len(cat)) % len(cath)]
     pts.append(cat)
     pts = np.concatenate(pts)
     maxpl = 3
+    # TPC ids passed to GetCalPosOffsets cycle over the TPCs of a cryostat (at least
+    # 0 and 1) so every cathode clamp of the provider is exercised
+    n_cal_tpc = max(2, int(geom.NTPC(ROOT.geo.CryostatID(0))))
     out = dict(point=pts, cryo=np.full(len(pts), -1), tpc=np.full(len(pts), -1),
                wire_coordinate=np.full((len(pts), maxpl), np.nan),
                nearest_wire=np.full((len(pts), maxpl), -1),
@@ -629,9 +675,7 @@ def extract_validation(ROOT, geom, wr, detdata, sce=None, voxdef=None, n_inside=
         if sce is not None:
             out["sce_pos_offsets"][i] = Q.get("val.sce.GetPosOffsets", lambda: vec(sce.GetPosOffsets(P)), [np.nan] * 3)
             out["sce_efield_offsets"][i] = Q.get("val.sce.GetEfieldOffsets", lambda: vec(sce.GetEfieldOffsets(P)), [np.nan] * 3)
-            # TPC id passed to GetCalPosOffsets: alternate between the two
-            # conventions-relevant choices so both cathode clamps are exercised
-            ctid = int(i % 2)
+            ctid = int(i % n_cal_tpc)
             out["sce_cal_tpcid"][i] = ctid
             out["sce_cal_pos_offsets"][i] = Q.get("val.sce.GetCalPosOffsets", lambda: vec(sce.GetCalPosOffsets(P, ctid)), [np.nan] * 3)
         if voxdef is not None:
@@ -649,7 +693,7 @@ def extract_validation(ROOT, geom, wr, detdata, sce=None, voxdef=None, n_inside=
     return out
 
 
-def extract_photonlib(ROOT, services_fhicl, outdir, tag, n_opdets, geom=None):
+def extract_photonlib(ROOT, services_fhicl, outdir, tag, n_opdets, geom=None, wr=None):
     """Copy the photon visibility library and convert it to a dense HDF5 file.
 
     LArSoft's PhotonLibrary stores a sparse TTree `PhotonLibraryData`
@@ -695,6 +739,13 @@ def extract_photonlib(ROOT, services_fhicl, outdir, tag, n_opdets, geom=None):
         info["grid_min_eff"] = [float(info["XMin"]), float(info["YMin"]), float(info["ZMin"])]
         info["grid_max_eff"] = [float(info["XMax"]), float(info["YMax"]), float(info["ZMax"])]
         info["grid_source"] = "PhotonVisibilityService X/Y/ZMin/Max"
+    # detector <-> library mapping tool (phot::IPhotonMappingTransformations)
+    mapping = parse_fhicl_dump(block)["PhotonVisibilityService"].get("Mapping", {})
+    info["mapping_tool"] = mapping.get("tool_type", "PhotonMappingIdentityTransformations")
+    if info["mapping_tool"] == "ICARUSPhotonMappingTransformations":
+        info.update(icarus_photon_mapping(ROOT, geom, wr, mapping))
+    elif info["mapping_tool"] != "PhotonMappingIdentityTransformations":
+        Q.failed["photonlib.mapping"] = f"mapping tool {info['mapping_tool']!r} not reproduced"
     f = ROOT.TFile.Open(dst)
     # LArSoft PhotonLibrary: "PhotonLibraryData" at top level, else "pmtresponse/PhotonLibraryData"
     # (MicroBooNE); Get() returns the highest key cycle
@@ -712,7 +763,9 @@ def extract_photonlib(ROOT, services_fhicl, outdir, tag, n_opdets, geom=None):
     arr = ROOT.RDataFrame(tree).AsNumpy(cols)
     vox = np.asarray(arr["Voxel"], dtype=np.int64)
     och = np.asarray(arr["OpChannel"], dtype=np.int64)
-    nch = max(int(och.max()) + 1, n_opdets)
+    # a mapped library (ICARUS) only holds the channels of one cryostat: keep its width
+    nch = int(och.max()) + 1 if "mapping_switch_x" in info else max(int(och.max()) + 1, n_opdets)
+    info["n_opdets_detector"] = int(n_opdets)
     info["n_opchannels_in_library"] = int(och.max()) + 1
     nvox = nx * ny * nz
     bad = (vox < 0) | (vox >= nvox) | (och < 0)
@@ -724,7 +777,7 @@ def extract_photonlib(ROOT, services_fhicl, outdir, tag, n_opdets, geom=None):
         fo.attrs["schema_version"] = SCHEMA_VERSION
         fo.attrs["layout"] = "[ix, iy, iz, opchannel]; voxel id = ix + iy*NX + iz*NX*NY"
         for k, v in info.items():
-            if isinstance(v, (str, int, float, bool, np.number)):
+            if isinstance(v, (str, int, float, bool, np.number, np.ndarray)):
                 fo.attrs[k] = v
         fo.attrs["grid_min"] = info["grid_min_eff"]
         fo.attrs["grid_max"] = info["grid_max_eff"]
@@ -756,7 +809,10 @@ def fhicl_table(fcl, table, workdir):
     try:
         text = subprocess.run(["fhicl-dump", path], capture_output=True, text=True,
                               check=True).stdout
-        import fhicl                                  # fhiclpy (UPS)
+        try:
+            import fhicl                              # fhiclpy (UPS), if set up
+        except ImportError:                           # e.g. icaruscode does not pull it in
+            return text, parse_fhicl_dump(text)["tab"]
         # make_pset resolves the file through FHICL_FILE_PATH only (absolute
         # paths are rejected), so put workdir on the path for this call
         old = os.environ.get("FHICL_FILE_PATH", "")
@@ -768,6 +824,61 @@ def fhicl_table(fcl, table, workdir):
         return text, d
     finally:
         os.remove(path)
+
+
+_FHICL_TOKEN = re.compile(r'\s*(?:(#[^\n]*)|("(?:[^"\\]|\\.)*")|([{}\[\],:])|([^\s{}\[\],:"#]+))')
+
+
+def parse_fhicl_dump(text):
+    """Python dict from `fhicl-dump` output (fully resolved FHiCL: tables,
+    sequences, numbers, quoted strings, true/false/nil). Used when fhiclpy is
+    not set up."""
+    toks = []
+    for m in _FHICL_TOKEN.finditer(text):
+        if m.group(1) is not None:
+            continue
+        toks.append(m.group(2) or m.group(3) or m.group(4))
+    pos = 0
+
+    def atom(t):
+        if t.startswith('"'):
+            return json.loads(t)
+        if t in ("true", "false"):
+            return t == "true"
+        if t in ("nil", "@nil"):
+            return None
+        for conv in (int, float):
+            try:
+                return conv(t)
+            except ValueError:
+                pass
+        return t
+
+    def value():
+        nonlocal pos
+        t = toks[pos]; pos += 1
+        if t == "{":
+            return table("}")
+        if t == "[":
+            out = []
+            while toks[pos] != "]":
+                out.append(value())
+                if toks[pos] == ",":
+                    pos += 1
+            pos += 1
+            return out
+        return atom(t)
+
+    def table(end):
+        nonlocal pos
+        out = {}
+        while pos < len(toks) and toks[pos] != end:
+            key = toks[pos]; pos += 2               # key ':'
+            out[key] = value()
+        pos += 1
+        return out
+
+    return table(None)
 
 
 def write_fhicl_tree(group, d):
@@ -973,7 +1084,7 @@ def main():
         print("extracting photon visibility library ...", flush=True)
         PVS, plib_h5 = Q.get("photonlib", lambda: extract_photonlib(
             ROOT, services_fhicl, args.outdir, f"{args.detector}_{version}",
-            int(G["detector"]["n_opdets"]), geom), ({"note": "extraction failed"}, None))
+            int(G["detector"]["n_opdets"]), geom, wr), ({"note": "extraction failed"}, None))
     print("extracting light model tables / semi-analytic reference ...", flush=True)
     OPT_TABLES, SAM, sam_model = Q.get("optical_model", lambda: extract_optical_model(
         ROOT, cfg, geom, wr, larp, args.outdir), ({}, {}, None))
@@ -1088,8 +1199,9 @@ def main():
                                   compression_opts=9, shuffle=True)
             d.attrs["class"] = h["cls"]; d.attrs["title"] = h["title"]
             d.attrs["axis_titles"] = np.asarray(h["axis_titles"], dtype=h5py.string_dtype())
-            for ax, e in zip("xyz", h["edges"]):
+            for ax, e, r in zip("xyz", h["edges"], h["ranges"]):
                 d.attrs[f"edges_{ax}"] = e
+                d.attrs[f"range_{ax}"] = r          # TAxis GetXmin/GetXmax (exact)
 
         vg = write_table(f, "validation", VAL,
                          attrs=dict(note="LArSoft reference answers for random points; "
