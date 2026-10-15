@@ -235,18 +235,33 @@ def geometry_figure(di, wires=None, wire_stride=1, crt=True, crt_strips=False, h
     return fig
 
 
-def sce_slice_figure(di, kind="fwd", component=0, z=250.0, side_maps=True, height=420):
-    """Heatmap of an SCE map component on an x-y slice at fixed z (both TPC sides)."""
+def sce_slice_figure(di, kind="fwd", component=0, z=None, side_maps=True, height=420, margin=10.0):
+    """Heatmap of an SCE map component on an x-y slice at fixed z, over the union of the
+    TPC active volumes plus `margin` cm (z defaults to the middle of the active volumes)."""
     sce = di.sce
-    x = np.linspace(-205, 205, 165)
-    y = np.linspace(-205, 205, 165)
+    g = di.geometry
+    boxes = np.array([np.concatenate(g.TPCBoundaries(t, c)) for c in range(g.Ncryostats())
+                      for t in range(g.NTPCs(c))])
+    lo, hi = boxes[:, :3].min(0) - margin, boxes[:, 3:].max(0) + margin
+    if z is None:
+        z = 0.5 * (boxes[:, 2].min() + boxes[:, 5].max())
+    step = max(hi[0] - lo[0], hi[1] - lo[1]) / 220.0
+    x = np.arange(lo[0], hi[0] + step, step)
+    y = np.arange(lo[1], hi[1] + step, step)
     X, Y = np.meshgrid(x, y)
     P = np.stack([X.ravel(), Y.ravel(), np.full(X.size, z)], axis=1)
     if kind == "fwd":
         V = sce.GetPosOffsets(P)
         title = "GetPosOffsets"
     elif kind == "bkwd":
-        V = sce.GetCalPosOffsets(P, np.where(P[:, 0] < 0, 0, 1))
+        # TPC id of the containing TPC (points outside: the TPC nearest in x)
+        _, tpc = g.FindTPC(P)
+        if (tpc < 0).any():
+            cx = 0.5 * (boxes[:, 0] + boxes[:, 3])
+            ids = np.array([t for c in range(g.Ncryostats()) for t in range(g.NTPCs(c))])
+            near = ids[np.abs(P[:, 0][:, None] - cx[None]).argmin(1)]
+            tpc = np.where(tpc < 0, near, tpc)
+        V = sce.GetCalPosOffsets(P, tpc)
         title = "GetCalPosOffsets"
     else:
         V = sce.GetEfieldOffsets(P)
