@@ -127,6 +127,42 @@ CAT_COLORS = ["#d62728", "#ff9896", "#ff7f0e", "#ffbb78", "#c49c94", "#17becf",
 N_MC_CAT = 11                # MC categories; index N_MC_CAT = EXT
 N_SIG_CAT = 4                # categories 0..3 are signal
 
+# SIGNAL DEFINITION (module global, set with set_signal_def / configure):
+#   lar : "detectable single photon in LAr" (goal: the SM single-photon rate
+#         MicroBooNE sees, incl. entering photons). Visible photon = deposited
+#         E >= EVIS_MIN (a_gamma x Q); visible e = deposited E >= EVIS_MIN and
+#         NOT produced by a decay (Michel electrons do not veto); visible mu =
+#         KE >= MU_KE_VIS AND deposits charge (a hard muon that never enters
+#         the TPC does not veto -> category 3); FV = trueVtxInWCFV flag.
+#         ("present" is accepted as an alias.)
+#   wc  : WireCell photon-like LEE (arXiv:2502.06064), to compare with that
+#         analysis: reconstructable photon = TRUE E > WC_E_MIN with its first
+#         deposit >= WC_DWALL_MIN inside the TPC box, same-vertex pairs with
+#         opening angle < WC_OPEN_ANGLE merged; veto = any muon KE >= MU_KE_VIS
+#         (also outside the TPC) or any PRIMARY e+-; FV = vertex >=
+#         WC_DWALL_MIN inside the box. Category 3 is empty by construction.
+#   mb  : "would MiniBooNE have seen one EM ring": as wc but with MiniBooNE's
+#         Cherenkov thresholds in mineral oil (n = 1.47) for the veto -- any
+#         mu KE >= MB_MU_KE, pi+- >= MB_PI_KE, K+- >= MB_K_KE, p >= MB_P_KE,
+#         anywhere -- and same-vertex pairs merged below MB_OPEN_ANGLE
+#         (MiniBooNE's quoted ring resolution). Category 7 then means
+#         "ring-making mu / pi / K / p above Cherenkov threshold".
+SIGNAL_DEFS = ("lar", "wc", "mb")
+SIGNAL_DEF_ALIASES = {"present": "lar"}
+SIGNAL_DEF = "lar"
+WC_E_MIN = 20.0
+WC_DWALL_MIN = 3.0
+WC_OPEN_ANGLE = 20.0
+MB_OPEN_ANGLE = 13.0
+_MB_N = 1.47                                         # mineral oil refractive index
+_MB_GAMMA_THR = 1.0 / np.sqrt(1.0 - 1.0 / _MB_N ** 2) - 1.0   # KE/m at Cherenkov threshold
+MB_MU_KE = 105.658 * _MB_GAMMA_THR                   # 38.6 MeV
+MB_PI_KE = 139.570 * _MB_GAMMA_THR                   # 50.9 MeV
+MB_K_KE = 493.677 * _MB_GAMMA_THR                    # 180 MeV
+MB_P_KE = 938.272 * _MB_GAMMA_THR                    # 342 MeV
+_CAT7_DEFAULT = "bkg: visible mu (CC numu)"
+_CAT7_MB = "bkg: ring-making mu/pi/K/p (above Cherenkov thr.)"
+
 BR_RECO = ["run", "subrun", "event", "foundVertex", "primaryVtxStream",
            "vtxIsFiducial", "recoVtxStream", "recoVtxFlashChi2",
            "showerLArFormerPID", "showerRecoE", "showerCosmicScore",
@@ -155,7 +191,10 @@ BR_MC = ["xsecWeight", "trueVtxInWCFV", "trueNuCCNC", "trueSimPartPDG",
          "trueSimPartE", "trueSimPartPixelSumQ", "trueSimPartProcess",
          "trueSimPartMID", "trueSimPartTID",
          "trueSimPartX", "trueSimPartY", "trueSimPartZ",
-         "trueSimPartEndX", "trueSimPartEndY", "trueSimPartEndZ"]
+         "trueSimPartEndX", "trueSimPartEndY", "trueSimPartEndZ",
+         "trueSimPartEDepX", "trueSimPartEDepY", "trueSimPartEDepZ",
+         "trueSimPartPx", "trueSimPartPy", "trueSimPartPz",
+         "trueVtxX", "trueVtxY", "trueVtxZ"]
 TRACKLIKE = (13, 211, 321, 2212, 3222, 3112, 3312, 3334)   # charged track-like PDGs
 CONTAIN_DWALL = 10.0        # truth + reco containment: track start/end < this from a wall
 
@@ -166,6 +205,57 @@ def set_truth_scale(scale):
     A_GAMMA, A_E = em_constants(scale)
     print(f">>> truth EM scale '{scale}': a_gamma {A_GAMMA:.4f}, a_e {A_E:.4f} MeV/ADC; "
           f"visible = deposited >= {EVIS_MIN:.0f} MeV")
+
+
+def set_signal_def(name):
+    """Select the truth signal definition ('lar', 'wc' or 'mb'; see the module header)."""
+    global SIGNAL_DEF
+    name = SIGNAL_DEF_ALIASES.get(name, name)
+    if name not in SIGNAL_DEFS:
+        raise ValueError(f"unknown signal definition {name!r}; choose from {SIGNAL_DEFS}")
+    SIGNAL_DEF = name
+    CATS[7] = _CAT7_MB if name == "mb" else _CAT7_DEFAULT
+    if name == "wc":
+        print(f">>> signal definition 'wc': photon TRUE E > {WC_E_MIN:.0f} MeV, first deposit >= "
+              f"{WC_DWALL_MIN:.0f} cm inside the TPC, same-vertex pairs < {WC_OPEN_ANGLE:.0f} deg merged; "
+              f"veto any mu KE >= {MU_KE_VIS:.0f} / primary e; FV = vertex >= {WC_DWALL_MIN:.0f} cm inside")
+    elif name == "mb":
+        print(f">>> signal definition 'mb': photon TRUE E > {WC_E_MIN:.0f} MeV, first deposit >= "
+              f"{WC_DWALL_MIN:.0f} cm inside the TPC, same-vertex pairs < {MB_OPEN_ANGLE:.0f} deg merged; "
+              f"veto (anywhere) mu KE >= {MB_MU_KE:.1f}, pi >= {MB_PI_KE:.1f}, K >= {MB_K_KE:.0f}, "
+              f"p >= {MB_P_KE:.0f} MeV (Cherenkov in oil) or primary e; FV = vertex >= {WC_DWALL_MIN:.0f} cm inside")
+    else:
+        print(f">>> signal definition 'lar': photon deposited E >= {EVIS_MIN:.0f} MeV; e deposited >= "
+              f"{EVIS_MIN:.0f} MeV and not from a decay; mu KE >= {MU_KE_VIS:.0f} MeV AND depositing; WC FV flag")
+
+
+def configure(args):
+    """Apply the truth options shared by every script (--truth-scale, --signal-def)."""
+    set_truth_scale(getattr(args, "truth_scale", "deposited"))
+    set_signal_def(getattr(args, "signal_def", "lar"))
+
+
+def count_showers(starts, dirs, open_angle_deg, same_vtx_tol=0.5):
+    """Number of distinct reconstructable showers among photons (k,3): photons
+    with the same start point (< tol cm) and opening angle below open_angle_deg
+    are merged (union-find). WC-definition helper."""
+    k = len(starts)
+    if k < 2:
+        return k
+    parent = list(range(k))
+
+    def find(i):
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+    cos_max = np.cos(np.radians(open_angle_deg))
+    for i in range(k):
+        for j in range(i + 1, k):
+            if np.linalg.norm(starts[i] - starts[j]) < same_vtx_tol:
+                if float(np.dot(dirs[i], dirs[j])) > cos_max:
+                    parent[find(i)] = find(j)
+    return len({find(i) for i in range(k)})
 
 
 def _mass_of(pdg):
@@ -185,9 +275,23 @@ def truth_tables(a):
     evis = A_GAMMA * np.maximum(q, 0.0)          # photon deposited energy
     evis_e = A_E * np.maximum(q, 0.0)            # electron deposited energy
     dep = q > 0                                  # deposits charge in the TPC
-    vis_g = (apdg == 22) & (evis >= EVIS_MIN)
-    vis_e = (apdg == 11) & (evis_e >= EVIS_MIN)
-    vis_mu = (apdg == 13) & (ke >= MU_KE_VIS) & dep
+    cnt = ak.to_numpy(ak.num(pdg))
+    proc = a["trueSimPartProcess"]
+    if SIGNAL_DEF in ("wc", "mb"):
+        ed = np.stack([ak.to_numpy(ak.flatten(a["trueSimPartEDep" + c])) for c in "XYZ"], 1)
+        dw_ed = ak.unflatten(np.minimum((ed - TPC_LO).min(1), (TPC_HI - ed).min(1)), cnt)
+        vis_g = (apdg == 22) & (E > WC_E_MIN) & (dw_ed >= WC_DWALL_MIN)
+        vis_e = (apdg == 11) & (proc == 0)                           # any primary e+-
+        if SIGNAL_DEF == "wc":
+            vis_mu = (apdg == 13) & (ke >= MU_KE_VIS)                # also outside the TPC
+        else:   # mb: anything that makes a Cherenkov ring in mineral oil, anywhere
+            vis_mu = (((apdg == 13) & (ke >= MB_MU_KE)) | ((apdg == 211) & (ke >= MB_PI_KE))
+                      | ((apdg == 321) & (ke >= MB_K_KE)) | ((apdg == 2212) & (ke >= MB_P_KE)))
+    else:   # lar
+        vis_g = (apdg == 22) & (evis >= EVIS_MIN)
+        vis_e = (apdg == 11) & (evis_e >= EVIS_MIN) & (proc != 1)    # Michel (decay) e do not veto
+        vis_mu = (apdg == 13) & (ke >= MU_KE_VIS) & dep
+    merge_angle = MB_OPEN_ANGLE if SIGNAL_DEF == "mb" else WC_OPEN_ANGLE
     mu100_any = (apdg == 13) & (ke >= MU_KE_VIS)     # incl. muons outside the TPC
     is_meson = ak.zeros_like(pdg, dtype=bool)
     for p in CHARGED_MESONS:
@@ -201,7 +305,41 @@ def truth_tables(a):
     n = lambda m: ak.to_numpy(ak.sum(m, axis=1)).astype(np.int64)
     out = dict(n_vis_g=n(vis_g), n_vis_e=n(vis_e), n_vis_mu=n(vis_mu),
                n_x_strict=n(x_strict), n_mu100_any=n(mu100_any))
-    fv = ak.to_numpy(a["trueVtxInWCFV"]) == 1
+    # TRUE OPENING ANGLE between detectable photons (true momenta): smallest
+    # pair angle when there are >= 2 (NaN otherwise); *_samevtx restricts to
+    # pairs with the same start point (< 0.5 cm, e.g. a pi0 decay). In the wc
+    # definition, same-vertex pairs below WC_OPEN_ANGLE merge into one shower.
+    n_g_raw = out["n_vis_g"].copy()
+    open_min = np.full(len(cnt), np.nan)
+    open_min_sv = np.full(len(cnt), np.nan)
+    n_merged = n_g_raw.copy()
+    multi = np.nonzero(n_g_raw >= 2)[0]
+    if len(multi):
+        st_all = [a["trueSimPart" + c] for c in "XYZ"]
+        p_all = [a["trueSimPartP" + c] for c in "xyz"]
+        for i in multi:
+            m = np.asarray(vis_g[i])
+            st = np.stack([np.asarray(x[i])[m] for x in st_all], 1)
+            pv = np.stack([np.asarray(x[i])[m] for x in p_all], 1)
+            dr = pv / np.maximum(np.linalg.norm(pv, axis=1, keepdims=True), 1e-12)
+            iu = np.triu_indices(len(dr), 1)
+            ang = np.degrees(np.arccos(np.clip((dr @ dr.T)[iu], -1.0, 1.0)))
+            open_min[i] = ang.min()
+            same = np.linalg.norm(st[iu[0]] - st[iu[1]], axis=1) < 0.5
+            if same.any():
+                open_min_sv[i] = ang[same].min()
+            if SIGNAL_DEF in ("wc", "mb"):
+                n_merged[i] = count_showers(st, dr, merge_angle)
+    out["g_open_min_true"] = open_min
+    out["g_open_min_samevtx_true"] = open_min_sv
+    out["n_vis_g_raw"] = n_g_raw
+    if SIGNAL_DEF in ("wc", "mb"):
+        out["n_vis_g"] = n_merged
+    if SIGNAL_DEF in ("wc", "mb"):
+        vx = np.stack([np.asarray(ak.to_numpy(a["trueVtx" + c]), np.float64) for c in "XYZ"], 1)
+        fv = np.minimum((vx - TPC_LO).min(1), (TPC_HI - vx).min(1)) >= WC_DWALL_MIN
+    else:
+        fv = ak.to_numpy(a["trueVtxInWCFV"]) == 1
     sig = (out["n_vis_g"] == 1) & (out["n_vis_e"] == 0) & (out["n_vis_mu"] == 0)
     out["sig_incl"] = sig                        # any vertex (entering included)
     out["sig_1g0x"] = sig & fv & (out["n_x_strict"] == 0)
@@ -262,6 +400,29 @@ def truth_tables(a):
         v[v > 1e8] = np.nan
         out["true_track_min_dwall" + ("" if kemin == 0 else f"_ke{int(kemin)}")] = v
     out["pc_true"] = out["true_track_min_dwall"] < CONTAIN_DWALL
+    # TRUTH backward wall distance of the (single) visible photon, mirroring
+    # the reco cand_dist_from_wall: from the photon's first energy deposit in
+    # the TPC (trueSimPartEDep*, always inside the box) traced back along
+    # -p_hat (true momentum) to the TPC box. For an in-TPC vertex the ray
+    # passes the vertex and continues to the wall, exactly as the reco ray
+    # does. dfw_in_true = (>= DFW_CUT) is the truth analogue of the in-TPC
+    # path (NaN -> False = entering-like, same convention as reco).
+    conv = np.stack([first(a["trueSimPartEDep" + c]) for c in "XYZ"], 1)
+    pv = np.stack([first(a["trueSimPartP" + c]) for c in "xyz"], 1)
+    pn = np.linalg.norm(pv, axis=1, keepdims=True)
+    pv = np.where(pn > 0, pv / np.maximum(pn, 1e-12), np.nan)
+    out["g_dfw_true"] = rays_to_wall(conv, -pv)
+    out["g_dtw_true"] = rays_to_wall(conv, pv)
+    out["g_conv_dwall"] = np.minimum((conv - TPC_LO).min(1), (TPC_HI - conv).min(1))
+    out["dfw_in_true"] = out["g_dfw_true"] >= DFW_CUT
+    # SECOND-PHOTON truth tag mirroring R["other_gE_max"]: deposited energy of
+    # the second-most-energetic photon in the event (NaN if < 2 photons). The
+    # truth veto-fail class is g2_evis_true > veto2g_emin (applied by caller).
+    g_ev = ak.sort(ak.where(apdg == 22, evis, -1.0), axis=1, ascending=False)
+    g2 = ak.fill_none(ak.pad_none(g_ev, 2, axis=1)[:, 1], -1.0)
+    v = np.asarray(ak.to_numpy(g2), np.float64)
+    v[v < 0] = np.nan
+    out["g2_evis_true"] = v
     return out
 
 
@@ -388,6 +549,7 @@ def reco_tables(a, args):
         pe_ratio[ok] = obs[ok] / prd[ok]
     return dict(run=ak.to_numpy(a["run"]), subrun=ak.to_numpy(a["subrun"]),
                 event=ak.to_numpy(a["event"]), vtx_ok=vtx_ok, chi2=chi2, pe_ratio=pe_ratio,
+                vtx_cosmic_bdt_min=float(getattr(args, "vtx_cosmic_bdt_min", 0.6)),
                 n_g0=n_g0, n_e=n_e, n_mu=n_mu, s1=s1,
                 track_min_dwall=track_min_dwall,
                 _is_g0=is_g0, _E=E, _score=score, _path=path_flag,
@@ -423,7 +585,7 @@ def rays_to_wall(st, dr):
     return out
 
 
-def build_steps(R, thr, chi2_cut, bdt_after=False, pe_ratio_max=None):
+def build_steps(R, thr, chi2_cut, bdt_after=False, pe_ratio_max=None, veto2g_dcmax=0.0):
     """Cumulative step masks + candidate-photon arrays for a BDT threshold.
     Returns (names, steps[nstep, n], E_cand, score_cand, n_g)."""
     is_g = R["_is_g0"] if bdt_after else (R["_is_g0"] & (R["_score"] >= thr))
@@ -447,7 +609,35 @@ def build_steps(R, thr, chi2_cut, bdt_after=False, pe_ratio_max=None):
     oe = ak.max(ak.where(other, R["_E"], -1.0), axis=1)
     oe = np.asarray(ak.to_numpy(ak.fill_none(oe, -1.0)), np.float64)
     oe[oe < 0] = np.nan
+    R["other_gE_max_old"] = oe            # any other photon prong (BDT-chain feature; unchanged)
     R["other_gE_max"] = oe
+    # GEOMETRIC veto (2026-10-08): count another photon prong only if its start
+    # axis and the candidate's cross within veto2g_dcmax of BOTH starts (axis
+    # closest-approach mid-point; a real pi0 pair crosses near the decay point,
+    # an unrelated far cluster does not). veto2g_dcmax <= 0 -> old behaviour.
+    if veto2g_dcmax and veto2g_dcmax > 0:
+        cs = [pick(R["_sp" + c]) for c in "XYZ"]; cd = [pick(R["_sd" + c]) for c in "XYZ"]
+        cn = np.sqrt(sum(np.nan_to_num(x) ** 2 for x in cd)); cd = [np.nan_to_num(x) / np.maximum(cn, 1e-9) for x in cd]
+        S1 = [ak.Array(np.nan_to_num(x, nan=1e9)) for x in cs]; D1 = [ak.Array(x) for x in cd]
+        s2 = [R["_sp" + c] for c in "XYZ"]; d2 = [R["_sd" + c] for c in "XYZ"]
+        n2 = np.sqrt(d2[0] ** 2 + d2[1] ** 2 + d2[2] ** 2); d2 = [x / np.maximum(n2, 1e-9) for x in d2]
+        r = [s2[k] - S1[k] for k in range(3)]
+        b = D1[0] * d2[0] + D1[1] * d2[1] + D1[2] * d2[2]
+        e = D1[0] * r[0] + D1[1] * r[1] + D1[2] * r[2]
+        f = d2[0] * r[0] + d2[1] * r[1] + d2[2] * r[2]
+        den = 1.0 - b * b
+        t = ak.where(den > 1e-6, (e - b * f) / np.maximum(den, 1e-6), 0.0)
+        u = ak.where(den > 1e-6, (b * e - f) / np.maximum(den, 1e-6), 0.0)
+        c = [0.5 * (S1[k] + t * D1[k] + s2[k] + u * d2[k]) for k in range(3)]
+        dc1 = np.sqrt(sum((c[k] - S1[k]) ** 2 for k in range(3)))
+        dc2 = np.sqrt(sum((c[k] - s2[k]) ** 2 for k in range(3)))
+        dcmax = np.maximum(dc1, dc2)
+        R["_other_dcmax"] = dcmax
+        other_geo = other & (dcmax < veto2g_dcmax)
+        og = ak.max(ak.where(other_geo, R["_E"], -1.0), axis=1)
+        og = np.asarray(ak.to_numpy(ak.fill_none(og, -1.0)), np.float64)
+        og[og < 0] = np.nan
+        R["other_gE_max"] = og
     # BACKWARD WALL DISTANCE of the leading candidate: distance from its start
     # point to the TPC box along -direction (NaN if no candidate or start
     # outside the box). Entering photons point back to a wall within a few
@@ -477,6 +667,14 @@ def build_steps(R, thr, chi2_cut, bdt_after=False, pe_ratio_max=None):
         s_pe = s_last & np.isfinite(R["pe_ratio"]) & (R["pe_ratio"] < pe_ratio_max)
         names.append(f"S{len(steps)} flash PE ratio")
         steps.append(s_pe)
+        s_last = s_pe
+    # S6 (2026-10-02): vertex-path candidates must have cosmic BDT >= R["vtx_cosmic_bdt_min"]
+    # (default 0.6; <= 0 disables). Vertex-less candidates (path 1) pass unchanged.
+    vmin = R.get("vtx_cosmic_bdt_min", 0.0)
+    if vmin > 0:
+        s_v = s_last & ((path_cand != 0) | (np.nan_to_num(score_cand, nan=-9.0) >= vmin))
+        names.append(f"S{len(steps)} vtx cosmic BDT >= {vmin:.2f}")
+        steps.append(s_v)
     return names, np.stack(steps), E_cand, score_cand, n_g, path_cand
 
 
@@ -558,6 +756,15 @@ def main():
     ap.add_argument("--mc-odd-only", action="store_true",
                     help="use only odd-event MC (w x2): required with the "
                          "vertex-free BDT, which trained on even events")
+    ap.add_argument("--vtx-cosmic-bdt-min", type=float, default=0.6,
+                    help="S6 pre-selection: vertex-path candidate cosmic BDT >= this (0 disables)")
+    ap.add_argument("--veto2g-dcmax", type=float, default=0.0,
+                    help="GEOMETRIC 2nd-photon veto: another photon prong counts only if the two start axes cross "
+                         "within this many cm of both starts (0 = any other photon prong, the old veto)")
+    ap.add_argument("--signal-def", default="lar", choices=list(SIGNAL_DEFS) + list(SIGNAL_DEF_ALIASES),
+                    help="truth signal definition: 'lar' (detectable in LAr; alias 'present'), "
+                         "'wc' (WireCell photon-like LEE, arXiv:2502.06064) or 'mb' (MiniBooNE "
+                         "Cherenkov thresholds, 13 deg ring merging)")
     ap.add_argument("--truth-scale", default="deposited", choices=["deposited", "legacy"],
                     help="truth EM visible-energy constants: 'deposited' (0.0110 g / "
                          "0.0101 e MeV/ADC, measured) or 'legacy' (0.0253 for both)")
@@ -586,7 +793,7 @@ def main():
     os.makedirs(args.plots, exist_ok=True)
     if args.out_dir:
         os.makedirs(args.out_dir, exist_ok=True)
-    set_truth_scale(args.truth_scale)
+    configure(args)
 
     # ---- MC -----------------------------------------------------------------
     print(">>> loading MC ...", flush=True)
@@ -645,13 +852,13 @@ def main():
         if RR is not None:
             RR["novtx"] = args.novtx
     prm = args.flashpe_ratio_max
-    STEPS, S, E_cand, score_cand, n_g, path_cand = build_steps(R, thr, ccut, after, prm)
+    STEPS, S, E_cand, score_cand, n_g, path_cand = build_steps(R, thr, ccut, after, prm, veto2g_dcmax=args.veto2g_dcmax)
     SX = EX = None
     if RX is not None:
-        _, SX, EX, _, _, PX = build_steps(RX, thr, ccut, after, prm)
+        _, SX, EX, _, _, PX = build_steps(RX, thr, ccut, after, prm, veto2g_dcmax=args.veto2g_dcmax)
     SD = ED = None
     if RD is not None:
-        _, SD, ED, _, _, PD = build_steps(RD, thr, ccut, after, prm)
+        _, SD, ED, _, _, PD = build_steps(RD, thr, ccut, after, prm, veto2g_dcmax=args.veto2g_dcmax)
     k_chi2 = step_index(STEPS, "flash chi2")
     k_pe = step_index(STEPS, "PE ratio") if any("PE ratio" in n for n in STEPS) else None
     nstep = len(STEPS)
@@ -822,6 +1029,7 @@ def main():
                 ax.errorbar(tctr, e, yerr=er, fmt=styles[k], ms=4,
                             label=f"{STEPS[k]} ({w[num].sum()/max(w[den].sum(),1e-9):.3f})")
             ax.set(xlabel=xlab, ylabel="efficiency", ylim=(0, 1.0), xscale="log",
+                   xlim=(tedges[0], tedges[-1]),        # explicit: a panel may be empty (wc def)
                    title=f"efficiency vs true photon energy\n(denominator: {dlab})")
             ax.legend(fontsize=7)
             ax.grid(alpha=0.3, which="both")

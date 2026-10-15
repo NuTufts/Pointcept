@@ -84,7 +84,7 @@ def main():
     ap.add_argument("--truth-scale", default="deposited", choices=["deposited", "legacy"])
     ap.add_argument("--plots", required=True)
     args = ap.parse_args()
-    SPS.set_truth_scale(getattr(args, 'truth_scale', 'deposited'))
+    SPS.configure(args)
     os.makedirs(args.plots, exist_ok=True)
 
     print(">>> loading MC ...", flush=True)

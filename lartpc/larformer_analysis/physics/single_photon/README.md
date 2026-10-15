@@ -472,3 +472,179 @@ Diagnostics take `--dfw in|ent`; `run_suite.sh` now produces
 `diagnostics_vertex_pass_FC_{in,ent}` and `paths6`. Numbers in
 `RUN1_SINGLE_PHOTON_TABLES.md`: the in-TPC cell keeps 61% of the FC in-FV
 signal at in-FV purity 0.25 with entering signal down 3.6x.
+
+### Truth analogue of dist-from-wall (2026-09-29)
+
+`truth_tables` adds `g_dfw_true` / `g_dtw_true` / `g_conv_dwall` / `dfw_in_true`
+(first deposit traced back along -p_true, DFW_CUT 100). `path_tables` prints the
+truth in-TPC fraction per category, truth-vs-reco agreement (0.795 on the
+selected vertex-pass-FC signal), (category x truth FC/PC x truth in/entering)
+efficiency rows, and `dfw_truth_vs_reco.png`; the truth script plots
+`gDistFromWall` / `gDistToWall`. Truth-FC in-TPC -> FC in-TPC cell: 0.274 (1g0X),
+0.378 (1g+X). Numbers in `RUN1_SINGLE_PHOTON_TABLES.md`.
+
+### Truth-path confusion table (2026-09-29)
+
+`truth_tables` adds `g2_evis_true` (second photon deposited E, truth analogue
+of `other_gE_max`); `path_tables` prints CONFUSION blocks: fraction of each
+truth path (true vtx in FV x 2nd photon > veto2g_emin x truth PC x truth dfw)
+landing in each of the six reco paths or in no path, for all signal, per signal
+category, and per true event type (backgrounds included). Numbers in
+`RUN1_SINGLE_PHOTON_TABLES.md`.
+
+### All-selected diagnostics (2026-09-29)
+
+`plots_run1_novtx_dep_pe3/diagnostics_all/` = the diagnostics set for ALL
+selected events (both paths, no veto / containment / wall-distance split),
+PE-ratio step on; `run_suite.sh` now submits it as `diagnostics_all`.
+
+### Truth plots without the selected overlay (2026-09-29)
+
+`single_photon_truth.py --no-selected` drops the black "signal passing full
+selection" step histogram so the truth plots show only the stacked signal
+categories (selected counts still go to `truth_medians.txt`). `run_suite.sh`
+passes it; `plots_run1_novtx_dep_pe3/truth/` regenerated this way.
+
+### Candidate BDT score in the diagnostics (2026-09-29)
+
+`single_photon_diagnostics.py` now plots `bdtCosmic` (vertex-path candidates,
+cosmic-shower BDT, cut 0.164), `bdtNoVtx` (no-vertex-path candidates, raw
+vertex-free BDT, cut 0.5; the unified-score shift is undone) and `bdtScore`
+(the unified score `build_steps` compares to `--shower-bdt-min`). BDT medians
+printed to 3 decimals. All `diagnostics_*` folders in both suites regenerated.
+
+### Tighter BDT on the FC in-TPC cell (2026-09-30)
+
+`path_tables --fc-in-bdt-min X` (cell-only cut via `dfw_code`, -1 = no path)
+prints a scan of the FC in-TPC cell vs the candidate cosmic-BDT cut with in-FV
+1g efficiency / purity; `diagnostics --cand-bdt-min X` restricts to candidates
+above a raw score. `run_suite.sh` adds `paths6_tightbdt` and
+`diagnostics_vertex_pass_FC_in_tightbdt` (0.5). Numbers in
+`RUN1_SINGLE_PHOTON_TABLES.md`.
+
+### WireCell LEE signal definition (2026-09-30)
+
+`single_photon_wc_lee_definition.py` implements the arXiv:2502.06064 signal
+definition on the truth tables (reconstructable photon = true E > 20 MeV,
+first deposit >= 3 cm inside the TPC; same-vertex < 20 deg pairs merged; no mu
+KE >= 100; no primary e; no vertex cut) and prints the expected count at 4.4e19
+with the inside / outside-TPC split, ingredient sensitivities and the overlap
+with our categories. Run-1: 760.8 (174.0 inside / 586.8 outside) vs ours 805.7,
+overlap 297.7. Wrapper `slurm/submit_single_photon_wc_lee.sh`.
+
+### WC LEE definition: primary tag (2026-09-30)
+
+`single_photon_wc_lee_definition.py --prim-dist 1.0`: photon start within 1 cm
+of the true vertex = primary (direct or immediate primary pi0 decay). Nominal
+760.8 -> 702.9 with the single shower primary (92%); present-analysis signal is
+97% / 88% primary in FV, 70-75% for entering. Bookkeeping cross-check fixed
+(primary pi0 IS in the table for out-of-TPC vertices). Plot
+`wc_signal_trueE_primary.png`. Numbers in `RUN1_SINGLE_PHOTON_TABLES.md`.
+
+### Three signal definitions: lar / wc / mb (2026-10-01)
+
+All table/plot scripts take `--signal-def lar|wc|mb` (`present` = alias of
+`lar`), applied through `single_photon_selection.configure(args)` together
+with `--truth-scale`. One definition per plot suite:
+
+| | `lar` (goal: SM single-photon rate in LAr) | `wc` (compare with arXiv:2502.06064) | `mb` (would MiniBooNE see one ring) |
+|---|---|---|---|
+| visible photon | deposited E >= 20 MeV | TRUE E > 20 MeV, first deposit >= 3 cm inside TPC | same as wc |
+| photon merging | none | same-vertex pairs < 20 deg = one shower | < 13 deg (MiniBooNE ring resolution) |
+| electron veto | deposited E >= 20 MeV, not from a decay (Michels do not veto) | any primary e | any primary e |
+| muon veto | KE >= 100 MeV AND deposits charge (muon outside TPC -> category 3 signal) | KE >= 100 MeV anywhere | KE >= 38.6 MeV anywhere (Cherenkov in oil, n = 1.47) |
+| hadron veto | none (X thresholds only define 1g0X) | none | pi >= 50.9, K >= 180, p >= 342 MeV anywhere (ring-making); category 7 relabelled |
+| FV | trueVtxInWCFV flag | vertex >= 3 cm inside TPC box | same as wc |
+
+Suites: `plots_run1_novtx_dep_pe3` (lar), `plots_run1_novtx_wcdef_pe3` (wc),
+`plots_run1_novtx_mbdef_pe3` (mb), each via
+`slurm/run_suite.sh <ROOT> --flashpe-ratio-max 3.0 --signal-def <def>`.
+
+`truth_tables` also returns `g_open_min_true` (smallest TRUE opening angle
+between detectable photons, true momenta, NaN if < 2) and
+`g_open_min_samevtx_true` (same-start-point pairs only); `n_vis_g_raw` keeps
+the unmerged count. Diagnostics plot them as MC-only variables
+(`trueOpenAngle`, `trueOpenAngleSameVtx`) and print, per category and step,
+the fraction with >= 2 detectable photons and the fraction of those below
+20 deg; the truth script plots `gOpenAngleMin*`.
+
+
+### MiniBooNE-targeted selection (2026-10-01)
+
+`single_photon_mb_selection.py` (+ `slurm/submit_single_photon_mb.sh`,
+`mb_scan_summary.py`, plan and results in `MB_SELECTION_PLAN.md`): cumulative
+M1-M5 steps on the vertex / veto-pass / FC / in-TPC cell, mb truth by default,
+no photon-kinematic cuts (E, cosBeam, E_QE reported only), 1g0p / 1gNp split,
+N-1 plots per variable, efficiency vs in-FV and tight-FV truth. Defaults are the
+scan optimum (tight FV 10 cm, BDT >= 0.7): purity 0.305 at in-FV eff 0.107.
+`--pi0-cone` (M2b, not adopted) and `mb_variable_study.py` (diagnostic BDTs vs nu
+bkg / EXT, kinematics-free: nu-bkg AUC 0.60 = no separation left) are described in
+`MB_SELECTION_PLAN.md`.
+
+### WC-style MB BDT chain (2026-10-01)
+
+`single_photon_mb_bdt_chain.py` (+ `slurm/submit_mb_bdt_chain.sh`): S3
+pre-selection -> BDT_ext -> BDT_numu -> BDT_enter split (in-FV-like / entering
+sideband) -> 1g0p / 1gNp; trained on the TRAINPOOL overlay half + EXT first
+half, evaluated on the RESERVED halves + data (`--ext-scale 1.202`);
+`--no-flash` variant; score plots with data/pred ratio; efficiency-based
+threshold scan. Results and working points in `MB_SELECTION_PLAN.md`.
+
+### S6 vertex-path cosmic BDT pre-selection + chain-score diagnostics (2026-10-02)
+
+`--vtx-cosmic-bdt-min 0.6` (all scripts, via add_args / reco_tables ->
+`build_steps` S6): vertex-path candidates need cosmic BDT >= 0.6. Diagnostics
+add `preBDT/`, `mupiKEmax`, `E_QE` (e-CCQE hypothesis, reported only), and the MB-chain scores (`--mb-chain-model`,
+default `plots_run1_mbchain/mb_bdt_chain_flash.joblib`, which now stores the
+flattening maps). Every `plots_run1_mbchain` plot has a `_logy` twin;
+`mb_input_agreement.py` makes per-input data/MC plots at S3 and S5.
+
+### FC split by BDT_enter (2026-10-02)
+
+`single_photon_path_tables.py --fc-split enter --enter-cut 0.05` and
+`single_photon_diagnostics.py --enter in|ent` split the vertex / veto-pass / FC
+cell by the MB-chain BDT_enter score (shared scorer
+`single_photon_mb_bdt_chain.chain_scores`). `run_suite.sh` writes
+`paths6_enter/` and `diagnostics_vertex_pass_FC_enter_{in,ent}/` next to the
+dwall-based `paths6/`. In-FV purity of the in-FV-like cell: lar 0.41 (dwall
+0.32). Numbers in `RUN1_SINGLE_PHOTON_TABLES.md`.
+
+### tightbdt path = MB-chain cuts (2026-10-02)
+
+`paths6_tightbdt/` and `diagnostics_vertex_pass_FC_in_tightbdt/` now mean
+`--fc-split enter --chain-ext-min 0.2 --chain-numu-min 0.4` (path tables) and
+`--enter in --chain-ext-min 0.2 --chain-numu-min 0.4` (diagnostics): in-FV-like
+cell = BDT_enter > 0.05 & BDT_ext > 0.2 & BDT_numu > 0.4. mb in-FV purity
+0.34 (0.21 without the ext/numu cuts); data/pred 0.73 in that cell.
+
+### Adopted chain configuration (2026-10-02)
+
+Default `--mb-chain-model` = `plots_run1_mbchain/mb_bdt_chain_noflash_novtx.joblib`
+(retrained cross-fitted ensemble, NO flash variables, no vertex-found / path inputs;
+`--no-flash --drop-vars vtx_ok,path --tag noflash_novtx`); `paths6_enter/` and the
+tightbdt path both use `--enter-cut 0.3`; tightbdt adds BDT_ext > 0.2,
+BDT_numu > 0.4. Models are loadable from any script through
+`single_photon_mb_bdt_chain.chain_scores` (fold models stored in the joblib).
+
+### Isotropic 1-gamma gun passthrough (2026-10-10) -- `plots_isogamma/cutflow/`
+
+`single_photon_isogamma_cutflow.py` runs the run-1 cutflow + BDT-path tree on the
+mcc9.10 isotropic photon-gun ntuple (versions doc 3d) with unit weights
+(`--unit-weight`, also added to `single_photon_diagnostics.py`; the sample has
+xsecWeight = -1). Truth per event = the gun photon: conversion point from the
+truth sidecar EDep, deposited energy, origin in/out of the WC FV; reco adds
+"candidate is the gun photon" (showerTrueTID) and "vertex on the conversion
+point" (< 5 cm). `single_photon_isogamma_losses.py` classifies the S1/S2
+failures (electron PID, split shower, BDT, no prong, ...) per true-E bin.
+`slurm/submit_isogamma_cutflow.sh [args]` runs either (`SCRIPT=` env var).
+Result: 48% of lar-visible in-FV photons pass the base selection, 32% land in
+the in-FV MB-target cell (99.8% with the gun photon as candidate); the largest
+loss is photon-as-electron PID (21%). Numbers in the versions doc section 3d.
+
+`slurm/run_isogamma_diag_suite.sh plots_isogamma` makes the run-1 BDT-path
+suite's diagnostics cells for the gun (plus `diagnostics_all_selected`), and
+`single_photon_isogamma_epid.py --mc-ntuple <gun> --overlay-ntuple <ovl>`
+is the electron-PID loss study (gun 22% of photon showers PID'd electron vs 6%
+in the overlay: an energy prior plus the missing vertex gap; see versions doc
+3d). `make_gallery.py <out> isogamma` builds the gallery page.
+

@@ -80,7 +80,7 @@ def main():
     ap.add_argument("--veto-emins", default="5,10,15,20,30")
     ap.add_argument("--mgg-window", default="50,250")
     args = ap.parse_args()
-    SPS.set_truth_scale(getattr(args, 'truth_scale', 'deposited'))
+    SPS.configure(args)
     os.makedirs(args.plots, exist_ok=True)
     a, pot = SPS.load(args.mc_ntuple, True, args.novtx, extra=EXTRA)
     w0 = ak.to_numpy(a["xsecWeight"]).astype(np.float64)

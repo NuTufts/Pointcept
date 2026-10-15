@@ -480,6 +480,96 @@ expected from the dlmerged flash-time survey (not understood). The cosmics are
 simulated, so cosmic flash-chi2 tails and the vertex false-positive rate need not
 match data overlay. Proxy gamma (above).
 
+**Single-photon cutflow passthrough (2026-10-10;
+`physics/single_photon/single_photon_isogamma_cutflow.py` + `_losses.py`,
+`slurm/submit_isogamma_cutflow.sh` -> `plots_isogamma/cutflow/`, gitignored).**
+Unit weights; the run-1 lar-truth selection (S1-S6, geometric 2nd-photon veto
+E > 10 MeV & dcmax < 100 cm, lar-trained chain BDTs, BDT_numu > 0.25,
+BDT_enter >= 0.30 Np / 0.15 0p). Truth denominators: 53,938 events; photon
+converts in the TPC 41,867 (78%); lar-visible (>= 20 MeV deposited) 29,380 (54%);
+visible with ORIGIN in the WC FV 20,479; visible with origin outside the FV 8,901.
+
+| step / cell | visible, origin in FV | visible, origin outside FV | candidate = gun photon |
+|---|---|---|---|
+| S1 nu-stream photon shower | 0.758 | 0.782 | |
+| S2 exactly one candidate | 0.626 | 0.517 | 0.935 |
+| S3 no visible X | 0.599 | 0.483 | |
+| S4 flash chi2 < 316 | 0.516 | 0.359 | 0.997 |
+| S6 final (vertex cosmic BDT) | **0.483** | 0.338 | 0.997 |
+| vertex path, veto PASS | 0.401 | 0.119 | 0.998 |
+| vertex path, veto FAIL | 0.010 | 0.004 | |
+| CC-numu-like (BDT_numu <= 0.25) | 0.024 | 0.008 | |
+| non-CC-numu, ENTERING | 0.053 | 0.072 | |
+| **in-FV MB target** (1g0p / 1gNp) | **0.323** (0.319 / 0.004) | 0.040 | 0.998 |
+| no-vertex, veto PASS | 0.067 | 0.192 | |
+| no-vertex, veto FAIL | 0.005 | 0.023 | |
+
+Efficiency vs true E for in-FV visible photons (base / MB cell): 100-200 MeV
+0.49 / 0.27, 200-400 MeV 0.61 / 0.40, 400-800 MeV 0.5 / 0.35, > 1.5 GeV
+0.2 / 0.15; it falls to ~0.1 below 50 MeV. Vs conversion-point dwall the MB-cell
+fraction is flat (0.35) above 20 cm and drops to 0.03 in the last 5 cm. Of the
+MB-cell events 81% have the reco vertex within 5 cm of the conversion point.
+
+Where the in-FV visible photons are lost (fractions of the 20,479):
+photon shower in the nu slice but **PID = electron 0.209** (0.08 below 100 MeV,
+0.37 above 800 MeV; the dominant loss, same as in the beam MC), flash chi2 0.083,
+split shower (>= 2 candidates that are both the photon) 0.050 (0.07 above 400 MeV),
+photon fails the cosmic / no-vertex BDT 0.047 (0.28 below 100 MeV), vertex cosmic
+BDT 0.032, visible-X veto 0.027, photon matched only to a track prong 0.009,
+no matched prong 0.012, no nu-stream slice 0.006, cosmic-stream photon 0.000.
+Caveats: simulated cosmics; photon origins are uniform in the TPC, not a beam
+spectrum (E 5/50/95% = 110/416/1473 MeV); "origin in FV" is the gun vertex, not
+the conversion point.
+
+**Per-cell diagnostics (`slurm/run_isogamma_diag_suite.sh plots_isogamma`
+-> `plots_isogamma/diagnostics_*/final/`).** The run-1 BDT-path suite's 10 cells
+plus an all-selected cell, gun only, unit weights (`submit_isogamma_diagnostics.sh`
+wraps `single_photon_diagnostics.py --unit-weight`). Notable: the gun's
+BDT_numu is broad (6% of vertex/veto-pass events fall in the CC-numu-like cell
+without any mu/pi track); the ENTERING cell is 63% in-FV-origin photons (gun
+origins near a wall heading inward have small distFromWall); the no-vertex
+veto-pass cell holds 1,380 in-FV photons whose vertex was not found (flat start
+dwall) on top of 1,715 entering ones. Gallery: `make_gallery.py <out> isogamma`.
+
+**Electron-PID loss study (2026-10-10; `physics/single_photon/single_photon_isogamma_epid.py`
+-> `plots_isogamma/epid/`).** One row per lar-visible true photon converting
+>= 10 cm inside the TPC, matched to its nu-stream shower by showerTrueTID
+(purity > 0.5); the held-out run-1 overlay half2 (photons of any origin, mostly
+pi0) is the comparison. Gun: 22,120 photons, 96.9% matched, LArFormer PID
+electron **22.4%** (LArPID 30.2%). Overlay: 26,497 photons, 89.7% matched,
+electron 6.0% (LArPID 4.5%). Findings:
+
+- *Energy drives it in both samples*: electron fraction (gun / overlay)
+  20-50 MeV 0.08 / 0.08, 200-300 0.12 / 0.05, 400-600 0.20 / 0.10, 800-1000
+  0.31 / 0.16, 1-1.5 GeV 0.39 / 0.19, 1.5-2 GeV 0.54 / 0.24, 3-5 GeV 0.69 / 0.67.
+  The gun spectrum is much harder than the beam photon spectrum, which is why
+  the integrated loss is 3.7x larger.
+- *The gap is gone by construction*: with no other activity the reco vertex sits
+  on the conversion point (median showerDistToVtx 0.6-0.9 cm vs 17 cm in the
+  overlay). In the overlay the electron fraction at gap < 2 cm is 0.12-0.18 vs
+  0.04-0.06 at gap > 5 cm, i.e. the overlay converges to the gun value once the
+  gap information is removed. At fixed gap and E the gun is still somewhat
+  higher (0-1 cm gap, 200-300 MeV: 0.13 gun vs ~0.12 overlay at < 0.5 cm).
+- The mis-tags are confident (median ph/(ph+el) 0.03; only 13% have > 0.3), so
+  no score threshold recovers them. LArPID disagrees with LArFormer in both
+  directions (1,445 of 4,795 LArFormer-electron photons are LArPID-photon, but
+  2,655 of 16,642 LArFormer-photon are LArPID-electron), so an override would
+  not help the beam analysis.
+- Weak secondary dependences: low completeness (comp < 0.2: 0.39), a shower
+  start >= 5 cm from the conversion point (0.37), purity 0.9-0.95 (0.34).
+  No |cos theta_beam| dependence.
+- The electron-tagged showers have recoE/trueE 1.23 (photon-tagged 1.00): the
+  PID-dependent energy calibration inflates them.
+
+Interpretation: the e/gamma network uses (i) the vertex gap and (ii) an energy
+prior learned from beam MC, where multi-hundred-MeV isolated showers are mostly
+nu_e CC electrons. An isolated single photon with the vertex placed at its own
+conversion point loses (i) and, above ~400 MeV, is penalised by (ii). Fixes are
+upstream (retrain the LArFormer particle PID with photon-gun events mixed in /
+energy-balanced e-gamma classes) or a dedicated e/gamma dE/dx discriminant at
+the shower start; a selection-level fix is not available without admitting
+nu_e CC.
+
 ### 3b. Intrinsic-nue signal sample (added 2026-09-10)
 
 | sample | ntuple | events |

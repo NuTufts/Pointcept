@@ -10,6 +10,9 @@ Variables (per signal event; "the photon" = the one detectable photon):
   gCosBeam        cos(theta_beam) from the photon's true initial momentum
   gConvX/Y/Z      the photon's conversion point (trueSimPartEDep*)
   gConvDwall      distance of the conversion point to the TPC box wall
+  gDistFromWall   TRUTH backward wall distance (first deposit traced back along -p;
+                  analogue of the reco cand_dist_from_wall path variable)
+  gDistToWall     TRUTH forward wall distance (first deposit along +p)
   ndTrueE, ndEvis  true / visible energy of every NON-detectable photon
                   (deposited < 20 MeV) in the event -- one entry per photon
   nNonDetG        number of non-detectable photons per event
@@ -53,8 +56,11 @@ def main():
     ap.add_argument("--ke-min", type=float, default=0.0,
                     help="KE threshold [MeV] for the primary p / pi+- / mu counts")
     ap.add_argument("--ke-include-neutrons", action="store_true")
+    ap.add_argument("--no-selected", action="store_true",
+                    help="do not overlay the signal-passing-selection histogram (all-signal plots only; "
+                         "the selected counts still go to truth_medians.txt)")
     args = ap.parse_args()
-    SPS.set_truth_scale(getattr(args, 'truth_scale', 'deposited'))
+    SPS.configure(args)
     os.makedirs(args.plots, exist_ok=True)
 
     a, pot = SPS.load(args.mc_ntuple, True, args.novtx, extra=BR_T)
@@ -96,6 +102,10 @@ def main():
                                              for c in "XYZ"]
     conv = np.stack([V["gConvX"], V["gConvY"], V["gConvZ"]], 1)
     V["gConvDwall"] = np.minimum((conv - SPS.TPC_LO).min(1), (SPS.TPC_HI - conv).min(1))
+    V["gOpenAngleMin"] = T["g_open_min_true"]           # min true opening angle, >= 2 detectable photons
+    V["gOpenAngleMinSameVtx"] = T["g_open_min_samevtx_true"]
+    V["gDistFromWall"] = T["g_dfw_true"]       # truth analogue of reco cand_dist_from_wall
+    V["gDistToWall"] = T["g_dtw_true"]
     V["nNonDetG"] = ak.to_numpy(ak.sum(nd_g, axis=1)).astype(np.float64)
     prim = proc == 0
     keep = prim & (apdg != 22) & (apdg != 2112) & (apdg < 1000000000) & (apdg != 12) & (apdg != 14)
@@ -128,6 +138,10 @@ def main():
         ("gTrueE", "detectable photon true E [MeV]", np.linspace(0, 1000, 41)),
         ("gEvis", "detectable photon deposited E [MeV] (a_gamma x Q)", np.linspace(0, 1500, 51)),
         ("gCosBeam", r"detectable photon true $\cos\theta_{beam}$", np.linspace(-1, 1, 41)),
+        ("gOpenAngleMin", "TRUTH min opening angle between detectable photons [deg] (>= 2 photons)", np.linspace(0, 180, 37)),
+        ("gOpenAngleMinSameVtx", "TRUTH min opening angle, same-start-point pairs [deg]", np.linspace(0, 180, 37)),
+        ("gDistFromWall", "detectable photon TRUTH backward wall distance [cm] (EDep, -p)", np.linspace(0, 600, 61)),
+        ("gDistToWall", "detectable photon TRUTH forward wall distance [cm] (EDep, +p)", np.linspace(0, 600, 61)),
         ("gConvX", "photon conversion x [cm]", np.linspace(-20, 276, 38)),
         ("gConvY", "photon conversion y [cm]", np.linspace(-130, 130, 27)),
         ("gConvZ", "photon conversion z [cm]", np.linspace(-20, 1060, 37)),
@@ -161,9 +175,10 @@ def main():
                 weights=[ww[m & (cc == c)] for c in SIGCATS],
                 stacked=True, color=[SPS.CAT_COLORS[c] for c in SIGCATS],
                 label=[f"{SPS.CATS[c]} ({ww[m & (cc == c)].sum():.1f})" for c in SIGCATS])
-        ax.hist(np.clip(vals[m & ss], lo, hi), bins=bins, weights=ww[m & ss],
-                histtype="step", color="k", lw=1.8,
-                label=f"signal passing full selection ({ww[m & ss].sum():.1f})")
+        if not args.no_selected:
+            ax.hist(np.clip(vals[m & ss], lo, hi), bins=bins, weights=ww[m & ss],
+                    histtype="step", color="k", lw=1.8,
+                    label=f"signal passing full selection ({ww[m & ss].sum():.1f})")
         if key.startswith("maxKE_"):
             sp = key.split("_")[1]
             for thv, lab in CHER[sp]:

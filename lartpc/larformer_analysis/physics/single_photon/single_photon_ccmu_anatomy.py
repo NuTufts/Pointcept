@@ -68,7 +68,7 @@ def main():
     ap.add_argument("--broken-comp", type=float, default=0.6)
     ap.add_argument("--cats", default="7,5", help="truth categories to analyse")
     args = ap.parse_args()
-    SPS.set_truth_scale(args.truth_scale)
+    SPS.configure(args)
     os.makedirs(args.plots, exist_ok=True)
     a, pot = SPS.load(args.mc_ntuple, True, args.novtx, extra=EXTRA)
     w0 = ak.to_numpy(a["xsecWeight"]).astype(np.float64)
