@@ -16,7 +16,8 @@ downstream is python-only (numpy + h5py), with no ROOT / LArSoft / cvmfs at use 
 | python utility: `Geometry`, `DetectorClocks`, `DetectorProperties`, `LArProperties`, `SpaceCharge` (SBND), `PhotonLibrary`, `Conventions` | done; **8/8 checks vs LArSoft reference pass** ([`tests/test_validation.py`](tests/test_validation.py)) |
 | plotly 3D geometry review page ([`viz/make_detinfo_html.py`](viz/make_detinfo_html.py)) | done |
 | SBND in-TPC light: semi-analytic model (the SBND library covers only outside the active volume) | open |
-| ICARUS / MicroBooNE extraction | `icarus` entry is a guess, untested; `uboone` not yet added |
+| MicroBooNE extraction | **uboonecode v10_04_07_13 done** (8/8 checks incl. a python SpaceChargeMicroBooNE port); v08_00_00_13 compared at the configuration level (section below) |
+| ICARUS extraction | `icarus` entry is a guess, untested |
 | fold MicroBooNE SCE / photonlib (lartpc/flashmatch) into this package | later |
 | export back to larlite ROOT trees | later |
 
@@ -75,3 +76,61 @@ python lartpc/detinfo/dump_tables.py FILE.h5 -g geometry/wires --where "(tpc==1)
 python lartpc/detinfo/dump_tables.py FILE.h5 -a clocks
 python lartpc/detinfo/dump_tables.py FILE.h5 -t provenance/services_fhicl
 ```
+
+## MicroBooNE notes (2026-10-15)
+
+```bash
+bash lartpc/detinfo/extract/run_extract.sh uboone v10_04_07_13      # e26:prof, ~7 min
+```
+
+**How the providers are built.** uboonecode has no python service loader (no `UBooNEservices`,
+no `LArSoftUtils` on its `PYTHONPATH`). `extract/larsoft_ref/providers.py` builds the providers with
+cling, from the dumped `microboone_simulation_services` FHiCL:
+- larcorealg's standalone geometry setup
+- `geo::WireReadoutUBooNEGeom`
+- lardataalg's provider test helpers for clocks, detector properties and LAr properties
+
+Gotchas handled in the code:
+- range-v3's `<span>` include must be disabled for cling's C++17 modulemap
+  (`RANGES_WORKAROUND_MSVC_UNUSABLE_SPAN`).
+- Every UPS `*_INC` directory goes on the include path (GSL for the SCE header).
+- `SpaceChargeMicroBooNE` needs `TH1::AddDirectory(false)`: it closes its TH3 file, which deletes
+  the histograms otherwise.
+- The photon library sits under `pmtresponse/`.
+- Its voxel grid follows `UseCryoBoundary`, i.e. the cryostat box, not X/Y/ZMin/Max.
+
+**Validation** (`tests/test_validation.py --detector uboone`, 8/8):
+- TPC lookup, wire coordinate, nearest wire and x→tick are exact
+- the python `SpaceChargeMicroBooNE` port matches the LArSoft provider to ~1e-14: forward map
+  (`SCEoffsets_dataDriven_combined_fwd_Jan18`), backward map (`..._bkwd_Jan18`) and E field
+  (× `EfieldOffsetScale` 3.65)
+- photon-library voxel ids agree
+
+**Frame: the MicroBooNE pipeline (larlite/larcv, `merged_sp`, `lartpc/flashmatch`) is NOT the
+LArSoft world frame.**
+- detinfo (LArSoft world) active volume: x [−1.55, 254.8], y [−115.53, 117.47], z [0.1, 1036.9].
+- Pipeline active volume: x [0, 256.35], y ±116.5, z [0, 1036.8].
+- So pipeline = world − (−1.55, 0.97, 0.10). This is the "TPC origin" that
+  `lartpc/flashmatch/build_photonlib_cache.py` subtracts.
+- Any MicroBooNE use of detinfo positions must apply this offset.
+
+**Photon library.**
+- The official config loads `uboone_photon_library_v6_70kV.root` (`uboone_photon_propagation`).
+- Our flash model uses `ublarcvapp/UBPhotonLib/dat/uboone_photon_library_v6_70kV_EnhancedExtraTPCVis.root`.
+- Same grid and channel order, but the values differ:
+  - outside the active volume, 711,919 of 1,485,000 voxels differ and total visibility is +49% (6,779 vs 4,565)
+  - inside, 50,580 of 765,000 voxels differ and total visibility is +6%
+- The calibrated MicroBooNE gamma belongs to the *enhanced* library.
+
+**v08_00_00_13 (the overlay release) vs v10_04_07_13.** v08 runs larsoft v08 under python 2.7 and the
+older geometry API, so the extractor does not run there. Comparing the resolved services FHiCL and file md5s:
+- **Identical:** GDML (`microboonev12.gdml`), both SCE map files, the photon library file, and the
+  `DetectorClocksService`. `DetectorPropertiesService` has the same E field, temperature, lifetime and ADC scale.
+- **New in v10:**
+  - `IncludeInterPlanePitchInXTickOffsets: true` and `UseIcarusMicrobooneDriftModel: false` (DetectorProperties)
+  - `EfieldOffsetScale: 3.65` (SpaceCharge; v08 code default 1.0, i.e. E-field distortions 3.65× smaller in v08)
+  - the CRT aux-det initializer/sorter (76 modules × 16 strips)
+  - semi-analytic timing tables (PhotonVisibilityService)
+- **Changed:** the LAr optical spectra (e.g. absorption length 2000 → 8000 cm), which affect only optical simulation.
+- So for geometry, wires, SCE positions and the photon library, the v10 extraction applies to the v08 overlay.
+  The v08 x↔tick (inter-plane pitch) and E-field SCE scale would need a check before relying on them.
