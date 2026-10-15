@@ -69,6 +69,9 @@ pre { background:var(--head); padding:8px; overflow:auto; max-height:420px; font
 """
 
 
+
+DISPLAY_NAMES = {"sbnd": "SBND", "uboone": "MicroBooNE", "icarus": "ICARUS"}
+
 def esc(v):
     if isinstance(v, float):
         return f"{v:.6g}"
@@ -267,10 +270,10 @@ def build_page(di, args):
                  f"<pre>{esc(fcl)}</pre></details>")
 
     if wires is None:
-        title = f"{di.detector.upper()} Detector Geometry {di.version}"
+        title = f"{DISPLAY_NAMES.get(di.detector, di.detector.upper())} Detector Geometry"
     else:
         wpl = g.GetPlane(wires[2], wires[1], wires[0])
-        title = f"{di.detector.upper()} TPC {wires[1]} {wpl.ViewName}-Plane Wires"
+        title = f"{DISPLAY_NAMES.get(di.detector, di.detector.upper())} TPC {wires[1]} {wpl.ViewName}-Plane Wires"
     head = (f"<title>{esc(title)}</title>"
             f'<link rel="stylesheet" href="{FONTS}">'
             f"<style>{CSS}</style>")
