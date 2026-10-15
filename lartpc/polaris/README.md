@@ -4,6 +4,16 @@ This document is for a fresh Claude session (or a person) working on Polaris.
 It says what the job is, where everything is, which code to read, and how to
 test and launch. Read it fully before touching the cluster.
 
+
+> **2026-10-15: split workflow (stage B only on Polaris).** New samples are
+> converted at Tufts, only the GPU cascade runs here, and the CPU tail runs
+> back at Tufts: `docs/reference/Polaris_Split_Workflow.md`. Per-sample
+> settings live in `lartpc/polaris/samples/<x>.env` (`POL_SAMPLE_ENV`); the
+> stage-B scripts are `qsub_stageB.sh` / `test_stageB.pbs` / `stageB.pbs`
+> (node-local output packed per shard, PPG processes per GPU, MPS, GPU
+> utilization report). Everything below is the original all-on-Polaris
+> bnb5e19 campaign and still works with the default (bnb5e19) sample values.
+
 ## 1. Goal
 
 Run the LArFormer **keypoint2 cascade GPU inference** over the full MicroBooNE

@@ -8,6 +8,8 @@
 # re-running this script resumes wherever it stopped.
 #
 #   bash run_tier2_tranche.sh <specfile>   # one SPEC per line, '#' comments ok
+# THROTTLE=%N (default %60): concurrent array tasks per batch (tier1 sources
+# need no staging copy, so a whole batch can run at once, e.g. THROTTLE=%119).
 set -u
 K=/cluster/tufts/wongjiradlabnu/twongj01/pointcept_env/kpv2_pointcept
 cd $K
@@ -34,7 +36,7 @@ while read -r SAMPLE LIST OUT_ROOT MODE TRUTH_DIR STAGE MARK FIRST LAST TICK; do
   OUT=$(LIST=$LIST OUT_ROOT=$OUT_ROOT MODE=$MODE TRUTH_DIR=$TRUTH_DIR \
         STAGE=$STAGE MARK=$MARK TICK=$TICK \
         bash lartpc/data_prep/uboone_official/stage_overlay_train_batch.sh \
-             "$SAMPLE" "$FIRST" "$LAST" %60)
+             "$SAMPLE" "$FIRST" "$LAST" "${THROTTLE:-%60}")
   echo "$OUT"
   J=$(echo "$OUT" | grep -oE 'conversion array: [0-9]+' | grep -oE '[0-9]+$')
   [ -n "$J" ] || { echo "ERROR: no job id; skipping batch"; continue; }

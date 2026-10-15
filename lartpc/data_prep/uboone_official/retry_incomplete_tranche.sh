@@ -71,7 +71,10 @@ for round in $(seq 1 "$ROUNDS"); do
   [ ${#TODO[@]} -eq 0 ] && { echo ">>> nothing to retry"; break; }
   [ $DRY -eq 1 ] && { echo "(dry run)"; break; }
   if squeue -u "$USER" -h -o '%j' | grep -q ovl_train_conv; then echo "ERROR: conversion arrays still running; retry later" >&2; exit 2; fi
-  [ -d /cluster/tier2/wongjiradlab ] || { echo "ERROR: tier2 not visible; run on a login node" >&2; exit 2; }
+  # tier2 is login-only, but only lists with tier2 sources need it (tier1 sources are symlinked)
+  if awk '!/^\s*(#|$)/ {print $2}' "$SPEC" | xargs -r grep -lq '^/cluster/tier2/' 2>/dev/null; then
+    [ -d /cluster/tier2/wongjiradlab ] || { echo "ERROR: tier2 not visible; run on a login node" >&2; exit 2; }
+  fi
   printf '%s\n' "${TODO[@]}" | clean
   RETRY=${SPEC}.retry$round; : > "$RETRY"
   while read -r line; do

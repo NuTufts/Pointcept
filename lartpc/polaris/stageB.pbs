@@ -1,0 +1,61 @@
+#!/bin/bash
+# ---------------------------------------------------------------------------
+# PBS job: STAGE B of the split workflow -- keypoint2 cascade GPU pass over a
+# worklist, PPG processes per GPU (4 x PPG shards per node), node-local output
+# packed per shard into squashfs images on Eagle, GPU utilization sampled on
+# every node, scaling report at the end. Submit through qsub_stageB.sh.
+# Required -v: WORKLIST, TAG, OUTDIR, LIST, PPG, MPS, POL_SAMPLE_ENV.
+# ---------------------------------------------------------------------------
+#PBS -N kp2stageB
+#PBS -l select=1:system=polaris
+#PBS -l walltime=00:30:00
+#PBS -l filesystems=home:eagle
+#PBS -l place=scatter
+#PBS -j oe
+set -u
+cd "${PBS_O_WORKDIR:-$(pwd)}"
+: "${WORKLIST:?}" "${TAG:?}" "${OUTDIR:?}" "${LIST:?}" "${PBS_NODEFILE:?stageB.pbs must run under PBS (qsub_stageB.sh)}"
+PPG=${PPG:-1}; MPS=${MPS:-0}
+# CPU threads per process: 32 cores / (4 x PPG) processes, 2..8 (polaris_env
+# forces the OMP/BLAS caps from POL_THREADS; PBS presets OMP_NUM_THREADS=64)
+export POL_THREADS=${POL_THREADS:-$(( 32 / (4 * PPG) ))}
+[ "$POL_THREADS" -gt 8 ] && POL_THREADS=8; [ "$POL_THREADS" -lt 2 ] && POL_THREADS=2
+export POL_MPS=$MPS POL_GPU_MONITOR=1
+# shellcheck disable=SC1091
+source lartpc/polaris/polaris_env.sh
+JID=${PBS_JOBID:-nojob}; JID=${JID%%.*}
+export POL_LOCAL_OUT=${POL_LOCAL_OUT:-$POL_LOCAL_ROOT/$USER/kp2_${TAG}_$JID}
+NN=$(awk '!s[$0]++' "$PBS_NODEFILE" | wc -l)
+echo ">>> job ${PBS_JOBID:-none} tag=$TAG nodes=$NN ppg=$PPG mps=$MPS threads=$POL_THREADS $(date +%FT%T)"
+echo ">>> worklist=$WORKLIST ($(grep -c . "$WORKLIST") shards) images=$OUTDIR list=$LIST local=$POL_LOCAL_OUT"
+pol_check_env || exit 2
+mkdir -p "$POL_LOGDIR/$TAG" "$OUTDIR"
+JOBENV=$POL_LOGDIR/$TAG/job_$JID.env
+HOSTFILE=$POL_LOGDIR/$TAG/nodefile_$JID; cp "$PBS_NODEFILE" "$HOSTFILE"
+{
+  echo "export POL_SAMPLE_ENV='${POL_SAMPLE_ENV:-}' POL_THREADS='$POL_THREADS' POL_MPS='$MPS' POL_GPU_MONITOR=1 POL_PACK_FMT='${POL_PACK_FMT:-tar}' POL_SQFS_VIA='${POL_SQFS_VIA:-auto}' POL_PACK_COMP='${POL_PACK_COMP:-auto}'"
+  echo "export POL_TAG='$TAG' POL_OUTDIR='$OUTDIR' POL_LIST='$LIST' POL_HOSTFILE='$HOSTFILE' POL_LOCAL_OUT='$POL_LOCAL_OUT'"
+  echo "source '$POL_REPO/lartpc/polaris/polaris_env.sh'"
+} > "$JOBENV"
+# shard images: POL_PACK_FMT=tar (default; no site mksquashfs on Polaris) or sqfs
+# (host mksquashfs, else the container-built $POL_ASSETS/bin/mksquashfs; tar fallback otherwise)
+if [ "$POL_PACK_FMT" = sqfs ]; then
+  if mpiexec -n 1 --ppn 1 --hostfile "$HOSTFILE" bash -c 'command -v mksquashfs' >/dev/null 2>&1; then echo ">>> .sqfs images via host mksquashfs"
+  elif [ -x "$POL_ASSETS/bin/mksquashfs" ]; then echo ">>> .sqfs images via container-built $POL_ASSETS/bin/mksquashfs"
+  else echo ">>> WARNING: POL_PACK_FMT=sqfs but no mksquashfs (host or $POL_ASSETS/bin): shards will be packed as .tar"; fi
+else
+  echo ">>> shard images packed as .tar (POL_PACK_FMT=$POL_PACK_FMT)"
+fi
+T0=$(date +%s)
+mpiexec -n "$NN" --ppn 1 --hostfile "$HOSTFILE" --cpu-bind none \
+  bash "$POL_REPO/lartpc/polaris/node_launcher.sh" "$JOBENV" "$WORKLIST" $((4 * PPG)) "$POL_REPO/lartpc/polaris/run_cascade_shard.sh"
+rc=$?
+T1=$(date +%s)
+echo ">>> launcher rc=$rc elapsed=$((T1 - T0))s $(date +%FT%T)"
+python3 lartpc/polaris/check_cascade.py --worklist "$WORKLIST" --outdir "$OUTDIR" --images "$OUTDIR" \
+  --logdir "$POL_LOGDIR/$TAG" --tag "$TAG" --throughput
+python3 lartpc/polaris/summarize_gpu_util.py --logdir "$POL_LOGDIR/$TAG" --tag "$TAG" --worklist "$WORKLIST" \
+  --nodes "$NN" --ppg "$PPG" --mps "$MPS" --elapsed $((T1 - T0)) \
+  --out "$POL_LOGDIR/$TAG/report_${TAG}_$JID.md" --csv "$POL_LOGDIR/$TAG/util_timeseries_${TAG}_$JID.csv"
+echo ">>> images: $(ls "$OUTDIR"/kp2_${TAG}_shard*.sqfs "$OUTDIR"/kp2_${TAG}_shard*.tar 2>/dev/null | wc -l) in $OUTDIR; report $POL_LOGDIR/$TAG/report_${TAG}_$JID.md"
+exit $rc

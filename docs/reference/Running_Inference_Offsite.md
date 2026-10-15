@@ -1,5 +1,7 @@
 # Running keypoint2 cascade inference on another cluster (Polaris)
 
+> Operator runbook for the Tufts -> Polaris -> Tufts split workflow (new samples, 2026-10): `Polaris_Split_Workflow.md`.
+
 What a fresh clone of this repo is missing, and how to point it at the assets.
 
 ## Not in git (transfer these)

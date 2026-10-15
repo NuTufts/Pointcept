@@ -1,0 +1,101 @@
+#!/bin/bash
+# ---------------------------------------------------------------------------
+# Stage-B test job (debug queue, 1 node, <= 1 h). Submit: bash lartpc/polaris/qsub_stageB.sh --test
+#  0. assets, images (+ sha256 of the merged_sp images unless SKIP_CHECKSUM=1), container, GPUs, mksquashfs, MPS binary
+#  1. input list from the mounted images (list_merged_sp.py; count == POL_NEVENTS)
+#  2. 2-event smoke through the node-local pack path; unpack; kp2 attr assertions
+#  3. utilization matrix: MATRIX="1:0 2:1 3:1" (PPG:MPS) x NTHR events per process
+#     -> one summary line per config (events/s, s/event per process, GPU util %)
+#  4. all PASS -> $POL_DATADIR/tests/stageB/.PASS (the production qsub requires it)
+# Optional -v: NTHR=40, MATRIX, SKIP_CHECKSUM=1
+# ---------------------------------------------------------------------------
+#PBS -N kp2testB
+#PBS -l select=1:system=polaris
+#PBS -l walltime=01:00:00
+#PBS -l filesystems=home:eagle
+#PBS -l place=scatter
+#PBS -j oe
+set -u
+cd "${PBS_O_WORKDIR:-$(pwd)}"
+export POL_GPU_MONITOR=1
+# shellcheck disable=SC1091
+source lartpc/polaris/polaris_env.sh
+JID=${PBS_JOBID:-nojob}; JID=${JID%%.*}
+NTHR=${NTHR:-40}; MATRIX=${MATRIX:-"1:0 2:1 3:1"}
+FAILS=0
+step() { echo; echo "=================== $(date +%FT%T) $*"; }
+result() { if [ "$1" -eq 0 ]; then echo ">>> PASS: $2"; else echo ">>> FAIL: $2 (rc=$1)"; FAILS=$((FAILS + 1)); fi; }
+T=$POL_DATADIR/tests/stageB; mkdir -p "$T" "$POL_DATADIR/lists" "$POL_LOGDIR/testB"
+rm -f "$T/.PASS"
+LOCAL_ROOT=$POL_LOCAL_ROOT/$USER/kp2_testB_$JID
+
+step "0. assets, images, container, GPUs, tools"
+pol_check_env; result $? "pol_check_env"
+if [ "${SKIP_CHECKSUM:-0}" != 1 ]; then
+  bash lartpc/data_prep/squashfs/verify_images.sh "$POL_IMGDIR"; result $? "merged_sp images match their manifests (sha256)"
+fi
+nvidia-smi -L
+NG=$(nvidia-smi -L 2>/dev/null | grep -c GPU); [ "$NG" -eq "$POL_NGPU" ]; result $? "$POL_NGPU GPUs visible ($NG)"
+echo ">>> INFO: POL_PACK_FMT=$POL_PACK_FMT; host mksquashfs: $(command -v mksquashfs || echo absent); container-built: $([ -x $POL_ASSETS/bin/mksquashfs ] && echo $POL_ASSETS/bin/mksquashfs || echo 'absent (bash lartpc/polaris/build_squashfs_tools.sh)')"
+command -v nvidia-cuda-mps-control >/dev/null; result $? "nvidia-cuda-mps-control present"
+mkdir -p "$LOCAL_ROOT" && df -h "$LOCAL_ROOT" | tail -1; result $? "node-local scratch $POL_LOCAL_ROOT writable"
+POL_LOCAL_OUT=$LOCAL_ROOT pol_exec --nv "python3 -c 'import torch, pointops; print(torch.__version__, torch.cuda.is_available(), torch.cuda.get_device_name(0))' && ls $POL_MSP_MNT | head -3 && ls $POL_MSP_MNT/\$(ls $POL_MSP_MNT | head -1) | head -2 && test -d $LOCAL_ROOT"
+result $? "container: torch + pointops, GPU, squashfs mounts, local scratch bound"
+
+step "1. input list"
+LIST=$POL_DATADIR/lists/$POL_LIST_NAME
+if [ -s "$LIST" ] && head -1 "$LIST" | grep -q "^$POL_MSP_MNT/"; then
+  echo ">>> exists: $LIST ($(wc -l < "$LIST") lines)"
+else
+  pol_exec "python3 lartpc/data_prep/uboone_official/list_merged_sp.py --dir $POL_MSP_MNT --out $LIST"
+fi
+NL=$(grep -c . "$LIST" 2>/dev/null || echo 0)
+if [ "$POL_NEVENTS" -gt 0 ]; then [ "$NL" -eq "$POL_NEVENTS" ]; result $? "list has $POL_NEVENTS paths ($NL)"; else [ "$NL" -gt 0 ]; result $? "list non-empty ($NL)"; fi
+export POL_LIST=$LIST
+
+step "2. two-event smoke through the node-local pack path"
+rm -rf "$T/smoke"; mkdir -p "$T/smoke"
+JOBENV=$POL_LOGDIR/testB/job_${JID}_smoke.env
+echo "export POL_SAMPLE_ENV='${POL_SAMPLE_ENV:-}' POL_PACK_FMT='${POL_PACK_FMT:-tar}' POL_SQFS_VIA='${POL_SQFS_VIA:-auto}' POL_PACK_COMP='${POL_PACK_COMP:-auto}' POL_TAG=testB_smoke POL_OUTDIR='$T/smoke' POL_LIST='$LIST' POL_LOCAL_OUT='$LOCAL_ROOT/smoke'; source '$POL_REPO/lartpc/polaris/polaris_env.sh'" > "$JOBENV"
+( source "$JOBENV"; mkdir -p "$POL_LOCAL_OUT"; SLOT=0 bash lartpc/polaris/run_cascade_shard.sh 0 0 2 ); result $? "smoke shard rc"
+SLOG=$POL_LOGDIR/testB_smoke/cascade_shard000.log
+grep -q "Injecting LoRA" "$SLOG"; result $? "deghoster LoRA injected"
+grep -q "n_particles=" "$SLOG"; result $? "at least one n_particles line"
+! grep -q Traceback "$SLOG"; result $? "no Traceback in smoke log"
+IMG=$(ls "$T"/smoke/kp2_testB_smoke_shard000.sqfs "$T"/smoke/kp2_testB_smoke_shard000.tar 2>/dev/null | head -1)
+[ -n "$IMG" ] && [ -f "$IMG.manifest" ] && [ -f "$T/smoke/.shards/shard000.done" ]; result $? "shard image + manifest + .done marker"
+rm -rf "$T/smoke_unpacked"; mkdir -p "$T/smoke_unpacked"
+case "$IMG" in *.sqfs) unsquashfs -f -n -d "$T/smoke_unpacked" "$IMG" >/dev/null;; *.tar) tar -xf "$IMG" -C "$T/smoke_unpacked";; esac
+result $? "image unpacks"
+pol_exec "python3 lartpc/polaris/check_kp2_attrs.py --tree $T/smoke_unpacked --sample 5 --expect-gamma-eff $POL_EXPECT_GAMMA_EFF --expect-spec $POL_EXPECT_SPEC --expect-kind $POL_EXPECT_KIND --expect-window $POL_EXPECT_WINDOW"
+result $? "flash attrs (gamma_eff $POL_EXPECT_GAMMA_EFF, $POL_EXPECT_SPEC, $POL_EXPECT_KIND, $POL_EXPECT_WINDOW)"
+
+step "3. utilization matrix: $MATRIX (PPG:MPS), $NTHR events per process"
+SUMMARY=$T/matrix_$JID.txt; : > "$SUMMARY"
+for cfg in $MATRIX; do
+  PPG=${cfg%%:*}; MPS=${cfg##*:}; CT=testB_p${PPG}m${MPS}
+  NP=$((POL_NGPU * PPG)); OUT=$T/$CT; rm -rf "$OUT"; mkdir -p "$OUT"
+  WL=$T/$CT.wl
+  python3 lartpc/polaris/make_worklist.py --mode range --start 100 --n $((NP * NTHR)) --nshards "$NP" --out "$WL"
+  THR=$(( 32 / NP )); [ "$THR" -gt 8 ] && THR=8; [ "$THR" -lt 2 ] && THR=2
+  JOBENV=$POL_LOGDIR/testB/job_${JID}_$CT.env
+  echo "export POL_SAMPLE_ENV='${POL_SAMPLE_ENV:-}' POL_PACK_FMT='${POL_PACK_FMT:-tar}' POL_SQFS_VIA='${POL_SQFS_VIA:-auto}' POL_PACK_COMP='${POL_PACK_COMP:-auto}' POL_TAG=$CT POL_OUTDIR='$OUT' POL_LIST='$LIST' POL_LOCAL_OUT='$LOCAL_ROOT/$CT' POL_MPS=$MPS POL_GPU_MONITOR=1 POL_THREADS=$THR; source '$POL_REPO/lartpc/polaris/polaris_env.sh'" > "$JOBENV"
+  echo ">>> config $CT: $NP processes ($PPG per GPU), MPS=$MPS, threads=$THR, $NTHR events each"
+  T0=$(date +%s)
+  bash lartpc/polaris/node_launcher.sh "$JOBENV" "$WL" "$NP" lartpc/polaris/run_cascade_shard.sh; result $? "$CT shards"
+  T1=$(date +%s)
+  python3 lartpc/polaris/summarize_gpu_util.py --logdir "$POL_LOGDIR/$CT" --tag "$CT" --nodes 1 --ppg "$PPG" --mps "$MPS" \
+    --elapsed $((T1 - T0)) --out "$POL_LOGDIR/$CT/report_$CT.md" --csv "$POL_LOGDIR/$CT/util_timeseries_$CT.csv" --brief | tee -a "$SUMMARY"
+done
+echo; echo ">>> MATRIX SUMMARY (pick the PPG/MPS with the highest ev/s; per-process s/ev shows the slowdown from sharing):"
+grep "^tag=" "$SUMMARY"
+rm -rf "$LOCAL_ROOT"
+
+echo
+if [ $FAILS -eq 0 ]; then
+  date +%FT%T > "$T/.PASS"
+  echo ">>> TEST JOB: ALL PASS -> $T/.PASS written; production may be submitted (qsub_stageB.sh with PPG/MPS from the matrix)"
+else
+  echo ">>> TEST JOB: $FAILS FAILED step(s); fix before production"
+fi
+exit $FAILS

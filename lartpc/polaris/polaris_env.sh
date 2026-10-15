@@ -19,6 +19,29 @@
 # too, but start from a fresh shell if in doubt.
 pol_canon() { readlink -f "$1" 2>/dev/null || echo "$1"; }
 export POL_EAGLE=$(pol_canon "${POL_EAGLE:-/eagle/neutrinoGPU/twongj01}")
+# ---- per-sample overrides (2026-10-15) --------------------------------------
+# POL_SAMPLE_ENV=lartpc/polaris/samples/<x>.env sets the sample's images, datadir,
+# inference flags and expected attrs BEFORE the defaults below (which are the
+# original bnb5e19 values, kept so the bnb5e19 cascade/tail scripts still work).
+export POL_SAMPLE_ENV=${POL_SAMPLE_ENV:-}
+if [ -n "$POL_SAMPLE_ENV" ]; then
+  if [ -r "$POL_SAMPLE_ENV" ]; then
+    # shellcheck disable=SC1090
+    source "$POL_SAMPLE_ENV"
+  else
+    echo "ERROR: POL_SAMPLE_ENV=$POL_SAMPLE_ENV not readable" >&2
+  fi
+fi
+export POL_SAMPLE=${POL_SAMPLE:-bnb5e19}
+export POL_NIMG=${POL_NIMG:-12}                 # expected merged_sp images (0 = any)
+export POL_NEVENTS=${POL_NEVENTS:-176302}       # expected list length (0 = any)
+export POL_LIST_NAME=${POL_LIST_NAME:-merged_sp_bnb5e19_polaris.txt}
+export POL_NEED_TAIL=${POL_NEED_TAIL:-1}        # 0: skip the CPU-tail asset checks
+export POL_NGPU=${POL_NGPU:-4}
+export POL_EXPECT_GAMMA_EFF=${POL_EXPECT_GAMMA_EFF:-2.86073}
+export POL_EXPECT_SPEC=${POL_EXPECT_SPEC:-table}
+export POL_EXPECT_KIND=${POL_EXPECT_KIND:-data}
+export POL_EXPECT_WINDOW=${POL_EXPECT_WINDOW:-2.8,5.0}
 export POL_REPO=$(pol_canon "${POL_REPO:-$POL_EAGLE/larformer_pointcept}")
 export POL_ASSETS=$(pol_canon "${POL_ASSETS:-$POL_EAGLE/polaris_assets}")
 export POL_SIF=$(pol_canon "${POL_SIF:-$POL_ASSETS/pointcept_cuml.sif}")
@@ -57,6 +80,32 @@ export OPENBLAS_NUM_THREADS=$POL_THREADS
 export NUMEXPR_NUM_THREADS=$POL_THREADS
 export VECLIB_MAXIMUM_THREADS=$POL_THREADS
 export PYTHONUNBUFFERED=1
+# ---- stage-B (GPU pass) knobs: node-local output + MPS (2026-10-15) ---------
+# POL_LOCAL_OUT: per-shard outputs go to this NODE-LOCAL dir (Polaris: /local/scratch,
+#   2x1.6 TB NVMe, wiped at job end) and are packed into one squashfs image per
+#   shard in $POL_OUTDIR; empty = write per-event files straight to Eagle (legacy).
+#   POL_LOCAL_ROOT is bound into the container by pol_exec.
+export POL_LOCAL_ROOT=${POL_LOCAL_ROOT:-/local/scratch}
+export POL_LOCAL_OUT=${POL_LOCAL_OUT:-}
+# POL_PACK_FMT: per-shard image format, tar (default; plain uncompressed tar,
+#   Polaris has no site mksquashfs -- checked 2026-10-15) or sqfs. For sqfs
+#   run_cascade_shard.sh uses a host mksquashfs if present, else the one built
+#   inside the container by lartpc/polaris/build_squashfs_tools.sh into
+#   $POL_ASSETS/bin (run through pol_exec), else falls back to tar.
+#   POL_SQFS_VIA=auto|host|container forces the route; POL_PACK_COMP=auto|lz4|gzip|xz
+#   (auto = lz4 if the tool has it, else gzip level 1). Both formats carry a
+#   .manifest (sha256, counts); unpack_kp2_images.sh / mount_args.sh handle both.
+export POL_PACK_FMT=${POL_PACK_FMT:-tar}
+export POL_SQFS_VIA=${POL_SQFS_VIA:-auto}
+export POL_PACK_COMP=${POL_PACK_COMP:-auto}
+# POL_MPS=1: node_launcher.sh starts the CUDA MPS control daemon on each node
+#   (lartpc/polaris/mps_enable.sh) and the shards share GPUs through it; the
+#   pipe dir must be node-local and the same for daemon and clients.
+export POL_MPS=${POL_MPS:-0}
+export CUDA_MPS_PIPE_DIRECTORY=${CUDA_MPS_PIPE_DIRECTORY:-/tmp/nvidia-mps}
+export CUDA_MPS_LOG_DIRECTORY=${CUDA_MPS_LOG_DIRECTORY:-/tmp/nvidia-log}
+export POL_GPU_MONITOR=${POL_GPU_MONITOR:-0}    # 1: nvidia-smi sampler per node -> $POL_LOGDIR/$POL_TAG/gpumon_<host>.csv
+export POL_GPU_MONITOR_INTERVAL=${POL_GPU_MONITOR_INTERVAL:-5}
 unset PYTHONSTARTUP   # ALCF sets /etc/pythonstart, absent in the container (harmless warning)
 
 # ---- model assets: set the two roots BEFORE sourcing the shipped env.sh ----
@@ -78,7 +127,9 @@ export POL_ATTACH_LLR_THR=${POL_ATTACH_LLR_THR:-4.0}
 # bnb5e19 = beam-on run-1 DATA: calibrated table gamma (cell (data,1) = 0.5449
 # -> gamma_eff 2.861), beam-on window 2.8-5.0 us, no truth, deterministic.
 # Do NOT add --no-flash. Same flags as the Tufts production.
-export POL_INF_FLAGS=${POL_INF_FLAGS:-"--deterministic --save-score-maps --device cuda --output-tree --no-gt --gamma-run-scale table --sample-kind data --flash-window 2.8,5.0 --photonlib $POL_PHOTONLIB"}
+# A sample env sets POL_INF_FLAGS_SAMPLE (without --photonlib); the bnb5e19 flags are the default.
+export POL_INF_FLAGS_SAMPLE=${POL_INF_FLAGS_SAMPLE:-"--deterministic --save-score-maps --device cuda --output-tree --no-gt --gamma-run-scale table --sample-kind data --flash-window 2.8,5.0"}
+export POL_INF_FLAGS=${POL_INF_FLAGS:-"$POL_INF_FLAGS_SAMPLE --photonlib $POL_PHOTONLIB"}
 # LArPID: a tag without 'run3' selects LArPID_default_network_weights.pt (run-1 data)
 export POL_LARPID_TAG=${POL_LARPID_TAG:-bnb5e19_polaris}
 
@@ -143,18 +194,19 @@ pol_eagle_bind() {
 # and the merged_sp images mounted. Host environment (LARFORMER_*, HDF5_*,
 # CUDA_VISIBLE_DEVICES, PRONGCNN_DIR, ...) is inherited by the container.
 pol_exec() {
-  local nv=""
+  local nv="" lb=""
   if [ "${1:-}" = "--nv" ]; then nv="--nv"; shift; fi
   local cmd="$*"
+  [ -n "$POL_LOCAL_OUT" ] && [ -d "$POL_LOCAL_ROOT" ] && lb="--bind $POL_LOCAL_ROOT:$POL_LOCAL_ROOT"
   # shellcheck disable=SC2046
-  apptainer exec $nv $POL_APPTAINER_FLAGS $(pol_eagle_bind) $(pol_mount_args) "$POL_SIF" \
+  apptainer exec $nv $POL_APPTAINER_FLAGS $lb $(pol_eagle_bind) $(pol_mount_args) "$POL_SIF" \
     bash -c "cd '$POL_REPO' && export PYTHONPATH='$POL_REPO' && $cmd"
 }
 
 # pol_check_env: assert every asset this campaign needs exists; print them.
 pol_check_env() {
   local rc=0 f
-  echo ">>> polaris_env: repo=$POL_REPO"
+  echo ">>> polaris_env: sample=$POL_SAMPLE${POL_SAMPLE_ENV:+ ($POL_SAMPLE_ENV)} repo=$POL_REPO"
   echo "    assets=$POL_ASSETS  sif=$POL_SIF"
   echo "    images=$POL_IMGDIR -> $POL_MSP_MNT"
   echo "    datadir=$POL_DATADIR  prongCNN=$PRONGCNN_DIR"
@@ -164,20 +216,34 @@ pol_check_env() {
            "$LARFORMER_BATTERY_SLICER_CKPT" "$LARFORMER_KP_PARTICLE_CKPT" \
            "$LARFORMER_KP_KEYPOINT_CKPT" "$LARFORMER_SONATA_PRETRAIN" \
            "$LARFORMER_KPV2_ROOT/sonata/lora_deghost_v6noghosts_lantern/model/epoch_25.pth" \
-           "$POL_PHOTONLIB" "$LARFORMER_SHOWER_BDT" "$LARFORMER_SHOWER_BDT_NOVTX" \
-           "$POL_ATTACH_LLR" \
-           "$POL_REPO/lartpc/larformer_reco/export/lib_wirecell_fiducial_volume.so" \
-           "$POL_REPO/lartpc/larformer_reco/trajfit/data/range2ke_lar.npz" \
-           "$POL_REPO/lartpc/larformer_reco/trajfit/data/calo_calib.npz" \
-           "$PRONGCNN_DIR/checkpoints/LArPID_default_network_weights.pt" \
-           "$PRONGCNN_DIR/models/models_instanceNorm_reco_2chan_quadTask.py" \
-           "$PRONGCNN_DIR/models/normalization_constants.py"; do
+           "$POL_PHOTONLIB"; do
     if [ -f "$f" ]; then echo "    ok  $f"; else echo "    MISSING $f"; rc=1; fi
   done
-  local nimg
+  if [ "$POL_NEED_TAIL" = 1 ]; then
+    for f in "$LARFORMER_SHOWER_BDT" "$LARFORMER_SHOWER_BDT_NOVTX" "$POL_ATTACH_LLR" \
+             "$POL_REPO/lartpc/larformer_reco/export/lib_wirecell_fiducial_volume.so" \
+             "$POL_REPO/lartpc/larformer_reco/trajfit/data/range2ke_lar.npz" \
+             "$POL_REPO/lartpc/larformer_reco/trajfit/data/calo_calib.npz" \
+             "$PRONGCNN_DIR/checkpoints/LArPID_default_network_weights.pt" \
+             "$PRONGCNN_DIR/models/models_instanceNorm_reco_2chan_quadTask.py" \
+             "$PRONGCNN_DIR/models/normalization_constants.py"; do
+      if [ -f "$f" ]; then echo "    ok  $f"; else echo "    MISSING $f"; rc=1; fi
+    done
+  fi
+  local nimg nman
   nimg=$(ls "$POL_IMGDIR"/*_merged_sp_*.sqfs 2>/dev/null | wc -l)
-  if [ "$nimg" -eq 12 ]; then echo "    ok  12 squashfs images"; else echo "    ERROR: $nimg squashfs images (expect 12) in $POL_IMGDIR"; rc=1; fi
+  nman=$(ls "$POL_IMGDIR"/*_merged_sp_*.sqfs.manifest 2>/dev/null | wc -l)
+  if [ "$nimg" -gt 0 ] && { [ "$POL_NIMG" -eq 0 ] || [ "$nimg" -eq "$POL_NIMG" ]; }; then
+    echo "    ok  $nimg squashfs images ($nman manifests) in $POL_IMGDIR"
+  else
+    echo "    ERROR: $nimg squashfs images (expect $POL_NIMG) in $POL_IMGDIR"; rc=1
+  fi
+  [ "$nman" -eq "$nimg" ] || echo "    WARNING: $nman manifests for $nimg images (verify_images.sh cannot check them all)"
   command -v apptainer >/dev/null 2>&1 && echo "    ok  apptainer $(apptainer --version 2>/dev/null | awk '{print $NF}')" || { echo "    MISSING apptainer"; rc=1; }
+  if [ "$POL_NEED_TAIL" != 1 ]; then
+    [ $rc -eq 0 ] && echo ">>> pol_check_env: PASS (GPU pass only)" || echo ">>> pol_check_env: FAIL"
+    return $rc
+  fi
   # python packages the export stage needs that are NOT in pointcept_cuml.sif:
   # they come from the user's ~/.local (pip --user, bound into the container).
   # Tufts production versions: scikit-learn 1.8.0 (the cew6 BDT pickles),

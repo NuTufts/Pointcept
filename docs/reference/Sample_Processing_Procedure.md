@@ -110,6 +110,10 @@ PDG, `trueNuE` = gun energy and `trueVtx*` = gun start.
 
 ## STEP 3: conversion (tranche spec + tmux sequencer + finisher)
 
+> Samples whose GPU pass runs on Polaris follow `Polaris_Split_Workflow.md`
+> from here on (sbatch sequencer + pack finisher instead of the chain launch).
+
+
 1. **Spec** `lartpc/data_prep/uboone_official/tranche_<x>.spec`: one line per
    batch, `SAMPLE LIST OUT_ROOT MODE TRUTH_DIR STAGE MARK FIRST LAST`
    (`TRUTH_DIR=-` for data). FIRST/LAST are 1-based list line numbers = filenos.
@@ -276,6 +280,7 @@ normalizations: versions doc §3c.
 | run-1 intrinsic nue half | mc overlay / 1 | `tranche_nue_run1_half.spec` | `launch_run1nue_half_chain.sh` | `nue_run1_half` | table (mc,1) / 3.6,5.2 | done |
 | run-1 intrinsic nue TRAIN half | mc overlay / 1 | sidecar-only pass (`run_sidecar_only_tranche.sh`) | `launch_run1nue_trainhalf_chain.sh` | `nue_run1_trainhalf` | table (mc,1) / 3.6,5.2 | done (BDT training only) |
 | bnb5e19 | data beam-on / 1 | (pre-existing merged_sp) | `launch_bnb5e19_table_chain.sh` | `bnb5e19_run1_table` | table (data,1) / 2.8,5.0 | done |
+| mcc9.10 Run4a BNB nu overlay (`..._dlreco_4a` mergeonly, 119 files) | mc overlay / 4 | `tranche_run4ovl_4a.spec` (tier1 symlink staging, **TICK=forward**, DATADIR on wongjiradlabnu) | **split workflow**: `logs/data_prep/run4ovl4a_seq.sbatch` (convert + pack) -> Polaris stage B -> `launch_stageC_from_polaris.sh`; `docs/reference/Polaris_Split_Workflow.md` | `run4ovl_4a` | **0.8325 = (mc,3) proxy** / 3.6,5.2 ; WEIGHTS_PKL none (no run-4 pickle) ; LArPID default | conversion launched 2026-10-15 (103,384 ev) |
 | mcc9.10 isotropic 1γ gun, runs 4/5 | pure MC (CORSIKA) / 4 | `tranche_isogamma_run45.spec` (tier1, symlink staging, **TICK=forward**) | `launch_tranche_chain.sh` via `logs/data_prep/isog_finish.run.sh` | `isogamma_run45` | **0.8325 = (mc,3) proxy** (no (mc,4) cell; no in-time muons to calibrate) / 3.6,5.2 (verified) ; WEIGHTS_PKL none ; LArPID default | DONE 2026-10-09 (247/248 files, 53,938 ev; registered in versions doc §3c) |
 
 Per-sample notes: **isogamma_run45** has 248 files and 54,670 events (3-829

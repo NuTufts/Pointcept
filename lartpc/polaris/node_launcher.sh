@@ -15,7 +15,12 @@
 #   $PBS_NODEFILE (fallback: $PMI_RANK, then 0); it takes worklist line i when
 #   i % NNODES == rank, so a worklist longer than NNODES*ppn is queued.
 # * Up to <ppn> tasks run concurrently; each gets SLOT=0..ppn-1 in its
-#   environment (the GPU task maps SLOT -> CUDA_VISIBLE_DEVICES).
+#   environment (the GPU task maps SLOT -> CUDA_VISIBLE_DEVICES = SLOT % 4, so
+#   ppn = 4 x processes-per-GPU for the GPU pass).
+# * Node hooks (2026-10-15, stage B): POL_GPU_MONITOR=1 runs gpu_monitor.sh for
+#   the node's lifetime (csv in $POL_LOGDIR/$POL_TAG); POL_MPS=1 starts/stops
+#   the CUDA MPS daemon; POL_LOCAL_OUT is created (node-local scratch) and
+#   removed at the end.
 # * A task is `<task script> [task args...] <fields of the worklist line>`.
 # * Exit status is non-zero if any task failed; per-task results are printed.
 # ---------------------------------------------------------------------------
@@ -52,13 +57,36 @@ elif [ -n "${PMI_SIZE:-}" ] && [ "${PMI_SIZE}" -gt 1 ]; then
 fi
 [ "$NN" -ge 1 ] || NN=1
 
+# ---- node hooks ---------------------------------------------------------------
+PL=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+MON=""
+if [ "${POL_GPU_MONITOR:-0}" = 1 ] && [ -n "${POL_LOGDIR:-}" ] && [ -n "${POL_TAG:-}" ]; then
+  mkdir -p "$POL_LOGDIR/$POL_TAG"
+  bash "$PL/gpu_monitor.sh" "$POL_LOGDIR/$POL_TAG/gpumon_$(hostname -s).csv" "${POL_GPU_MONITOR_INTERVAL:-5}" &
+  MON=$!
+fi
+if [ "${POL_MPS:-0}" = 1 ]; then
+  bash "$PL/mps_enable.sh" || echo "WARNING: MPS could not be enabled on $(hostname); shards run without it"
+fi
+if [ -n "${POL_LOCAL_OUT:-}" ]; then
+  mkdir -p "$POL_LOCAL_OUT" || { echo "ERROR: cannot create node-local output dir $POL_LOCAL_OUT on $(hostname)" >&2; exit 2; }
+  echo ">>> node $(hostname): local output $POL_LOCAL_OUT ($(df -h --output=avail "$POL_LOCAL_OUT" | tail -1 | tr -d ' ') free)"
+fi
+node_cleanup() {
+  [ -n "$MON" ] && kill "$MON" 2>/dev/null
+  [ "${POL_MPS:-0}" = 1 ] && bash "$PL/mps_disable.sh"
+  # node-local scratch only (never a shared path)
+  case "${POL_LOCAL_OUT:-}" in /local/scratch/*|/tmp/*) rm -rf "$POL_LOCAL_OUT" ;; esac
+}
+trap node_cleanup EXIT
+
 # ---- my share of the worklist ---------------------------------------------
 mapfile -t LINES < <(grep -v '^[[:space:]]*#' "$WL" | grep -v '^[[:space:]]*$')
 MY=()
 for i in "${!LINES[@]}"; do
   [ $((i % NN)) -eq "$RANK" ] && MY+=("${LINES[$i]}")
 done
-echo ">>> node $(hostname) rank $RANK/$NN: ${#MY[@]} of ${#LINES[@]} tasks, ppn=$PPN, task=$TASK $*"
+echo ">>> node $(hostname) rank $RANK/$NN: ${#MY[@]} of ${#LINES[@]} tasks, ppn=$PPN, task=$TASK $* mps=${POL_MPS:-0} $(date +%FT%T)"
 [ ${#MY[@]} -gt 0 ] || exit 0
 
 # ---- slot pool --------------------------------------------------------------
@@ -95,5 +123,5 @@ for line in "${MY[@]}"; do
   SLOT_PID[$s]=$!; SLOT_DESC[$s]="$line"
 done
 while busy; do reap; done
-echo ">>> NODE $(hostname) rank $RANK: ok=$ok failed=$fail"
+echo ">>> NODE $(hostname) rank $RANK: ok=$ok failed=$fail $(date +%FT%T)"
 [ $fail -eq 0 ]

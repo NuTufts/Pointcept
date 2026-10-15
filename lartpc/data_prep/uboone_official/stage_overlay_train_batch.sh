@@ -25,8 +25,10 @@ TICK=${TICK:-backward}         # backward (-tb, mcc9 v28/v29e) | forward (mcc9.1
 mkdir -p "$STAGE" "$MARK"
 # disk guard: never start a batch that could fill the volume (MIN_FREE_GB: the
 # retry tool lowers it, a retry is a handful of files)
-AVAIL_GB=$(df -BG --output=avail /cluster/tufts/wongjiradlab | tail -1 | tr -dc '0-9')
-[ "${AVAIL_GB:-0}" -lt "${MIN_FREE_GB:-500}" ] && { echo "ERROR: only ${AVAIL_GB}G free on wongjiradlab (< ${MIN_FREE_GB:-500}G); aborting"; exit 1; }
+# (the volume that holds OUT_ROOT: samples may live on wongjiradlabnu, 2026-10-15)
+mkdir -p "$OUT_ROOT"
+AVAIL_GB=$(df -BG --output=avail "$OUT_ROOT" | tail -1 | tr -dc '0-9')
+[ "${AVAIL_GB:-0}" -lt "${MIN_FREE_GB:-500}" ] && { echo "ERROR: only ${AVAIL_GB}G free on $(df --output=target "$OUT_ROOT" | tail -1) (< ${MIN_FREE_GB:-500}G); aborting"; exit 1; }
 echo "list=$LIST mode=$MODE tick=$TICK out=$OUT_ROOT free=${AVAIL_GB}G"
 n=0; skip=0
 for i in $(seq $FIRST $LAST); do

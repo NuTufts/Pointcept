@@ -2,7 +2,7 @@
 """Verify a cascade GPU pass (stdlib only; runs on the Polaris host).
 
   check_cascade.py --worklist <wl> --outdir <keypoint2 tree> --logdir <dir> --tag <tag>
-                   [--throughput] [--no-count]
+                   [--throughput] [--no-count] [--images <dir>]
 
 Per shard of the worklist ("shard start n" lines): done marker, log ends with
 DONE, Traceback count, "SKIP unreadable" count, last processed event index,
@@ -14,6 +14,11 @@ Unfinished shards are written to <worklist>.resume as "shard <last+1> <remaining
 qsub_cascade.sh line to relaunch them is printed. Exit 0 only when every shard
 is done. --throughput prints s/event per shard from the timestamped log lines
 (first event line -> DONE), i.e. excluding model build time.
+--images <dir> (stage-B node-local mode): a shard is done only if its image
+<dir>/kp2_<tag>_shardNNN.{sqfs,tar} + .manifest exist as well; since the
+per-event files of an unfinished shard were on node-local scratch, an
+unfinished shard is resumed WHOLE (not from its last logged event). No tree
+count in this mode.
 """
 import argparse
 import datetime as dt
@@ -98,7 +103,10 @@ def main():
     ap.add_argument("--tag", required=True)
     ap.add_argument("--throughput", action="store_true")
     ap.add_argument("--no-count", action="store_true")
+    ap.add_argument("--images", default=None, help="stage-B image dir (per-shard kp2_<tag>_shardNNN.tar or .sqfs + .manifest)")
     args = ap.parse_args()
+    if args.images:
+        args.no_count = True
 
     wl = read_worklist(args.worklist)
     markdir = os.path.join(args.outdir, ".shards")
@@ -118,8 +126,19 @@ def main():
             secs = (parse_stamp(st["t_done"]) - parse_stamp(st["t_first"])).total_seconds()
             r = secs / max(1, st["n_events_seen"] - 1)
             rates.append(r); rate = f"{r:6.2f}"
-        if marker and st["done"]:
+        img_ok = True
+        if args.images:
+            base = os.path.join(args.images, f"kp2_{args.tag}_shard{shard:03d}")
+            img_ok = (os.path.exists(base + ".sqfs") or os.path.exists(base + ".tar")) and \
+                     (os.path.exists(base + ".sqfs.manifest") or os.path.exists(base + ".tar.manifest"))
+        if marker and st["done"] and img_ok:
             status = "ok"
+        elif args.images:
+            status = ("INCOMPLETE" if st["exists"] else "NOT STARTED") + \
+                     ("" if img_ok else " (no image)") + " -> resume whole shard"
+            unfinished.append((shard, start, n))
+            if st["failed"]:
+                status += " [FAILED]"
         elif not st["exists"]:
             status = "NOT STARTED"; unfinished.append((shard, start, n))
         else:
@@ -155,8 +174,12 @@ def main():
         nres = sum(1 for _s, _st, n in unfinished if n > 0)
         print(f">>> {len(unfinished)} shard(s) unfinished; {nres} resume ranges -> {resume}")
         print(f"    relaunch (after the job is gone from qstat):")
-        print(f"    MODE=debug NODES=1 TAG={args.tag} OUTDIR={args.outdir} WORKLIST={resume} "
-              f"bash lartpc/polaris/qsub_cascade.sh   # <= 8 ranges; MODE=preempt NODES=k for more")
+        if args.images:
+            print(f"    MODE=debug NODES=1 TAG={args.tag} OUTDIR={args.outdir} WORKLIST={resume} "
+                  f"bash lartpc/polaris/qsub_stageB.sh   # <= 4 x PPG ranges per node; MODE=preempt NODES=k for more")
+        else:
+            print(f"    MODE=debug NODES=1 TAG={args.tag} OUTDIR={args.outdir} WORKLIST={resume} "
+                  f"bash lartpc/polaris/qsub_cascade.sh   # <= 8 ranges; MODE=preempt NODES=k for more")
         sys.exit(1)
     print(">>> check_cascade: ALL SHARDS DONE")
 
