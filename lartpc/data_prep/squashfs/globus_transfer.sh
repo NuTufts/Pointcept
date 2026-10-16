@@ -12,7 +12,8 @@
 # for the dlmerged copy). Paths: Tufts collections expose the /cluster/... path
 # as is; Eagle is /eagle/<project>/... (see docs.alcf.anl.gov data-transfer).
 #
-# Setup once (Tufts login node, python >= 3.9):  pip install --user globus-cli
+# Setup once, on any Tufts node (shared home; login nodes lack a `pip` wrapper):
+#   python3 -m pip install --user globus-cli   -> ~/.local/bin/globus (add to PATH)
 #   globus login            (browser flow)      globus whoami
 # Both collections must be activated/consented in the browser the first time
 # (ALCF needs the OTP from the CryptoCARD/MobilePASS token).

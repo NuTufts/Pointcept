@@ -65,7 +65,8 @@ is too -- use `totPOT`).
        lartpc/data_prep/squashfs/pack_merged_sp_squashfs.sh
    bash lartpc/data_prep/squashfs/verify_images.sh $D/squashfs --quick
    ```
-4. Transfer (Globus CLI; once: `pip install --user globus-cli; globus login`;
+4. Transfer (Globus CLI; once: `python3 -m pip install --user globus-cli; globus login`
+   -- installed 2026-10-16 into `~/.local/bin`, login nodes have no `pip` wrapper;
    copy `lartpc/data_prep/squashfs/globus_endpoints.env.example` to
    `globus_endpoints.env` with the Tufts and `alcf#dtn_eagle` UUIDs from
    `globus endpoint search ...`):
