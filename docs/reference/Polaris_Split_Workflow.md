@@ -75,7 +75,9 @@ is too -- use `totPOT`).
    rm $D/squashfs/run4ovl_4a_merged_sp_g0[0-5].sqfs      # only after the far-side verify; manifests/.ok stay
    ```
    Set wide striping on the Eagle destination before the first transfer
-   (`lfs setstripe -c 8 <dir>`, squashfs README). The transfer is
+   (squashfs README): on a Polaris login node, create the directory, then
+   `lfs setstripe -c 8 /eagle/neutrinoGPU/twongj01/data/uboone/run4ovl_4a/squashfs`
+   (any cwd; files Globus creates inside inherit it; `lfs getstripe -d <dir>` shows it). The transfer is
    `--sync-level checksum --verify-checksum`, so re-running it resumes.
    Keep the dlmerged copies at Tufts until this workflow has been exercised
    end to end (user decision 2026-10-15); long term they live on Polaris.
@@ -140,7 +142,7 @@ cd /eagle/neutrinoGPU/twongj01/larformer_pointcept && git pull
 export POL_SAMPLE_ENV=lartpc/polaris/samples/run4ovl_4a.env
 source lartpc/polaris/polaris_env.sh && pol_check_env          # 12 images, assets, apptainer -> PASS
 sbank-list-allocations -r polaris -p neutrinoGPU -f "+subname users_list"   # DetsimGPU / debug still valid?
-lfs setstripe -c 8 $POL_DATADIR/kp2_images 2>/dev/null; mkdir -p $POL_DATADIR/kp2_images
+mkdir -p $POL_DATADIR/kp2_images && lfs setstripe -c 8 $POL_DATADIR/kp2_images   # dir must exist first; new files inherit the stripe
 
 # B1 test (debug queue, 1 node, <= 1 h; log $POL_DATADIR/logs/testB/<jobid>...OU)
 bash lartpc/polaris/qsub_stageB.sh --test                        # NTHR=40 MATRIX="1:0 2:1 3:1" by default
