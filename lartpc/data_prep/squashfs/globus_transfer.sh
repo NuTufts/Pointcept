@@ -47,12 +47,18 @@ SRC=${SRC%/}/; DST=${DST%/}/
 LABEL="larformer $MODE $(basename "${SRC%/}") $(date +%Y%m%d-%H%M)"
 globus whoami >/dev/null 2>&1 || { echo "ERROR: not logged in: globus login" >&2; exit 2; }
 echo ">>> $MODE: $SRC_EP:$SRC -> $DST_EP:$DST  (label: $LABEL)"
+# both collections need a one-time per-login data_access consent; globus prints the exact
+# `globus session consent '...'` command to run (browser flow) -- surface it instead of failing silently
+for ep in "$SRC_EP:$SRC" "$DST_EP:$(dirname "${DST%/}")/"; do
+  if ! out=$(globus ls "$ep" 2>&1); then echo "ERROR: cannot list $ep:" >&2; echo "$out" >&2; exit 3; fi
+done
 echo ">>> source listing (first 20):"; globus ls "$SRC_EP:$SRC" | head -20
 CMD=(globus transfer "$SRC_EP:$SRC" "$DST_EP:$DST" --recursive --sync-level checksum --verify-checksum
      --preserve-mtime --label "$LABEL" --notify off --jmespath task_id --format unix)
 echo ">>> ${CMD[*]}"
 [ $DRY -eq 1 ] && { echo "(dry run)"; exit 0; }
-TASK=$("${CMD[@]}")
+TASK=$("${CMD[@]}") || { echo "ERROR: globus transfer was NOT submitted (rc=$?); see the message above" >&2; exit 4; }
+[ -n "$TASK" ] || { echo "ERROR: globus returned no task id; nothing submitted" >&2; exit 4; }
 echo ">>> task $TASK submitted   (globus task show $TASK ; globus task event-list $TASK)"
 echo "$(date -Is) $MODE $SRC -> $DST task=$TASK" >> "${GLOBUS_LOG:-$HOME/.larformer_globus_tasks.log}"
 if [ $WAIT -eq 1 ]; then
