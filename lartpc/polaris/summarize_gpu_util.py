@@ -77,7 +77,7 @@ def read_gpumon(path):
 
 
 def mean(xs):
-    return statistics.fmean(xs) if xs else float("nan")
+    return (sum(xs) / len(xs)) if xs else float("nan")   # not statistics.fmean: Polaris host python3 < 3.8
 
 
 def main():
