@@ -32,18 +32,25 @@ if [ "$MODE" = status ]; then globus task show "${1:?task id}"; exit 0; fi
 # shellcheck disable=SC1090
 source "$ENVF"
 : "${GLOBUS_TUFTS_EP:?}" "${GLOBUS_EAGLE_EP:?}"
+# the alcf#dtn_eagle collection is rooted at /eagle: filesystem path /eagle/<project>/... is
+# Globus path /<project>/... (verified 2026-10-16). Accept either spelling for the Eagle side.
+eagle_path() { local p=$1; [ "${p#/eagle/}" != "$p" ] && p=/${p#/eagle/}; echo "$p"; }
 case "$MODE" in
   to-polaris) SRC_EP=$GLOBUS_TUFTS_EP; DST_EP=$GLOBUS_EAGLE_EP ;;
   to-tufts)   SRC_EP=$GLOBUS_EAGLE_EP; DST_EP=$GLOBUS_TUFTS_EP ;;
   ls)         DIR_MODE=${1:?to-polaris|to-tufts}; D=${2:?dir}
               case "$DIR_MODE" in to-polaris) EP=$GLOBUS_EAGLE_EP;; to-tufts) EP=$GLOBUS_TUFTS_EP;; *) exit 2;; esac
-              globus ls -l "$EP:$D"; exit 0 ;;
+              [ "$DIR_MODE" = to-polaris ] && D=$(eagle_path "$D"); globus ls -l "$EP:$D"; exit 0 ;;
   *) echo "MODE must be to-polaris|to-tufts|status|ls" >&2; exit 2 ;;
 esac
 SRC=${1:?source dir}; DST=${2:?destination dir}; shift 2
 WAIT=0; DRY=0
 for a in "$@"; do case "$a" in --wait) WAIT=1;; --dry-run) DRY=1;; *) echo "unknown option $a" >&2; exit 2;; esac; done
 SRC=${SRC%/}/; DST=${DST%/}/
+case "$MODE" in
+  to-polaris) DST=$(eagle_path "$DST") ;;
+  to-tufts)   SRC=$(eagle_path "$SRC") ;;
+esac
 LABEL="larformer $MODE $(basename "${SRC%/}") $(date +%Y%m%d-%H%M)"
 globus whoami >/dev/null 2>&1 || { echo "ERROR: not logged in: globus login" >&2; exit 2; }
 echo ">>> $MODE: $SRC_EP:$SRC -> $DST_EP:$DST  (label: $LABEL)"
