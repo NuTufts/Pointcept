@@ -7,6 +7,9 @@
 #   DRYRUN=1 ...                         # print the qsub line only
 #
 # Defaults: MODE=prod NODES=16 PPG=1 MPS=0 WALLTIME=03:00:00 TAG=prod
+#   THREADS:  CPU threads per process; default computed in stageB.pbs as 32/(4*PPG), clamped 2..8
+#             (the same rule the test matrix uses). NOT POL_THREADS: polaris_env.sh, sourced here and
+#             in the caller's shell, exports POL_THREADS=2, which used to be forwarded and override the rule.
 #   WORKLIST: built here as NODES x 4 x PPG equal shards over LIST (one uniform
 #             wave, so the utilization measurement is clean) unless given
 #   OUTDIR:   $POL_DATADIR/kp2_images (prod) | $POL_DATADIR/tests/$TAG (other tags)
@@ -57,7 +60,7 @@ else
   fi
   NSH=$(grep -c . "$WORKLIST"); SLOTS=$((NODES * POL_NGPU * PPG))
   echo ">>> $NSH shards on $NODES nodes x $POL_NGPU GPUs x $PPG proc/GPU = $SLOTS slots (waves: $(( (NSH + SLOTS - 1) / SLOTS ))), MPS=$MPS"
-  V="POL_SAMPLE_ENV='$SENV',WORKLIST='$WORKLIST',TAG='$TAG',OUTDIR='$OUTDIR',LIST='$LIST',PPG='$PPG',MPS='$MPS'${POL_THREADS:+,POL_THREADS=$POL_THREADS}${POL_PACK_FMT:+,POL_PACK_FMT=$POL_PACK_FMT}${POL_SQFS_VIA:+,POL_SQFS_VIA=$POL_SQFS_VIA}${POL_PACK_COMP:+,POL_PACK_COMP=$POL_PACK_COMP}"
+  V="POL_SAMPLE_ENV='$SENV',WORKLIST='$WORKLIST',TAG='$TAG',OUTDIR='$OUTDIR',LIST='$LIST',PPG='$PPG',MPS='$MPS'${THREADS:+,POL_THREADS=$THREADS}${POL_PACK_FMT:+,POL_PACK_FMT=$POL_PACK_FMT}${POL_SQFS_VIA:+,POL_SQFS_VIA=$POL_SQFS_VIA}${POL_PACK_COMP:+,POL_PACK_COMP=$POL_PACK_COMP}"
   CMD=(qsub -A "$ACCT" -q "$QUEUE" -l "select=$NODES:system=polaris" -l "walltime=$WALLTIME" -l filesystems=home:eagle -l place=scatter -N "kp2B_${POL_SAMPLE}_$TAG" -o "$POL_LOGDIR/$TAG" -j oe -v "$V" lartpc/polaris/stageB.pbs)
 fi
 echo ">>> ${CMD[*]}"
