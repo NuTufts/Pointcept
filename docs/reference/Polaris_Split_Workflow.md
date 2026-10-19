@@ -150,6 +150,11 @@ bash lartpc/polaris/qsub_stageB.sh --test                        # NTHR=40 MATRI
 #   read the MATRIX SUMMARY lines (tag=testB_p<PPG>m<MPS> ... agg=<ev/s> ... gpu_util_mean=..); .PASS written
 
 # B2 production (prod -> small queue, 16 nodes, 3 h cap; charges DetsimGPU)
+#   2026-10-19: the neutrinoGPU PROJECT balance is negative (-3,061 node-h across sub-allocations, even though
+#   DetsimGPU has +100), so `prod` routes to backfill-small (Priority 1 vs 150; "for active projects with a
+#   negative balance") -- job 7757331 sat 3 days "Not enough free nodes". Until the PI gets the project positive,
+#   use the preemptable queue (Priority 155, <= 10 nodes, not routed; preemption handled by the .resume worklist):
+#   MODE=preempt NODES=10 PPG=2 MPS=1 TAG=prod WALLTIME=02:00:00 bash lartpc/polaris/qsub_stageB.sh
 MODE=prod NODES=16 PPG=2 MPS=1 TAG=prod bash lartpc/polaris/qsub_stageB.sh   # PPG/MPS = best matrix row
 qstat -u $USER;  tail -f $POL_DATADIR/logs/prod/gpumon_*.csv    # live utilization while it runs
 
