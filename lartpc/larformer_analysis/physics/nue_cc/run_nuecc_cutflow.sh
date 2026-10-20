@@ -21,16 +21,39 @@ K=$(cd "$AN/../../../.." && pwd)
 TABLES=${TABLES:-tables_run1}
 TAB=$AN/$TABLES
 VARPLOTS=${VARPLOTS:-1}   # per-step variable plots (~20 s/step); 0 = skip
+BDT=${BDT:-0}                # 1 = use the BDT-scored RESERVED-half tables + add a BDT step
+BDTCUT=${BDTCUT:-0.5}        # nue-CC BDT score threshold (keep ABOVE)
 
 # numpy is only inside the container; use it directly if we're not already in it
 if python3 -c "import numpy" 2>/dev/null; then RUN="python3"
 else RUN="$K/run_in_tufts_pointcept_container.sh python3"; fi
 
-CMN="--nue-npz $TAB/nue.npz --bnb-npz $TAB/bnb.npz \
-     --ext-npz $TAB/ext.npz --data-npz $TAB/data.npz --ext-rescale ${EXTRESCALE:-1.0}"
+# both disjoint EXT halves when the second one has been built: doubles the EXT
+# statistics; the per-event EXT weight halves automatically so the prediction
+# is unchanged, just less noisy. EXT1ONLY=1 forces the single half.
+EXTN=$TAB/ext.npz
+[ -f "$TAB/ext2.npz" ] && [ "${EXT1ONLY:-0}" != "1" ] && EXTN="$TAB/ext.npz,$TAB/ext2.npz"
+# both disjoint BNB-overlay halves when the second one has been built: the
+# plotters merge them by POT (each half is re-weighted by POT_i / POT_total),
+# so the MC prediction is unchanged and its statistical error drops.
+# BNB1ONLY=1 forces the single (TRAINPOOL, exclusion-applied) half.
+BNBN=$TAB/bnb.npz
+[ -f "$TAB/bnb2.npz" ] && [ "${BNB1ONLY:-0}" != "1" ] && BNBN="$TAB/bnb.npz,$TAB/bnb2.npz"
+NUEN=$TAB/nue.npz; DATN=$TAB/data.npz
+if [ "$BDT" = "1" ]; then
+  # BDT mode: the BDT was trained on nue_train + bnb (half 1) + ext (half 1), so
+  # plots may use ONLY the scored RESERVED halves (nue_cc_bdt_apply.py output).
+  # load_tables refuses a training table if one slips in.
+  for f in nue bnb2 ext2 data; do
+    [ -f "$TAB/${f}_bdt.npz" ] || { echo "missing $TAB/${f}_bdt.npz -- run nue_cc_bdt_apply.py first"; exit 1; }
+  done
+  NUEN=$TAB/nue_bdt.npz; BNBN=$TAB/bnb2_bdt.npz; EXTN=$TAB/ext2_bdt.npz; DATN=$TAB/data_bdt.npz
+fi
+CMN="--nue-npz $NUEN --bnb-npz $BNBN \
+     --ext-npz $EXTN --data-npz $DATN --ext-rescale ${EXTRESCALE:-1.0}"
 
 # ---------------- cut values: edit these (or override from the env) --------
-FLASH=${FLASH:-2.7}          # log10(flash chi2) upper bound
+FLASH=${FLASH:-4.0}          # log10(flash chi2) upper bound (default 4 since the BDT work)
 ELCONF=${ELCONF:-8.0}         # LArPID e-confidence       (signal is at HIGH values)
 PRIM=${PRIM:-0.0}            # LArPID primariness        (kills Michel/delta e + EXT)
 EL=${EL:--0.10}               # LArPID electron score log p_e (keep ABOVE; signal just below 0)
@@ -41,6 +64,7 @@ NPHOT=${NPHOT:-0}            # max # BDT-passing photons at the vertex (pi0 veto
 EXTRESCALE=${EXTRESCALE:-1.0} # multiply the EXT weight (e.g. 1.3); 1.0 = spill-based
 # one folder per combination of cut values, so trials never overwrite each other
 TAGX=""; [ "$EXTRESCALE" != "1.0" ] && [ "$EXTRESCALE" != "1" ] && TAGX="_ext${EXTRESCALE}"
+[ "$BDT" = "1" ] && TAGX="${TAGX}_bdt${BDTCUT}"
 OUT=${OUT:-$AN/cutflow${TABLES#tables}/flash${FLASH}_elconf${ELCONF}_prim${PRIM}_el${EL}_mu${MU}_vtxmu${VTXMU}_nphot${NPHOT}${TAGX}}
 # Other flags, all on top of the above (see nue_cc_common.add_cut_args):
 #   --el-cut X  --egamma-cut X  --elconf-lf-cut X  --egamma-lf-cut X  --mu-lf-cut X
@@ -59,7 +83,7 @@ step () {  # step <name> <cut flags...>
   local name=$1; shift
   echo "=================== ${name} ==================="
   $RUN $AN/nue_cc_overlay.py $CMN --plots $OUT/$name "$@" 2>&1 | tee -a $LOG.$name \
-    | grep -E "SELECTION SUMMARY|purity|efficiency|data/pred|TOTAL" || true
+    | grep -E "merged|sample set|SELECTION SUMMARY|purity|efficiency|data/pred|TOTAL" || true
   if [ "$VARPLOTS" = "1" ]; then
     $RUN $AN/nue_cc_scan.py $CMN --plots $OUT/$name --target-eff 0.4 "$@" >/dev/null 2>&1 \
       || echo "  !! variable plots failed for $name"
@@ -68,12 +92,13 @@ step () {  # step <name> <cut flags...>
 }
 
 # ---------------- the cutflow: edit / comment / reorder these ---------------
-#step 0_precut                               --flashchi2-cut -1
+step 0_precut                               --flashchi2-cut -1
 #step 1_vtxmu${VTXMU}                        --vtxmu-cut $VTXMU
 #step 2_prim${PRIM}                          --vtxmu-cut $VTXMU --primariness-cut $PRIM
 #step 3_el${EL}                              --vtxmu-cut $VTXMU --primariness-cut $PRIM --el-cut $EL
 #step 4_mu${MU}                              --vtxmu-cut $VTXMU --primariness-cut $PRIM --el-cut $EL --mu-cut $MU
-step 5_egamma${EG}                              --vtxmu-cut $VTXMU --primariness-cut $PRIM --el-cut $EL --mu-cut $MU --egamma-cut $EG
+#step 5_egamma${EG}                          --vtxmu-cut $VTXMU --primariness-cut $PRIM --el-cut $EL --mu-cut $MU --egamma-cut $EG
+[ "$BDT" = "1" ] && step 9_bdt${BDTCUT}                      --flashchi2-cut $FLASH --bdt-cut $BDTCUT
 # step 1_flash${FLASH}                        --flashchi2-cut $FLASH
 # step 2_elconf${ELCONF}                      --flashchi2-cut $FLASH --elconf-cut $ELCONF
 # step 3_prim${PRIM}                          --flashchi2-cut $FLASH --elconf-cut $ELCONF --primariness-cut $PRIM

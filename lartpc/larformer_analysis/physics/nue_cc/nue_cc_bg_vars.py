@@ -56,8 +56,8 @@ def main():
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
-    nue = dict(np.load(args.nue_npz)); bnb = dict(np.load(args.bnb_npz))
-    ext = dict(np.load(args.ext_npz)); dat = dict(np.load(args.data_npz))
+    nue, _ = C.load_one_table(args.nue_npz); bnb, _ = C.load_one_table(args.bnb_npz)
+    ext, _ = C.load_one_table(args.ext_npz); dat, _ = C.load_one_table(args.data_npz)
     cutv = None if args.flashchi2_cut < 0 else args.flashchi2_cut
 
     def base(tab):

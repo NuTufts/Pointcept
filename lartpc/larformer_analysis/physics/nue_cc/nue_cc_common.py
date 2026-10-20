@@ -55,7 +55,16 @@ SAMPLES_RUN1 = {
             "run-1 BNB-nu overlay TRAINPOOL half; 182,069 evts; POT 2.2903e20 "
             "(2.1292e20 after the segmenter-training exclusion)"),
     "ext": (f"{_L}/run1_C1_extbnb_half/dlgen2_larformer_ntuple_extbnb_run1_half.root",
-            "run-1 C1 EXT-BNB, 25% of the full sample; 104,516 evts"),
+            "run-1 C1 EXT-BNB half 1 (stride-2 filenos 1-6900), 25% of full C1; "
+            "104,516 evts"),
+    "ext2": (f"{_L}/run1_C1_extbnb_half2/dlgen2_larformer_ntuple_extbnb_run1_half2.root",
+             "run-1 C1 EXT-BNB half 2 (stride-2 filenos 6901-13801), another 25%, "
+             "DISJOINT from half 1 (verified: 0 shared run/subrun/event); "
+             "114,638 evts"),
+    "bnb2": (f"{_L}/run1_bnboverlay_half2/dlgen2_larformer_ntuple_bnbovl_run1_half2.root",
+             "run-1 BNB-nu overlay RESERVED half (the other unbiased 50%; never in "
+             "any training, no exclusion); 188,560 evts; POT 2.3630e20. DISJOINT "
+             "from half 1 (verified: 0 shared run/subrun/event)"),
     "data": (f"{_L}/bnb5e19_run1_table/dlgen2_larformer_ntuple_bnb5e19_run1_table.root",
              "bnb5e19 run-1 open data, table-gamma reprocess; 176,302 evts; POT 4.4e19"),
 }
@@ -75,8 +84,20 @@ RUN1_BNB_EXCLUSION = (
 # correct processed EXT spill count is 0.25 x 94,414,115 = 23,603,529.
 RUN1_BEAM_SPILLS = 23_090_946
 RUN1_EXT_FULL_SPILLS = 94_414_115
-RUN1_EXT_FRACTION = 0.25
-RUN1_EXT_SCALE = RUN1_BEAM_SPILLS / (RUN1_EXT_FULL_SPILLS * RUN1_EXT_FRACTION)
+#: each processed EXT half is 25% of the full C1 sample; using both halves
+#: doubles the statistics and HALVES the per-event weight, so the total EXT
+#: prediction is unchanged while its statistical error drops.
+RUN1_EXT_FRACTION_PER_FILE = 0.25
+RUN1_EXT_FRACTION = RUN1_EXT_FRACTION_PER_FILE      # back-compat: one half
+
+
+def run1_ext_scale(n_files=1):
+    """Per-event EXT weight when `n_files` disjoint 25% halves are stacked."""
+    return RUN1_BEAM_SPILLS / (RUN1_EXT_FULL_SPILLS
+                               * RUN1_EXT_FRACTION_PER_FILE * n_files)
+
+
+RUN1_EXT_SCALE = run1_ext_scale(1)
 
 # --------------------------------------------------------------------------
 # EXT normalization
@@ -108,11 +129,13 @@ SAMPLE_SETS = {
     "run3_cew6": dict(samples=SAMPLES, ext_scale_all=EXT_SCALE_ALL, hygiene=True,
                       label="run 3 cew6 (legacy flash gamma)"),
     "run1_tg": dict(samples=SAMPLES_RUN1, ext_scale_all=RUN1_EXT_SCALE,
-                    hygiene=False, label="run 1 table-gamma"),
+                    ext_scale_fn=run1_ext_scale, hygiene=False,
+                    label="run 1 table-gamma"),
 }
 DEFAULT_SAMPLE_SET = "run3_cew6"      # what tables built before tagging were
 
-_ACTIVE = {"set": DEFAULT_SAMPLE_SET, "ext_override": None, "ext_rescale": 1.0}
+_ACTIVE = {"set": DEFAULT_SAMPLE_SET, "ext_override": None, "ext_rescale": 1.0,
+           "n_ext": 1}
 
 
 def set_sample_set(name, ext_scale_override=None, ext_rescale=1.0):
@@ -137,6 +160,8 @@ def active_label():
     lab = SAMPLE_SETS[_ACTIVE["set"]]["label"]
     if _ACTIVE["ext_override"] is not None:
         lab += f" [EXT weight overridden to {_ACTIVE['ext_override']:.4g}]"
+    if _ACTIVE["n_ext"] > 1:
+        lab += f" [{_ACTIVE['n_ext']} EXT halves]"
     if _ACTIVE["ext_rescale"] != 1.0:
         lab += f" [EXT x{_ACTIVE['ext_rescale']:g}]"
     return lab
@@ -154,7 +179,8 @@ def _ext_scale_nominal(shower_bdt_used=False, event_bdt_used=False):
         return _ACTIVE["ext_override"]
     ss = SAMPLE_SETS[_ACTIVE["set"]]
     if not ss["hygiene"]:
-        return ss["ext_scale_all"]
+        fn = ss.get("ext_scale_fn")
+        return fn(_ACTIVE["n_ext"]) if fn else ss["ext_scale_all"]
     if event_bdt_used:
         return EXT_SCALE_ANALYSIS_ODD
     if shower_bdt_used:
@@ -250,9 +276,36 @@ def derive(tab):
         "vtx_score": _col(tab, "vtx_score"),
         "vtx_frac_cosmic": _col(tab, "vtx_frac_cosmic"),
         "reco_ele_E": _col(tab, "reco_ele_E"),
+        # --- geometry / quality (nue-CC BDT inputs) ---
+        "cos_z": _col(tab, "cos_z"), "cos_y": _col(tab, "cos_y"),
+        "dist_vtx": _col(tab, "dist_vtx"), "sdwall": _col(tab, "sdwall"),
+        "hitfrac": _col(tab, "hitfrac"),
+        "lp_comp": _col(tab, "lp_comp"), "lp_purity": _col(tab, "lp_purity"),
+        "n_prim_trk": _count(tab, "n_prim_trk"),
+        "n_showers_vtx": _count(tab, "n_showers_vtx"),
+        "vtx_x": _col(tab, "vtx_x"), "vtx_y": _col(tab, "vtx_y"),
+        "vtx_z": _col(tab, "vtx_z"), "vdwall": _col(tab, "vdwall"),
+        "vtx_containment": _col(tab, "vtx_containment"),
+        "chargefrac": _col(tab, "chargefrac"),
+        "att_score": _col(tab, "att_score"),
+        "att_confident": _col(tab, "att_confident"),
+        # --- the nue-CC BDT score (filled by nue_cc_bdt_apply.py) ---
+        "bdt": _col(tab, "bdt_score"),
         # --- diagnostics (MC only) ---
         "vtx_dist_true": _col(tab, "vtx_dist_true"),
     }
+    for k in ("el_score", "ph_score", "mu_score", "pi_score", "pr_score",
+              "prim_score", "fromneut_score", "fromchg_score",
+              "lf_el_score", "lf_ph_score", "lf_mu_score", "lf_pi_score",
+              "lf_pr_score", "vtx_lf_mu_score", "nu_slice_nparts"):
+        d[k] = _col(tab, k)
+    d["nu_slice_nparts"] = np.where(d["nu_slice_nparts"] < 0, np.nan,
+                                    d["nu_slice_nparts"])
+    # the raw score piles up against 1 for signal (useful thresholds are
+    # 0.99+); the logit spreads that region out for plotting and tuning
+    b = np.clip(d["bdt"], 1e-6, 1 - 1e-6)
+    with np.errstate(invalid="ignore"):
+        d["bdt_logit"] = np.where(np.isfinite(d["bdt"]), np.log(b / (1 - b)), np.nan)
     fc = _col(tab, "flash_chi2")
     with np.errstate(invalid="ignore", divide="ignore"):
         d["logchi2"] = np.where(np.isfinite(fc) & (fc > 0), np.log10(fc), np.nan)
@@ -287,6 +340,12 @@ VARS = [
     ("vtx_frac_cosmic", "vertex fraction of hits on cosmic", "below", None),
     ("nu_slice_logchi2", r"$\log_{10}$(nu-slice flash $\chi^2$)", "below", None),
     ("vtx_dist_true", "reco-true vtx distance [cm] (MC only)", "below", None),
+    ("dist_vtx", "e-candidate start to vertex [cm] (conversion gap)", "below", None),
+    ("sdwall", "e-candidate start dwall [cm]", "above", None),
+    ("cos_y", r"e-candidate $\cos\theta_y$ (downward = -1)", "above", None),
+    ("n_prim_trk", "# primary tracks at the vertex", "max", None),
+    ("bdt", "nue-CC BDT score", "above", None),
+    ("bdt_logit", "nue-CC BDT logit  log(s/(1-s))", "above", None),
 ]
 
 #: variables that only exist for MC (no data/EXT overlay possible)
@@ -316,6 +375,9 @@ CUT_SPECS = {
     "objectness": ("objectness", "above"),
     "vtxscore": ("vtx_score", "above"),
     "vtxfraccosmic": ("vtx_frac_cosmic", "below"),
+    "distvtx": ("dist_vtx", "below"),
+    "bdt": ("bdt", "above"),
+    "bdtlogit": ("bdt_logit", "above"),
 }
 
 #: cuts whose variable comes from a shower-BDT score -> triggers EXT hygiene
@@ -356,6 +418,14 @@ def add_cut_args(ap):
     ap.add_argument("--objectness-cut", type=float, default=None)
     ap.add_argument("--vtxscore-cut", type=float, default=None)
     ap.add_argument("--vtxfraccosmic-cut", type=float, default=None)
+    ap.add_argument("--distvtx-cut", type=float, default=None,
+                    help="keep e-candidate start-to-vertex distance < this [cm]")
+    ap.add_argument("--bdt-cut", type=float, default=None,
+                    help="keep nue-CC BDT score > this (tables must carry "
+                         "bdt_score from nue_cc_bdt_apply.py)")
+    ap.add_argument("--bdtlogit-cut", type=float, default=None,
+                    help="same cut on the logit of the score: logit 5 = 0.9933, "
+                         "6 = 0.9975, 4 = 0.982")
     ap.add_argument("--ext-scale", type=float, default=None,
                     help="OVERRIDE the per-event EXT weight (default: from the "
                          "sample set recorded in the tables)")
@@ -386,6 +456,9 @@ def cuts_from_args(args):
         "objectness": getattr(args, "objectness_cut", None),
         "vtxscore": getattr(args, "vtxscore_cut", None),
         "vtxfraccosmic": getattr(args, "vtxfraccosmic_cut", None),
+        "distvtx": getattr(args, "distvtx_cut", None),
+        "bdt": getattr(args, "bdt_cut", None),
+        "bdtlogit": getattr(args, "bdtlogit_cut", None),
     }
     # flash: -1 is the documented "disable" sentinel
     if raw["flashchi2"] is not None and raw["flashchi2"] < 0:
@@ -575,9 +648,81 @@ def summarize(tabs, cuts, dat=None, pot=DEFAULT_POT, stream=None):
     return res
 
 
+def load_one_table(paths):
+    """Load one sample table; `paths` may be a comma-separated list of
+    DISJOINT tables of the same sample, which are merged.
+
+    * unit-weight tables (EXT/data): rows are concatenated; the caller
+      derives the EXT weight from how many halves were passed.
+    * MC tables: each file's `w` was scaled to the full target POT
+      (w = xsecWeight * POT_target / POT_file), so plain concatenation would
+      double-count. The merge re-weights each file by POT_file / sum(POT) --
+      exactly equivalent to having built one table from the combined sample.
+    Mixing MC with unit-weight tables, or different sample sets, is an error.
+    """
+    parts = [q.strip() for q in str(paths).split(",") if q.strip()]
+    tabs = [dict(np.load(q)) for q in parts]
+    if len(tabs) == 1:
+        return tabs[0], 1
+    kinds = {bool(t.get("is_data", False)) for t in tabs}
+    if len(kinds) != 1:
+        raise ValueError(f"cannot merge MC with data/EXT tables: {parts}")
+    sets = {str(t["sample_set"]) for t in tabs if "sample_set" in t}
+    if len(sets) > 1:
+        raise ValueError(f"tables from different sample sets: {sets}")
+    # drop events that appear in an earlier table (same run/subrun/event):
+    # the run-1 overlay halves share ONE dlmerged file (run 7023 subrun 193,
+    # 49 events) despite the "disjoint by md5 parity" split. Dedupe keeps the
+    # first occurrence. (The duplicated file's POT, ~0.02% of a half, stays in
+    # the second table's total -- the MC is low by that much, negligible.)
+    seen = set()
+    for q, t in zip(parts, tabs):
+        key = list(zip(t["run"].tolist(), t["subrun"].tolist(), t["event"].tolist()))
+        keep = np.fromiter((k not in seen for k in key), bool, len(key))
+        seen.update(key)
+        if not keep.all():
+            print(f">>> dropped {int((~keep).sum())} duplicate event(s) from {q} "
+                  "(already present in an earlier table)")
+            for k in list(t):
+                v = t[k]
+                if v.ndim >= 1 and len(v) == len(keep):
+                    t[k] = v[keep]
+    n = [len(t["sel"]) for t in tabs]
+    is_mc = not kinds.pop()
+    if is_mc:
+        pots = [float(t["pot"]) for t in tabs]
+        if min(pots) <= 0:
+            raise ValueError(f"MC table without a POT record among {parts}")
+        pot_tot = sum(pots)
+        for t, pot_i in zip(tabs, pots):
+            t["w"] = np.asarray(t["w"], float) * (pot_i / pot_tot)
+    out = {}
+    for k in tabs[0]:
+        vals = [t[k] for t in tabs]
+        if vals[0].ndim >= 1 and len(vals[0]) == n[0]:
+            out[k] = np.concatenate(vals)
+        else:
+            out[k] = vals[0]          # scalars: is_data, sample_set, ...
+    if is_mc:
+        out["pot"] = np.array(pot_tot)
+    # keep `row` unique across files so any row-based mask stays well defined
+    if "row" in out:
+        out["row"] = np.concatenate([t["row"] + sum(n[:i])
+                                     for i, t in enumerate(tabs)])
+    what = ("MC tables, POT-merged: " + " + ".join(f"{p:.4e}" for p in pots)
+            + f" = {pot_tot:.4e}") if is_mc else "EXT/data tables"
+    print(f">>> merged {len(parts)} {what}; events "
+          f"{' + '.join(str(x) for x in n)} = {sum(n)}")
+    return out, len(parts)
+
+
 def load_tables(nue_npz, bnb_npz, ext_npz, data_npz=None, ext_scale_override=None,
                 ext_rescale=1.0):
-    """Load the per-sample tables into {"nue","bnb","ext"[,"data"]} and
+    """Any argument may be a comma-separated list of DISJOINT tables of that
+    sample: EXT/data are concatenated (and the EXT weight reduced accordingly),
+    MC halves are merged by POT.
+
+    Load the per-sample tables into {"nue","bnb","ext"[,"data"]} and
     activate the sample set they were built from.
 
     Each table records its `sample_set` (nue_cc_analysis.py --sample-set).
@@ -585,16 +730,79 @@ def load_tables(nue_npz, bnb_npz, ext_npz, data_npz=None, ext_scale_override=Non
     disagreement source the run-1 set exists to remove -- so it is an error.
     Tables that predate the tag are taken to be run3_cew6.
     """
-    tabs = {"nue": dict(np.load(nue_npz)),
-            "bnb": dict(np.load(bnb_npz)),
-            "ext": dict(np.load(ext_npz))}
+    tabs = {}
+    tabs["nue"], _ = load_one_table(nue_npz)
+    tabs["bnb"], _ = load_one_table(bnb_npz)
+    tabs["ext"], n_ext = load_one_table(ext_npz)
     if data_npz is not None:
-        tabs["data"] = dict(np.load(data_npz))
+        tabs["data"], _ = load_one_table(data_npz)
+    import os
+    if os.environ.get("NUECC_ALLOW_TRAIN_TABLES", "0") != "1":
+        for k, v in tabs.items():
+            if "bdt_trained_on" in v and bool(v["bdt_trained_on"]):
+                raise ValueError(
+                    f"the {k} table was a TRAINING input of the BDT "
+                    f"({v.get('bdt_model', '?')}) -- it must not appear in a "
+                    "plot. Use the RESERVED-half tables (nue/bnb2/ext2), or set "
+                    "NUECC_ALLOW_TRAIN_TABLES=1 for a deliberate training-sample "
+                    "diagnostic.")
     sets = {k: (str(v["sample_set"]) if "sample_set" in v else DEFAULT_SAMPLE_SET)
             for k, v in tabs.items()}
     if len(set(sets.values())) != 1:
         raise ValueError(f"tables come from different sample sets: {sets}")
-    set_sample_set(next(iter(sets.values())), ext_scale_override, ext_rescale)
+    name = next(iter(sets.values()))
+    if n_ext > 1 and SAMPLE_SETS[name]["hygiene"]:
+        raise ValueError(
+            f"sample set {name!r} uses EXT row hygiene (rows < "
+            f"{EXT_TRAIN_ROW_MAX} are a BDT training half), which is not "
+            "defined across concatenated EXT files -- pass a single EXT table.")
+    set_sample_set(name, ext_scale_override, ext_rescale)
+    _ACTIVE["n_ext"] = n_ext
     print(f">>> sample set: {active_label()}  |  EXT per-event weight "
           f"{ext_scale():.4f}")
     return tabs
+
+
+# --------------------------------------------------------------------------
+# nue-CC BDT
+# --------------------------------------------------------------------------
+#: Canonical input set. Flash-blind (no chi2) and energy-blind (no reco_ele_E,
+#: charge, nhits) by construction. Keys are `derive()` keys.
+BDT_FEATS = [
+    # LArPID (log-softmax) raw + derived
+    "el_score", "ph_score", "mu_score", "pi_score", "pr_score",
+    "prim_score", "fromneut_score", "fromchg_score",
+    "elconf", "egamma", "primariness",
+    # LArFormer (log prob) raw + derived
+    "lf_el_score", "lf_ph_score", "lf_mu_score", "lf_pi_score", "lf_pr_score",
+    "elconf_lf", "egamma_lf",
+    # vertex / interaction context
+    "vtx_mu", "vtx_lf_mu_score", "n_photons", "n_good_photons",
+    "n_novtx_photons", "vtx_score", "vtx_frac_cosmic", "nu_slice_nparts",
+    "n_prim_trk", "n_showers_vtx", "vtx_x", "vtx_y", "vtx_z", "vdwall",
+    "vtx_containment",
+    # candidate shower geometry / quality
+    "objectness", "chargefrac", "att_score", "att_confident",
+    "cos_z", "cos_y", "dist_vtx", "sdwall", "hitfrac", "lp_comp", "lp_purity",
+]
+
+#: never allowed as BDT inputs (would break flash-/energy-blindness or leak truth)
+BDT_FORBIDDEN = {"logchi2", "nu_slice_logchi2", "fm_slice_logchi2", "reco_ele_E",
+                 "vtx_dist_true", "bdt", "bdt_logit"}
+
+
+def bdt_feature_matrix(tab, feats):
+    """(n_events, n_feats) float matrix in the order of `feats`, NaN where a
+    value is undefined. The ONE code path used by both the trainer and the
+    scorer, so the two can never drift."""
+    bad = [f for f in feats if f in BDT_FORBIDDEN]
+    if bad:
+        raise ValueError(f"forbidden BDT inputs: {bad}")
+    d = derive(tab)
+    cols = []
+    for f in feats:
+        if f not in d:
+            raise KeyError(f"BDT feature {f!r} is not a derive() key")
+        v = np.asarray(d[f], float)
+        cols.append(np.where(v <= -9.0, np.nan, v))   # -9 sentinels -> NaN
+    return np.column_stack(cols) if cols else np.zeros((len(tab["sel"]), 0))

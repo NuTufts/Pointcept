@@ -178,12 +178,17 @@ def main():
             "vtxX", "vtxY", "vtxZ",
             "vtxDistToTrue",          # reco-vtx to SCE-corrected true-vtx [cm]
             "vtxScore", "vtxFracHitsOnCosmic",   # vertex-quality / cosmic handles
+            "vtxContainment",
             "recoVtxX", "recoVtxY", "recoVtxZ", "recoVtxStream",
             "recoVtxFlashChi2",
             "showerLArFormerPID", "showerRecoE", "showerIsSecondary",
             "showerVtxIdx",
             # cew6 per-shower additions
             "showerCosmicScore", "showerNoVtxScore", "showerObjectness",
+            # shower-BDT-style geometry / quality features (nue-CC BDT inputs)
+            "showerCosTheta", "showerCosThetaY", "showerDistToVtx",
+            "showerStartPosX", "showerStartPosY", "showerStartPosZ",
+            "showerHitFrac", "showerComp", "showerPurity",
             "showerStream", "showerCharge", "showerChargeFrac", "showerNHits",
             "showerAttScore", "showerAttConfident",
             # slice-level flash chi2 (complement to the per-vertex value)
@@ -195,7 +200,7 @@ def main():
             "showerPrimaryScore",
             "showerFromNeutralScore", "showerFromChargedScore",
             # tracks (for the "muon at the e-shower's vertex" background tag)
-            "trackVtxIdx", "trackMuScore",
+            "trackVtxIdx", "trackMuScore", "trackIsSecondary",
             # LArFormer (segmentation model) softmax PROBABILITIES; stored as
             # log(prob) so the same confidence formulas apply as for LArPID.
             "showerLArFormerElScore", "showerLArFormerPhScore",
@@ -265,6 +270,12 @@ def main():
     charge, chargefrac, nhits = nan(), nan(), nan()
     att_score, att_confident = nan(), nan()
     stream = np.full(n, -1, np.int64)
+    # geometry / quality of the candidate (nue-CC BDT inputs; flash- and
+    # energy-blind by construction)
+    cos_z, cos_y, dist_vtx, sdwall = nan(), nan(), nan(), nan()
+    hitfrac, lp_comp, lp_purity = nan(), nan(), nan()
+    n_prim_trk = np.full(n, -1, np.int64)
+    n_showers_vtx = np.full(n, -1, np.int64)
     # counts
     n_photons = np.full(n, -1, np.int64)
     n_good_photons = np.full(n, -1, np.int64)
@@ -305,6 +316,19 @@ def main():
     rvs, rvf = a["recoVtxStream"], a["recoVtxFlashChi2"]
     rvx, rvy, rvz = a["recoVtxX"], a["recoVtxY"], a["recoVtxZ"]
     vtx_score = (np.asarray(a["vtxScore"], float) if has("vtxScore") else nan())
+    vtx_containment = (np.asarray(a["vtxContainment"], float)
+                       if has("vtxContainment") else nan())
+    vtx_x = np.asarray(a["vtxX"], float); vtx_y = np.asarray(a["vtxY"], float)
+    vtx_z = np.asarray(a["vtxZ"], float)
+    _lo = np.array([0.0, -116.5, 0.0]); _hi = np.array([256.35, 116.5, 1036.8])
+
+    def dwall(x, y, z):
+        """distance to the nearest TPC face (export_gen2ntuple._dwall)."""
+        pt = np.array([x, y, z], float)
+        return float(min((pt - _lo).min(), (_hi - pt).min()))
+
+    vdwall = np.array([dwall(x, y, z) if np.isfinite(x) else np.nan
+                       for x, y, z in zip(vtx_x, vtx_y, vtx_z)])
     vtx_frac_cosmic = (np.asarray(a["vtxFracHitsOnCosmic"], float)
                        if has("vtxFracHitsOnCosmic") else nan())
     nu_slice_chi2 = (np.asarray(a["nuSliceFlashChi2"], float)
@@ -358,6 +382,15 @@ def main():
                 arr[i] = float(ak.to_numpy(a[br][i])[k])
         if has("showerStream"):
             stream[i] = int(ak.to_numpy(a["showerStream"][i])[k])
+        for arr, br in ((cos_z, "showerCosTheta"), (cos_y, "showerCosThetaY"),
+                        (dist_vtx, "showerDistToVtx"), (hitfrac, "showerHitFrac"),
+                        (lp_comp, "showerComp"), (lp_purity, "showerPurity")):
+            if has(br):
+                arr[i] = float(ak.to_numpy(a[br][i])[k])
+        if has("showerStartPosX"):
+            sdwall[i] = dwall(float(ak.to_numpy(a["showerStartPosX"][i])[k]),
+                              float(ak.to_numpy(a["showerStartPosY"][i])[k]),
+                              float(ak.to_numpy(a["showerStartPosZ"][i])[k]))
 
         # --- photon counts at the e-vertex + vertex-less photons ------------
         svi = ak.to_numpy(a["showerVtxIdx"][i])
@@ -367,6 +400,13 @@ def main():
         if e_vtx >= 0:
             at_vtx = gam & (svi == e_vtx)
             n_photons[i] = int(np.sum(at_vtx))
+            # interaction context: showers (>20 MeV) and PRIMARY tracks at the
+            # candidate's vertex (cosmic-BDT `nShower` / `nPrimTrk` analogues)
+            n_showers_vtx[i] = int(np.sum((svi == e_vtx) & (E_sh > PHOTON_E_MIN)))
+            if has("trackIsSecondary"):
+                tvi0 = ak.to_numpy(a["trackVtxIdx"][i])
+                tsec = ak.to_numpy(a["trackIsSecondary"][i])
+                n_prim_trk[i] = int(np.sum((tvi0 == e_vtx) & (tsec == 0)))
             if has("showerCosmicScore"):
                 cs = ak.to_numpy(a["showerCosmicScore"][i])
                 n_good_photons[i] = int(np.sum(at_vtx
@@ -504,6 +544,11 @@ def main():
              vtx_score=vtx_score, vtx_frac_cosmic=vtx_frac_cosmic,
              nu_slice_chi2=nu_slice_chi2, fm_slice_chi2=fm_slice_chi2,
              nu_slice_nparts=nu_slice_nparts, fm_slice_nparts=fm_slice_nparts,
+             cos_z=cos_z, cos_y=cos_y, dist_vtx=dist_vtx, sdwall=sdwall,
+             hitfrac=hitfrac, lp_comp=lp_comp, lp_purity=lp_purity,
+             n_prim_trk=n_prim_trk, n_showers_vtx=n_showers_vtx,
+             vtx_x=vtx_x, vtx_y=vtx_y, vtx_z=vtx_z, vdwall=vdwall,
+             vtx_containment=vtx_containment,
              pot=(0.0 if args.data else pot_sum), is_data=args.data,
              sample_set=np.array(args.sample_set), kept=keep)
     print(f"\n>>> wrote {args.out}  (sel={int(sel.sum())}, "

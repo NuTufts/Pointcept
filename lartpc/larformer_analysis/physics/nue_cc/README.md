@@ -25,6 +25,51 @@ so **no analysis-side `--recal-gamma-*` is applied anywhere in this folder**.
 **LANTERN benchmark: ~55% efficiency at ~90% purity**, state of the art in
 MicroBooNE.
 
+## nue-CC BDT (2026-09-23) -- beats the flat cuts
+
+`nue_cc_bdt_train.py` -> `models/nue_cc_bdt_run1_v1.joblib`; `nue_cc_bdt_apply.py`
+writes `bdt_score` into `tables_run1/*_bdt.npz`; `run_nuecc_cutflow.sh BDT=1
+BDTCUT=0.993` runs the cutflow on the scored RESERVED tables. Training report:
+`plots_bdt_train_v1/` (ROC, overtraining, importance, `bdt_train_summary.md`).
+
+**Samples -- training and plotting never share an event.** Training = TRAINPOOL
+side: intrinsic-nue TRAINING half (signal, `is_nuecc_fv`) + BNB-overlay half 1
+(nue CC vetoed) + EXT half 1, after `log10 chi2 < 4`; 236/293/289 events that
+also exist in the plot tables were dropped by (run,subrun,event). Plots = RESERVED
+side only: nue analysis half, overlay half 2, EXT half 2, data (so back to ONE
+half of MC/EXT; EXT weight 0.9783). `load_tables` REFUSES a training table
+(`bdt_trained_on=True`) in any plot run. Even events train, odd events test.
+
+**Inputs (44, flash-blind, energy-blind):** LArPID + LArFormer scores (raw and
+derived), vertex context (vertex muon scores, photon counts, vertex score,
+`n_prim_trk`, `n_showers_vtx`, vertex position/dwall, containment) and candidate
+geometry/quality (`objectness`, `chargefrac`, attachment, `cos_z/cos_y`,
+**`dist_vtx` = conversion gap**, `sdwall`, `hitfrac`, LArPID comp/purity). No
+chi2, no reco energy, no charge/nhits. `HistGradientBoostingClassifier(max_depth 3,
+lr 0.08, early stopping)`, 198 iterations. AUC train 0.995 / **test 0.992**.
+Top importances: `prim_score, elconf, n_prim_trk, vtx_lf_mu_score, objectness,
+dist_vtx`. No train-vs-analysis-half bias: signal efficiency at fixed threshold
+agrees to 0.1-1% (the "optimistic training half" caveat does not bite).
+
+**Performance on the RESERVED set, `log10 chi2 < 4`:**
+
+| selection | purity | eff | data/pred |
+|---|---|---|---|
+| flat `elconf>9 & prim>4` | 0.833 | 0.467 | 0.96 |
+| flat `elconf>8 & prim>4` | 0.753 | 0.524 | 0.81 |
+| **BDT > 0.993 (logit 5)** | **0.893** | **0.520** | 0.84 |
+| BDT > 0.990 | 0.832 | 0.554 | 0.85 |
+| BDT > 0.995 | 0.919 | 0.484 | 0.85 |
+| BDT > 0.997 | 0.937 | 0.423 | 0.94 |
+| LANTERN | 0.90 | 0.55 | |
+
+At the flat cut's purity (0.833) the BDT gives **eff 0.547 vs 0.467 (+17%
+relative)**; at purity 0.90 it gives eff 0.50. The remaining gap to LANTERN is
+the low-energy turn-on, not PID. The raw score piles up against 1 (useful
+thresholds 0.98-0.999), so use `bdt_logit` = log(s/(1-s)) for plots and
+`--bdtlogit-cut` (logit 5 = 0.9933, 6 = 0.9975); `var_bdt_logit.png` /
+`cat_bdt_logit.png` in `plots_run1_bdt_flash4/`.
+
 ## RESULTS on RUN 1, table-gamma (2026-09-18)  -- use these for data vs MC
 
 All four samples are run 1 with the calibrated flash light-yield table
@@ -36,8 +81,8 @@ mix sets.
 | sample | ntuple (`$L=/cluster/tufts/wongjiradlab/larbys/data/larformer`) | norm |
 |---|---|---|
 | nu_e CC signal | `$L/run1_nueintrinsics_half/..._nue_run1_half.root` | POT 4.9065e22 |
-| BNB nu bkg | `$L/run1_bnboverlay_half/..._bnbovl_run1_half.root` | POT 2.1292e20 after dropping the 350 filenos that fed segmenter training (`--exclude-rows pi0mass_peak/run1ovl_trainpool_exclusion.npz`) |
-| EXT cosmic | `$L/run1_C1_extbnb_half/..._extbnb_run1_half.root` | 23,090,946 beam spills / (0.25 x 94,414,115 EXT spills) = **0.9783** per event |
+| BNB nu bkg | `$L/run1_bnboverlay_half/..._bnbovl_run1_half.root` **+** `$L/run1_bnboverlay_half2/..._bnbovl_run1_half2.root` | half 1 (TRAINPOOL): POT 2.1292e20 after dropping the 350 filenos that fed segmenter training (`--exclude-rows pi0mass_peak/run1ovl_trainpool_exclusion.npz`); half 2 (RESERVED, never in training, no exclusion): POT 2.3630e20. Merged by POT -> **4.4922e20**, 370,580 events |
+| EXT cosmic | `$L/run1_C1_extbnb_half/..._extbnb_run1_half.root` **+** `$L/run1_C1_extbnb_half2/..._extbnb_run1_half2.root` | two DISJOINT 25% halves (104,516 + 114,638 = 219,154 evts; verified 0 shared run/subrun/event). 23,090,946 beam spills / (0.50 x 94,414,115 EXT spills) = **0.4891** per event |
 | data | `$L/bnb5e19_run1_table/..._bnb5e19_run1_table.root` | 4.4e19 POT |
 
 No classifier hygiene on run 1 (no BDT ever saw a run-1 event).
@@ -69,6 +114,26 @@ it looks like a global factor rather than an EXT-only problem. Check the
 bnb5e19 POT (4.4e19) and spill count before tuning EXT. The tight working
 points are insensitive: EXT is 0.00 at `elconf>9 & prim>4` and 1.96 -> 2.88
 at `elconf>8 & prim>4`.
+
+**Both BNB-overlay halves are merged by default.** MC halves cannot simply be
+concatenated (each table's `w` is already scaled to the full target POT, so
+stacking would double-count); `nue_cc_common.load_one_table` re-weights each
+file by POT_i / POT_total, which is exactly one table built from the combined
+sample. Validated: the two halves independently predict numuCC 1900.96 and
+1900.97 at the flash cut; merged 1900.96 +- 18.6 (from +- 26.6). At
+`elconf>9 & prim>4` the numuCC/NC estimates rest on 19/9 raw events instead
+of 7/3. `BNB1ONLY=1` forces half 1. NOTE the halves are NOT perfectly
+disjoint: one dlmerged file (run 7023 subrun 193, 49 events; fileid 2596 in
+half 1, 977 in half 2) is in both; the merge drops the duplicates from the
+second table (its ~0.02% of POT stays counted -- negligible).
+
+**Both EXT halves are stacked by default.** `--ext-npz` (and the other table
+flags) accept a comma-separated list; the per-event EXT weight is derived from
+how many 25% halves are passed, so adding the second half leaves the EXT
+prediction unchanged and shrinks its statistical error by ~sqrt(2) (flash-only:
+1213 +- 34 from 1240 raw -> 1241 +- 25 from 2538 raw). MC tables are refused
+for concatenation -- each is already normalized to the full target POT, so
+stacking two would double-count. `EXT1ONLY=1` forces the single half.
 
 **Cut tuning:** `run_nuecc_cutflow.sh` (defaults to run 1). Every step folder
 gets the headline plots plus, for each of 19 candidate variables at that

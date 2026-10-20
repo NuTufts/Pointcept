@@ -4,7 +4,7 @@
 #SBATCH --time=24:00:00
 #SBATCH --mem=16G
 #SBATCH --cpus-per-task=2
-#SBATCH --array=0-3
+#SBATCH --array=0-6
 #SBATCH --output=logs/nuecc/tables.%A_%a.log
 #SBATCH --error=logs/nuecc/tables.%A_%a.err
 # Build the four per-sample nue-CC tables, one per array task.
@@ -28,6 +28,13 @@ if [ "$SET" = "run1_tg" ]; then
     1) TAG=bnb;  NT=$L/run1_bnboverlay_half/dlgen2_larformer_ntuple_bnbovl_run1_half.root;   EXTRA="--exclude-rows $EXCL" ;;
     2) TAG=ext;  NT=$L/run1_C1_extbnb_half/dlgen2_larformer_ntuple_extbnb_run1_half.root;    EXTRA="--data" ;;
     3) TAG=data; NT=$L/bnb5e19_run1_table/dlgen2_larformer_ntuple_bnb5e19_run1_table.root;   EXTRA="--data" ;;
+    # second, disjoint 25% EXT half -- stacked with ext.npz by the plotters
+    4) TAG=ext2; NT=$L/run1_C1_extbnb_half2/dlgen2_larformer_ntuple_extbnb_run1_half2.root;  EXTRA="--data" ;;
+    # second, disjoint overlay half (RESERVED list: never in any training, so no
+    # exclusion). Merged with bnb.npz by POT in the plotters.
+    5) TAG=bnb2; NT=$L/run1_bnboverlay_half2/dlgen2_larformer_ntuple_bnbovl_run1_half2.root; EXTRA="" ;;
+    # intrinsic-nue TRAINING half: BDT training ONLY, never a plot sample
+    6) TAG=nue_train; NT=$L/run1_nueintrinsics_trainhalf/dlgen2_larformer_ntuple_nue_run1_trainhalf.root; EXTRA="" ;;
   esac
 else
   OUTD=$N/tables
@@ -36,6 +43,7 @@ else
     1) TAG=bnb;  NT=$D/larformer_mcoverlay67k_s1ep2p8cew6/dlgen2_larformer_ntuple_mc_overlay_s1ep2p8cew6_run3.root;   EXTRA="" ;;
     2) TAG=ext;  NT=$D/larformer_extbnb200k_s1ep2p8cew6/dlgen2_larformer_ntuple_extbnb200k_s1ep2p8cew6.root;          EXTRA="--data" ;;
     3) TAG=data; NT=$D/larformer_bnb5e19_s1ep2p8cew6/dlgen2_larformer_ntuple_bnb5e19_s1ep2p8cew6.root;                EXTRA="--data" ;;
+    4|5|6) exit 0 ;;   # run 3 has single EXT / overlay files, no training half
   esac
 fi
 mkdir -p $OUTD

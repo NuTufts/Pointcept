@@ -55,8 +55,10 @@ def main():
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
-    nue = dict(np.load(args.nue_npz)); bnb = dict(np.load(args.bnb_npz))
-    ext = dict(np.load(args.ext_npz)); dat = dict(np.load(args.data_npz))
+    nue, _ = C.load_one_table(args.nue_npz); bnb, _ = C.load_one_table(args.bnb_npz)
+    # --ext-npz accepts a comma-separated list ("ext.npz,ext2.npz")
+    ext, _n_ext = C.load_one_table(args.ext_npz)
+    dat, _ = C.load_one_table(args.data_npz)
 
     def sel_logchi2(tab):
         m = tab["sel"].astype(bool) & np.isfinite(tab["reco_ele_E"])

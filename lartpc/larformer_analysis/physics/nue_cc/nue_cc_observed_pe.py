@@ -58,8 +58,8 @@ def main():
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
-    nue = dict(np.load(args.nue_npz)); bnb = dict(np.load(args.bnb_npz))
-    ext = dict(np.load(args.ext_npz)); dat = dict(np.load(args.data_npz))
+    nue, _ = C.load_one_table(args.nue_npz); bnb, _ = C.load_one_table(args.bnb_npz)
+    ext, _ = C.load_one_table(args.ext_npz); dat, _ = C.load_one_table(args.data_npz)
     for tag, tb in (("nue", nue), ("bnb", bnb), ("ext", ext), ("data", dat)):
         if "observed_pe" not in tb:
             raise SystemExit(f"{tag} table has no observed_pe -- run "
