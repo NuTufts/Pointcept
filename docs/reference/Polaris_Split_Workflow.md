@@ -155,6 +155,9 @@ bash lartpc/polaris/qsub_stageB.sh --test                        # NTHR=40 MATRI
 #   negative balance") -- job 7757331 sat 3 days "Not enough free nodes". Until the PI gets the project positive,
 #   use the preemptable queue (Priority 155, <= 10 nodes, not routed; preemption handled by the .resume worklist):
 #   MODE=preempt NODES=10 PPG=2 MPS=1 TAG=prod WALLTIME=02:00:00 bash lartpc/polaris/qsub_stageB.sh
+#   2026-10-22: preemptable also sat 3 days. ALCF advice: debug-scaling (<= 10 nodes, <= 1 h, priority 150, no
+#   backfill routing); 10 nodes x PPG=2 = 80 shards x 1093 events ~ 40 min:
+#   MODE=debugscale NODES=10 PPG=2 MPS=1 TAG=prod bash lartpc/polaris/qsub_stageB.sh
 MODE=prod NODES=16 PPG=2 MPS=1 TAG=prod bash lartpc/polaris/qsub_stageB.sh   # PPG/MPS = best matrix row
 qstat -u $USER;  tail -f $POL_DATADIR/logs/prod/gpumon_*.csv    # live utilization while it runs
 

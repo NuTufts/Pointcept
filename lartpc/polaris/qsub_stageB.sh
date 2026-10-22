@@ -16,7 +16,9 @@
 #   LIST:     $POL_DATADIR/lists/$POL_LIST_NAME (the test job builds it)
 # Guards: prod needs $POL_DATADIR/tests/stageB/.PASS (FORCE=1 overrides);
 #         refuses if $OUTDIR/.shards/*.running exist (FORCE=1 after `qstat -u $USER`).
-# Accounts: debug -> $POL_DEBUG_ACCOUNT, prod/preempt -> $POL_ACCOUNT.
+# Accounts: debug/debugscale -> $POL_DEBUG_ACCOUNT, prod/preempt -> $POL_ACCOUNT; ACCOUNT=.. overrides.
+# MODE=debugscale: the debug-scaling queue (<= 10 nodes, <= 1 h, priority 150, NOT routed to backfill when
+#   the project balance is negative). 10 nodes x PPG=2 runs run4ovl_4a in ~40 min (1093 events/shard).
 # ---------------------------------------------------------------------------
 set -eu
 HERE=$(cd "$(dirname "$0")" && pwd); REPO=$(cd "$HERE/../.." && pwd); cd "$REPO"
@@ -31,8 +33,11 @@ case "$MODE" in
   debug)   QUEUE=debug;       ACCT=$POL_DEBUG_ACCOUNT; NODES=${NODES:-1};  WALLTIME=${WALLTIME:-01:00:00} ;;
   prod)    QUEUE=prod;        ACCT=$POL_ACCOUNT;       NODES=${NODES:-16}; WALLTIME=${WALLTIME:-03:00:00} ;;
   preempt) QUEUE=preemptable; ACCT=$POL_ACCOUNT;       NODES=${NODES:-4};  WALLTIME=${WALLTIME:-12:00:00} ;;
-  *) echo "MODE must be debug|prod|preempt" >&2; exit 2 ;;
+  debugscale) QUEUE=debug-scaling; ACCT=${ACCOUNT:-$POL_DEBUG_ACCOUNT}; NODES=${NODES:-10}; WALLTIME=${WALLTIME:-01:00:00}
+           [ "$NODES" -le 10 ] || { echo "ERROR: debug-scaling allows <= 10 nodes (NODES=$NODES)" >&2; exit 2; } ;;
+  *) echo "MODE must be debug|prod|preempt|debugscale" >&2; exit 2 ;;
 esac
+ACCT=${ACCOUNT:-$ACCT}    # ACCOUNT=<project>::<suballocation> overrides the per-mode default
 mkdir -p "$POL_LOGDIR/$TAG" "$POL_DATADIR/lists"
 SENV=$(readlink -f "$POL_SAMPLE_ENV")
 echo ">>> sample=$POL_SAMPLE ($SENV)  images=$POL_IMGDIR  datadir=$POL_DATADIR"
