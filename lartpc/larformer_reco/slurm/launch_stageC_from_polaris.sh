@@ -59,7 +59,7 @@ rm -rf "$TMPU"
 apptainer exec --bind /cluster:/cluster $C python3 lartpc/data_prep/uboone_official/list_merged_sp.py --dir "$DATADIR/merged_sp" --out "$MSP_LIST"
 echo ">>> $(wc -l < "$MSP_LIST") merged_sp events -> $MSP_LIST"
 mkdir -p logs/data_prep logs/export
-UNPACK=$(IMGDIR=$IMGDIR DEST=$KP2 sbatch --parsable --export=ALL,IMGDIR=$IMGDIR,DEST=$KP2 --job-name=${TAG}_unpack lartpc/data_prep/squashfs/unpack_kp2_images.sh)
+UNPACK=$(IMGDIR=$IMGDIR DEST=$KP2 sbatch --parsable --export=ALL,IMGDIR=$IMGDIR,DEST=$KP2 --job-name=kp2unpack_${TAG} lartpc/data_prep/squashfs/unpack_kp2_images.sh)
 echo ">>> unpack job $UNPACK -> $KP2"
 RESUME_AFTER_INF=$UNPACK SPEC=$SPEC TAG=$TAG GAMMA_SPEC=$GAMMA_SPEC FLASH_WINDOW=$FLASH_WINDOW \
   bash lartpc/larformer_reco/slurm/launch_tranche_chain.sh

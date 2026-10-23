@@ -10,7 +10,9 @@
 # per-shard subtrees merge). Writes $DEST/.unpacked_ok with the h5 count.
 set -eu
 IMGDIR=${IMGDIR:?image dir}; DEST=${DEST:?keypoint2_streams dir}
-HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+# under sbatch BASH_SOURCE is the spool copy (/var/spool/slurm/jobN/), so locate the siblings via the submit dir
+if [ -n "${SLURM_JOB_ID:-}" ]; then HERE=${SLURM_SUBMIT_DIR:-$PWD}/lartpc/data_prep/squashfs; else HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd); fi
+[ -f "$HERE/verify_images.sh" ] || { echo "ERROR: $HERE/verify_images.sh not found (submit from the repo root)" >&2; exit 2; }
 bash "$HERE/verify_images.sh" "$IMGDIR" || { echo "ERROR: image verification failed; not unpacking" >&2; exit 2; }
 mkdir -p "$DEST"
 WANT=0; N=0
