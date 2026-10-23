@@ -205,6 +205,18 @@ inference and hangs regen on the unpack. `WEIGHTS_PKL=none` because no run-4
 run 3). Then STEP 5 / STEP 6 of `Sample_Processing_Procedure.md`
 (verify reco-vs-truth, register in the versions doc with the proxy gamma).
 
+**RESULT (run4ovl_4a, 2026-10-23):** launcher 6243733 -> unpack 6243738 (80 tar images, 8 min),
+regen 6243740, nu_reco 6243741/6243742, larpid 6243743/6243744, export 6243745 (60 shards), hadd
+6243746; 15:14 -> 17:36 EDT = **2 h 22 min wall** for the whole CPU tail, every task COMPLETED,
+0 tracebacks. hadd 87,383 == merged_sp list == shard sum; 87,381 nu-stream + 15 flash-match kp2
+files; `flashGammaEff` 4.370625; foundVertex 78.0% (run-1 overlay sibling 77.6%); for true
+vertices inside the TPC: found 94.5%, `vtxDistToTrue` median 0.65 cm, 82% within 5 cm (sibling
+0.67 cm / 80.5%), i.e. the Polaris GPU pass is physically consistent with the Tufts-processed
+run-1 overlay. New disk at Tufts: keypoint2_streams 12 GB, nu_reco + larpid 1.8 GB, ntuple 155 MB
+(kp2_images tars, 12 GB, are reproducible from Eagle and can be deleted once
+`keypoint2_streams/.unpacked_ok` exists). POT is unusable at the source for this production
+(unfilled potsummary tree; `lartpc/data_prep/README.md` § Normalization).
+
 Conformance note: Polaris A100-SXM4 + driver 580 is a separate determinism
 family from Tufts (`Polaris_Conformance_2026-09-16.md`: ~4% event-level
 flips vs Tufts, unbiased). A sample processed this way must be compared only

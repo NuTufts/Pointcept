@@ -79,6 +79,17 @@ Info for 'uboone official' samples
   cosmics (248 files, 54,670 events; 247 files / 53,938 events converted 2026-10-09 into
   `$L/mcc9.10_isotropic_one_gamma_run45/`, TICK=forward). No normalization: a particle gun
   has no POT (the potTree values are meaningless) and no spill count. Performance sample only.
+* mcc9.10_run4_bnbnu_overlay_4a: mcc9.10 Run4a BNB nu overlay
+  (`MCC9.10_Run4acd5_v10_04_07_20_BNB_nu_overlay_retuple_retuple_dlreco_4a`, "mergeonly" list of
+  119 merged files / 103,384 events). 102 files / 87,383 events converted 2026-10-15/16 into
+  `/cluster/tufts/wongjiradlabnu/nutufts/data/larformer/mcc9.10_run4_bnbnu_overlay_4a/`
+  (TICK=forward; 17 partially converted files dropped whole, `tranche_run4ovl_4a.spec.dropped`).
+  **POT not available from the files**: the `potsummary_generator_tree` in these dlreco files is
+  unfilled (run/subrun = larlite's invalid sentinel 0xFFFFFFFF, totpot/totgoodpot are uninitialized
+  doubles; ROOT and uproot read the same garbage), so the truth sidecars' totPOT and the ntuple's
+  potTree (44 of 102 rows overflow float32 to inf) are meaningless -- never sum them. To normalize,
+  get the production's POT from SAM metadata, or as a rough proxy scale by events using the run-1
+  overlay's 1.258e15 POT/event (2.2903e20 / 182,069) -> ~1.10e20 POT for 87,383 events. No spill count.
 * mcc9_v28_run1_bnboverlay: Run 1 BNB nu overlay MC, 9,538 tier2 files. The run-1
   overlay HALF production (`run1_bnboverlay_half/`, 2026-09-13) converts the
   TRAINPOOL list (4,740 files = unbiased 50% by md5 parity, see

@@ -570,6 +570,54 @@ energy-balanced e-gamma classes) or a dedicated e/gamma dE/dx discriminant at
 the shower start; a selection-level fix is not available without admitting
 nu_e CC.
 
+**LArFormer vs LANTERN vs Wire-Cell comparison (2026-10-22;
+`physics/iso_1gamma/iso1g_compare.py`, plan + results in
+`physics/iso_1gamma/ANALYSIS_PLAN.md`, tables `plots_iso1g/iso1g_summary.md`,
+gitignored).** Joined on (run, subrun, event) with the official hist file
+`checkout_isotropic_one_gamma_run45_reco2_prod_reco2_hist_4a.root`
+(`lantern/EventTree`, `wcpselection/T_PFeval`, `wcpselection/T_eval`;
+53,890 of 53,938 events match, 732 hist-only = LArFormer-chain losses). Headline
+(tier "reconstructable photon": E > 20 MeV, conversion point >= 3 cm inside the
+TPC, 35,183 events; success = selected event, reco vertex in the WC FV, exactly
+one shower candidate with PID 11|22 and E > 20 MeV, truth-matched purity > 0.5
+and completeness > 0.5): efficiency / purity WC 0.27 / 0.85, LANTERN 0.26 / 0.84,
+LArFormer vertex path 0.43 / 0.80, vertex + vertex-less 0.51 / 0.71, + cosmic
+BDT 0.50 / 0.78, + flash chi2 0.42 / 0.97. Leading-candidate version (split
+showers not penalised): WC 0.38, LANTERN 0.30, LArFormer+flash 0.45. Gotchas:
+WC per-particle completeness is unusable on this pure-MC sample (simulated
+cosmics in the denominator; event-level `match_completeness_energy /
+truth_energyInside` used instead), WC showers are split into particle-flow
+segments (top-level showers counted), LANTERN tree's `trueSimPartEDep` is not
+the sidecar conversion point, `vtxIsFiducial` != WC FV (the exporter's WC
+boundary library is applied to all three reco vertices).
+
+### 3e. mcc9.10 Run4a BNB nu OVERLAY (run period 4) — added 2026-10-23; the Tufts -> Polaris -> Tufts split-workflow demonstration sample
+
+`MCC9.10_Run4acd5_v10_04_07_20_BNB_nu_overlay_retuple_retuple_dlreco_4a`, the
+"mergeonly" list of 119 merged dlreco files (103,384 events, runs 18961-19752 =
+run period 4, numu 98.4% / nue 0.7%, CC 72.5%; 37.6% of true vertices inside the
+TPC with a 10 cm fiducial margin, like the run-1 overlay). Processed with the
+split workflow of `docs/reference/Polaris_Split_Workflow.md`: step A (conversion
++ truth sidecars + squashfs packing) at Tufts, step B (keypoint2 GPU cascade) on
+Polaris, step C (unpack, nu_reco, LArPID, export, hadd) at Tufts. `$N =
+/cluster/tufts/wongjiradlabnu/nutufts/data/larformer`.
+
+**Use it for:** run-4 performance studies, and as the reference sample of the
+Polaris throughput measurement (ALCF allocation proposal). **Do not** POT-normalize
+it yet (below), and compare it only with samples whose GPU pass also ran on Polaris
+or quote the ~4% event-level conformance difference (`Polaris_Conformance_2026-09-16.md`).
+
+| item | value |
+|---|---|
+| ntuple | `$N/mcc9.10_run4_bnbnu_overlay_4a/dlgen2_larformer_ntuple_run4ovl_4a.root` |
+| events | **87,383** (102 of 119 files; 17 partially converted files dropped whole, `uboone_official/tranche_run4ovl_4a.spec.dropped`). 87,381 nu-stream + 15 flash-match kp2 files; nu_reco 68,126 reco / 19,255 no slice / 0 errors; hadd == 60-shard sum == merged_sp list |
+| normalization | **NOT AVAILABLE from the files.** The dlreco `potsummary_generator_tree` is unfilled in this production (run/subrun = larlite invalid sentinel 0xFFFFFFFF, totpot/totgoodpot uninitialized doubles; ROOT and uproot read the same garbage), so the sidecar totPOT and the ntuple potTree (102 rows, 44 of them inf after the float32 cast) are meaningless. Get the POT from SAM metadata before stacking; rough proxy 1.258e15 POT/event (run-1 overlay) -> ~1.10e20. `xsecWeight` = -1 for every event (`WEIGHTS_PKL=none`: no run-4 bnb_nu pickle) |
+| chain | v2_s1ep2p8cew6 (section 1) with the GPU pass on Polaris A100-SXM4 / driver 580 (job 7776037, 10 nodes, PPG=2 + MPS, 57% GPU util, 3,323 ev/GPU-h; `docs/reference/figures/polaris_run4ovl_4a/`); CPU tail at Tufts 2026-10-23 15:14-17:36. LArPID DEFAULT weights (tag has no `run3`) |
+| flash gamma | `flashGammaEff` 4.370625 = 5.25 x 0.8325 = the **(mc,3) cell used as a PROXY** (no (mc,4) cell measured; same choice as isogamma_run45). Flash window 3.6-5.2 us, `SAMPLE_KIND=mc` |
+| reco vs truth | foundVertex 78.0% (run-1 overlay half: 77.6%); rises with trueNuE (66.6% below 0.3 GeV -> 82.6% above 2.5 GeV), CC 80.8% / NC 70.6%. True vertex inside the TPC: found 94.5% (CC 98.4%, NC 84.4%), `vtxDistToTrue` median 0.65 cm, 82.2% within 5 cm (sibling 94.1%, 0.67 cm, 80.5%); outside the TPC: 68.0% "found" at a median 246 cm (sibling 67.8% / 248 cm) -- same behaviour as the Tufts-processed run 1. 2.33 tracks / 1.96 showers per found-vertex event. trueNuE > 0 for all events |
+| intermediates | `$N/mcc9.10_run4_bnbnu_overlay_4a/{merged_sp (445 GB),truth_sidecar,markers,kp2_images (80 tar images from Polaris, 12 GB, reproducible from Eagle),keypoint2_streams,nu_reco_streams_{nu,fm},nu_reco_larpid_{nu,fm},polaris_logs}`; lists `$N/.../merged_sp_run4ovl_4a.txt`, `outputlists/keypoint2_out_run4ovl_4a_{nu,fm}.txt` (do NOT regenerate). Polaris: `/eagle/neutrinoGPU/twongj01/data/uboone/run4ovl_4a{,_stageB}` |
+| provenance | spec `uboone_official/tranche_run4ovl_4a.spec` (MC mode, truth sidecars, **TICK=forward**, tier1 symlink staging, DATADIR on wongjiradlabnu); step A sequencer `logs/data_prep/run4ovl4a_seq.sbatch`; step B `lartpc/polaris/qsub_stageB.sh` MODE=debugscale; step C `larformer_reco/slurm/launch_stageC_from_polaris.sh` (6243733 -> chain 6243738-6243746). Procedure: `docs/reference/Sample_Processing_Procedure.md` |
+
 ### 3b. Intrinsic-nue signal sample (added 2026-09-10)
 
 | sample | ntuple | events |
