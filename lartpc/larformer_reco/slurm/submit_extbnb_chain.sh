@@ -227,4 +227,4 @@ echo "hadd      : ${HADD}  -> ${OUT_NTUPLE}"
 
 echo
 echo "chain submitted for TAG=${TAG}. final ntuple: ${OUT_NTUPLE}"
-echo "watch: squeue -j ${PREP},${INF},${REGEN},${NRNU},${NRFM},${LPNU},${LPFM},${EXP},${HADD}"
+echo "watch: squeue -j ${PREP:-}${PREP:+,}${INF:-}${INF:+,}${REGEN},${NRNU},${NRFM},${LPNU},${LPFM},${EXP},${HADD}"
