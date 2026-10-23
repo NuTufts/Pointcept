@@ -30,8 +30,26 @@ HOST_RE = re.compile(r"host=(\S+)")
 GPU_RE = re.compile(r"gpu=(\d+)")
 
 
+STAMP_OFF = 0.0   # string stamp -> epoch; set by calibrate_offset (logs are the Polaris node's local clock)
+
+
 def pstamp(s):
-    return dt.datetime.strptime(s, "%Y-%m-%dT%H:%M:%S").timestamp()
+    return dt.datetime.strptime(s, "%Y-%m-%dT%H:%M:%S").timestamp() + STAMP_OFF
+
+
+def calibrate_offset(paths):
+    """Lines like '<stamp> >>> ... SHARD_T0=<epoch>' carry both clocks; use them so the report is
+    right when the logs are read in another timezone (e.g. shipped to Tufts)."""
+    global STAMP_OFF
+    offs = []
+    for path in paths[:5]:
+        with open(path, errors="replace") as fh:
+            for l in fh:
+                m = STAMP_RE.match(l); kv = KV_RE.findall(l)
+                if m and kv:
+                    offs.append(int(kv[0][1]) - dt.datetime.strptime(m.group(1), "%Y-%m-%dT%H:%M:%S").timestamp())
+    if offs:
+        offs.sort(); STAMP_OFF = offs[len(offs) // 2]
 
 
 def scan_shard(path):
@@ -69,7 +87,7 @@ def read_gpumon(path):
             if len(p) < 7:
                 continue
             try:
-                t = dt.datetime.strptime(p[0].split(".")[0], "%Y/%m/%d %H:%M:%S").timestamp()
+                t = dt.datetime.strptime(p[0].split(".")[0], "%Y/%m/%d %H:%M:%S").timestamp() + STAMP_OFF
                 rows.append((t, int(p[1]), float(p[2]), float(p[3]), float(p[4]), float(p[6]) if p[6] not in ("[N/A]", "") else 0.0))
             except ValueError:
                 continue
@@ -95,7 +113,9 @@ def main():
     ap.add_argument("--brief", action="store_true")
     args = ap.parse_args()
 
-    shards = [scan_shard(p) for p in sorted(glob.glob(os.path.join(args.logdir, "cascade_shard*.log")))]
+    paths = sorted(glob.glob(os.path.join(args.logdir, "cascade_shard*.log")))
+    calibrate_offset(paths)
+    shards = [scan_shard(p) for p in paths]
     mons = dict(read_gpumon(p) for p in sorted(glob.glob(os.path.join(args.logdir, "gpumon_*.csv"))))
     hosts = sorted(set(s["host"] for s in shards if s["host"]) | set(mons))
     nnodes = args.nodes or len(hosts) or 1

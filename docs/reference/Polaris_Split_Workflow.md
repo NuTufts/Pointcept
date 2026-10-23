@@ -162,6 +162,9 @@ bash lartpc/polaris/qsub_stageB.sh --test                        # NTHR=40 MATRI
 #   36.9 ev/s aggregate, 3323 ev/GPU-h, per-process 2.00 s/ev, model build 74 s/shard, pack 1-2 s, mean GPU util 57.2 %
 #   over 40 GPUs, max GPU memory 32.5-40.3 GiB of 40 (PPG=3 would not fit), 0 tracebacks. Images 80 x ~145 MB tar.
 #   Report: logs/prod/report_prod_7776037.md (+ util_timeseries_prod_7776037.csv, gpumon_<node>.csv).
+#   Proposal figures: lartpc/polaris/plot_stageB_report.py --logs $D/polaris_logs --out <dir> (in the container) ->
+#   docs/reference/figures/polaris_run4ovl_4a/{stageB_gpu_util_timeseries,stageB_config_matrix}.png + stageB_summary.md
+#   (60 % utilization during inference, 55-58 % per node; 3,323 ev/GPU-h charged, 3,600 inference-only).
 MODE=prod NODES=16 PPG=2 MPS=1 TAG=prod bash lartpc/polaris/qsub_stageB.sh   # PPG/MPS = best matrix row
 qstat -u $USER;  tail -f $POL_DATADIR/logs/prod/gpumon_*.csv    # live utilization while it runs
 
