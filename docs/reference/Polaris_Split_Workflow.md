@@ -158,6 +158,10 @@ bash lartpc/polaris/qsub_stageB.sh --test                        # NTHR=40 MATRI
 #   2026-10-22: preemptable also sat 3 days. ALCF advice: debug-scaling (<= 10 nodes, <= 1 h, priority 150, no
 #   backfill routing); 10 nodes x PPG=2 = 80 shards x 1093 events ~ 40 min:
 #   MODE=debugscale NODES=10 PPG=2 MPS=1 TAG=prod bash lartpc/polaris/qsub_stageB.sh
+#   RESULT (job 7776037, debug-scaling, 2026-10-23): 80/80 shards, 87,383 events, wall 2367 s (0.66 h), 6.58 node-h,
+#   36.9 ev/s aggregate, 3323 ev/GPU-h, per-process 2.00 s/ev, model build 74 s/shard, pack 1-2 s, mean GPU util 57.2 %
+#   over 40 GPUs, max GPU memory 32.5-40.3 GiB of 40 (PPG=3 would not fit), 0 tracebacks. Images 80 x ~145 MB tar.
+#   Report: logs/prod/report_prod_7776037.md (+ util_timeseries_prod_7776037.csv, gpumon_<node>.csv).
 MODE=prod NODES=16 PPG=2 MPS=1 TAG=prod bash lartpc/polaris/qsub_stageB.sh   # PPG/MPS = best matrix row
 qstat -u $USER;  tail -f $POL_DATADIR/logs/prod/gpumon_*.csv    # live utilization while it runs
 
