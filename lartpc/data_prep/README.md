@@ -16,6 +16,9 @@ Steps (each a `*_wconfig.sh` driven by a per-sample config in `lantern_configs/`
 5. `run_step5_flashinfo_pointcept_wconfig.sh` — flash-info H5
    (`lartpc/flashmatch/prepare_flashinfo_h5.py`)
 
+Provenance of the simulation these files come from (fcls, uboonecode version,
+ublite patch): `docs/reference/Training_Sim_Provenance.md`.
+
 ## uboone_official/ — official MicroBooNE sim/data
 
 Processes official datasets (different truth handling than the training data).
