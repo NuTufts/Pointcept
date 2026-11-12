@@ -42,8 +42,11 @@ see `nu_and_cosmics/README.md` in `uboone_on_tufts`.
   `standard_larcv_uboone_mctruth_prod_on_tufts_wcsimch.fcl` → `hadd` of the larlite
   and larcv outputs into one dlmerged file.
 - The ublite patch is what makes the truth labels possible: the larlite `simch`
-  stream keeps SimChannels for all three planes and stores each IDE's 3D x,y,z
-  (stock ublite keeps only Y-plane channels and drops x,y,z). It also lets the
+  stream keeps SimChannels for all three planes and stores each IDE's x,y,z
+  (stock ublite keeps only Y-plane channels and drops x,y,z). For the WireCell
+  `driftWC:simpleSC` SimChannels only y,z are true deposit coordinates; x is the
+  wire-plane position (-0.6..0 cm), so the drift coordinate comes from the TDC
+  (checked 2026-11-12, `uboone_on_tufts/wireplane_extract/README.md`). It also lets the
   LiteScanner store simulated CRT hits/tracks when there is no DAQ header.
 
 ## Open items
